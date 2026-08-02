@@ -51,8 +51,7 @@ hs.hotkey.bind(HOTKEY_MODS, HOTKEY_KEY, sendSelection)
 ------------ 接收：HTTP 服务 → 写剪贴板 + 通知 ------------
 
 local server = hs.httpserver.new(false, false)
-server:setInterface("0.0.0.0")
-server:setPort(PORT)
+server:setPort(PORT) -- 不调用 setInterface，默认监听所有网卡
 server:setCallback(function(method, path, _headers, body)
   if method == "POST" and path == "/push" then
     local ok, data = pcall(hs.json.decode, body)
