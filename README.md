@@ -1,8 +1,9 @@
 # ClipRelay
 
-两台 Mac 在同一局域网内互传选中文本的小工具。选中即发，对方直接 Cmd+V 粘贴。
+Mac 与 Android 手机在同一局域网内互传文本的小工具。选中即发，对方直接粘贴。
 
-基于 [Hammerspoon](https://www.hammerspoon.org/)，每台 Mac 一个 `init.lua`，无需构建。
+- Mac 端基于 [Hammerspoon](https://www.hammerspoon.org/)，每台 Mac 一个 `init.lua`，无需构建。
+- Android 端基于 [Termux](https://termux.dev/)，脚本在 `android/` 目录，双向实时互传。
 
 ## 工作原理
 
@@ -24,6 +25,45 @@ cp init.lua ~/.hammerspoon/init.lua
 2. 编辑 `~/.hammerspoon/init.lua`，把顶部的 `PEER` 改成对方 Mac 的局域网 IP
    （在对方机器上用 `ipconfig getifaddr en0` 查询）。
 3. 点 Hammerspoon 菜单栏图标 → Reload Config，看到「ClipRelay 已启动」即就绪。
+
+## Android 端（Termux）
+
+需要三个 App（建议从 F-Droid 安装，Play 商店版本已停更）：
+
+- **Termux**：跑脚本本体
+- **Termux:API**：读写剪贴板、弹通知
+- **Termux:Widget**（可选）：把"发送"做成桌面一键小部件
+- **Termux:Boot**（可选）：开机自动启动接收端
+
+在 Termux 里执行：
+
+```bash
+pkg install python curl jq termux-api
+mkdir -p ~/cliprelay
+# 把本仓库 android/receiver.py 和 android/send.sh 拷到 ~/cliprelay/
+chmod +x ~/cliprelay/send.sh
+# 编辑 send.sh 顶部的 PEER 为 Mac 的局域网 IP
+```
+
+- **启动接收端**（收 Mac 发来的文本，写剪贴板 + 通知）：
+
+  ```bash
+  termux-wake-lock
+  python ~/cliprelay/receiver.py
+  ```
+
+- **发送**（把手机剪贴板推到 Mac）：
+
+  ```bash
+  ~/cliprelay/send.sh
+  ```
+
+  一键化：`mkdir -p ~/.shortcuts && cp ~/cliprelay/send.sh ~/.shortcuts/`，
+  然后在桌面添加 Termux:Widget 小部件，点一下即发。
+
+- **开机自启**（可选）：`mkdir -p ~/.termux/boot && cp android/boot-cliprelay.sh ~/.termux/boot/`
+
+另：在系统设置里把 Termux 的电池优化关掉，否则后台会被杀。
 
 ## 配置项
 
