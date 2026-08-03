@@ -29,20 +29,13 @@ local function sendSelection()
       pb.setContents(old) -- 恢复自己剪贴板原内容
     end
     if not text or text == "" or text == old then
-      hs.alert.show("ClipRelay：没有选中新文本")
-      return
+      return -- 发送方静默：无任何弹窗
     end
 
     local url = string.format("http://%s:%d/push", PEER, PORT)
     -- 用 curl 而非 hs.http：hs.http 会走系统代理，代理拦截局域网请求导致发送失败；
     -- curl 默认忽略系统代理，直连对方
-    hs.task.new("/usr/bin/curl", function(exitCode)
-      if exitCode == 0 then
-        hs.alert.show("ClipRelay：已发送（" .. #text .. " 字节）")
-      else
-        hs.alert.show("ClipRelay：发送失败，对方可达吗？")
-      end
-    end, { "-s", "-o", "/dev/null", "--fail", "--max-time", "5",
+    hs.task.new("/usr/bin/curl", nil, { "-s", "-o", "/dev/null", "--fail", "--max-time", "5",
            "-X", "POST", "-H", "Content-Type: application/json",
            "--data", hs.json.encode({ text = text }), url }):start()
   end)
