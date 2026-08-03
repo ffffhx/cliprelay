@@ -34,15 +34,17 @@ local function sendSelection()
     end
 
     local url = string.format("http://%s:%d/push", PEER, PORT)
-    hs.http.asyncPost(url, hs.json.encode({ text = text }),
-      { ["Content-Type"] = "application/json" },
-      function(status)
-        if status == 200 then
-          hs.alert.show("ClipRelay：已发送（" .. #text .. " 字节）")
-        else
-          hs.alert.show("ClipRelay：发送失败，对方可达吗？")
-        end
-      end)
+    -- 用 curl 而非 hs.http：hs.http 会走系统代理，代理拦截局域网请求导致发送失败；
+    -- curl 默认忽略系统代理，直连对方
+    hs.task.new("/usr/bin/curl", function(exitCode)
+      if exitCode == 0 then
+        hs.alert.show("ClipRelay：已发送（" .. #text .. " 字节）")
+      else
+        hs.alert.show("ClipRelay：发送失败，对方可达吗？")
+      end
+    end, { "-s", "-o", "/dev/null", "--fail", "--max-time", "5",
+           "-X", "POST", "-H", "Content-Type: application/json",
+           "--data", hs.json.encode({ text = text }), url }):start()
   end)
 end
 
