@@ -5,7 +5,7 @@
 # 会从 Mac 上下载 receiver.py / send.sh，装依赖，写好对端 IP，并启动接收端。
 
 set -e
-MAC_IP="${1:-192.168.1.187}"
+MAC_IP="${1:-192.168.1.190}"
 BASE="http://$MAC_IP:8787"
 
 echo "==> 安装依赖（python curl jq termux-api）"
