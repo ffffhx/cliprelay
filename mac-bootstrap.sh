@@ -34,7 +34,8 @@ fi
 sed -i '' "s/^local PEER = .*/local PEER = \"$MAC_IP\"/" "$INIT"
 
 echo "==> 启动 Hammerspoon"
-open -a Hammerspoon
+# 刚装完 LaunchServices 可能还没注册，open -a 按名字会找不到，直接按路径打开
+open /Applications/Hammerspoon.app
 
 cat <<EOF
 ✅ ClipRelay 部署完成！
