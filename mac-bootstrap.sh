@@ -1,12 +1,13 @@
 #!/bin/bash
 # ClipRelay Mac 一键部署脚本。
 # 用法（终端里粘贴一条即可）：
-#   curl -fsSL http://<Mac的IP>:8788/mac-bootstrap.sh | bash -s <Mac的IP>
-# 会装 Homebrew（如缺失）→ 装 Hammerspoon → 下载配置并写好对端 IP → 启动。
+#   curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/mac-bootstrap.sh \
+#     | bash -s -- <对端IP或.local主机名>
+# 会装 Homebrew（如缺失）→ 装 Hammerspoon → 下载配置并写好对端地址 → 启动。
 
 set -e
-MAC_IP="${1:-192.168.1.190}"
-BASE="http://192.168.1.190:8788"
+PEER="${1:-peer-mac.local}"
+BASE="${CLIPRELAY_BASE_URL:-https://raw.githubusercontent.com/ffffhx/cliprelay/main}"
 
 echo "==> 检查 Homebrew"
 if ! command -v brew >/dev/null 2>&1; then
@@ -22,7 +23,7 @@ fi
 echo "==> 安装 Hammerspoon"
 brew install --cask hammerspoon
 
-echo "==> 部署 ClipRelay 配置（对端 IP：$MAC_IP）"
+echo "==> 部署 ClipRelay 配置（对端：$PEER）"
 mkdir -p ~/.hammerspoon
 INIT=~/.hammerspoon/init.lua
 if [ -f "$INIT" ]; then
@@ -31,7 +32,7 @@ if [ -f "$INIT" ]; then
 else
   curl -fsSL "$BASE/init.lua" -o "$INIT"
 fi
-sed -i '' "s/^local PEER = .*/local PEER = \"$MAC_IP\"/" "$INIT"
+sed -i '' "s/^local PEER = .*/local PEER = \"$PEER\"/" "$INIT"
 
 echo "==> 启动 Hammerspoon"
 # 刚装完 LaunchServices 可能还没注册，open -a 按名字会找不到，直接按路径打开

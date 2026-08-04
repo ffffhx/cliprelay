@@ -11,7 +11,7 @@
 
 ------------ 配置 ------------
 
-local PEER = "192.168.1.100" -- 对方 Mac 的局域网 IP，两台机器互相填对方的
+local PEER = "peer-mac.local" -- 对方设备的局域网 IP 或 .local 主机名
 local PORT = 47632
 local HOTKEY_MODS = { "ctrl", "alt" } -- 热键修饰键，冲突可改
 local HOTKEY_KEY = "g"
