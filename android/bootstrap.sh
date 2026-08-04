@@ -1,12 +1,18 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ClipRelay Android 一键部署脚本。
 # 用法（Termux 里）：
-#   curl -fsSL http://<Mac的IP>:8787/bootstrap.sh | bash -s <Mac的IP>
-# 会从 Mac 上下载 receiver.py / send.sh，装依赖，写好对端 IP，并启动接收端。
+#   curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/android/bootstrap.sh \
+#     | bash -s -- <Mac的IP或.local主机名>
+# 会从 GitHub 下载 receiver.py / send.sh，装依赖，写好对端地址，并启动接收端。
 
 set -e
-MAC_IP="${1:-192.168.1.190}"
-BASE="http://$MAC_IP:8787"
+PEER="${1:-}"
+BASE="${CLIPRELAY_BASE_URL:-https://raw.githubusercontent.com/ffffhx/cliprelay/main/android}"
+
+if [ -z "$PEER" ]; then
+  echo "用法：bash bootstrap.sh <Mac的IP或.local主机名>"
+  exit 2
+fi
 
 echo "==> 安装依赖（python curl jq termux-api）"
 pkg install -y python curl jq termux-api
@@ -17,8 +23,8 @@ curl -fsSL "$BASE/receiver.py" -o ~/cliprelay/receiver.py
 curl -fsSL "$BASE/send.sh" -o ~/cliprelay/send.sh
 chmod +x ~/cliprelay/send.sh
 
-echo "==> 配置对端 IP：$MAC_IP"
-sed -i "s/^PEER=.*/PEER=\"$MAC_IP\"/" ~/cliprelay/send.sh
+echo "==> 配置对端：$PEER"
+sed -i "s/^PEER=.*/PEER=\"$PEER\"/" ~/cliprelay/send.sh
 
 echo "==> 注册桌面一键发送（~/.shortcuts，配合 Termux:Widget）"
 mkdir -p ~/.shortcuts
