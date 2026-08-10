@@ -45,9 +45,10 @@ hs.hotkey.bind(HOTKEY_MODS, HOTKEY_KEY, sendSelection)
 
 ------------ 接收：HTTP 服务 → 写剪贴板 + 通知 ------------
 
-local server = hs.httpserver.new(false, false)
-server:setPort(PORT) -- 不调用 setInterface，默认监听所有网卡
-server:setCallback(function(method, path, _headers, body)
+-- 保留全局引用；若只用局部变量，Lua GC 后会释放 server 并停止监听。
+clipRelayServer = hs.httpserver.new(false, false)
+clipRelayServer:setPort(PORT) -- 不调用 setInterface，默认监听所有网卡
+clipRelayServer:setCallback(function(method, path, _headers, body)
   if method == "POST" and path == "/push" then
     local ok, data = pcall(hs.json.decode, body)
     if ok and data and type(data.text) == "string" and data.text ~= "" then
@@ -59,6 +60,6 @@ server:setCallback(function(method, path, _headers, body)
   end
   return "bad request", 400, {}
 end)
-server:start()
+clipRelayServer:start()
 
 hs.alert.show("ClipRelay 已启动")
