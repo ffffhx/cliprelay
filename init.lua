@@ -6,14 +6,14 @@
 --   3. mkdir -p ~/.hammerspoon && cp init.lua ~/.hammerspoon/init.lua
 --   4. 修改下方 PEER 为对方 Mac 的局域网 IP，然后在 Hammerspoon 菜单里点 Reload Config
 --
--- 使用：选中任意文本（不用手动复制），按 Ctrl+Alt+G，
---       对方 Mac 会收到通知，文本已写入对方剪贴板，直接 Cmd+V 粘贴。
+-- 使用：选中任意文本（不用手动复制），按 Control+Option+G（⌃⌥G），
+--       对方 Mac 会收到通知，文本已写入对方剪贴板，直接按 Command+V（⌘V）粘贴。
 
 ------------ 配置 ------------
 
 local PEER = "peer-mac.local" -- 对方设备的局域网 IP 或 .local 主机名
 local PORT = 47632
-local HOTKEY_MODS = { "ctrl", "alt" } -- 热键修饰键，冲突可改
+local HOTKEY_MODS = { "ctrl", "alt" } -- Hammerspoon 中对应 Mac 的 Control、Option 键
 local HOTKEY_KEY = "g"
 
 ------------ 发送：热键 → 模拟复制 → POST 给对方 ------------
