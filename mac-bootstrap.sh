@@ -42,5 +42,5 @@ cat <<EOF
 ✅ ClipRelay 部署完成！
    还剩最后一步（系统强制要求本人操作）：
    在弹出的「辅助功能」设置里打开 Hammerspoon 的开关。
-   之后选中任意文本按 Ctrl+Alt+G 即可发送。
+   之后选中任意文本按 Control+Option+G（⌃⌥G）即可发送。
 EOF

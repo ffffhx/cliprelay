@@ -8,8 +8,8 @@ Mac 与 Android 手机在同一局域网内互传文本的小工具。选中即�
 ## 工作原理
 
 - 每台 Mac 的 Hammerspoon 加载配置后，自带一个 HTTP 服务（默认端口 `47632`）。
-- 按下热键（默认 `Ctrl+Alt+G`）：脚本模拟一次 `Cmd+C` 拿到选中文本，恢复本地剪贴板原内容，然后 POST 给对方 Mac。
-- 对方收到后写入对方剪贴板并弹系统通知，直接 `Cmd+V` 即可。
+- 按下热键（默认 `⌃ Control + ⌥ Option + G`）：脚本模拟一次 `⌘ Command + C` 拿到选中文本，恢复本地剪贴板原内容，然后 POST 给对方 Mac。
+- 对方收到后写入对方剪贴板并弹系统通知，直接按 `⌘ Command + V` 即可。
 - 双向互发，两边配置相同，仅 `PEER` 各填对方的局域网 IP 或 `.local` 主机名。
 
 ## 安装（两台 Mac 各做一次）
@@ -81,7 +81,7 @@ chmod +x ~/cliprelay/send.sh
 | --- | --- | --- |
 | `PEER` | `peer-mac.local` | 对方设备的局域网 IP 或 `.local` 主机名 |
 | `PORT` | `47632` | HTTP 服务端口，两边需一致 |
-| `HOTKEY_MODS` / `HOTKEY_KEY` | `ctrl` `alt` + `g` | 全局热键，冲突可改 |
+| `HOTKEY_MODS` / `HOTKEY_KEY` | `⌃ Control + ⌥ Option + G` | 全局热键；代码中的 `ctrl`、`alt` 是 Hammerspoon 对这两个 Mac 键位的标识 |
 
 ## 注意
 
