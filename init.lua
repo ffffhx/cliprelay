@@ -1,13 +1,13 @@
--- ClipRelay：两台 Mac 局域网互传选中文本
+-- ClipRelay：Mac 与其他 ClipRelay 设备在局域网内互传选中文本
 --
--- 安装（两台 Mac 各做一次）：
+-- Mac 安装：
 --   1. brew install --cask hammerspoon
 --   2. 打开 Hammerspoon，授予「辅助功能」权限（系统设置 → 隐私与安全性 → 辅助功能）
 --   3. mkdir -p ~/.hammerspoon && cp init.lua ~/.hammerspoon/init.lua
---   4. 修改下方 PEER 为对方 Mac 的局域网 IP，然后在 Hammerspoon 菜单里点 Reload Config
+--   4. 修改下方 PEER 为对端设备的局域网 IP，然后在 Hammerspoon 菜单里点 Reload Config
 --
 -- 使用：选中任意文本（不用手动复制），按 Ctrl+Alt+G，
---       对方 Mac 会收到通知，文本已写入对方剪贴板，直接 Cmd+V 粘贴。
+--       对端设备会收到通知，文本已写入对方剪贴板，可直接粘贴。
 
 ------------ 配置 ------------
 

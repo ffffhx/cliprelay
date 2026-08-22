@@ -2,7 +2,7 @@
 # ClipRelay Android 一键部署脚本。
 # 用法（Termux 里）：
 #   curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/android/bootstrap.sh \
-#     | bash -s -- <Mac的IP或.local主机名>
+#     | bash -s -- <对端设备的IP或.local主机名>
 # 会从 GitHub 下载 receiver.py / send.sh，装依赖，写好对端地址，并启动接收端。
 
 set -e
@@ -10,7 +10,7 @@ PEER="${1:-}"
 BASE="${CLIPRELAY_BASE_URL:-https://raw.githubusercontent.com/ffffhx/cliprelay/main/android}"
 
 if [ -z "$PEER" ]; then
-  echo "用法：bash bootstrap.sh <Mac的IP或.local主机名>"
+  echo "用法：bash bootstrap.sh <对端设备的IP或.local主机名>"
   exit 2
 fi
 
