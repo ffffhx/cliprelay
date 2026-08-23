@@ -277,6 +277,74 @@ function Get-PropertyValue {
     return $property.Value
 }
 
+function Get-NormalizedPeerAddress {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "Peer host or IP address cannot be empty."
+    }
+
+    $normalized = $Value.Trim()
+    if ($normalized.Contains("://") -or $normalized.Contains("/") -or $normalized.Contains("\")) {
+        throw "Peer must be a host name or IP address without a scheme, port, or path."
+    }
+
+    return $normalized
+}
+
+function Set-ActivePeerAddress {
+    param([string]$Value)
+
+    $normalized = Get-NormalizedPeerAddress -Value $Value
+    $uriBuilder = New-Object System.UriBuilder("http", $normalized, $script:Port, "push")
+    $script:Peer = $normalized
+    $script:pushUri = $uriBuilder.Uri
+}
+
+function Get-LocalLanIPv4Addresses {
+    $candidates = @()
+    foreach ($networkInterface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+        if ($networkInterface.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up -or
+            $networkInterface.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Loopback -or
+            $networkInterface.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Tunnel) {
+            continue
+        }
+
+        try {
+            $properties = $networkInterface.GetIPProperties()
+            $hasDefaultGateway = @($properties.GatewayAddresses | Where-Object {
+                $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and
+                -not $_.Address.Equals([System.Net.IPAddress]::Any)
+            }).Count -gt 0
+
+            foreach ($unicastAddress in $properties.UnicastAddresses) {
+                $address = $unicastAddress.Address
+                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                    continue
+                }
+
+                $text = $address.ToString()
+                if ($text -eq "0.0.0.0" -or $text.StartsWith("127.") -or $text.StartsWith("169.254.")) {
+                    continue
+                }
+
+                $candidates += [PSCustomObject]@{
+                    Address           = $text
+                    HasDefaultGateway = $hasDefaultGateway
+                    InterfaceName     = $networkInterface.Name
+                }
+            }
+        }
+        catch {
+            # Ignore adapters that disappear while the list is being read.
+        }
+    }
+
+    return @($candidates |
+        Sort-Object @{ Expression = { if ($_.HasDefaultGateway) { 0 } else { 1 } } }, InterfaceName, Address |
+        Select-Object -ExpandProperty Address -Unique)
+}
+
 $configPath = Join-Path $PSScriptRoot "config.json"
 $configuration = $null
 if (Test-Path -LiteralPath $configPath) {
@@ -294,11 +362,7 @@ if ([string]::IsNullOrWhiteSpace($Peer)) {
 if ([string]::IsNullOrWhiteSpace($Peer)) {
     $Peer = "peer-device.local"
 }
-$Peer = $Peer.Trim()
-
-if ($Peer.Contains("://") -or $Peer.Contains("/") -or $Peer.Contains("\")) {
-    throw "Peer must be a host name or IP address without a scheme, port, or path."
-}
+$Peer = Get-NormalizedPeerAddress -Value $Peer
 
 if ($Port -eq 0) {
     $configuredPort = Get-PropertyValue -Object $configuration -Name "port"
@@ -317,15 +381,17 @@ if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne [System.Threadin
     throw "ClipRelay requires an STA thread. Start it with powershell.exe -STA -File cliprelay.ps1."
 }
 
-$peerUriBuilder = New-Object System.UriBuilder("http", $Peer, $Port, "push")
-$pushUri = $peerUriBuilder.Uri
+$pushUri = $null
+Set-ActivePeerAddress -Value $Peer
 $mutex = $null
 $ownsMutex = $false
 $listener = $null
 $notifyIcon = $null
 $trayMenu = $null
+$peerMenuItem = $null
 $copyMonitorStarted = $false
 $stopRequested = $false
+$configurationDialogOpen = $false
 
 function Show-ClipRelayNotification {
     param(
@@ -342,6 +408,143 @@ function Show-ClipRelayNotification {
         $Message = $Message.Substring(0, 240)
     }
     $script:notifyIcon.ShowBalloonTip(3000, $Title, $Message, $Icon)
+}
+
+function Show-PeerConfiguration {
+    if ($script:configurationDialogOpen) {
+        return
+    }
+
+    $script:configurationDialogOpen = $true
+    $form = $null
+    try {
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = "ClipRelay settings"
+        $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+        $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $form.MaximizeBox = $false
+        $form.MinimizeBox = $false
+        $form.ShowInTaskbar = $true
+        $form.TopMost = $true
+        $form.ClientSize = New-Object System.Drawing.Size(430, 238)
+
+        $localIpLabel = New-Object System.Windows.Forms.Label
+        $localIpLabel.Text = "This PC LAN IP (share with the peer):"
+        $localIpLabel.AutoSize = $true
+        $localIpLabel.Location = New-Object System.Drawing.Point(16, 16)
+
+        $localIpBox = New-Object System.Windows.Forms.ComboBox
+        $localIpBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+        $localIpBox.Location = New-Object System.Drawing.Point(19, 39)
+        $localIpBox.Size = New-Object System.Drawing.Size(292, 24)
+
+        $copyIpButton = New-Object System.Windows.Forms.Button
+        $copyIpButton.Text = "Copy IP"
+        $copyIpButton.Location = New-Object System.Drawing.Point(319, 38)
+        $copyIpButton.Size = New-Object System.Drawing.Size(92, 27)
+
+        $localAddresses = @(Get-LocalLanIPv4Addresses)
+        if ($localAddresses.Count -gt 0) {
+            $localIpBox.Items.AddRange([object[]]$localAddresses)
+            $localIpBox.SelectedIndex = 0
+        }
+        else {
+            $null = $localIpBox.Items.Add("No LAN IPv4 detected")
+            $localIpBox.SelectedIndex = 0
+            $copyIpButton.Enabled = $false
+        }
+
+        $peerLabel = New-Object System.Windows.Forms.Label
+        $peerLabel.Text = "Peer host or LAN IP:"
+        $peerLabel.AutoSize = $true
+        $peerLabel.Location = New-Object System.Drawing.Point(16, 82)
+
+        $peerTextBox = New-Object System.Windows.Forms.TextBox
+        $peerTextBox.Text = $script:Peer
+        $peerTextBox.Location = New-Object System.Drawing.Point(19, 105)
+        $peerTextBox.Size = New-Object System.Drawing.Size(392, 24)
+
+        $portLabel = New-Object System.Windows.Forms.Label
+        $portLabel.Text = "Port: $script:Port    Changes take effect immediately after Save."
+        $portLabel.AutoSize = $true
+        $portLabel.ForeColor = [System.Drawing.SystemColors]::GrayText
+        $portLabel.Location = New-Object System.Drawing.Point(16, 139)
+
+        $saveButton = New-Object System.Windows.Forms.Button
+        $saveButton.Text = "Save"
+        $saveButton.Size = New-Object System.Drawing.Size(88, 30)
+        $saveButton.Location = New-Object System.Drawing.Point(227, 188)
+
+        $cancelButton = New-Object System.Windows.Forms.Button
+        $cancelButton.Text = "Cancel"
+        $cancelButton.Size = New-Object System.Drawing.Size(88, 30)
+        $cancelButton.Location = New-Object System.Drawing.Point(323, 188)
+        $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+
+        $copyIpButton.Add_Click({
+            if ($localAddresses.Count -gt 0 -and $localIpBox.SelectedIndex -ge 0) {
+                Set-ClipboardTextWithRetry -Text ([string]$localIpBox.SelectedItem)
+                $copyIpButton.Text = "Copied!"
+            }
+        })
+        $localIpBox.Add_SelectedIndexChanged({ $copyIpButton.Text = "Copy IP" })
+
+        $saveButton.Add_Click({
+            try {
+                $normalized = Get-NormalizedPeerAddress -Value $peerTextBox.Text
+                $newUriBuilder = New-Object System.UriBuilder("http", $normalized, $script:Port, "push")
+                $configuration = [ordered]@{
+                    peer = $normalized
+                    port = $script:Port
+                }
+                $configuration | ConvertTo-Json | Set-Content -LiteralPath $script:configPath -Encoding UTF8
+
+                $script:Peer = $normalized
+                $script:pushUri = $newUriBuilder.Uri
+                if ($null -ne $script:peerMenuItem) {
+                    $script:peerMenuItem.Text = "Peer: $normalized`:$script:Port"
+                }
+
+                Show-ClipRelayNotification -Title "ClipRelay settings saved" -Message "Peer changed to $normalized`:$script:Port."
+                $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                $form.Close()
+            }
+            catch {
+                $null = [System.Windows.Forms.MessageBox]::Show(
+                    $form,
+                    $_.Exception.Message,
+                    "Invalid peer address",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+            }
+        })
+
+        $form.AcceptButton = $saveButton
+        $form.CancelButton = $cancelButton
+        $form.Controls.AddRange(@(
+            $localIpLabel,
+            $localIpBox,
+            $copyIpButton,
+            $peerLabel,
+            $peerTextBox,
+            $portLabel,
+            $saveButton,
+            $cancelButton
+        ))
+        $form.Add_Shown({
+            $peerTextBox.Focus()
+            $peerTextBox.SelectAll()
+        })
+
+        $null = $form.ShowDialog()
+    }
+    finally {
+        if ($null -ne $form) {
+            $form.Dispose()
+        }
+        $script:configurationDialogOpen = $false
+    }
 }
 
 function Get-ClipboardTextWithRetry {
@@ -613,13 +816,22 @@ try {
     $notifyIcon.Icon = [System.Drawing.SystemIcons]::Information
     $notifyIcon.Text = "ClipRelay - Ctrl+C copies and sends"
     $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    $configureMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure peer...")
+    $configureMenuItem.Add_Click({ Show-PeerConfiguration })
     $peerMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("Peer: $Peer`:$Port")
     $peerMenuItem.Enabled = $false
     $exitMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("Exit ClipRelay")
     $exitMenuItem.Add_Click({ $script:stopRequested = $true })
+    $null = $trayMenu.Items.Add($configureMenuItem)
     $null = $trayMenu.Items.Add($peerMenuItem)
     $null = $trayMenu.Items.Add($exitMenuItem)
     $notifyIcon.ContextMenuStrip = $trayMenu
+    $notifyIcon.Add_MouseClick({
+        param($sender, $eventArgs)
+        if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+            Show-PeerConfiguration
+        }
+    })
     $notifyIcon.Visible = $true
 
     $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Any, $Port)

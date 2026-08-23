@@ -43,7 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/mac-bootstrap
 - 把客户端和配置写入 `%LOCALAPPDATA%\ClipRelay`；
 - 注册当前用户登录自启；
 - 为监听端口添加仅限“专用网络”的入站防火墙规则；
-- 安装后立即启动，系统托盘出现 ClipRelay 图标即表示运行中。
+- 安装后立即启动，系统托盘出现 ClipRelay 图标即表示运行中；
+- 左键点击托盘图标可查看/复制本机局域网 IP，也可随时修改对端 IP，保存后立即生效。
 
 在仓库根目录打开 PowerShell，执行（把 IP 换成接收方设备的局域网 IP）：
 
@@ -64,8 +65,10 @@ $source = (Invoke-WebRequest -UseBasicParsing `
 到本机并发送；接收的文本会进入剪贴板并弹出通知。局域网内建议优先使用 IP，避免
 Windows 或 Android 环境无法解析 `.local`。
 
-配置保存在 `%LOCALAPPDATA%\ClipRelay\config.json`。修改后注销并重新登录，或结束
-现有 `cliprelay.ps1` 进程后重新运行。卸载命令：
+配置保存在 `%LOCALAPPDATA%\ClipRelay\config.json`。左键点击托盘图标，或右键选择
+`Configure peer...`：窗口顶部显示本机可用的局域网 IPv4，点击 `Copy IP` 后发给对方；
+在 Peer 输入框填写对方的局域网 IP/主机名并保存即可，无需重新安装或重启。
+卸载命令：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -136,8 +139,8 @@ Windows 配置位于 `%LOCALAPPDATA%\ClipRelay\config.json`：
 | `port` | `47632` | HTTP 服务端口，两边需一致 |
 
 Windows 当前监听不带其他修饰键的 `Ctrl+C`。按键不会被 ClipRelay 拦截，前台应用
-仍按原方式完成复制；只有检测到剪贴板确实更新且内容为文本时才会发送。
-如需临时退出，可右键单击系统托盘里的 ClipRelay 图标并选择 `Exit ClipRelay`。
+仍按原方式完成复制；只有检测到剪贴板确实更新且内容为文本时才会发送。左键点击
+托盘图标可配置对端；如需临时退出，可右键单击图标并选择 `Exit ClipRelay`。
 
 ## 注意
 
