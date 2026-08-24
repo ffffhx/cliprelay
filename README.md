@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="ClipRelay Logo" width="128" height="128" />
+</p>
+
 # ClipRelay
 
 Mac、Windows 与 Android 手机在同一局域网内互传文本的小工具。选中即发，对方直接粘贴。
@@ -44,7 +48,8 @@ curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/mac-bootstrap
 - 注册当前用户登录自启；
 - 为监听端口添加仅限“专用网络”的入站防火墙规则；
 - 安装后立即启动，系统托盘出现 ClipRelay 图标即表示运行中；
-- 左键点击托盘图标可查看/复制本机局域网 IP，也可随时修改对端 IP，保存后立即生效。
+- 左键点击托盘图标可打开中文设置面板，查看并一键复制本机主机名（`.local`）或局域网 IP 发给对方；
+- 支持随时修改对端设备地址，并可一键检测与对方的实时连通性，保存后立即生效。
 
 在仓库根目录打开 PowerShell，执行（把 IP 换成接收方设备的局域网 IP）：
 
@@ -66,8 +71,8 @@ $source = (Invoke-WebRequest -UseBasicParsing `
 Windows 或 Android 环境无法解析 `.local`。
 
 配置保存在 `%LOCALAPPDATA%\ClipRelay\config.json`。左键点击托盘图标，或右键选择
-`Configure peer...`：窗口顶部显示本机可用的局域网 IPv4，点击 `Copy IP` 后发给对方；
-在 Peer 输入框填写对方的局域网 IP/主机名并保存即可，无需重新安装或重启。
+`设置 / 配置对方设备...`：窗口顶部显示本机主机名 (`.local`) 与局域网 IPv4，点击 `复制` 后发给对方；
+在对方设备地址输入框填写对方的局域网 IP 或主机名（如 `Alice-Mac.local`），点击 `检测连接` 确认通畅后保存即可，无需重新安装或重启。
 卸载命令：
 
 ```powershell
@@ -140,7 +145,7 @@ Windows 配置位于 `%LOCALAPPDATA%\ClipRelay\config.json`：
 
 Windows 当前监听不带其他修饰键的 `Ctrl+C`。按键不会被 ClipRelay 拦截，前台应用
 仍按原方式完成复制；只有检测到剪贴板确实更新且内容为文本时才会发送。左键点击
-托盘图标可配置对端；如需临时退出，可右键单击图标并选择 `Exit ClipRelay`。
+托盘图标可配置对端并检测连通性；如需临时退出，可右键单击图标并选择 `退出 ClipRelay`。
 
 ## 注意
 

@@ -23,6 +23,7 @@ $installDirectory = Join-Path $env:LOCALAPPDATA "ClipRelay"
 $clientPath = Join-Path $installDirectory "cliprelay.ps1"
 $uninstallerPath = Join-Path $installDirectory "uninstall.ps1"
 $configPath = Join-Path $installDirectory "config.json"
+$iconPath = Join-Path $installDirectory "cliprelay.ico"
 $startupDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
 $shortcutPath = Join-Path $startupDirectory "ClipRelay.lnk"
 $windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -74,6 +75,7 @@ Write-Host "==> Installing ClipRelay to $installDirectory"
 $null = New-Item -ItemType Directory -Path $installDirectory -Force
 Install-ScriptFile -Name "cliprelay.ps1" -Destination $clientPath
 Install-ScriptFile -Name "uninstall.ps1" -Destination $uninstallerPath
+Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
 
 $configuration = [ordered]@{
     peer = $Peer.Trim()
@@ -94,7 +96,12 @@ else {
     $shortcut.TargetPath = $windowsPowerShell
     $shortcut.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clientPath`""
     $shortcut.WorkingDirectory = $installDirectory
-    $shortcut.IconLocation = "$windowsPowerShell,0"
+    if (Test-Path -LiteralPath $iconPath) {
+        $shortcut.IconLocation = "$iconPath,0"
+    }
+    else {
+        $shortcut.IconLocation = "$windowsPowerShell,0"
+    }
     $shortcut.Description = "ClipRelay Windows client"
     $shortcut.Save()
 }
