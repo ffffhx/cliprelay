@@ -369,6 +369,32 @@ function Get-LocalShareableAddresses {
     return @($addresses | Select-Object -Unique)
 }
 
+function Resolve-TargetAddress {
+    param([string]$Address)
+
+    try {
+        $ip = $null
+        if ([System.Net.IPAddress]::TryParse($Address, [ref]$ip)) {
+            return $Address
+        }
+
+        $addresses = [System.Net.Dns]::GetHostAddresses($Address)
+        $ipv4 = $addresses | Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } | Select-Object -First 1
+        if ($null -ne $ipv4) {
+            return $ipv4.ToString()
+        }
+
+        $first = $addresses | Select-Object -First 1
+        if ($null -ne $first) {
+            return $first.ToString()
+        }
+    }
+    catch {
+    }
+
+    return $Address
+}
+
 function Test-PeerConnectivity {
     param(
         [string]$Address,
@@ -377,9 +403,10 @@ function Test-PeerConnectivity {
     )
 
     $normalized = Get-NormalizedPeerAddress -Value $Address
+    $targetAddress = Resolve-TargetAddress -Address $normalized
     $tcpClient = New-Object System.Net.Sockets.TcpClient
     try {
-        $asyncResult = $tcpClient.BeginConnect($normalized, $Port, $null, $null)
+        $asyncResult = $tcpClient.BeginConnect($targetAddress, $Port, $null, $null)
         if (-not $asyncResult.AsyncWaitHandle.WaitOne($TimeoutMilliseconds, $false)) {
             throw "连接超时（$([math]::Round($TimeoutMilliseconds / 1000, 1))秒）。请确认对方设备已开机、在同一 Wi-Fi/局域网，且防火墙已放行端口 $Port。"
         }
@@ -853,10 +880,17 @@ function Set-ClipboardTextWithRetry {
 function Send-TextToPeer {
     param([string]$Text)
 
+    $normalizedPeer = $script:Peer
+    $targetAddress = Resolve-TargetAddress -Address $normalizedPeer
+    $targetUri = "http://$targetAddress`:$($script:Port)/push"
+
     $json = @{ text = $Text } | ConvertTo-Json -Compress
     $body = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $request = [System.Net.HttpWebRequest]::Create($script:pushUri)
+    $request = [System.Net.HttpWebRequest]::Create($targetUri)
     $request.Method = "POST"
+    if ($normalizedPeer -ne $targetAddress) {
+        $request.Host = "$normalizedPeer`:$($script:Port)"
+    }
     $request.ContentType = "application/json; charset=utf-8"
     $request.ContentLength = $body.Length
     $request.Timeout = 5000
