@@ -617,7 +617,7 @@ function Show-PeerConfiguration {
         $testButton.Cursor = [System.Windows.Forms.Cursors]::Hand
 
         $hintLabel = New-Object System.Windows.Forms.Label
-        $hintLabel.Text = "💡 提示：支持输入电脑名 (如 Alice-Mac.local) 或局域网 IP (如 192.168.1.119)"
+        $hintLabel.Text = "提示：支持输入电脑名 (如 Alice-Mac.local) 或局域网 IP (如 192.168.1.119)"
         $hintLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.5, [System.Drawing.FontStyle]::Regular)
         $hintLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 116, 139)
         $hintLabel.AutoSize = $true
@@ -913,7 +913,20 @@ function Send-CopiedClipboard {
         Send-TextToPeer -Text $copiedText
     }
     catch {
-        Show-ClipRelayNotification -Title "ClipRelay 发送失败" -Message $_.Exception.Message -Icon Error
+        $msg = $_.Exception.Message
+        if ($_.Exception.InnerException) {
+            $msg = $_.Exception.InnerException.Message
+        }
+        if ($msg -like "*超时*" -or $msg -like "*timed out*") {
+            $msg = "连接对端设备 $script:Peer`:$script:Port 超时，请确认对方设备在线且在同一局域网。"
+        }
+        elseif ($msg -like "*拒绝*" -or $msg -like "*refused*") {
+            $msg = "对端设备 $script:Peer`:$script:Port 拒绝连接，对方可能未开启 ClipRelay 服务。"
+        }
+        elseif ($msg -like "*找不到*" -or $msg -like "*not known*" -or $msg -like "*No such host*") {
+            $msg = "无法解析对端主机名 $script:Peer，请检查网络或在设置中改用局域网 IP。"
+        }
+        Show-ClipRelayNotification -Title "ClipRelay 发送失败" -Message $msg -Icon Warning
     }
 }
 
