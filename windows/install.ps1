@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -77,9 +77,25 @@ Install-ScriptFile -Name "cliprelay.ps1" -Destination $clientPath
 Install-ScriptFile -Name "uninstall.ps1" -Destination $uninstallerPath
 Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
 
+$existingConfig = $null
+if (Test-Path -LiteralPath $configPath) {
+    try {
+        $existingConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    }
+    catch {
+    }
+}
+$notifications = $true
+if ($null -ne $existingConfig) {
+    $existingNotif = $existingConfig.PSObject.Properties["notifications"]
+    if ($null -ne $existingNotif -and $null -ne $existingNotif.Value) {
+        $notifications = [bool]$existingNotif.Value
+    }
+}
 $configuration = [ordered]@{
-    peer = $Peer.Trim()
-    port = $Port
+    peer          = $Peer.Trim()
+    port          = $Port
+    notifications = $notifications
 }
 $configuration | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
 

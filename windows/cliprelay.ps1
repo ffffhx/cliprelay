@@ -18,6 +18,7 @@ Add-Type -AssemblyName System.Windows.Forms
 if (-not ("ClipRelay.NativeMethods" -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -92,8 +93,7 @@ namespace ClipRelay
         private static IntPtr hookHandle;
         private static uint workerThreadId;
         private static int cIsDown;
-        private static int copyPending;
-        private static uint clipboardSequence;
+        private static readonly ConcurrentQueue<uint> CopyQueue = new ConcurrentQueue<uint>();
 
         public static void Start()
         {
@@ -154,14 +154,7 @@ namespace ClipRelay
 
         public static bool TryTakeCopy(out uint sequence)
         {
-            if (Interlocked.Exchange(ref copyPending, 0) == 0)
-            {
-                sequence = 0;
-                return false;
-            }
-
-            sequence = clipboardSequence;
-            return true;
+            return CopyQueue.TryDequeue(out sequence);
         }
 
         private static void RunMessageLoop()
@@ -215,8 +208,7 @@ namespace ClipRelay
                                  IsKeyDown(VK_CONTROL) && !IsKeyDown(VK_SHIFT) &&
                                  !IsKeyDown(VK_MENU) && !IsKeyDown(VK_LWIN) && !IsKeyDown(VK_RWIN))
                         {
-                            clipboardSequence = NativeMethods.GetClipboardSequenceNumber();
-                            Interlocked.Exchange(ref copyPending, 1);
+                            CopyQueue.Enqueue(NativeMethods.GetClipboardSequenceNumber());
                         }
                     }
                 }
@@ -306,12 +298,24 @@ function Set-ActivePeerAddress {
     $script:pushUri = $uriBuilder.Uri
 }
 
-function Get-LocalLanIPv4Addresses {
-    $candidates = @()
+function Get-LocalShareableAddresses {
+    $items = @()
+    try {
+        $hostName = [System.Net.Dns]::GetHostName()
+        if (-not [string]::IsNullOrWhiteSpace($hostName)) {
+            $items += [PSCustomObject]@{
+                Address = "$hostName.local"
+                Display = "$hostName.local  (局域网主机名 - 推荐)"
+            }
+        }
+    }
+    catch {
+    }
+
+    $lanCandidates = @()
     foreach ($networkInterface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
         if ($networkInterface.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up -or
-            $networkInterface.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Loopback -or
-            $networkInterface.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Tunnel) {
+            $networkInterface.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Loopback) {
             continue
         }
 
@@ -333,40 +337,34 @@ function Get-LocalLanIPv4Addresses {
                     continue
                 }
 
-                $candidates += [PSCustomObject]@{
+                $label = $networkInterface.Name
+                if ($hasDefaultGateway) {
+                    $label = "$($networkInterface.Name) - 当前 Wi-Fi"
+                }
+
+                $lanCandidates += [PSCustomObject]@{
                     Address           = $text
+                    Display           = "$text  ($label)"
                     HasDefaultGateway = $hasDefaultGateway
                     InterfaceName     = $networkInterface.Name
                 }
             }
         }
         catch {
-            # Ignore adapters that disappear while the list is being read.
         }
     }
 
-    return @($candidates |
-        Sort-Object @{ Expression = { if ($_.HasDefaultGateway) { 0 } else { 1 } } }, InterfaceName, Address |
-        Select-Object -ExpandProperty Address -Unique)
-}
+    $sortedLan = @($lanCandidates |
+        Sort-Object @{ Expression = { if ($_.HasDefaultGateway) { 0 } else { 1 } } }, InterfaceName, Address)
 
-function Get-LocalShareableAddresses {
-    $addresses = @()
-    try {
-        $hostName = [System.Net.Dns]::GetHostName()
-        if (-not [string]::IsNullOrWhiteSpace($hostName)) {
-            $addresses += "$hostName.local"
+    foreach ($candidate in $sortedLan) {
+        $items += [PSCustomObject]@{
+            Address = $candidate.Address
+            Display = $candidate.Display
         }
     }
-    catch {
-    }
 
-    $ipAddresses = Get-LocalLanIPv4Addresses
-    if ($null -ne $ipAddresses) {
-        $addresses += $ipAddresses
-    }
-
-    return @($addresses | Select-Object -Unique)
+    return @($items)
 }
 
 function Resolve-TargetAddress {
@@ -470,6 +468,14 @@ if ($Port -lt 1 -or $Port -gt 65535) {
     throw "Port must be between 1 and 65535."
 }
 
+$configuredNotifications = Get-PropertyValue -Object $configuration -Name "notifications"
+if ($null -ne $configuredNotifications) {
+    $script:Notifications = [bool]$configuredNotifications
+}
+else {
+    $script:Notifications = $true
+}
+
 if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne [System.Threading.ApartmentState]::STA) {
     throw "ClipRelay requires an STA thread. Start it with powershell.exe -STA -File cliprelay.ps1."
 }
@@ -483,6 +489,7 @@ $notifyIcon = $null
 $appIcon = $null
 $trayMenu = $null
 $peerMenuItem = $null
+$notifyMenuItem = $null
 $copyMonitorStarted = $false
 $stopRequested = $false
 $configurationDialogOpen = $false
@@ -560,7 +567,7 @@ function Show-PeerConfiguration {
         $form.MinimizeBox = $false
         $form.ShowInTaskbar = $true
         $form.TopMost = $true
-        $form.ClientSize = New-Object System.Drawing.Size(460, 426)
+        $form.ClientSize = New-Object System.Drawing.Size(460, 442)
 
         # Header Title & Subtitle
         $headerTitle = New-Object System.Windows.Forms.Label
@@ -609,6 +616,8 @@ function Show-PeerConfiguration {
 
         $localAddresses = @(Get-LocalShareableAddresses)
         if ($localAddresses.Count -gt 0) {
+            $localAddressBox.DisplayMember = "Display"
+            $localAddressBox.ValueMember = "Address"
             $localAddressBox.Items.AddRange([object[]]$localAddresses)
             $localAddressBox.SelectedIndex = 0
         }
@@ -652,7 +661,7 @@ function Show-PeerConfiguration {
 
         # Section 3: Connection Status Card
         $statusPanel = New-Object System.Windows.Forms.Panel
-        $statusPanel.Location = New-Object System.Drawing.Point(18, 216)
+        $statusPanel.Location = New-Object System.Drawing.Point(18, 214)
         $statusPanel.Size = New-Object System.Drawing.Size(424, 88)
         $statusPanel.BackColor = [System.Drawing.Color]::FromArgb(255, 251, 235)
         $statusPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
@@ -673,9 +682,19 @@ function Show-PeerConfiguration {
         $statusDetailLabel.Text = "正在尝试连接..."
         $statusPanel.Controls.Add($statusDetailLabel)
 
-        # Section 4: Footer
+        # Section 4: Preferences (Notifications Toggle)
+        $notifyCheckBox = New-Object System.Windows.Forms.CheckBox
+        $notifyCheckBox.Text = "开启气泡通知（取消勾选即开启静默模式，彻底不弹窗）"
+        $notifyCheckBox.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Regular)
+        $notifyCheckBox.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85)
+        $notifyCheckBox.Checked = $script:Notifications
+        $notifyCheckBox.AutoSize = $true
+        $notifyCheckBox.Location = New-Object System.Drawing.Point(18, 314)
+        $notifyCheckBox.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+        # Section 5: Footer
         $footerDivider = New-Object System.Windows.Forms.Panel
-        $footerDivider.Location = New-Object System.Drawing.Point(18, 316)
+        $footerDivider.Location = New-Object System.Drawing.Point(18, 344)
         $footerDivider.Size = New-Object System.Drawing.Size(424, 1)
         $footerDivider.BackColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
 
@@ -684,13 +703,13 @@ function Show-PeerConfiguration {
         $portLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.5, [System.Drawing.FontStyle]::Regular)
         $portLabel.ForeColor = [System.Drawing.Color]::FromArgb(148, 163, 184)
         $portLabel.AutoSize = $true
-        $portLabel.Location = New-Object System.Drawing.Point(18, 330)
+        $portLabel.Location = New-Object System.Drawing.Point(18, 356)
 
         $saveButton = New-Object System.Windows.Forms.Button
         $saveButton.Text = "保 存"
         $saveButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.5, [System.Drawing.FontStyle]::Bold)
         $saveButton.Size = New-Object System.Drawing.Size(96, 34)
-        $saveButton.Location = New-Object System.Drawing.Point(242, 368)
+        $saveButton.Location = New-Object System.Drawing.Point(242, 388)
         $saveButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
         $saveButton.FlatAppearance.BorderSize = 0
         $saveButton.BackColor = [System.Drawing.Color]::FromArgb(37, 99, 235)
@@ -701,7 +720,7 @@ function Show-PeerConfiguration {
         $cancelButton.Text = "取 消"
         $cancelButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.5, [System.Drawing.FontStyle]::Regular)
         $cancelButton.Size = New-Object System.Drawing.Size(94, 34)
-        $cancelButton.Location = New-Object System.Drawing.Point(348, 368)
+        $cancelButton.Location = New-Object System.Drawing.Point(348, 388)
         $cancelButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
         $cancelButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(203, 213, 225)
         $cancelButton.BackColor = [System.Drawing.Color]::FromArgb(241, 245, 249)
@@ -752,7 +771,9 @@ function Show-PeerConfiguration {
 
         $copyButton.Add_Click({
             if ($localAddresses.Count -gt 0 -and $localAddressBox.SelectedIndex -ge 0) {
-                Set-ClipboardTextWithRetry -Text ([string]$localAddressBox.SelectedItem)
+                $selectedItem = $localAddressBox.SelectedItem
+                $textToCopy = if ($null -ne $selectedItem -and $selectedItem.PSObject.Properties["Address"]) { [string]$selectedItem.Address } else { [string]$selectedItem }
+                Set-ClipboardTextWithRetry -Text $textToCopy
                 $copyButton.Text = "✓ 已复制!"
                 $copyButton.ForeColor = [System.Drawing.Color]::FromArgb(5, 150, 105)
             }
@@ -768,9 +789,11 @@ function Show-PeerConfiguration {
             try {
                 $normalized = Get-NormalizedPeerAddress -Value $peerTextBox.Text
                 $newUriBuilder = New-Object System.UriBuilder("http", $normalized, $script:Port, "push")
+                $script:Notifications = [bool]$notifyCheckBox.Checked
                 $configuration = [ordered]@{
-                    peer = $normalized
-                    port = $script:Port
+                    peer          = $normalized
+                    port          = $script:Port
+                    notifications = $script:Notifications
                 }
                 $configuration | ConvertTo-Json | Set-Content -LiteralPath $script:configPath -Encoding UTF8
 
@@ -779,8 +802,13 @@ function Show-PeerConfiguration {
                 if ($null -ne $script:peerMenuItem) {
                     $script:peerMenuItem.Text = "对方设备: $normalized`:$script:Port"
                 }
+                if ($null -ne $script:notifyMenuItem) {
+                    $script:notifyMenuItem.Checked = $script:Notifications
+                }
 
-                Show-ClipRelayNotification -Title "ClipRelay 设置已保存" -Message "已将对方地址更新为 $normalized`:$script:Port。"
+                if ($script:Notifications) {
+                    Show-ClipRelayNotification -Title "ClipRelay 设置已保存" -Message "已将对方地址更新为 $normalized`:$script:Port。"
+                }
                 $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
                 $form.Close()
             }
@@ -809,6 +837,7 @@ function Show-PeerConfiguration {
             $testButton,
             $hintLabel,
             $statusPanel,
+            $notifyCheckBox,
             $footerDivider,
             $portLabel,
             $saveButton,
@@ -960,7 +989,9 @@ function Send-CopiedClipboard {
         elseif ($msg -like "*找不到*" -or $msg -like "*not known*" -or $msg -like "*No such host*") {
             $msg = "无法解析对端主机名 $script:Peer，请检查网络或在设置中改用局域网 IP。"
         }
-        Show-ClipRelayNotification -Title "ClipRelay 发送失败" -Message $msg -Icon Warning
+        if ($script:Notifications) {
+            Show-ClipRelayNotification -Title "ClipRelay 发送失败" -Message $msg -Icon Warning
+        }
     }
 }
 
@@ -1098,7 +1129,9 @@ function Handle-Client {
     try {
         Set-ClipboardTextWithRetry -Text $text
         Send-HttpResponse -Stream $request.Stream -StatusCode 200 -Reason "OK" -Body "ok"
-        Show-ClipRelayNotification -Title "ClipRelay received text" -Message $text
+        if ($script:Notifications) {
+            Show-ClipRelayNotification -Title "ClipRelay 收到文本" -Message $text
+        }
     }
     catch {
         try {
@@ -1147,6 +1180,23 @@ try {
         }
     })
 
+    $script:notifyMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("🔔 开启气泡通知")
+    $script:notifyMenuItem.CheckOnClick = $true
+    $script:notifyMenuItem.Checked = $script:Notifications
+    $script:notifyMenuItem.Add_Click({
+        $script:Notifications = [bool]$script:notifyMenuItem.Checked
+        try {
+            $cfg = [ordered]@{
+                peer          = $script:Peer
+                port          = $script:Port
+                notifications = $script:Notifications
+            }
+            $cfg | ConvertTo-Json | Set-Content -LiteralPath $script:configPath -Encoding UTF8
+        }
+        catch {
+        }
+    })
+
     $peerMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("📡 对方: $Peer`:$Port")
     $peerMenuItem.Enabled = $false
 
@@ -1155,6 +1205,7 @@ try {
 
     $null = $trayMenu.Items.Add($configureMenuItem)
     $null = $trayMenu.Items.Add($checkStatusMenuItem)
+    $null = $trayMenu.Items.Add($script:notifyMenuItem)
     $null = $trayMenu.Items.Add($peerMenuItem)
     $null = $trayMenu.Items.Add($exitMenuItem)
     $notifyIcon.ContextMenuStrip = $trayMenu
@@ -1173,7 +1224,9 @@ try {
     $copyMonitorStarted = $true
 
     Write-Host "ClipRelay Windows 端已启动: 监听端口 $Port, 对方设备 $Peer"
-    Show-ClipRelayNotification -Title "ClipRelay 已启动" -Message "按 Ctrl+C 复制时将自动同步给对方。本机监听端口: $Port。"
+    if ($script:Notifications) {
+        Show-ClipRelayNotification -Title "ClipRelay 已启动" -Message "按 Ctrl+C 复制时将自动同步给对方。本机监听端口: $Port。"
+    }
 
     while (-not $stopRequested) {
         Process-WindowsMessages
