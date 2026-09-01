@@ -1,0 +1,7 @@
+{
+  "versionCode": 3,
+  "versionName": "0.3.0",
+  "apkUrl": "https://github.com/ffffhx/cliprelay/releases/download/android-v0.3.0/ClipRelay-0.3.0.apk",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "releaseNotes": "这里填写给手机用户看的更新说明。"
+}

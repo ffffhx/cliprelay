@@ -1,3 +1,17 @@
 # Runtime and user configs
 windows/config.json
 *.tmp
+
+# Android / Gradle
+.gradle/
+**/build/
+android-app/local.properties
+android-app/keystore.properties
+android-app/.idea/
+android-app/.kotlin/
+*.jks
+*.keystore
+
+# Local build tooling
+.android-sdk/
+.tools/

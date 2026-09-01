@@ -1,0 +1,96 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - "android-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          if android sdk list "platforms/android-37.0" --all >/dev/null 2>&1; then
+            android sdk install platforms/android-37.0 build-tools/36.0.0
+          else
+            sdkmanager "platforms;android-37" "build-tools;36.0.0"
+          fi
+
+      - name: Prepare release signing
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CLIPRELAY_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.CLIPRELAY_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CLIPRELAY_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CLIPRELAY_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/cliprelay-release.jks"
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/cliprelay-release.jks"
+            printf 'storePassword=%s\n' "$STORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
+          } > android-app/keystore.properties
+
+      - name: Verify and build signed APK
+        working-directory: android-app
+        run: ./gradlew testDebugUnitTest lintRelease assembleRelease --no-daemon
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        run: |
+          metadata="android-app/app/build/outputs/apk/release/output-metadata.json"
+          version_name="$(jq -r '.elements[0].versionName' "$metadata")"
+          version_code="$(jq -r '.elements[0].versionCode' "$metadata")"
+          expected_tag="android-v${version_name}"
+          test "$GITHUB_REF_NAME" = "$expected_tag"
+
+          mkdir -p dist
+          apk_name="ClipRelay-${version_name}.apk"
+          cp android-app/app/build/outputs/apk/release/app-release.apk "dist/$apk_name"
+          sha256="$(sha256sum "dist/$apk_name" | cut -d ' ' -f 1)"
+          apk_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${apk_name}"
+          jq -n \
+            --argjson versionCode "$version_code" \
+            --arg versionName "$version_name" \
+            --arg apkUrl "$apk_url" \
+            --arg sha256 "$sha256" \
+            --arg releaseNotes "查看 GitHub Release 中的更新说明。" \
+            '{versionCode:$versionCode,versionName:$versionName,apkUrl:$apkUrl,sha256:$sha256,releaseNotes:$releaseNotes}' \
+            > dist/update.json
+          echo "apk_name=$apk_name" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/${{ steps.assets.outputs.apk_name }}" \
+            dist/update.json \
+            --verify-tag \
+            --generate-notes \
+            --title "ClipRelay Android ${GITHUB_REF_NAME#android-v}"

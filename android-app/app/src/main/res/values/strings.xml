@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClipRelay</string>
+    <string name="service_description">在局域网内接收电脑发送的剪贴板文本和截图</string>
+    <string name="receiver_channel_name">接收服务</string>
+    <string name="receiver_channel_description">显示 ClipRelay 是否正在等待电脑发送剪贴板内容</string>
+    <string name="clips_channel_name">收到的内容</string>
+    <string name="clips_channel_description">收到电脑剪贴板文本或截图时提醒</string>
+    <string name="notification_running_title">ClipRelay 正在接收</string>
+    <string name="notification_stop">停止</string>
+    <string name="notification_received_title">已收到电脑文本</string>
+    <string name="notification_received_hidden">内容已写入手机剪贴板</string>
+    <string name="notification_image_received_title">已收到电脑截图</string>
+    <string name="notification_image_received_body">%1$d × %2$d 的截图已写入手机剪贴板</string>
+    <string name="updates_channel_name">软件更新</string>
+    <string name="updates_channel_description">发现新版 ClipRelay 时提醒</string>
+    <string name="notification_update_title">ClipRelay 有新版本</string>
+</resources>
