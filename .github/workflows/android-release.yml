@@ -21,18 +21,15 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ""
 
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Install Android SDK
         shell: bash
-        run: |
-          if android sdk list "platforms/android-37.0" --all >/dev/null 2>&1; then
-            android sdk install platforms/android-37.0 build-tools/36.0.0
-          else
-            sdkmanager "platforms;android-37" "build-tools;36.0.0"
-          fi
+        run: android sdk install --canary platforms/android-37.0 build-tools/37.0.0
 
       - name: Prepare release signing
         shell: bash
