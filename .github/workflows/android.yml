@@ -35,7 +35,7 @@ jobs:
 
       - name: Install Android SDK
         shell: bash
-        run: android sdk install --canary platforms/android-37.0 build-tools/37.0.0
+        run: sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Verify and build APK
         working-directory: android-app
