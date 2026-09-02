@@ -2798,6 +2798,7 @@ function Show-RelayPeerManager {
 
     $editorCommand = Get-Command Show-RelayPeerEditor
     $normalizePeersCommand = Get-Command Get-NormalizedRelayPeers
+    $refreshState = [PSCustomObject]@{ Command = $null }
     $refreshRows = $null
     $refreshRows = {
         $listHost.SuspendLayout()
@@ -2833,32 +2834,54 @@ function Show-RelayPeerManager {
                     $editButton = & $newButton $row "编辑" 354 14 58 34 $colors.Raised $colors.Border $colors.Cyan $colors.Border
                     $removeButton = & $newButton $row "移除" 420 14 58 34 $colors.Surface $colors.Border $colors.Muted $colors.Border
 
+                    # These row handlers are closures created inside $refreshRows, which is
+                    # itself a closure. GetNewClosure only captures variables from the
+                    # immediate scope, so references such as $peerList and $countLabel would
+                    # otherwise resolve to $null when an event fires later.
+                    $rowEventContext = [PSCustomObject]@{
+                        PeerList          = $peerList
+                        PeerId            = $peerId
+                        Toggle            = $toggle
+                        CountLabel        = $countLabel
+                        EditorCommand     = $editorCommand
+                        OwnerForm         = $form
+                        DefaultPort       = $DefaultPort
+                        DefaultAccessToken = $DefaultAccessToken
+                        RefreshState      = $refreshState
+                    }
+
                     $toggle.Add_CheckedChanged({
-                        for ($peerIndex = 0; $peerIndex -lt $peerList.Count; $peerIndex++) {
-                            if ([string]$peerList[$peerIndex].id -eq $peerId) {
-                                $peerList[$peerIndex].enabled = [bool]$toggle.Checked
+                        $context = $rowEventContext
+                        for ($peerIndex = 0; $peerIndex -lt $context.PeerList.Count; $peerIndex++) {
+                            if ([string]$context.PeerList[$peerIndex].id -eq $context.PeerId) {
+                                $context.PeerList[$peerIndex].enabled = [bool]$context.Toggle.Checked
                                 break
                             }
                         }
-                        $countLabel.Text = "$(@($peerList | Where-Object { $_.enabled }).Count)/$($peerList.Count) 台已启用"
+                        $context.CountLabel.Text = "$(@($context.PeerList | Where-Object { $_.enabled }).Count)/$($context.PeerList.Count) 台已启用"
                     }.GetNewClosure())
                     $editButton.Add_Click({
-                        for ($peerIndex = 0; $peerIndex -lt $peerList.Count; $peerIndex++) {
-                            if ([string]$peerList[$peerIndex].id -eq $peerId) {
-                                $edited = & $editorCommand -Owner $form -Peer $peerList[$peerIndex] -DefaultPort $DefaultPort -DefaultAccessToken $DefaultAccessToken
+                        $context = $rowEventContext
+                        for ($peerIndex = 0; $peerIndex -lt $context.PeerList.Count; $peerIndex++) {
+                            if ([string]$context.PeerList[$peerIndex].id -eq $context.PeerId) {
+                                $editCommand = $context.EditorCommand
+                                $edited = & $editCommand -Owner $context.OwnerForm -Peer $context.PeerList[$peerIndex] -DefaultPort $context.DefaultPort -DefaultAccessToken $context.DefaultAccessToken
                                 if ($null -ne $edited) {
-                                    $peerList[$peerIndex] = $edited
-                                    & $refreshRows
+                                    $context.PeerList[$peerIndex] = $edited
+                                    $refreshCommand = $context.RefreshState.Command
+                                    & $refreshCommand
                                 }
                                 break
                             }
                         }
                     }.GetNewClosure())
                     $removeButton.Add_Click({
-                        for ($peerIndex = 0; $peerIndex -lt $peerList.Count; $peerIndex++) {
-                            if ([string]$peerList[$peerIndex].id -eq $peerId) {
-                                $peerList.RemoveAt($peerIndex)
-                                & $refreshRows
+                        $context = $rowEventContext
+                        for ($peerIndex = 0; $peerIndex -lt $context.PeerList.Count; $peerIndex++) {
+                            if ([string]$context.PeerList[$peerIndex].id -eq $context.PeerId) {
+                                $context.PeerList.RemoveAt($peerIndex)
+                                $refreshCommand = $context.RefreshState.Command
+                                & $refreshCommand
                                 break
                             }
                         }
@@ -2871,6 +2894,7 @@ function Show-RelayPeerManager {
             $listHost.ResumeLayout()
         }
     }.GetNewClosure()
+    $refreshState.Command = $refreshRows
 
     $addButton.Add_Click({
         if ($peerList.Count -ge 16) {

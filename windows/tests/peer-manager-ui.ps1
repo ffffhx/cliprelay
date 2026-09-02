@@ -8,6 +8,9 @@ $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::SetUnhandledExceptionMode(
+    [System.Windows.Forms.UnhandledExceptionMode]::ThrowException
+)
 
 $clientPath = Join-Path (Split-Path -Parent $PSScriptRoot) "cliprelay.ps1"
 $source = Get-Content -LiteralPath $clientPath -Raw -Encoding UTF8
@@ -71,6 +74,13 @@ function Test-PeerConnectivity {
     param([string]$Address, [int]$Port, [int]$TimeoutMilliseconds, [string]$AccessToken)
     return "ok"
 }
+function Get-DescendantControls {
+    param([System.Windows.Forms.Control]$Parent)
+    foreach ($control in $Parent.Controls) {
+        $control
+        Get-DescendantControls -Parent $control
+    }
+}
 
 $peers = @(
     [PSCustomObject]@{
@@ -121,6 +131,155 @@ $null = Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -Def
 $timer.Dispose()
 if (-not $script:captured) { throw "The peer manager did not open for validation." }
 
+$script:toggleApplied = $false
+$toggleTimer = New-Object System.Windows.Forms.Timer
+$toggleTimer.Interval = 500
+$toggleTimer.Add_Tick({
+    $toggleTimer.Stop()
+    $openForms = [System.Windows.Forms.Application]::OpenForms
+    if ($openForms.Count -lt 1) { return }
+    $manager = $openForms[$openForms.Count - 1]
+    $controls = @(Get-DescendantControls -Parent $manager)
+    $probeToggle = $controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayToggle" } |
+        Select-Object -First 1
+    $probeCountLabel = $controls |
+        Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -match "^\d+/\d+ " } |
+        Select-Object -First 1
+    $probeApplyButton = $manager.Controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
+        Select-Object -Last 1
+    if ($null -eq $probeToggle -or $null -eq $probeCountLabel -or $null -eq $probeApplyButton) {
+        $manager.Close()
+        throw "The peer manager toggle controls were not found."
+    }
+
+    $probeToggle.Checked = $false
+    if ($probeCountLabel.Text -notmatch "^1/2 ") {
+        $manager.Close()
+        throw "Toggling a peer did not update the enabled-device count."
+    }
+    $script:toggleApplied = $true
+    $probeApplyButton.PerformClick()
+})
+$toggleTimer.Start()
+$toggledPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "")
+$toggleTimer.Dispose()
+if (-not $script:toggleApplied) { throw "The peer toggle regression check did not run." }
+if ($toggledPeers.Count -ne 2 -or [bool]$toggledPeers[0].enabled -or -not [bool]$toggledPeers[1].enabled) {
+    throw "The peer manager did not return the toggled enabled state."
+}
+
+$script:removeApplied = $false
+$removeTimer = New-Object System.Windows.Forms.Timer
+$removeTimer.Interval = 500
+$removeTimer.Add_Tick({
+    $removeTimer.Stop()
+    $openForms = [System.Windows.Forms.Application]::OpenForms
+    if ($openForms.Count -lt 1) { return }
+    $manager = $openForms[$openForms.Count - 1]
+    $controls = @(Get-DescendantControls -Parent $manager)
+    $firstPeerRow = $controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayPanel" } |
+        Select-Object -First 1
+    $probeRemoveButton = $firstPeerRow.Controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
+        Select-Object -Last 1
+    if ($null -eq $probeRemoveButton) {
+        $manager.Close()
+        throw "The peer manager remove button was not found."
+    }
+
+    $probeRemoveButton.PerformClick()
+    $controls = @(Get-DescendantControls -Parent $manager)
+    $probeCountLabel = $controls |
+        Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -match "^\d+/\d+ " } |
+        Select-Object -First 1
+    $probeApplyButton = $manager.Controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
+        Select-Object -Last 1
+    if ($null -eq $probeCountLabel -or $probeCountLabel.Text -notmatch "^1/1 ") {
+        $manager.Close()
+        throw "Removing a peer did not refresh the enabled-device count."
+    }
+    $script:removeApplied = $true
+    $probeApplyButton.PerformClick()
+})
+$removeTimer.Start()
+$remainingPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "")
+$removeTimer.Dispose()
+if (-not $script:removeApplied) { throw "The peer removal regression check did not run." }
+if ($remainingPeers.Count -ne 1 -or $remainingPeers[0].id -ne "computer") {
+    throw "The peer manager did not return the expected device after removal."
+}
+
+$script:editApplied = $false
+$script:editDialogTimer = New-Object System.Windows.Forms.Timer
+$editManagerTimer = New-Object System.Windows.Forms.Timer
+$editManagerTimer.Interval = 500
+$editManagerTimer.Add_Tick({
+    $editManagerTimer.Stop()
+    $openForms = [System.Windows.Forms.Application]::OpenForms
+    if ($openForms.Count -lt 1) { return }
+    $manager = $openForms[$openForms.Count - 1]
+    $controls = @(Get-DescendantControls -Parent $manager)
+    $firstPeerRow = $controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayPanel" } |
+        Select-Object -First 1
+    $probeEditButton = $firstPeerRow.Controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
+        Select-Object -First 1
+    if ($null -eq $probeEditButton) {
+        $manager.Close()
+        throw "The peer manager edit button was not found."
+    }
+
+    $script:editDialogTimer.Interval = 300
+    $script:editDialogTimer.Add_Tick({
+        $script:editDialogTimer.Stop()
+        $editor = [System.Windows.Forms.Application]::OpenForms[
+            [System.Windows.Forms.Application]::OpenForms.Count - 1
+        ]
+        $editorControls = @(Get-DescendantControls -Parent $editor)
+        $nameTextBox = $editorControls |
+            Where-Object { $_ -is [System.Windows.Forms.TextBox] } |
+            Select-Object -First 1
+        $editorSaveButton = $editor.Controls |
+            Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
+            Select-Object -Last 1
+        if ($null -eq $nameTextBox -or $null -eq $editorSaveButton) {
+            $editor.Close()
+            throw "The peer editor controls were not found."
+        }
+        $nameTextBox.Text = "Renamed Phone"
+        $editorSaveButton.PerformClick()
+    })
+    $script:editDialogTimer.Start()
+    $probeEditButton.PerformClick()
+    $script:editDialogTimer.Dispose()
+
+    $controls = @(Get-DescendantControls -Parent $manager)
+    $renamedLabel = $controls |
+        Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -eq "Renamed Phone" } |
+        Select-Object -First 1
+    $probeApplyButton = $manager.Controls |
+        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
+        Select-Object -Last 1
+    if ($null -eq $renamedLabel -or $null -eq $probeApplyButton) {
+        $manager.Close()
+        throw "Editing a peer did not refresh its displayed name."
+    }
+    $script:editApplied = $true
+    $probeApplyButton.PerformClick()
+})
+$editManagerTimer.Start()
+$editedPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "")
+$editManagerTimer.Dispose()
+if (-not $script:editApplied) { throw "The peer edit regression check did not run." }
+if ($editedPeers.Count -ne 2 -or $editedPeers[0].name -ne "Renamed Phone") {
+    throw "The peer manager did not return the edited device."
+}
+
 $script:editorOpened = $false
 $editorTimer = New-Object System.Windows.Forms.Timer
 $editorTimer.Interval = 500
@@ -141,4 +300,4 @@ $null = Show-RelayPeerEditor -Owner $null -Peer $peers[0] -DefaultPort 47632 -De
 $editorTimer.Dispose()
 if (-not $script:editorOpened) { throw "The peer editor did not open for validation." }
 
-Write-Output "PASS: the branded peer manager and per-device editor open at the expected sizes."
+Write-Output "PASS: peer manager toggle/edit/removal events and the per-device editor work at the expected sizes."
