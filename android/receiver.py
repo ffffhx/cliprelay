@@ -26,8 +26,15 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
             text = data["text"]
             assert isinstance(text, str) and text
+            probe = bool(data.get("probe"))
         except Exception:
             self.send_error(400)
+            return
+
+        if probe:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
             return
 
         run(["termux-clipboard-set"], input_text=text)

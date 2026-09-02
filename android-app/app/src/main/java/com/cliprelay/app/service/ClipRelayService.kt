@@ -127,26 +127,23 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
                 pixelCount in 1..MAX_IMAGE_PIXELS
         ) { "Invalid or oversized JPEG dimensions" }
 
-        val imageDirectory = File(cacheDir, IMAGE_CLIPBOARD_DIRECTORY).apply {
-            check(isDirectory || mkdirs()) { "Cannot create the image clipboard cache" }
-        }
-        val imageFile = File.createTempFile("cliprelay-", ".jpg", imageDirectory)
-        try {
-            imageFile.outputStream().use { it.write(bytes) }
-            val imageUri = FileProvider.getUriForFile(
-                this,
-                "$packageName.fileprovider",
-                imageFile,
-            )
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newUri(contentResolver, "ClipRelay screenshot", imageUri))
+        val clip = historyRepository.addImage(
+            bytes = bytes,
+            width = dimensions.outWidth,
+            height = dimensions.outHeight,
+        )
+        val imageFile = File(requireNotNull(clip.imagePath))
+        val imageUri = FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            imageFile,
+        )
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newUri(contentResolver, "ClipRelay screenshot", imageUri))
 
-            clearCachedClipboardImages(keep = imageFile)
-            showReceivedImageNotification(dimensions.outWidth, dimensions.outHeight)
-        } catch (error: Exception) {
-            runCatching { imageFile.delete() }
-            throw error
-        }
+        clearCachedClipboardImages()
+        ClipRelayRuntime.historyChanged()
+        showReceivedImageNotification(dimensions.outWidth, dimensions.outHeight)
     }
 
     override fun onFailure(message: String) {

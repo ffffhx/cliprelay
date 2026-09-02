@@ -15,3 +15,7 @@ android-app/.kotlin/
 # Local build tooling
 .android-sdk/
 .tools/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

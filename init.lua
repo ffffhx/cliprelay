@@ -52,6 +52,9 @@ clipRelayServer:setCallback(function(method, path, _headers, body)
   if method == "POST" and path == "/push" then
     local ok, data = pcall(hs.json.decode, body)
     if ok and data and type(data.text) == "string" and data.text ~= "" then
+      if data.probe == true then
+        return "ok", 200, {}
+      end
       hs.pasteboard.setContents(data.text)
       local preview = data.text:sub(1, 80)
       hs.notify.new({ title = "ClipRelay 收到文本", informativeText = preview }):send()

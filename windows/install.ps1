@@ -86,18 +86,47 @@ if (Test-Path -LiteralPath $configPath) {
     }
 }
 $notifications = $true
+$accessToken = ""
+$peers = $null
 if ($null -ne $existingConfig) {
     $existingNotif = $existingConfig.PSObject.Properties["notifications"]
     if ($null -ne $existingNotif -and $null -ne $existingNotif.Value) {
         $notifications = [bool]$existingNotif.Value
     }
+    $existingAccessToken = $existingConfig.PSObject.Properties["accessToken"]
+    if ($null -ne $existingAccessToken -and $null -ne $existingAccessToken.Value) {
+        $accessToken = [string]$existingAccessToken.Value
+    }
+    $existingPeers = $existingConfig.PSObject.Properties["peers"]
+    if ($null -ne $existingPeers -and @($existingPeers.Value).Count -gt 0) {
+        $peers = @($existingPeers.Value)
+    }
+}
+if ($null -eq $peers) {
+    $peers = @([ordered]@{
+        id          = "installed-peer"
+        name        = "接收设备"
+        address     = $Peer.Trim()
+        port        = $Port
+        accessToken = $accessToken
+        enabled     = $true
+    })
+}
+$primaryPeer = @($peers | Where-Object {
+    $enabledProperty = $_.PSObject.Properties["enabled"]
+    $null -eq $enabledProperty -or [bool]$enabledProperty.Value
+} | Select-Object -First 1)[0]
+if ($null -eq $primaryPeer) {
+    $primaryPeer = @($peers)[0]
 }
 $configuration = [ordered]@{
-    peer          = $Peer.Trim()
+    peer          = [string]$primaryPeer.address
+    peers         = $peers
     port          = $Port
     notifications = $notifications
+    accessToken   = $accessToken
 }
-$configuration | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
+$configuration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
 
 if ($NoStartup) {
     if (Test-Path -LiteralPath $shortcutPath) {
@@ -168,8 +197,9 @@ if ($clientProcess.HasExited) {
 
 Write-Host ""
 Write-Host "ClipRelay for Windows is installed."
-Write-Host "  Peer: $Peer"
+Write-Host "  Initial peer: $Peer"
 Write-Host "  Port: $Port"
-Write-Host "  Send: Ctrl+C copies locally and sends to the peer"
+Write-Host "  Send: Ctrl+C copies locally and broadcasts to enabled devices"
+Write-Host "  Screenshot: Ctrl+Alt+F12 broadcasts all displays without changing the local clipboard"
 Write-Host "  Config: $configPath"
 Write-Host "  Uninstall: $uninstallerPath"

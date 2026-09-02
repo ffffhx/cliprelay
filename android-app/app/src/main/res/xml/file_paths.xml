@@ -3,6 +3,9 @@
     <files-path
         name="updates"
         path="updates/" />
+    <files-path
+        name="received_images"
+        path="received_images/" />
     <cache-path
         name="clipboard_images"
         path="clipboard_images/" />
