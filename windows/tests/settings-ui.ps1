@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ScreenshotPath = ""
+    [string]$ScreenshotPath = "",
+    [string]$ExpandedScreenshotPath = ""
 )
 
 Set-StrictMode -Version 2.0
@@ -101,6 +102,14 @@ $script:Peers = @(
         port = 47632
         accessToken = ""
         enabled = $true
+    },
+    [PSCustomObject]@{
+        id = "tablet"
+        name = "backup tablet"
+        address = "192.168.1.30"
+        port = 47632
+        accessToken = ""
+        enabled = $true
     }
 )
 $script:connectivityTaskSource = New-Object 'System.Threading.Tasks.TaskCompletionSource[ClipRelay.RelayDeliveryResult[]]'
@@ -123,10 +132,10 @@ function Test-RelayPeersConnectivity {
     param([object[]]$Peers, [int]$TimeoutMilliseconds)
     return [PSCustomObject]@{
         State = "success"
-        Detail = "probe delivered to 2/2 devices"
-        SuccessCount = 2
+        Detail = "probe delivered to 3/3 devices"
+        SuccessCount = 3
         FailureCount = 0
-        TotalCount = 2
+        TotalCount = 3
         Results = @()
     }
 }
@@ -136,13 +145,15 @@ function Start-RelayPeersConnectivityTest {
 }
 function Get-RelayDeliverySummary {
     param([ClipRelay.RelayDeliveryResult[]]$Results, [string]$Kind)
+    $allResults = @($Results)
+    $successCount = @($allResults | Where-Object Success).Count
     return [PSCustomObject]@{
         State = "partial"
-        Detail = "probe delivered to 1/2 devices"
-        SuccessCount = 1
-        FailureCount = 1
-        TotalCount = 2
-        Results = @($Results)
+        Detail = "probe delivered to $successCount/$($allResults.Count) devices"
+        SuccessCount = $successCount
+        FailureCount = $allResults.Count - $successCount
+        TotalCount = $allResults.Count
+        Results = $allResults
     }
 }
 function Show-RelayPeerManager {
@@ -226,10 +237,16 @@ $availableResult.Name = "phone"
 $availableResult.Address = "192.168.1.9:47632"
 $availableResult.Success = $true
 $unavailableResult = New-Object ClipRelay.RelayDeliveryResult
-$unavailableResult.Name = "computer"
-$unavailableResult.Address = "192.168.1.20:47632"
+$unavailableResult.Name = "backup tablet"
+$unavailableResult.Address = "192.168.1.30:47632"
 $unavailableResult.Success = $false
-$script:connectivityTaskSource.SetResult([ClipRelay.RelayDeliveryResult[]]@($availableResult, $unavailableResult))
+$secondAvailableResult = New-Object ClipRelay.RelayDeliveryResult
+$secondAvailableResult.Name = "office PC"
+$secondAvailableResult.Address = "192.168.1.20:47632"
+$secondAvailableResult.Success = $true
+$script:connectivityTaskSource.SetResult(
+    [ClipRelay.RelayDeliveryResult[]]@($availableResult, $secondAvailableResult, $unavailableResult)
+)
 for ($attempt = 0; $attempt -lt 50 -and -not $testPeersButton.Enabled; $attempt++) {
     [System.Windows.Forms.Application]::DoEvents()
     Start-Sleep -Milliseconds 20
@@ -242,19 +259,57 @@ $peerCountLabel = @($form.Controls.Find("PeerCountLabel", $true)) | Select-Objec
 $onlineStatusLabel = @($form.Controls.Find("OnlineStatusLabel", $true)) | Select-Object -First 1
 $peerSummaryOne = @($form.Controls.Find("PeerSummaryOneLabel", $true)) | Select-Object -First 1
 $peerSummaryTwo = @($form.Controls.Find("PeerSummaryTwoLabel", $true)) | Select-Object -First 1
+$peerSummaryToggle = @($form.Controls.Find("PeerSummaryToggleButton", $true)) | Select-Object -First 1
+$peerDetailsPanel = @($form.Controls.Find("PeerDetailsPanel", $true)) | Select-Object -First 1
 $managePeersButton = @($form.Controls.Find("ManagePeersButton", $true)) | Select-Object -First 1
 if ($null -eq $peerCountLabel -or $null -eq $onlineStatusLabel -or
-    $null -eq $peerSummaryOne -or $null -eq $peerSummaryTwo -or $null -eq $managePeersButton) {
+    $null -eq $peerSummaryOne -or $null -eq $peerSummaryTwo -or
+    $null -eq $peerSummaryToggle -or $null -eq $peerDetailsPanel -or $null -eq $managePeersButton) {
     throw "The peer controls required for cancellation validation were not found."
 }
-if ($peerCountLabel.Text -notmatch '^2\s' -or $peerCountLabel.Text -match '/') {
+if ($peerCountLabel.Text -notmatch '^3\s' -or $peerCountLabel.Text -match '/') {
     throw "The broadcast target count still mixes enabled and total-device counts."
 }
-if ($onlineStatusLabel.Text -notmatch '^1/2\s') {
+if ($onlineStatusLabel.Text -notmatch '^2/3\s') {
     throw "The online status does not show available devices over checked devices."
 }
-if ($peerSummaryOne.Tag -ne "available" -or $peerSummaryTwo.Tag -ne "unavailable") {
-    throw "The target-node list does not distinguish available and unavailable devices."
+if ($peerSummaryOne.Tag -ne "available" -or -not $peerSummaryToggle.Visible -or
+    $peerSummaryToggle.Tag -ne "summary") {
+    throw "The collapsed target-node list does not expose an explicit expand control."
+}
+$peerSummaryToggle.PerformClick()
+[System.Windows.Forms.Application]::DoEvents()
+$expandedStatuses = @($peerDetailsPanel.Controls | Where-Object { $_.Name -like "PeerExpandedStatusLabel*" })
+if (-not $peerDetailsPanel.Visible -or $peerSummaryToggle.Tag -ne "expanded" -or
+    $expandedStatuses.Count -ne 3 -or -not $peerDetailsPanel.AutoScroll) {
+    throw "Expanding the target-node list did not reveal the complete scrollable device roster."
+}
+if (@($expandedStatuses | Where-Object { $_.Tag -eq "available" }).Count -ne 2 -or
+    @($expandedStatuses | Where-Object { $_.Tag -eq "unavailable" }).Count -ne 1) {
+    throw "The expanded target-node list does not distinguish each device's availability."
+}
+foreach ($expectedName in @("phone", "office PC", "backup tablet")) {
+    if (@($expandedStatuses | Where-Object { $_.Text -match [regex]::Escape($expectedName) }).Count -ne 1) {
+        throw "The expanded target-node list is missing $expectedName."
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($ExpandedScreenshotPath)) {
+    $expandedBitmap = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
+    try {
+        $form.DrawToBitmap(
+            $expandedBitmap,
+            (New-Object System.Drawing.Rectangle(0, 0, $expandedBitmap.Width, $expandedBitmap.Height))
+        )
+        $expandedBitmap.Save($ExpandedScreenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally {
+        $expandedBitmap.Dispose()
+    }
+}
+$peerSummaryToggle.PerformClick()
+[System.Windows.Forms.Application]::DoEvents()
+if ($peerDetailsPanel.Visible -or $peerSummaryToggle.Tag -ne "summary") {
+    throw "The expanded target-node list could not be collapsed again."
 }
 $peerCountBeforeCancellation = $peerCountLabel.Text
 $managePeersButton.PerformClick()

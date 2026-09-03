@@ -4095,7 +4095,20 @@ function Show-RelayControlCenter {
         $peerSummaryOne.Name = "PeerSummaryOneLabel"
         $peerSummaryTwo = & $newLabel $sidebarPeersCard "" 12 70 180 34 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
         $peerSummaryTwo.Name = "PeerSummaryTwoLabel"
-        $null = & $newLabel $sidebarPeersCard "多目标广播独立响应`n不阻断剪贴板主流程" 12 110 180 32 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $peerSummaryToggle = & $newButton $sidebarPeersCard "" 12 70 180 30 $colors.SurfaceAlt $colors.Raised $colors.BlueLight $colors.Border
+        $peerSummaryToggle.Name = "PeerSummaryToggleButton"
+        $peerSummaryToggle.CornerRadius = 6
+        $peerSummaryToggle.Font = New-Object System.Drawing.Font($bodyFont, 8.0, [System.Drawing.FontStyle]::Bold)
+        $peerSummaryToggle.Visible = $false
+        $peerSummaryHint = & $newLabel $sidebarPeersCard "多目标广播独立响应`n不阻断剪贴板主流程" 12 110 180 32 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $peerDetailsPanel = New-Object System.Windows.Forms.Panel
+        $peerDetailsPanel.Name = "PeerDetailsPanel"
+        $peerDetailsPanel.Location = New-Object System.Drawing.Point(12, 64)
+        $peerDetailsPanel.Size = New-Object System.Drawing.Size(180, 136)
+        $peerDetailsPanel.BackColor = [System.Drawing.Color]::Transparent
+        $peerDetailsPanel.AutoScroll = $true
+        $peerDetailsPanel.Visible = $false
+        $sidebarPeersCard.Controls.Add($peerDetailsPanel)
         $managePeersButton = & $newButton $sidebarPeersCard "⚙ 管理目标设备" 12 210 180 38 $colors.Field $colors.Border $colors.BlueLight $colors.Border
         $managePeersButton.Name = "ManagePeersButton"
         $managePeersButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
@@ -4241,34 +4254,137 @@ function Show-RelayControlCenter {
         $snapshotCommand = Get-Command Get-RelayRuntimeSnapshot
         $notificationCommand = Get-Command Show-ClipRelayNotification
 
-        $updatePeerSummary = {
+        $peerSidebarState = [PSCustomObject]@{
+            Expanded = $false
+            Statuses = @()
+        }
+        $renderPeerSidebar = {
             $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
+            $statuses = @($peerSidebarState.Statuses)
             $peerCountLabel.Text = "$($enabledDraftPeers.Count) 台"
-            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
-            foreach ($label in $summaryLabels) {
+
+            foreach ($control in @($peerDetailsPanel.Controls)) {
+                $peerDetailsPanel.Controls.Remove($control)
+                $control.Dispose()
+            }
+            $peerDetailsPanel.AutoScrollMinSize = New-Object System.Drawing.Size(0, 0)
+            $peerDetailsPanel.Visible = $false
+            $peerSummaryHint.Visible = $true
+            $peerSummaryOne.Visible = $true
+            $peerSummaryOne.Location = New-Object System.Drawing.Point(12, 32)
+            $peerSummaryOne.Size = New-Object System.Drawing.Size(180, 34)
+            $peerSummaryTwo.Visible = $false
+            $peerSummaryTwo.Location = New-Object System.Drawing.Point(12, 70)
+            $peerSummaryTwo.Size = New-Object System.Drawing.Size(180, 34)
+            $peerSummaryToggle.Visible = $false
+            $peerSummaryToggle.Tag = $null
+
+            foreach ($label in @($peerSummaryOne, $peerSummaryTwo)) {
                 $label.Text = ""
                 $label.ForeColor = $colors.Muted
                 $label.Tag = $null
             }
+
             if ($enabledDraftPeers.Count -eq 0) {
+                $peerSidebarState.Expanded = $false
                 $peerSummaryOne.Text = "● 没有启用的设备"
                 $peerSummaryOne.ForeColor = $colors.Danger
-                $sidebarHealthLabel.Text = "无目标"
-                $sidebarHealthLabel.ForeColor = $colors.Danger
                 return
             }
-            $visibleCount = if ($enabledDraftPeers.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledDraftPeers.Count) }
+
+            if ($statuses.Count -ne $enabledDraftPeers.Count) {
+                $statuses = @($enabledDraftPeers | ForEach-Object {
+                    [PSCustomObject]@{
+                        Peer = $_
+                        State = "pending"
+                        Marker = "○"
+                        StatusText = "待检测"
+                        Color = $colors.Muted
+                    }
+                })
+                $peerSidebarState.Statuses = $statuses
+            }
+
+            if ($peerSidebarState.Expanded -and $enabledDraftPeers.Count -gt 2) {
+                $peerSummaryOne.Visible = $false
+                $peerSummaryTwo.Visible = $false
+                $peerSummaryHint.Visible = $false
+                $peerSummaryToggle.Location = New-Object System.Drawing.Point(12, 30)
+                $peerSummaryToggle.Size = New-Object System.Drawing.Size(180, 28)
+                $peerSummaryToggle.Text = "▲ 收起设备列表"
+                $peerSummaryToggle.AccessibleName = "收起目标设备列表"
+                $peerSummaryToggle.Tag = "expanded"
+                $peerSummaryToggle.Visible = $true
+                $peerDetailsPanel.Visible = $true
+
+                for ($index = 0; $index -lt $statuses.Count; $index++) {
+                    $status = $statuses[$index]
+                    $statusLabel = New-Object System.Windows.Forms.Label
+                    $statusLabel.Name = "PeerExpandedStatusLabel$index"
+                    $statusLabel.Text = "$($status.Marker) $($status.Peer.name)`n   $($status.StatusText) · $($status.Peer.address)"
+                    $statusLabel.Location = New-Object System.Drawing.Point(0, ($index * 44))
+                    $statusLabel.Size = New-Object System.Drawing.Size(158, 42)
+                    $statusLabel.Font = New-Object System.Drawing.Font($bodyFont, 7.8, [System.Drawing.FontStyle]::Regular)
+                    $statusLabel.ForeColor = $status.Color
+                    $statusLabel.BackColor = [System.Drawing.Color]::Transparent
+                    $statusLabel.AutoEllipsis = $true
+                    $statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+                    $statusLabel.Tag = $status.State
+                    $peerDetailsPanel.Controls.Add($statusLabel)
+                }
+                $peerDetailsPanel.AutoScrollMinSize = New-Object System.Drawing.Size(0, ($statuses.Count * 44))
+                return
+            }
+
+            $peerSidebarState.Expanded = $false
+            $visibleCount = [Math]::Min(2, $statuses.Count)
+            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
             for ($index = 0; $index -lt $visibleCount; $index++) {
-                $peer = $enabledDraftPeers[$index]
-                $summaryLabels[$index].Text = "○ $($peer.name) · 待检测`n   $($peer.address)"
-                $summaryLabels[$index].ForeColor = $colors.Muted
-                $summaryLabels[$index].Tag = "pending"
+                if ($enabledDraftPeers.Count -gt 2 -and $index -eq 1) { break }
+                $status = $statuses[$index]
+                $summaryLabels[$index].Text = "$($status.Marker) $($status.Peer.name) · $($status.StatusText)`n   $($status.Peer.address)"
+                $summaryLabels[$index].ForeColor = $status.Color
+                $summaryLabels[$index].Tag = $status.State
+                $summaryLabels[$index].Visible = $true
             }
             if ($enabledDraftPeers.Count -gt 2) {
-                $peerSummaryTwo.Text = "+ 另有 $($enabledDraftPeers.Count - 1) 台设备"
-                $peerSummaryTwo.Tag = "summary"
+                $peerSummaryTwo.Visible = $false
+                $peerSummaryToggle.Location = New-Object System.Drawing.Point(12, 70)
+                $peerSummaryToggle.Size = New-Object System.Drawing.Size(180, 30)
+                $peerSummaryToggle.Text = "＋ 另有 $($enabledDraftPeers.Count - 1) 台 · 展开"
+                $peerSummaryToggle.AccessibleName = "展开全部 $($enabledDraftPeers.Count) 台目标设备"
+                $peerSummaryToggle.Tag = "summary"
+                $peerSummaryToggle.Visible = $true
             }
         }.GetNewClosure()
+
+        $updatePeerSummary = {
+            $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
+            $peerSidebarState.Statuses = @($enabledDraftPeers | ForEach-Object {
+                [PSCustomObject]@{
+                    Peer = $_
+                    State = "pending"
+                    Marker = "○"
+                    StatusText = "待检测"
+                    Color = $colors.Muted
+                }
+            })
+            if ($enabledDraftPeers.Count -eq 0) {
+                $peerSidebarState.Expanded = $false
+                $sidebarHealthLabel.Text = "无目标"
+                $sidebarHealthLabel.ForeColor = $colors.Danger
+            }
+            & $renderPeerSidebar
+        }.GetNewClosure()
+
+        $peerSummaryToggle.Add_Click({
+            $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
+            if ($enabledDraftPeers.Count -gt 2) {
+                $peerSidebarState.Expanded = -not [bool]$peerSidebarState.Expanded
+                & $renderPeerSidebar
+                $sidebarPeersCard.Invalidate()
+            }
+        }.GetNewClosure())
 
         $checkState = [PSCustomObject]@{ Task = $null }
         $applyCheckSummary = {
@@ -4300,22 +4416,29 @@ function Show-RelayControlCenter {
             }
             $enabledPeersForStatus = @($draftPeers | Where-Object { [bool]$_.enabled })
             $deliveryResults = if ($null -eq $Summary.Results) { @() } else { @($Summary.Results) }
-            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
-            $visibleCount = if ($enabledPeersForStatus.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledPeersForStatus.Count) }
-            for ($index = 0; $index -lt $visibleCount; $index++) {
+            $peerSidebarState.Statuses = @(for ($index = 0; $index -lt $enabledPeersForStatus.Count; $index++) {
                 $peer = $enabledPeersForStatus[$index]
                 $deliveryResult = if ($index -lt $deliveryResults.Count) { $deliveryResults[$index] } else { $null }
                 if ($null -ne $deliveryResult -and [bool]$deliveryResult.Success) {
-                    $summaryLabels[$index].Text = "● $($peer.name) · ✓ 可用`n   $($peer.address)"
-                    $summaryLabels[$index].ForeColor = $colors.Success
-                    $summaryLabels[$index].Tag = "available"
+                    [PSCustomObject]@{
+                        Peer = $peer
+                        State = "available"
+                        Marker = "●"
+                        StatusText = "✓ 可用"
+                        Color = $colors.Success
+                    }
                 }
                 else {
-                    $summaryLabels[$index].Text = "● $($peer.name) · × 不可用`n   $($peer.address)"
-                    $summaryLabels[$index].ForeColor = $colors.Danger
-                    $summaryLabels[$index].Tag = "unavailable"
+                    [PSCustomObject]@{
+                        Peer = $peer
+                        State = "unavailable"
+                        Marker = "●"
+                        StatusText = "× 不可用"
+                        Color = $colors.Danger
+                    }
                 }
-            }
+            })
+            & $renderPeerSidebar
             $connectionDetail.Text = "$($Summary.Detail) · $(Get-Date -Format 'HH:mm:ss')"
         }.GetNewClosure()
         $applyCheckFailure = {
@@ -4331,14 +4454,16 @@ function Show-RelayControlCenter {
             $sidebarHealthLabel.Text = "检测失败"
             $sidebarHealthLabel.ForeColor = $colors.Danger
             $enabledPeersForStatus = @($draftPeers | Where-Object { [bool]$_.enabled })
-            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
-            $visibleCount = if ($enabledPeersForStatus.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledPeersForStatus.Count) }
-            for ($index = 0; $index -lt $visibleCount; $index++) {
-                $peer = $enabledPeersForStatus[$index]
-                $summaryLabels[$index].Text = "● $($peer.name) · × 检测失败`n   $($peer.address)"
-                $summaryLabels[$index].ForeColor = $colors.Danger
-                $summaryLabels[$index].Tag = "unavailable"
-            }
+            $peerSidebarState.Statuses = @($enabledPeersForStatus | ForEach-Object {
+                [PSCustomObject]@{
+                    Peer = $_
+                    State = "unavailable"
+                    Marker = "●"
+                    StatusText = "× 检测失败"
+                    Color = $colors.Danger
+                }
+            })
+            & $renderPeerSidebar
         }.GetNewClosure()
         $runCheck = {
             $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
@@ -4350,6 +4475,9 @@ function Show-RelayControlCenter {
                 $connectionDetail.Text = "点击左侧【⚙ 管理目标设备】，至少启用一台接收端"
                 $sidebarHealthLabel.Text = "无目标"
                 $sidebarHealthLabel.ForeColor = $colors.Danger
+                $peerSidebarState.Expanded = $false
+                $peerSidebarState.Statuses = @()
+                & $renderPeerSidebar
                 $connectionPanel.Invalidate()
                 $testButton.Enabled = $true
                 $testButton.Text = "⚡ 检测全链路连接"
@@ -4364,14 +4492,16 @@ function Show-RelayControlCenter {
             $connectionDetail.Text = "每台设备独立响应，不会修改剪贴板内容"
             $sidebarHealthLabel.Text = "检测中"
             $sidebarHealthLabel.ForeColor = $colors.Warning
-            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
-            $visibleCount = if ($enabledDraftPeers.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledDraftPeers.Count) }
-            for ($index = 0; $index -lt $visibleCount; $index++) {
-                $peer = $enabledDraftPeers[$index]
-                $summaryLabels[$index].Text = "○ $($peer.name) · 检测中`n   $($peer.address)"
-                $summaryLabels[$index].ForeColor = $colors.Muted
-                $summaryLabels[$index].Tag = "checking"
-            }
+            $peerSidebarState.Statuses = @($enabledDraftPeers | ForEach-Object {
+                [PSCustomObject]@{
+                    Peer = $_
+                    State = "checking"
+                    Marker = "○"
+                    StatusText = "检测中"
+                    Color = $colors.Muted
+                }
+            })
+            & $renderPeerSidebar
             $connectionPanel.Invalidate()
             try {
                 $checkState.Task = & $startPeersTestCommand -Peers @($draftPeers) -TimeoutMilliseconds 5000
