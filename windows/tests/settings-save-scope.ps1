@@ -19,6 +19,7 @@ if ($parseErrors.Count -gt 0) {
 foreach ($functionName in @(
     "Get-PropertyValue",
     "Get-NormalizedPeerAddress",
+    "Get-NormalizedDeviceName",
     "Get-NormalizedRelayPeers",
     "Copy-RelayPeers",
     "Get-EnabledRelayPeers",
@@ -51,6 +52,9 @@ try {
     $script:pushUri = $null
     $script:Notifications = $true
     $script:AccessToken = ""
+    $script:DeviceId = "local-device-id"
+    $script:DeviceName = "Test PC"
+    $script:DiscoveryEnabled = $true
     $script:peerMenuItem = $null
     $script:notifyMenuItem = $null
     $script:restartRequested = $false
@@ -92,6 +96,9 @@ try {
     if ([int]$saved.port -ne 47888) { throw "The port was not persisted." }
     if ([bool]$saved.notifications) { throw "Unchecked notifications were not persisted as false." }
     if ([string]$saved.accessToken -ne "shared-secret") { throw "The access token was not persisted." }
+    if ($saved.deviceId -ne "local-device-id" -or $saved.deviceName -ne "Test PC" -or -not [bool]$saved.discoveryEnabled) {
+        throw "The local discovery identity was not persisted."
+    }
     if (@($saved.peers).Count -ne 1) { throw "The migrated peer list was not persisted." }
     if ($saved.peers[0].address -ne "new-peer.local" -or [int]$saved.peers[0].port -ne 47888) {
         throw "The legacy peer was not migrated into the peer list."

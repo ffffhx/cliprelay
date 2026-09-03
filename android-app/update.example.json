@@ -1,7 +1,7 @@
 {
-  "versionCode": 7,
-  "versionName": "0.6.0",
-  "apkUrl": "https://github.com/ffffhx/cliprelay/releases/download/android-v0.6.0/ClipRelay-0.6.0.apk",
+  "versionCode": 8,
+  "versionName": "0.6.1",
+  "apkUrl": "https://github.com/ffffhx/cliprelay/releases/download/android-v0.6.1/ClipRelay-0.6.1.apk",
   "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "releaseNotes": "全屏图片支持 1×–5× 双指缩放与放大后拖动，缩回原始比例后可继续左右切换消息。"
 }

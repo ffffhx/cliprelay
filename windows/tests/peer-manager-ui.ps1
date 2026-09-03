@@ -63,6 +63,8 @@ function Copy-RelayPeers {
             port = $_.port
             accessToken = $_.accessToken
             enabled = $_.enabled
+            requiresAuth = [bool]$_.requiresAuth
+            platform = [string]$_.platform
         }
     })
 }
@@ -73,6 +75,27 @@ function Get-NormalizedRelayPeers {
 function Test-PeerConnectivity {
     param([string]$Address, [int]$Port, [int]$TimeoutMilliseconds, [string]$AccessToken)
     return "ok"
+}
+function Find-ClipRelayDevices {
+    param([int]$TimeoutMilliseconds, [string]$LocalDeviceId)
+    return @()
+}
+function Merge-DiscoveredRelayDevices {
+    param(
+        [object[]]$Peers,
+        [object[]]$DiscoveredDevices,
+        [int]$DefaultPort,
+        [string]$DefaultAccessToken,
+        [string]$LocalDeviceId,
+        [int]$MaximumPeers
+    )
+    return [PSCustomObject]@{
+        Peers = @($Peers)
+        Added = 0
+        Updated = 0
+        AuthRequired = 0
+        Discovered = 0
+    }
 }
 function Get-DescendantControls {
     param([System.Windows.Forms.Control]$Parent)
@@ -90,6 +113,8 @@ $peers = @(
         port = 47632
         accessToken = "phone-token"
         enabled = $true
+        requiresAuth = $true
+        platform = "android"
     },
     [PSCustomObject]@{
         id = "computer"
@@ -98,6 +123,8 @@ $peers = @(
         port = 47632
         accessToken = ""
         enabled = $true
+        requiresAuth = $false
+        platform = "windows"
     }
 )
 
@@ -112,6 +139,11 @@ $timer.Add_Tick({
     if ($manager.ClientSize.Width -lt 520 -or $manager.ClientSize.Height -lt 540) {
         $manager.Close()
         throw "The peer manager is unexpectedly small."
+    }
+    $scanButton = $manager.Controls["ScanDevicesButton"]
+    if ($null -eq $scanButton -or -not $scanButton.Visible) {
+        $manager.Close()
+        throw "The peer manager does not expose a visible mDNS scan button."
     }
     if (-not [string]::IsNullOrWhiteSpace($ScreenshotPath)) {
         $bitmap = New-Object System.Drawing.Bitmap($manager.Width, $manager.Height)

@@ -27,6 +27,7 @@ import com.cliprelay.app.MainActivity
 import com.cliprelay.app.R
 import com.cliprelay.app.data.AppPreferences
 import com.cliprelay.app.data.HistoryRepository
+import com.cliprelay.app.discovery.ClipRelayNsdPublisher
 import com.cliprelay.app.runtime.ClipRelayRuntime
 import com.cliprelay.app.runtime.ReceiverPhase
 import com.cliprelay.app.runtime.ReceiverStatus
@@ -38,6 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     private var server: ClipRelayHttpServer? = null
+    private val discoveryPublisher by lazy { ClipRelayNsdPublisher(this) }
     private lateinit var historyRepository: HistoryRepository
     private lateinit var connectivityManager: ConnectivityManager
     private val receivedNotificationId = AtomicInteger(RECEIVED_NOTIFICATION_START_ID)
@@ -77,6 +79,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     }
 
     override fun onDestroy() {
+        discoveryPublisher.stop()
         server?.stop()
         server = null
         runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
@@ -92,11 +95,29 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
 
     override fun onListening(port: Int) {
         val addresses = NetworkAddresses.localIpv4()
+        val settings = AppPreferences.load(this)
+        val discoveryError = if (settings.discoveryEnabled) {
+            runCatching {
+                discoveryPublisher.start(
+                    deviceId = AppPreferences.deviceId(this),
+                    deviceName = settings.deviceName,
+                    port = port,
+                    requiresAuth = settings.accessToken.isNotBlank(),
+                )
+            }.exceptionOrNull()
+        } else {
+            discoveryPublisher.stop()
+            null
+        }
         ClipRelayRuntime.receiverStatus.value = ReceiverStatus(
             phase = ReceiverPhase.RUNNING,
             port = port,
             addresses = addresses,
-            detail = if (addresses.isEmpty()) "等待网络连接" else null,
+            detail = when {
+                addresses.isEmpty() -> "等待网络连接"
+                discoveryError != null -> "接收正常；局域网自动发现暂不可用"
+                else -> null
+            },
         )
         updateReceiverNotification(
             if (addresses.isEmpty()) {
@@ -147,6 +168,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     }
 
     override fun onFailure(message: String) {
+        discoveryPublisher.stop()
         val settings = AppPreferences.load(this)
         ClipRelayRuntime.receiverStatus.value = ReceiverStatus(
             phase = ReceiverPhase.ERROR,
@@ -180,6 +202,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     }
 
     private fun restartServer() {
+        discoveryPublisher.stop()
         server?.stop()
         server = null
         startServer()

@@ -80,13 +80,18 @@ Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
 $existingConfig = $null
 if (Test-Path -LiteralPath $configPath) {
     try {
-        $existingConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        # Windows PowerShell 5.1 otherwise reads UTF-8 without a BOM through
+        # the active ANSI code page and corrupts non-ASCII discovery names.
+        $existingConfig = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
     }
     catch {
     }
 }
 $notifications = $true
 $accessToken = ""
+$deviceId = [Guid]::NewGuid().ToString("N")
+$deviceName = [Environment]::MachineName
+$discoveryEnabled = $true
 $peers = $null
 if ($null -ne $existingConfig) {
     $existingNotif = $existingConfig.PSObject.Properties["notifications"]
@@ -96,6 +101,18 @@ if ($null -ne $existingConfig) {
     $existingAccessToken = $existingConfig.PSObject.Properties["accessToken"]
     if ($null -ne $existingAccessToken -and $null -ne $existingAccessToken.Value) {
         $accessToken = [string]$existingAccessToken.Value
+    }
+    $existingDeviceId = $existingConfig.PSObject.Properties["deviceId"]
+    if ($null -ne $existingDeviceId -and -not [string]::IsNullOrWhiteSpace([string]$existingDeviceId.Value)) {
+        $deviceId = [string]$existingDeviceId.Value
+    }
+    $existingDeviceName = $existingConfig.PSObject.Properties["deviceName"]
+    if ($null -ne $existingDeviceName -and -not [string]::IsNullOrWhiteSpace([string]$existingDeviceName.Value)) {
+        $deviceName = [string]$existingDeviceName.Value
+    }
+    $existingDiscoveryEnabled = $existingConfig.PSObject.Properties["discoveryEnabled"]
+    if ($null -ne $existingDiscoveryEnabled -and $null -ne $existingDiscoveryEnabled.Value) {
+        $discoveryEnabled = [bool]$existingDiscoveryEnabled.Value
     }
     $existingPeers = $existingConfig.PSObject.Properties["peers"]
     if ($null -ne $existingPeers -and @($existingPeers.Value).Count -gt 0) {
@@ -110,6 +127,8 @@ if ($null -eq $peers) {
         port        = $Port
         accessToken = $accessToken
         enabled     = $true
+        requiresAuth = $false
+        platform    = ""
     })
 }
 $primaryPeer = @($peers | Where-Object {
@@ -125,6 +144,9 @@ $configuration = [ordered]@{
     port          = $Port
     notifications = $notifications
     accessToken   = $accessToken
+    deviceId      = $deviceId
+    deviceName    = $deviceName
+    discoveryEnabled = $discoveryEnabled
 }
 $configuration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
 

@@ -20,6 +20,7 @@ Add-Type -AssemblyName System.Windows.Forms
 if (-not ("ClipRelay.NativeMethods" -as [type])) {
     $clipRelaySource = @"
 using System;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -28,6 +29,8 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -444,6 +447,22 @@ namespace ClipRelay
                 System.Text.Encoding.UTF8.GetBytes(json), timeoutMilliseconds, 0, 0);
         }
 
+        public static Task<RelayDeliveryResult[]> SendTextAsync(
+            RelayTarget[] targets,
+            string json,
+            int timeoutMilliseconds)
+        {
+            if (json == null)
+                throw new ArgumentNullException("json");
+            byte[] body = System.Text.Encoding.UTF8.GetBytes(json);
+            return Task.Factory.StartNew(
+                () => Send(targets, "/push", "application/json; charset=utf-8",
+                    body, timeoutMilliseconds, 0, 0),
+                CancellationToken.None,
+                TaskCreationOptions.DenyChildAttach,
+                TaskScheduler.Default);
+        }
+
         public static RelayDeliveryResult[] SendImage(
             RelayTarget[] targets,
             byte[] jpegBytes,
@@ -572,6 +591,631 @@ namespace ClipRelay
             }
             return result;
         }
+    }
+
+    public sealed class DiscoveredDevice
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public string Address { get; set; }
+        public string HostName { get; set; }
+        public int Port { get; set; }
+        public string Platform { get; set; }
+        public string Version { get; set; }
+        public bool RequiresAuth { get; set; }
+    }
+
+    public static class MdnsDiscovery
+    {
+        private const uint RequestVersion = 1;
+        private const uint DnsRequestPending = 9506;
+        private const uint ErrorIoPending = 997;
+        private const string ServiceType = "_cliprelay._tcp.local";
+        private const ushort DnsTypeA = 1;
+        private const ushort DnsTypePtr = 12;
+        private const ushort DnsTypeTxt = 16;
+        private const ushort DnsTypeAaaa = 28;
+        private const ushort DnsTypeSrv = 33;
+        private const ushort DnsTypeAny = 255;
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        private delegate void RegisterComplete(uint status, IntPtr context, IntPtr instance);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ServiceRegisterRequest
+        {
+            public uint Version;
+            public uint InterfaceIndex;
+            public IntPtr ServiceInstance;
+            public IntPtr Callback;
+            public IntPtr Context;
+            public IntPtr Credentials;
+            public int UnicastEnabled;
+        }
+
+        private sealed class PacketService
+        {
+            public string InstanceName = String.Empty;
+            public string HostName = String.Empty;
+            public string ResponseAddress = String.Empty;
+            public int Port;
+            public readonly Dictionary<string, string> Properties =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private sealed class PacketDiscovery
+        {
+            public readonly Dictionary<string, PacketService> Services =
+                new Dictionary<string, PacketService>(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, string> HostAddresses =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            public readonly HashSet<string> FollowUpQueries =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static readonly object RegistrationLock = new object();
+        private static readonly object DiscoveryLock = new object();
+        private static readonly RegisterComplete RegistrationCallback = OnRegistrationComplete;
+        private static ServiceRegisterRequest registrationRequest;
+        private static IntPtr registeredInstance;
+        private static bool registered;
+        private static string registrationError = String.Empty;
+
+        public static bool IsRegistered
+        {
+            get { lock (RegistrationLock) return registered; }
+        }
+
+        public static string RegistrationError
+        {
+            get { lock (RegistrationLock) return registrationError; }
+        }
+
+        public static void Start(string deviceId, string deviceName, int port, bool requiresAuth)
+        {
+            if (String.IsNullOrWhiteSpace(deviceId))
+                throw new ArgumentException("A stable device ID is required.", "deviceId");
+            if (port < 1 || port > 65535)
+                throw new ArgumentOutOfRangeException("port");
+
+            lock (RegistrationLock)
+            {
+                if (registered)
+                    return;
+
+                string label = SanitizeInstanceLabel(deviceName);
+                string instanceName = label + "." + ServiceType;
+                string hostName = Dns.GetHostName();
+                string[] keys = new string[] { "id", "version", "platform", "auth" };
+                string[] values = new string[] {
+                    deviceId.Trim(),
+                    "1",
+                    "windows",
+                    requiresAuth ? "required" : "none"
+                };
+
+                IntPtr keyArray = IntPtr.Zero;
+                IntPtr valueArray = IntPtr.Zero;
+                List<IntPtr> allocatedStrings = new List<IntPtr>();
+                try
+                {
+                    keyArray = AllocateStringArray(keys, allocatedStrings);
+                    valueArray = AllocateStringArray(values, allocatedStrings);
+                    registeredInstance = DnsServiceConstructInstance(
+                        instanceName,
+                        hostName,
+                        IntPtr.Zero,
+                        IntPtr.Zero,
+                        (ushort)port,
+                        0,
+                        0,
+                        (uint)keys.Length,
+                        keyArray,
+                        valueArray);
+                    if (registeredInstance == IntPtr.Zero)
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows could not construct the DNS-SD service record.");
+
+                    registrationRequest = new ServiceRegisterRequest
+                    {
+                        Version = RequestVersion,
+                        InterfaceIndex = 0,
+                        ServiceInstance = registeredInstance,
+                        Callback = Marshal.GetFunctionPointerForDelegate(RegistrationCallback),
+                        Context = IntPtr.Zero,
+                        Credentials = IntPtr.Zero,
+                        UnicastEnabled = 0
+                    };
+                    registrationError = String.Empty;
+                    uint status = DnsServiceRegister(ref registrationRequest, IntPtr.Zero);
+                    if (!IsPending(status))
+                    {
+                        DnsServiceFreeInstance(registeredInstance);
+                        registeredInstance = IntPtr.Zero;
+                        throw new Win32Exception((int)status, "Windows could not publish the ClipRelay mDNS service.");
+                    }
+                    registered = true;
+                }
+                finally
+                {
+                    for (int index = 0; index < allocatedStrings.Count; index++)
+                        Marshal.FreeHGlobal(allocatedStrings[index]);
+                    if (keyArray != IntPtr.Zero)
+                        Marshal.FreeHGlobal(keyArray);
+                    if (valueArray != IntPtr.Zero)
+                        Marshal.FreeHGlobal(valueArray);
+                }
+            }
+        }
+
+        public static void Stop()
+        {
+            lock (RegistrationLock)
+            {
+                if (!registered)
+                    return;
+                try
+                {
+                    DnsServiceDeRegister(ref registrationRequest, IntPtr.Zero);
+                }
+                catch
+                {
+                }
+                // Registration is process-scoped. Keep the constructed instance alive
+                // until process exit so an asynchronous deregistration callback can never
+                // observe released memory.
+                registered = false;
+            }
+        }
+
+        public static DiscoveredDevice[] Discover(int timeoutMilliseconds)
+        {
+            if (timeoutMilliseconds < 200 || timeoutMilliseconds > 15000)
+                throw new ArgumentOutOfRangeException("timeoutMilliseconds");
+
+            lock (DiscoveryLock)
+            {
+                List<IPAddress> addresses = GetDiscoveryAddresses();
+                if (addresses.Count == 0)
+                    addresses.Add(IPAddress.Any);
+                Task<DiscoveredDevice[]>[] tasks = new Task<DiscoveredDevice[]>[addresses.Count];
+                for (int index = 0; index < addresses.Count; index++)
+                {
+                    IPAddress address = addresses[index];
+                    tasks[index] = Task.Factory.StartNew(
+                        delegate { return DiscoverOnInterface(address, timeoutMilliseconds); },
+                        CancellationToken.None,
+                        TaskCreationOptions.DenyChildAttach,
+                        TaskScheduler.Default);
+                }
+                Task.WaitAll(tasks);
+
+                Dictionary<string, DiscoveredDevice> devices =
+                    new Dictionary<string, DiscoveredDevice>(StringComparer.OrdinalIgnoreCase);
+                for (int taskIndex = 0; taskIndex < tasks.Length; taskIndex++)
+                {
+                    DiscoveredDevice[] interfaceDevices = tasks[taskIndex].Result;
+                    for (int deviceIndex = 0; deviceIndex < interfaceDevices.Length; deviceIndex++)
+                    {
+                        DiscoveredDevice device = interfaceDevices[deviceIndex];
+                        DiscoveredDevice existing;
+                        if (!devices.TryGetValue(device.Id, out existing) ||
+                            PreferAddress(device.Address, existing.Address))
+                        {
+                            devices[device.Id] = device;
+                        }
+                    }
+                }
+                DiscoveredDevice[] result = new DiscoveredDevice[devices.Count];
+                devices.Values.CopyTo(result, 0);
+                Array.Sort(result, delegate(DiscoveredDevice left, DiscoveredDevice right)
+                {
+                    return StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name);
+                });
+                return result;
+            }
+        }
+
+        private static void OnRegistrationComplete(uint status, IntPtr context, IntPtr instance)
+        {
+            lock (RegistrationLock)
+            {
+                if (status != 0 && status != 1223)
+                    registrationError = new Win32Exception((int)status).Message;
+            }
+            if (instance != IntPtr.Zero && instance != registeredInstance)
+                DnsServiceFreeInstance(instance);
+        }
+
+        private static DiscoveredDevice[] DiscoverOnInterface(IPAddress localAddress, int timeoutMilliseconds)
+        {
+            PacketDiscovery discovery = new PacketDiscovery();
+            try
+            {
+                using (UdpClient client = new UdpClient(AddressFamily.InterNetwork))
+                {
+                    client.Client.Bind(new IPEndPoint(localAddress, 0));
+                    client.Client.ReceiveTimeout = 100;
+                    if (!IPAddress.Any.Equals(localAddress))
+                    {
+                        client.Client.SetSocketOption(
+                            SocketOptionLevel.IP,
+                            SocketOptionName.MulticastInterface,
+                            localAddress.GetAddressBytes());
+                    }
+                    IPEndPoint multicast = new IPEndPoint(IPAddress.Parse("224.0.0.251"), 5353);
+                    byte[] query = BuildQuery(ServiceType, DnsTypePtr);
+                    client.Send(query, query.Length, multicast);
+
+                    Stopwatch stopwatch = Stopwatch.StartNew();
+                    while (stopwatch.ElapsedMilliseconds < timeoutMilliseconds)
+                    {
+                        if (client.Available == 0)
+                        {
+                            Thread.Sleep(15);
+                            continue;
+                        }
+                        IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+                        byte[] packet = client.Receive(ref remote);
+                        List<string> instances = ParsePacket(packet, remote.Address, discovery);
+                        for (int index = 0; index < instances.Count; index++)
+                        {
+                            string instanceName = instances[index];
+                            if (discovery.FollowUpQueries.Add(instanceName))
+                            {
+                                byte[] followUp = BuildQuery(instanceName, DnsTypeAny);
+                                client.Send(followUp, followUp.Length, multicast);
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            List<DiscoveredDevice> devices = new List<DiscoveredDevice>();
+            foreach (PacketService service in discovery.Services.Values)
+            {
+                if (service.Port < 1 ||
+                    !NormalizeDnsName(service.InstanceName).EndsWith("." + ServiceType, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                string address;
+                if (String.IsNullOrWhiteSpace(service.HostName) ||
+                    !discovery.HostAddresses.TryGetValue(NormalizeDnsName(service.HostName), out address))
+                {
+                    address = service.ResponseAddress;
+                }
+                if (String.IsNullOrWhiteSpace(address))
+                    continue;
+                string id = GetProperty(service.Properties, "id");
+                if (String.IsNullOrWhiteSpace(id))
+                    id = NormalizeDnsName(service.InstanceName).ToLowerInvariant();
+                string name = GetProperty(service.Properties, "name");
+                if (String.IsNullOrWhiteSpace(name))
+                    name = InstanceDisplayName(service.InstanceName);
+                devices.Add(new DiscoveredDevice
+                {
+                    Id = id,
+                    Name = name,
+                    Address = address,
+                    HostName = NormalizeDnsName(service.HostName),
+                    Port = service.Port,
+                    Platform = GetProperty(service.Properties, "platform"),
+                    Version = GetProperty(service.Properties, "version"),
+                    RequiresAuth = String.Equals(
+                        GetProperty(service.Properties, "auth"),
+                        "required",
+                        StringComparison.OrdinalIgnoreCase)
+                });
+            }
+            return devices.ToArray();
+        }
+
+        private static List<string> ParsePacket(byte[] packet, IPAddress responseAddress, PacketDiscovery discovery)
+        {
+            List<string> discoveredInstances = new List<string>();
+            if (packet == null || packet.Length < 12)
+                return discoveredInstances;
+            try
+            {
+                int questionCount = ReadUInt16(packet, 4);
+                int recordCount = ReadUInt16(packet, 6) + ReadUInt16(packet, 8) + ReadUInt16(packet, 10);
+                int offset = 12;
+                for (int index = 0; index < questionCount; index++)
+                {
+                    ReadDnsName(packet, ref offset);
+                    offset = CheckedAdvance(offset, 4, packet.Length);
+                }
+
+                for (int index = 0; index < recordCount; index++)
+                {
+                    string owner = NormalizeDnsName(ReadDnsName(packet, ref offset));
+                    int type = ReadUInt16(packet, offset);
+                    offset = CheckedAdvance(offset, 2, packet.Length);
+                    offset = CheckedAdvance(offset, 2, packet.Length); // class
+                    offset = CheckedAdvance(offset, 4, packet.Length); // TTL
+                    int dataLength = ReadUInt16(packet, offset);
+                    offset = CheckedAdvance(offset, 2, packet.Length);
+                    int dataOffset = offset;
+                    int dataEnd = CheckedAdvance(dataOffset, dataLength, packet.Length);
+
+                    if (type == DnsTypePtr)
+                    {
+                        int nameOffset = dataOffset;
+                        string instanceName = NormalizeDnsName(ReadDnsName(packet, ref nameOffset));
+                        if (String.Equals(owner, ServiceType, StringComparison.OrdinalIgnoreCase))
+                        {
+                            GetPacketService(discovery, instanceName).ResponseAddress = responseAddress.ToString();
+                            discoveredInstances.Add(instanceName);
+                        }
+                    }
+                    else if (type == DnsTypeSrv && dataLength >= 6)
+                    {
+                        PacketService service = GetPacketService(discovery, owner);
+                        service.Port = ReadUInt16(packet, dataOffset + 4);
+                        int hostOffset = dataOffset + 6;
+                        service.HostName = NormalizeDnsName(ReadDnsName(packet, ref hostOffset));
+                        service.ResponseAddress = responseAddress.ToString();
+                    }
+                    else if (type == DnsTypeTxt)
+                    {
+                        PacketService service = GetPacketService(discovery, owner);
+                        int textOffset = dataOffset;
+                        while (textOffset < dataEnd)
+                        {
+                            int length = packet[textOffset++];
+                            if (length == 0)
+                                continue;
+                            if (textOffset + length > dataEnd)
+                                break;
+                            string entry = System.Text.Encoding.UTF8.GetString(packet, textOffset, length);
+                            textOffset += length;
+                            int equals = entry.IndexOf('=');
+                            string key = equals < 0 ? entry : entry.Substring(0, equals);
+                            string value = equals < 0 ? String.Empty : entry.Substring(equals + 1);
+                            if (!String.IsNullOrWhiteSpace(key))
+                                service.Properties[key] = value;
+                        }
+                        service.ResponseAddress = responseAddress.ToString();
+                    }
+                    else if (type == DnsTypeA && dataLength == 4)
+                    {
+                        byte[] bytes = new byte[4];
+                        Buffer.BlockCopy(packet, dataOffset, bytes, 0, bytes.Length);
+                        discovery.HostAddresses[owner] = new IPAddress(bytes).ToString();
+                    }
+                    else if (type == DnsTypeAaaa && dataLength == 16 &&
+                        !discovery.HostAddresses.ContainsKey(owner))
+                    {
+                        byte[] bytes = new byte[16];
+                        Buffer.BlockCopy(packet, dataOffset, bytes, 0, bytes.Length);
+                        discovery.HostAddresses[owner] = new IPAddress(bytes).ToString();
+                    }
+                    offset = dataEnd;
+                }
+            }
+            catch
+            {
+                // Ignore malformed or unrelated UDP packets and retain valid records
+                // already parsed from this response.
+            }
+            return discoveredInstances;
+        }
+
+        private static PacketService GetPacketService(PacketDiscovery discovery, string instanceName)
+        {
+            string normalized = NormalizeDnsName(instanceName);
+            PacketService service;
+            if (!discovery.Services.TryGetValue(normalized, out service))
+            {
+                service = new PacketService { InstanceName = normalized };
+                discovery.Services[normalized] = service;
+            }
+            return service;
+        }
+
+        private static byte[] BuildQuery(string name, ushort type)
+        {
+            List<byte> bytes = new List<byte>();
+            for (int index = 0; index < 12; index++)
+                bytes.Add(0);
+            bytes[5] = 1; // one question
+            string[] labels = NormalizeDnsName(name).Split('.');
+            for (int index = 0; index < labels.Length; index++)
+            {
+                byte[] label = System.Text.Encoding.UTF8.GetBytes(labels[index]);
+                if (label.Length == 0 || label.Length > 63)
+                    throw new InvalidOperationException("The DNS-SD name contains an invalid label.");
+                bytes.Add((byte)label.Length);
+                bytes.AddRange(label);
+            }
+            bytes.Add(0);
+            bytes.Add((byte)(type >> 8));
+            bytes.Add((byte)type);
+            bytes.Add(0x80); // request a unicast reply to the ephemeral source port
+            bytes.Add(0x01);
+            return bytes.ToArray();
+        }
+
+        private static string ReadDnsName(byte[] packet, ref int offset)
+        {
+            List<string> labels = new List<string>();
+            int cursor = offset;
+            int resumeOffset = -1;
+            int jumps = 0;
+            while (true)
+            {
+                if (cursor < 0 || cursor >= packet.Length)
+                    throw new InvalidDataException("DNS name exceeds the packet.");
+                int length = packet[cursor];
+                if (length == 0)
+                {
+                    cursor++;
+                    if (resumeOffset < 0)
+                        resumeOffset = cursor;
+                    break;
+                }
+                if ((length & 0xC0) == 0xC0)
+                {
+                    if (cursor + 1 >= packet.Length || ++jumps > 16)
+                        throw new InvalidDataException("DNS compression pointer is invalid.");
+                    int pointer = ((length & 0x3F) << 8) | packet[cursor + 1];
+                    if (resumeOffset < 0)
+                        resumeOffset = cursor + 2;
+                    cursor = pointer;
+                    continue;
+                }
+                if ((length & 0xC0) != 0 || cursor + 1 + length > packet.Length)
+                    throw new InvalidDataException("DNS label is invalid.");
+                labels.Add(System.Text.Encoding.UTF8.GetString(packet, cursor + 1, length));
+                cursor += 1 + length;
+            }
+            offset = resumeOffset;
+            return String.Join(".", labels.ToArray());
+        }
+
+        private static int ReadUInt16(byte[] packet, int offset)
+        {
+            if (offset < 0 || offset + 2 > packet.Length)
+                throw new InvalidDataException("DNS integer exceeds the packet.");
+            return (packet[offset] << 8) | packet[offset + 1];
+        }
+
+        private static int CheckedAdvance(int offset, int length, int packetLength)
+        {
+            int result = checked(offset + length);
+            if (offset < 0 || length < 0 || result > packetLength)
+                throw new InvalidDataException("DNS record exceeds the packet.");
+            return result;
+        }
+
+        private static string NormalizeDnsName(string value)
+        {
+            return (value ?? String.Empty).Trim().TrimEnd('.');
+        }
+
+        private static List<IPAddress> GetDiscoveryAddresses()
+        {
+            List<IPAddress> addresses = new List<IPAddress>();
+            try
+            {
+                foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (networkInterface.OperationalStatus != OperationalStatus.Up ||
+                        networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                        !networkInterface.SupportsMulticast)
+                        continue;
+                    foreach (UnicastIPAddressInformation unicast in networkInterface.GetIPProperties().UnicastAddresses)
+                    {
+                        IPAddress address = unicast.Address;
+                        if (address.AddressFamily == AddressFamily.InterNetwork &&
+                            !IPAddress.IsLoopback(address) && !address.IsIPv6LinkLocal)
+                        {
+                            addresses.Add(address);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return addresses;
+        }
+
+        private static bool PreferAddress(string candidate, string existing)
+        {
+            IPAddress candidateAddress;
+            IPAddress existingAddress;
+            if (!IPAddress.TryParse(candidate, out candidateAddress))
+                return false;
+            if (!IPAddress.TryParse(existing, out existingAddress))
+                return true;
+            if (candidateAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                existingAddress.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                return true;
+            return IsPrivateIpv4(candidateAddress) && !IsPrivateIpv4(existingAddress);
+        }
+
+        private static bool IsPrivateIpv4(IPAddress address)
+        {
+            byte[] bytes = address.GetAddressBytes();
+            if (bytes.Length != 4)
+                return false;
+            return bytes[0] == 10 ||
+                (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+                (bytes[0] == 192 && bytes[1] == 168);
+        }
+
+        private static string InstanceDisplayName(string instanceName)
+        {
+            string normalized = NormalizeDnsName(instanceName);
+            const string suffix = "._cliprelay._tcp.local";
+            if (normalized.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                return normalized.Substring(0, normalized.Length - suffix.Length).Replace("\\.", ".");
+            return normalized;
+        }
+
+        private static string GetProperty(Dictionary<string, string> properties, string key)
+        {
+            string value;
+            return properties.TryGetValue(key, out value) ? value : String.Empty;
+        }
+
+        private static string SanitizeInstanceLabel(string value)
+        {
+            string label = String.IsNullOrWhiteSpace(value) ? Environment.MachineName : value.Trim();
+            label = label.Replace(".", "-").Replace("\\", "-");
+            char[] characters = label.ToCharArray();
+            for (int index = 0; index < characters.Length; index++)
+            {
+                if (Char.IsControl(characters[index]))
+                    characters[index] = '-';
+            }
+            label = new string(characters).Trim();
+            if (label.Length == 0)
+                label = "ClipRelay";
+            return label.Length <= 48 ? label : label.Substring(0, 48);
+        }
+
+        private static IntPtr AllocateStringArray(string[] values, List<IntPtr> allocatedStrings)
+        {
+            IntPtr array = Marshal.AllocHGlobal(values.Length * IntPtr.Size);
+            for (int index = 0; index < values.Length; index++)
+            {
+                IntPtr value = Marshal.StringToHGlobalUni(values[index]);
+                allocatedStrings.Add(value);
+                Marshal.WriteIntPtr(array, index * IntPtr.Size, value);
+            }
+            return array;
+        }
+
+        private static bool IsPending(uint status)
+        {
+            return status == 0 || status == DnsRequestPending || status == ErrorIoPending;
+        }
+
+        [DllImport("dnsapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr DnsServiceConstructInstance(
+            string serviceName,
+            string hostName,
+            IntPtr ip4Address,
+            IntPtr ip6Address,
+            ushort port,
+            ushort priority,
+            ushort weight,
+            uint propertyCount,
+            IntPtr keys,
+            IntPtr values);
+
+        [DllImport("dnsapi.dll", SetLastError = true)]
+        private static extern void DnsServiceFreeInstance(IntPtr instance);
+
+        [DllImport("dnsapi.dll", SetLastError = true)]
+        private static extern uint DnsServiceRegister(ref ServiceRegisterRequest request, IntPtr cancel);
+
+        [DllImport("dnsapi.dll", SetLastError = true)]
+        private static extern uint DnsServiceDeRegister(ref ServiceRegisterRequest request, IntPtr cancel);
+
     }
 
     internal static class RelayGeometry
@@ -870,6 +1514,15 @@ function Get-PropertyValue {
     return $property.Value
 }
 
+function Read-ClipRelayConfiguration {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # Windows PowerShell 5.1 treats UTF-8 files without a BOM as the active
+    # ANSI code page unless the encoding is explicit. Discovery names are
+    # valid UTF-8 and must not depend on the machine's legacy code page.
+    return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+}
+
 function Get-NormalizedPeerAddress {
     param([string]$Value)
 
@@ -882,6 +1535,22 @@ function Get-NormalizedPeerAddress {
         throw "设备地址只需填写主机名或 IP（无需包含 http://、端口或路径）。"
     }
 
+    return $normalized
+}
+
+function Get-NormalizedDeviceName {
+    param([string]$Value)
+
+    $normalized = if ([string]::IsNullOrWhiteSpace($Value)) { [Environment]::MachineName } else { $Value.Trim() }
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        $normalized = "ClipRelay"
+    }
+    if ($normalized.Length -gt 32) {
+        throw "本机设备名称不能超过 32 个字符。"
+    }
+    if ($normalized.IndexOfAny([char[]]@([char]0x0D, [char]0x0A, [char]0x00)) -ge 0) {
+        throw "本机设备名称不能包含换行或空字符。"
+    }
     return $normalized
 }
 
@@ -935,6 +1604,12 @@ function Get-NormalizedRelayPeers {
         if ([string]::IsNullOrWhiteSpace($id)) {
             $id = [Guid]::NewGuid().ToString("N")
         }
+        $requiresAuthValue = Get-PropertyValue -Object $sourcePeer -Name "requiresAuth"
+        $requiresAuth = if ($null -eq $requiresAuthValue) { $false } else { [bool]$requiresAuthValue }
+        $platform = [string](Get-PropertyValue -Object $sourcePeer -Name "platform")
+        if ($null -eq $platform) { $platform = "" }
+        $platform = $platform.Trim().ToLowerInvariant()
+        if ($platform.Length -gt 24) { $platform = $platform.Substring(0, 24) }
 
         $endpointKey = "$($address.ToLowerInvariant())`:$peerPort"
         if ($endpointKeys.ContainsKey($endpointKey)) {
@@ -949,6 +1624,8 @@ function Get-NormalizedRelayPeers {
             port        = $peerPort
             accessToken = $peerToken
             enabled     = $enabled
+            requiresAuth = $requiresAuth
+            platform    = $platform
         })
     }
 
@@ -966,8 +1643,112 @@ function Copy-RelayPeers {
             port        = [int](Get-PropertyValue -Object $_ -Name "port")
             accessToken = [string](Get-PropertyValue -Object $_ -Name "accessToken")
             enabled     = [bool](Get-PropertyValue -Object $_ -Name "enabled")
+            requiresAuth = [bool](Get-PropertyValue -Object $_ -Name "requiresAuth")
+            platform    = [string](Get-PropertyValue -Object $_ -Name "platform")
         }
     })
+}
+
+function Find-ClipRelayDevices {
+    param(
+        [ValidateRange(200, 15000)]
+        [int]$TimeoutMilliseconds = 1800,
+        [string]$LocalDeviceId = $script:DeviceId
+    )
+
+    return @([ClipRelay.MdnsDiscovery]::Discover($TimeoutMilliseconds) | Where-Object {
+        [string]::IsNullOrWhiteSpace($LocalDeviceId) -or [string]$_.Id -cne $LocalDeviceId
+    })
+}
+
+function Merge-DiscoveredRelayDevices {
+    param(
+        [object[]]$Peers,
+        [object[]]$DiscoveredDevices,
+        [int]$DefaultPort = 47632,
+        [string]$DefaultAccessToken = "",
+        [string]$LocalDeviceId = "",
+        [int]$MaximumPeers = 16
+    )
+
+    $merged = New-Object System.Collections.ArrayList
+    foreach ($peer in @(Copy-RelayPeers -Peers $Peers)) {
+        $null = $merged.Add($peer)
+    }
+    $added = 0
+    $updated = 0
+    $authRequired = 0
+    foreach ($device in @($DiscoveredDevices)) {
+        $deviceId = [string](Get-PropertyValue -Object $device -Name "Id")
+        if ([string]::IsNullOrWhiteSpace($deviceId)) {
+            $deviceId = [string](Get-PropertyValue -Object $device -Name "id")
+        }
+        if ([string]::IsNullOrWhiteSpace($deviceId) -or
+            (-not [string]::IsNullOrWhiteSpace($LocalDeviceId) -and $deviceId -ceq $LocalDeviceId)) {
+            continue
+        }
+        $address = [string](Get-PropertyValue -Object $device -Name "Address")
+        if ([string]::IsNullOrWhiteSpace($address)) {
+            $address = [string](Get-PropertyValue -Object $device -Name "address")
+        }
+        try { $address = Get-NormalizedPeerAddress -Value $address } catch { continue }
+        $devicePortValue = Get-PropertyValue -Object $device -Name "Port"
+        if ($null -eq $devicePortValue) { $devicePortValue = Get-PropertyValue -Object $device -Name "port" }
+        $devicePort = if ($null -eq $devicePortValue -or [int]$devicePortValue -eq 0) { $DefaultPort } else { [int]$devicePortValue }
+        if ($devicePort -lt 1 -or $devicePort -gt 65535) { continue }
+        $deviceName = [string](Get-PropertyValue -Object $device -Name "Name")
+        if ([string]::IsNullOrWhiteSpace($deviceName)) { $deviceName = "ClipRelay 设备" }
+        $deviceName = $deviceName.Trim()
+        if ($deviceName.Length -gt 32) { $deviceName = $deviceName.Substring(0, 32) }
+        $requiresAuthValue = Get-PropertyValue -Object $device -Name "RequiresAuth"
+        if ($null -eq $requiresAuthValue) { $requiresAuthValue = Get-PropertyValue -Object $device -Name "requiresAuth" }
+        $requiresAuth = if ($null -eq $requiresAuthValue) { $false } else { [bool]$requiresAuthValue }
+        if ($requiresAuth) { $authRequired++ }
+        $platform = [string](Get-PropertyValue -Object $device -Name "Platform")
+        if ([string]::IsNullOrWhiteSpace($platform)) { $platform = [string](Get-PropertyValue -Object $device -Name "platform") }
+
+        $matchIndex = -1
+        for ($index = 0; $index -lt $merged.Count; $index++) {
+            $existing = $merged[$index]
+            if ([string]$existing.id -ceq $deviceId -or
+                (([string]$existing.address).Equals($address, [StringComparison]::OrdinalIgnoreCase) -and
+                    [int]$existing.port -eq $devicePort)) {
+                $matchIndex = $index
+                break
+            }
+        }
+        if ($matchIndex -ge 0) {
+            $existing = $merged[$matchIndex]
+            $existing.id = $deviceId
+            $existing.name = $deviceName
+            $existing.address = $address
+            $existing.port = $devicePort
+            $existing.requiresAuth = $requiresAuth
+            $existing.platform = $platform
+            $updated++
+            continue
+        }
+        if ($merged.Count -ge $MaximumPeers) { continue }
+        $null = $merged.Add([PSCustomObject][ordered]@{
+            id           = $deviceId
+            name         = $deviceName
+            address      = $address
+            port         = $devicePort
+            accessToken  = $DefaultAccessToken
+            enabled      = $true
+            requiresAuth = $requiresAuth
+            platform     = $platform
+        })
+        $added++
+    }
+
+    return [PSCustomObject]@{
+        Peers        = @($merged)
+        Added        = $added
+        Updated      = $updated
+        AuthRequired = $authRequired
+        Discovered   = @($DiscoveredDevices).Count
+    }
 }
 
 function Get-EnabledRelayPeers {
@@ -1065,7 +1846,9 @@ function Save-PeerConfiguration {
         [int]$ListenPort = 0,
         [string]$AccessToken = $script:AccessToken,
         [bool]$StartupEnabled = (Test-StartupRegistration),
-        [object[]]$Peers = $null
+        [object[]]$Peers = $null,
+        [bool]$DiscoveryEnabled = $script:DiscoveryEnabled,
+        [string]$DeviceName = $script:DeviceName
     )
 
     # This function deliberately owns all script-scoped state changes. The
@@ -1081,6 +1864,7 @@ function Save-PeerConfiguration {
     if ($normalizedAccessToken.Length -gt 128) {
         throw "访问密钥不能超过 128 个字符。"
     }
+    $normalizedDeviceName = Get-NormalizedDeviceName -Value $DeviceName
 
     if ($null -eq $Peers) {
         $Peers = @([PSCustomObject]@{
@@ -1090,6 +1874,8 @@ function Save-PeerConfiguration {
             port        = $ListenPort
             accessToken = $normalizedAccessToken
             enabled     = $true
+            requiresAuth = $false
+            platform    = ""
         })
     }
     $normalizedPeers = @(Get-NormalizedRelayPeers -Peers $Peers -DefaultPort $ListenPort -DefaultAccessToken $normalizedAccessToken)
@@ -1101,6 +1887,9 @@ function Save-PeerConfiguration {
     $normalized = [string]$primaryPeer.address
 
     $portChanged = $ListenPort -ne $script:Port
+    $discoveryChanged = $DiscoveryEnabled -ne $script:DiscoveryEnabled -or
+        $normalizedDeviceName -cne $script:DeviceName -or
+        ([string]::IsNullOrWhiteSpace($script:AccessToken) -ne [string]::IsNullOrWhiteSpace($normalizedAccessToken))
     if ($portChanged) {
         Set-ClipRelayFirewallPort -ListenPort $ListenPort
     }
@@ -1112,6 +1901,9 @@ function Save-PeerConfiguration {
         port          = $ListenPort
         notifications = $Notifications
         accessToken   = $normalizedAccessToken
+        deviceId      = $script:DeviceId
+        deviceName    = $normalizedDeviceName
+        discoveryEnabled = $DiscoveryEnabled
     }
     $configuration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:configPath -Encoding UTF8
 
@@ -1121,13 +1913,15 @@ function Save-PeerConfiguration {
     $script:pushUri = (New-Object System.UriBuilder("http", $normalized, ([int]$primaryPeer.port), "push")).Uri
     $script:Notifications = $Notifications
     $script:AccessToken = $normalizedAccessToken
+    $script:DeviceName = $normalizedDeviceName
+    $script:DiscoveryEnabled = $DiscoveryEnabled
     if ($null -ne $script:peerMenuItem) {
         $script:peerMenuItem.Text = "发送设备: $($enabledPeers.Count) 台"
     }
     if ($null -ne $script:notifyMenuItem) {
         $script:notifyMenuItem.Checked = $Notifications
     }
-    if ($portChanged) {
+    if ($portChanged -or $discoveryChanged) {
         $script:restartRequested = $true
         $script:stopRequested = $true
     }
@@ -1498,7 +2292,7 @@ $configuration = $null
 $peerWasExplicitlyProvided = $PSBoundParameters.ContainsKey("Peer") -and -not [string]::IsNullOrWhiteSpace($Peer)
 if (Test-Path -LiteralPath $configPath) {
     try {
-        $configuration = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        $configuration = Read-ClipRelayConfiguration -Path $configPath
     }
     catch {
         throw "Cannot read config file $configPath`: $($_.Exception.Message)"
@@ -1537,6 +2331,19 @@ else {
 $configuredAccessToken = Get-PropertyValue -Object $configuration -Name "accessToken"
 $script:AccessToken = if ($null -eq $configuredAccessToken) { "" } else { [string]$configuredAccessToken }
 
+$configuredDeviceId = [string](Get-PropertyValue -Object $configuration -Name "deviceId")
+$configuredDeviceName = [string](Get-PropertyValue -Object $configuration -Name "deviceName")
+$configuredDiscoveryEnabled = Get-PropertyValue -Object $configuration -Name "discoveryEnabled"
+$configRequiresDiscoveryMigration = [string]::IsNullOrWhiteSpace($configuredDeviceId) -or
+    [string]::IsNullOrWhiteSpace($configuredDeviceName) -or $null -eq $configuredDiscoveryEnabled
+$script:DeviceId = if ([string]::IsNullOrWhiteSpace($configuredDeviceId)) { [Guid]::NewGuid().ToString("N") } else { $configuredDeviceId.Trim() }
+if ($script:DeviceId.Length -gt 128) {
+    $script:DeviceId = [Guid]::NewGuid().ToString("N")
+    $configRequiresDiscoveryMigration = $true
+}
+$script:DeviceName = Get-NormalizedDeviceName -Value $configuredDeviceName
+$script:DiscoveryEnabled = if ($null -eq $configuredDiscoveryEnabled) { $true } else { [bool]$configuredDiscoveryEnabled }
+
 $configuredPeers = Get-PropertyValue -Object $configuration -Name "peers"
 if ($peerWasExplicitlyProvided -or $null -eq $configuredPeers -or @($configuredPeers).Count -eq 0) {
     $peerSeed = @([PSCustomObject]@{
@@ -1546,6 +2353,8 @@ if ($peerWasExplicitlyProvided -or $null -eq $configuredPeers -or @($configuredP
         port        = $Port
         accessToken = $script:AccessToken
         enabled     = $true
+        requiresAuth = $false
+        platform    = ""
     })
 }
 else {
@@ -1557,6 +2366,20 @@ if ($enabledConfiguredPeers.Count -lt 1) {
     throw "ClipRelay 配置中没有启用的接收设备。"
 }
 $Peer = [string]$enabledConfiguredPeers[0].address
+
+if ($configRequiresDiscoveryMigration) {
+    $migratedConfiguration = [ordered]@{
+        peer             = $Peer
+        peers            = $script:Peers
+        port             = $Port
+        notifications    = $script:Notifications
+        accessToken      = $script:AccessToken
+        deviceId         = $script:DeviceId
+        deviceName       = $script:DeviceName
+        discoveryEnabled = $script:DiscoveryEnabled
+    }
+    $migratedConfiguration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
+}
 
 if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne [System.Threading.ApartmentState]::STA) {
     throw "ClipRelay requires an STA thread. Start it with powershell.exe -STA -File cliprelay.ps1."
@@ -1575,9 +2398,12 @@ $peerMenuItem = $null
 $notifyMenuItem = $null
 $screenshotHotkeyMenuItem = $null
 $copyMonitorStarted = $false
+$mdnsStarted = $false
+$discoveryStartupError = ""
 $stopRequested = $false
 $restartRequested = $false
 $configurationDialogOpen = $false
+$configurationForm = $null
 $clipboardDuplicateWindowMilliseconds = 1000
 $lastSentClipboardText = $null
 $lastSentClipboardPeer = $null
@@ -2193,6 +3019,21 @@ function Test-RelayPeersConnectivity {
     return Get-RelayDeliverySummary -Results $results -Kind "检测"
 }
 
+function Start-RelayPeersConnectivityTest {
+    param(
+        [object[]]$Peers = $script:Peers,
+        [int]$TimeoutMilliseconds = 5000
+    )
+
+    $payload = [ordered]@{
+        text  = "cliprelay-probe"
+        probe = $true
+    }
+    $json = $payload | ConvertTo-Json -Compress
+    $targets = New-RelayBroadcastTargets -Peers $Peers
+    return [ClipRelay.RelayBroadcaster]::SendTextAsync($targets, $json, $TimeoutMilliseconds)
+}
+
 function Send-TextToPeer {
     param([string]$Text)
 
@@ -2606,6 +3447,9 @@ function Show-RelayPeerEditor {
     $peerToken = if ($null -eq $peerTokenValue) { $DefaultAccessToken } else { [string]$peerTokenValue }
     $enabledValue = Get-PropertyValue -Object $Peer -Name "enabled"
     $peerEnabled = if ($null -eq $enabledValue) { $true } else { [bool]$enabledValue }
+    $requiresAuthValue = Get-PropertyValue -Object $Peer -Name "requiresAuth"
+    $peerRequiresAuth = if ($null -eq $requiresAuthValue) { $false } else { [bool]$requiresAuthValue }
+    $peerPlatform = [string](Get-PropertyValue -Object $Peer -Name "platform")
 
     $form = New-Object ClipRelay.RelayForm
     $form.Text = "ClipRelay 接收设备"
@@ -2689,6 +3533,8 @@ function Show-RelayPeerEditor {
                 port = $parsedPort
                 accessToken = $peerTokenInput.TextBox.Text
                 enabled = [bool]$enabledToggle.Checked
+                requiresAuth = $peerRequiresAuth
+                platform = $peerPlatform
             }
             $normalized = @(& $normalizePeersCommand -Peers @($candidate) -DefaultPort $DefaultPort -DefaultAccessToken $DefaultAccessToken)[0]
             $form.Tag = $normalized
@@ -2714,7 +3560,8 @@ function Show-RelayPeerManager {
         [System.Windows.Forms.Form]$Owner,
         [object[]]$Peers,
         [int]$DefaultPort,
-        [string]$DefaultAccessToken = ""
+        [string]$DefaultAccessToken = "",
+        [string]$LocalDeviceId = ""
     )
 
     $colors = @{
@@ -2791,13 +3638,17 @@ function Show-RelayPeerManager {
     $emptyLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 
     $addButton = & $newButton $form "+ 添加设备" 24 494 116 38 $colors.Surface $colors.Raised $colors.Cyan $colors.Border
-    $hintLabel = & $newLabel $form "发送时会并行投递；单台离线不影响其他设备" 154 494 382 38 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+    $scanButton = & $newButton $form "扫描设备" 148 494 116 38 $colors.Surface $colors.Raised $colors.Violet $colors.Border
+    $scanButton.Name = "ScanDevicesButton"
+    $hintLabel = & $newLabel $form "自动发现后仍需确认应用" 278 494 258 38 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
     $hintLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
     $cancelButton = & $newButton $form "取消" 340 542 92 36 $colors.Surface $colors.Raised $colors.Muted $colors.Border
     $saveButton = & $newButton $form "应用设备" 442 542 94 36 $colors.Cyan ([System.Drawing.Color]::FromArgb(91, 230, 224)) $colors.Background
 
     $editorCommand = Get-Command Show-RelayPeerEditor
     $normalizePeersCommand = Get-Command Get-NormalizedRelayPeers
+    $findDevicesCommand = Get-Command Find-ClipRelayDevices
+    $mergeDevicesCommand = Get-Command Merge-DiscoveredRelayDevices
     $refreshState = [PSCustomObject]@{ Command = $null }
     $refreshRows = $null
     $refreshRows = {
@@ -2828,7 +3679,11 @@ function Show-RelayPeerManager {
                     $name = & $newLabel $row ([string]$peer.name) 70 7 145 24 9.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
                     $address = & $newLabel $row "$($peer.address):$($peer.port)" 70 31 244 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $monoFont
                     if (-not [string]::IsNullOrWhiteSpace([string]$peer.accessToken)) {
-                        $auth = & $newLabel $row "已认证" 286 8 58 21 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $bodyFont
+                        $auth = & $newLabel $row "已配密钥" 276 8 68 21 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $bodyFont
+                        $auth.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+                    }
+                    elseif ([bool]$peer.requiresAuth) {
+                        $auth = & $newLabel $row "需密钥" 286 8 58 21 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Danger $bodyFont
                         $auth.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
                     }
                     $editButton = & $newButton $row "编辑" 354 14 58 34 $colors.Raised $colors.Border $colors.Cyan $colors.Border
@@ -2916,6 +3771,43 @@ function Show-RelayPeerManager {
             & $refreshRows
         }
     }.GetNewClosure())
+    $scanButton.Add_Click({
+        $scanButton.Enabled = $false
+        $scanButton.Text = "扫描中..."
+        $hintLabel.Text = "正在通过 mDNS 查找局域网内的 ClipRelay"
+        $hintLabel.ForeColor = $colors.Muted
+        $form.Update()
+        try {
+            $devices = @(& $findDevicesCommand -TimeoutMilliseconds 1800 -LocalDeviceId $LocalDeviceId)
+            $merge = & $mergeDevicesCommand `
+                -Peers @($peerList) `
+                -DiscoveredDevices $devices `
+                -DefaultPort $DefaultPort `
+                -DefaultAccessToken $DefaultAccessToken `
+                -LocalDeviceId $LocalDeviceId `
+                -MaximumPeers 16
+            $peerList.Clear()
+            foreach ($mergedPeer in @($merge.Peers)) { $null = $peerList.Add($mergedPeer) }
+            & $refreshRows
+            if ($merge.Discovered -eq 0) {
+                $hintLabel.Text = "未发现设备；可继续手动添加"
+                $hintLabel.ForeColor = $colors.Muted
+            }
+            else {
+                $authHint = if ($merge.AuthRequired -gt 0) { "；$($merge.AuthRequired) 台需填写密钥" } else { "" }
+                $hintLabel.Text = "发现 $($merge.Discovered) 台，新增 $($merge.Added) 台，更新 $($merge.Updated) 台$authHint"
+                $hintLabel.ForeColor = $colors.Cyan
+            }
+        }
+        catch {
+            $hintLabel.Text = "扫描失败：$($_.Exception.Message)"
+            $hintLabel.ForeColor = $colors.Danger
+        }
+        finally {
+            $scanButton.Enabled = $true
+            $scanButton.Text = "扫描设备"
+        }
+    }.GetNewClosure())
     $closeButton.Add_Click({ $form.Close() }.GetNewClosure())
     $cancelButton.Add_Click({ $form.Close() }.GetNewClosure())
     $saveButton.Add_Click({
@@ -2945,7 +3837,21 @@ function Show-RelayPeerManager {
 
 function Show-RelayControlCenter {
     if ($script:configurationDialogOpen) {
-        return
+        if ($null -ne $script:configurationForm -and -not $script:configurationForm.IsDisposed) {
+            if ($script:configurationForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
+                $script:configurationForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+            }
+            $script:configurationForm.ShowInTaskbar = $true
+            $script:configurationForm.Show()
+            $null = $script:configurationForm.Activate()
+            $script:configurationForm.BringToFront()
+            return
+        }
+
+        # Recover if a previous form disappeared without completing its normal
+        # close path. A stale guard must never make the tray icon unresponsive.
+        $script:configurationDialogOpen = $false
+        $script:configurationForm = $null
     }
 
     $script:configurationDialogOpen = $true
@@ -2954,18 +3860,25 @@ function Show-RelayControlCenter {
         [System.Windows.Forms.Application]::EnableVisualStyles()
 
         $colors = @{
-            Background = [System.Drawing.Color]::FromArgb(7, 19, 30)
-            Surface    = [System.Drawing.Color]::FromArgb(16, 33, 49)
-            Raised     = [System.Drawing.Color]::FromArgb(19, 44, 63)
-            Field      = [System.Drawing.Color]::FromArgb(10, 31, 48)
-            Border     = [System.Drawing.Color]::FromArgb(37, 71, 94)
-            Text       = [System.Drawing.Color]::FromArgb(232, 241, 250)
-            Muted      = [System.Drawing.Color]::FromArgb(157, 176, 193)
-            Cyan       = [System.Drawing.Color]::FromArgb(61, 214, 208)
-            Blue       = [System.Drawing.Color]::FromArgb(47, 128, 237)
-            Violet     = [System.Drawing.Color]::FromArgb(139, 110, 246)
-            Success    = [System.Drawing.Color]::FromArgb(71, 207, 155)
-            Danger     = [System.Drawing.Color]::FromArgb(255, 122, 114)
+            Background  = [System.Drawing.Color]::FromArgb(17, 19, 24)
+            Sidebar     = [System.Drawing.Color]::FromArgb(22, 25, 34)
+            Surface     = [System.Drawing.Color]::FromArgb(23, 26, 36)
+            SurfaceAlt  = [System.Drawing.Color]::FromArgb(28, 32, 44)
+            Raised      = [System.Drawing.Color]::FromArgb(32, 37, 52)
+            Field       = [System.Drawing.Color]::FromArgb(18, 20, 28)
+            Border      = [System.Drawing.Color]::FromArgb(38, 44, 60)
+            BorderLight = [System.Drawing.Color]::FromArgb(50, 58, 80)
+            Text        = [System.Drawing.Color]::FromArgb(241, 245, 249)
+            TextDim     = [System.Drawing.Color]::FromArgb(203, 213, 225)
+            Muted       = [System.Drawing.Color]::FromArgb(148, 163, 184)
+            Subtle      = [System.Drawing.Color]::FromArgb(100, 116, 139)
+            Cyan        = [System.Drawing.Color]::FromArgb(56, 189, 248)
+            Blue        = [System.Drawing.Color]::FromArgb(59, 130, 246)
+            BlueLight   = [System.Drawing.Color]::FromArgb(96, 165, 250)
+            Violet      = [System.Drawing.Color]::FromArgb(139, 92, 246)
+            Success     = [System.Drawing.Color]::FromArgb(16, 185, 129)
+            Warning     = [System.Drawing.Color]::FromArgb(251, 191, 36)
+            Danger      = [System.Drawing.Color]::FromArgb(244, 63, 94)
         }
         $displayFont = "Segoe UI Variable Display"
         $bodyFont = "Microsoft YaHei UI"
@@ -3010,7 +3923,7 @@ function Show-RelayControlCenter {
                 [int]$Height,
                 [System.Drawing.Color]$BackColor = $colors.Surface,
                 [System.Drawing.Color]$BorderColor = $colors.Border,
-                [int]$Radius = 14
+                [int]$Radius = 10
             )
             $card = New-Object ClipRelay.RelayPanel
             $card.Location = New-Object System.Drawing.Point($X, $Y)
@@ -3059,25 +3972,25 @@ function Show-RelayControlCenter {
                 [int]$Height,
                 [bool]$Password = $false
             )
-            $container = & $newCard $Parent $X $Y $Width $Height $colors.Field $colors.Border 9
+            $container = & $newCard $Parent $X $Y $Width $Height $colors.Field $colors.Border 8
             $textBox = New-Object System.Windows.Forms.TextBox
             $textBox.Text = $Text
-            $textBox.Location = New-Object System.Drawing.Point(11, 8)
-            $textBox.Size = New-Object System.Drawing.Size(($Width - 22), ($Height - 12))
+            $textBox.Location = New-Object System.Drawing.Point(10, 7)
+            $textBox.Size = New-Object System.Drawing.Size(($Width - 20), ($Height - 12))
             $textBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
             $textBox.BackColor = $colors.Field
             $textBox.ForeColor = $colors.Text
             $textBox.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Regular)
             $textBox.UseSystemPasswordChar = $Password
             $container.Controls.Add($textBox)
-            $textBox.Add_Enter({ $container.BorderColor = $colors.Cyan; $container.Invalidate() }.GetNewClosure())
+            $textBox.Add_Enter({ $container.BorderColor = $colors.Blue; $container.Invalidate() }.GetNewClosure())
             $textBox.Add_Leave({ $container.BorderColor = $colors.Border; $container.Invalidate() }.GetNewClosure())
             return [PSCustomObject]@{ Container = $container; TextBox = $textBox }
         }
 
         $form = New-Object ClipRelay.RelayForm
-        $form.Text = "ClipRelay 设备链路"
-        $form.ClientSize = New-Object System.Drawing.Size(640, 772)
+        $form.Text = "ClipRelay 控制中心"
+        $form.ClientSize = New-Object System.Drawing.Size(760, 720)
         $form.BackColor = $colors.Background
         $form.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Regular)
         $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
@@ -3089,28 +4002,37 @@ function Show-RelayControlCenter {
         if ($null -ne $script:appIcon) {
             $form.Icon = $script:appIcon
         }
+        $script:configurationForm = $form
 
-        $null = & $newLabel $form "CLIP / RELAY" 28 11 220 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
-        $null = & $newLabel $form "设备链路" 28 29 300 31 16.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $null = & $newLabel $form "文本与全屏截图 · 仅用于可信局域网" 29 61 340 18 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        # --- Left Sidebar ---
+        $sidebarPanel = & $newCard $form 0 0 236 720 $colors.Sidebar $colors.Border 0
+        $sidebarBorder = New-Object System.Windows.Forms.Panel
+        $sidebarBorder.Location = New-Object System.Drawing.Point(235, 0)
+        $sidebarBorder.Size = New-Object System.Drawing.Size(1, 720)
+        $sidebarBorder.BackColor = $colors.Border
+        $form.Controls.Add($sidebarBorder)
 
-        $serviceChip = & $newCard $form 368 22 198 34 $colors.Surface $colors.Border 17
-        $serviceDot = & $newLabel $serviceChip "●" 11 4 18 24 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $bodyFont
-        $serviceLabel = & $newLabel $serviceChip "本机接收中  :$script:Port" 28 4 160 24 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $closeButton = & $newButton $form "×" 588 19 30 30 $colors.Background $colors.Raised $colors.Muted
-        $closeButton.Font = New-Object System.Drawing.Font("Segoe UI", 14.0, [System.Drawing.FontStyle]::Regular)
+        # Branding
+        $brandLogo = & $newCard $sidebarPanel 18 18 36 36 $colors.Blue ([System.Drawing.Color]::Transparent) 8
+        $logoText = & $newLabel $brandLogo "CR" 0 0 36 36 12.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $monoFont
+        $logoText.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+        $null = & $newLabel $sidebarPanel "ClipRelay" 62 16 156 22 13.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $displayFont
+        $null = & $newLabel $sidebarPanel "局域网剪贴板中继" 63 38 156 16 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
 
-        $routeCard = & $newCard $form 24 88 592 233 $colors.Surface $colors.Border 17
-        $null = & $newLabel $routeCard "DEVICE ROUTE" 18 12 220 22 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
-        $null = & $newLabel $routeCard "自动检测链路" 430 12 144 22 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        # Live Server Status Hero Card
+        $statusHeroCard = & $newCard $sidebarPanel 16 68 204 136 $colors.SurfaceAlt $colors.Border 10
+        $serviceDot = & $newLabel $statusHeroCard "●" 12 10 16 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Success $bodyFont
+        $serviceStatusTitle = if ($script:DiscoveryEnabled) { "接收中 · 可发现" } else { "本机接收中" }
+        $serviceLabel = & $newLabel $statusHeroCard $serviceStatusTitle 28 9 164 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Success $bodyFont
+        $serviceSubText = if ($script:DiscoveryEnabled) { "端口 :$script:Port · 局域网可发现" } else { "端口 :$script:Port · 仅手动广播" }
+        $serviceSub = & $newLabel $statusHeroCard $serviceSubText 12 32 180 18 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
 
-        $localCard = & $newCard $routeCard 18 42 236 106 $colors.Raised ([System.Drawing.Color]::Transparent) 13
-        $null = & $newLabel $localCard "这台电脑" 12 8 128 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $localAddressField = & $newCard $localCard 12 35 156 32 $colors.Field $colors.Border 9
-        $localAddressValue = & $newLabel $localAddressField "" 9 2 115 27 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Text $bodyFont
-        $switchAddressButton = & $newButton $localAddressField "↕" 127 2 27 28 $colors.Field $colors.Border $colors.Muted
+        $localAddressField = & $newCard $statusHeroCard 10 56 184 34 $colors.Field $colors.Border 6
+        $localAddressValue = & $newLabel $localAddressField "" 8 2 104 30 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Text $monoFont
+        $switchAddressButton = & $newButton $localAddressField "↕" 114 3 26 28 $colors.Field $colors.Border $colors.Muted
         $switchAddressButton.Font = New-Object System.Drawing.Font("Segoe UI Symbol", 9.0, [System.Drawing.FontStyle]::Bold)
-        $copyButton = & $newButton $localCard "复制" 174 35 50 30 $colors.Field $colors.Border $colors.Cyan $colors.Border
+        $copyButton = & $newButton $localAddressField "复制" 142 3 38 28 $colors.Blue $colors.Raised $colors.Text
+        $copyButton.Font = New-Object System.Drawing.Font($bodyFont, 8.0, [System.Drawing.FontStyle]::Bold)
         $localAddresses = @(Get-LocalShareableAddresses)
         if ($localAddresses.Count -gt 0) {
             $localAddressField.Tag = 0
@@ -3123,104 +4045,197 @@ function Show-RelayControlCenter {
             $switchAddressButton.Enabled = $false
             $copyButton.Enabled = $false
         }
-        $null = & $newLabel $localCard "监听 0.0.0.0:$script:Port" 12 72 210 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $monoFont
+        $null = & $newLabel $statusHeroCard "监听 0.0.0.0:$script:Port" 12 96 180 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $monoFont
 
-        $routeLineLeft = New-Object System.Windows.Forms.Panel
-        $routeLineLeft.Location = New-Object System.Drawing.Point(266, 94)
-        $routeLineLeft.Size = New-Object System.Drawing.Size(24, 2)
-        $routeLineLeft.BackColor = $colors.Cyan
-        $routeCard.Controls.Add($routeLineLeft)
-        $routePulse = & $newCard $routeCard 294 90 10 10 $colors.Cyan ([System.Drawing.Color]::Transparent) 5
-        $routeTrunk = New-Object System.Windows.Forms.Panel
-        $routeTrunk.Location = New-Object System.Drawing.Point(308, 94)
-        $routeTrunk.Size = New-Object System.Drawing.Size(9, 2)
-        $routeTrunk.BackColor = $colors.Cyan
-        $routeCard.Controls.Add($routeTrunk)
-        $routeBranch = New-Object System.Windows.Forms.Panel
-        $routeBranch.Location = New-Object System.Drawing.Point(316, 72)
-        $routeBranch.Size = New-Object System.Drawing.Size(2, 46)
-        $routeBranch.BackColor = $colors.Cyan
-        $routeCard.Controls.Add($routeBranch)
-        foreach ($branchY in @(72, 94, 116)) {
-            $branchLine = New-Object System.Windows.Forms.Panel
-            $branchLine.Location = New-Object System.Drawing.Point(316, $branchY)
-            $branchLine.Size = New-Object System.Drawing.Size(14, 2)
-            $branchLine.BackColor = $colors.Cyan
-            $routeCard.Controls.Add($branchLine)
-        }
-
-        $peerCard = & $newCard $routeCard 338 42 236 106 $colors.Raised ([System.Drawing.Color]::Transparent) 13
-        $null = & $newLabel $peerCard "并行广播" 12 7 100 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $peerCountLabel = & $newLabel $peerCard "" 112 7 112 22 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $bodyFont
+        # Sidebar Stats Card
+        $sidebarStatsCard = & $newCard $sidebarPanel 16 216 204 146 $colors.SurfaceAlt $colors.Border 10
+        $null = & $newLabel $sidebarStatsCard "NETWORK STATS" 12 9 176 16 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
+        $null = & $newLabel $sidebarStatsCard "广播目标" 12 32 76 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $peerCountLabel = & $newLabel $sidebarStatsCard "" 90 32 102 18 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $peerCountLabel.Name = "PeerCountLabel"
         $peerCountLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
-        $peerSummaryOne = & $newLabel $peerCard "" 12 31 212 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $peerSummaryTwo = & $newLabel $peerCard "" 12 51 212 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $managePeersButton = & $newButton $peerCard "管理设备" 128 72 96 27 $colors.Field $colors.Border $colors.Cyan $colors.Border
 
-        $connectionPanel = & $newCard $routeCard 18 160 556 55 $colors.Field $colors.Border 12
-        $connectionDot = & $newLabel $connectionPanel "●" 12 6 18 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-        $connectionTitle = & $newLabel $connectionPanel "准备检测链路" 31 5 380 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $connectionDetail = & $newLabel $connectionPanel "输入对方地址后检测" 13 27 415 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $testButton = & $newButton $connectionPanel "检测全部" 435 10 108 35 $colors.Raised $colors.Border $colors.Cyan $colors.Border
+        $statDivider1 = New-Object System.Windows.Forms.Panel
+        $statDivider1.Location = New-Object System.Drawing.Point(12, 54)
+        $statDivider1.Size = New-Object System.Drawing.Size(180, 1)
+        $statDivider1.BackColor = $colors.Border
+        $sidebarStatsCard.Controls.Add($statDivider1)
 
-        $shortcutCard = & $newCard $form 24 333 592 118 $colors.Surface $colors.Border 17
-        $null = & $newLabel $shortcutCard "SHORTCUTS" 18 10 220 22 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $monoFont
-        $textShortcut = & $newCard $shortcutCard 18 39 270 61 $colors.Raised ([System.Drawing.Color]::Transparent) 12
-        $textBadge = & $newCard $textShortcut 10 13 34 34 $colors.Violet ([System.Drawing.Color]::Transparent) 17
+        $null = & $newLabel $sidebarStatsCard "在线状态" 12 62 76 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $sidebarHealthLabel = & $newLabel $sidebarStatsCard "待检测" 90 62 102 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Warning $bodyFont
+        $sidebarHealthLabel.Name = "OnlineStatusLabel"
+        $sidebarHealthLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+
+        $statDivider2 = New-Object System.Windows.Forms.Panel
+        $statDivider2.Location = New-Object System.Drawing.Point(12, 84)
+        $statDivider2.Size = New-Object System.Drawing.Size(180, 1)
+        $statDivider2.BackColor = $colors.Border
+        $sidebarStatsCard.Controls.Add($statDivider2)
+
+        $null = & $newLabel $sidebarStatsCard "最近同步" 12 92 76 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $sidebarLastRelayLabel = & $newLabel $sidebarStatsCard "—" 90 92 102 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.TextDim $monoFont
+        $sidebarLastRelayLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+
+        $statDivider3 = New-Object System.Windows.Forms.Panel
+        $statDivider3.Location = New-Object System.Drawing.Point(12, 114)
+        $statDivider3.Size = New-Object System.Drawing.Size(180, 1)
+        $statDivider3.BackColor = $colors.Border
+        $sidebarStatsCard.Controls.Add($statDivider3)
+
+        $null = & $newLabel $sidebarStatsCard "安全密钥" 12 122 76 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $sidebarAuthText = if ([string]::IsNullOrWhiteSpace($script:AccessToken)) { "未设置" } else { "已保护" }
+        $sidebarAuthColor = if ([string]::IsNullOrWhiteSpace($script:AccessToken)) { $colors.Subtle } else { $colors.Success }
+        $sidebarAuthLabel = & $newLabel $sidebarStatsCard $sidebarAuthText 90 122 102 18 8.0 ([System.Drawing.FontStyle]::Regular) $sidebarAuthColor $bodyFont
+        $sidebarAuthLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+
+        # Sidebar Target Nodes Card
+        $sidebarPeersCard = & $newCard $sidebarPanel 16 374 204 260 $colors.SurfaceAlt $colors.Border 10
+        $null = & $newLabel $sidebarPeersCard "TARGET NODES" 12 9 120 16 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $monoFont
+        $peerSummaryOne = & $newLabel $sidebarPeersCard "" 12 32 180 34 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $peerSummaryOne.Name = "PeerSummaryOneLabel"
+        $peerSummaryTwo = & $newLabel $sidebarPeersCard "" 12 70 180 34 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $peerSummaryTwo.Name = "PeerSummaryTwoLabel"
+        $null = & $newLabel $sidebarPeersCard "多目标广播独立响应`n不阻断剪贴板主流程" 12 110 180 32 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $managePeersButton = & $newButton $sidebarPeersCard "⚙ 管理目标设备" 12 210 180 38 $colors.Field $colors.Border $colors.BlueLight $colors.Border
+        $managePeersButton.Name = "ManagePeersButton"
+        $managePeersButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
+
+        # Sidebar Probe Button
+        $testButton = & $newButton $sidebarPanel "⚡ 检测全链路连接" 16 652 204 46 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
+        $testButton.Name = "TestPeersButton"
+        $testButton.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Bold)
+
+        # --- Right Main Workspace ---
+        # Top Header & Window Controls
+        $null = & $newLabel $form "CLIP / RELAY" 256 14 200 16 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
+        $largeHeader = & $newLabel $form "设备链路工作区" 256 30 320 32 16.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $displayFont
+        $null = & $newLabel $form "跨平台剪贴板与全屏截图实时并行中继 · 仅用于可信局域网" 256 62 390 18 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+
+        $minimizeButton = & $newButton $form "−" 676 18 32 30 $colors.Background $colors.Raised $colors.Muted
+        $minimizeButton.Name = "MinimizeButton"
+        $minimizeButton.Font = New-Object System.Drawing.Font("Segoe UI", 13.0, [System.Drawing.FontStyle]::Regular)
+        $minimizeButton.AccessibleName = "最小化"
+        $minimizeButton.TabStop = $false
+
+        $closeButton = & $newButton $form "×" 714 18 32 30 $colors.Background $colors.Raised $colors.Muted
+        $closeButton.Name = "CloseButton"
+        $closeButton.Font = New-Object System.Drawing.Font("Segoe UI", 14.0, [System.Drawing.FontStyle]::Regular)
+        $closeButton.AccessibleName = "关闭"
+        $closeButton.TabStop = $false
+
+        # Section 1: Connection Health Banner
+        $connectionPanel = & $newCard $form 256 86 488 64 $colors.Surface $colors.Border 10
+        $connectionDot = & $newLabel $connectionPanel "●" 14 10 16 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+        $connectionTitle = & $newLabel $connectionPanel "准备检测链路" 32 8 440 22 9.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $connectionTitle.Name = "ConnectionTitleLabel"
+        $connectionDetail = & $newLabel $connectionPanel "点击左侧【⚡ 检测全链路连接】可对所有启用的目标发起并行测试" 32 32 440 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+
+        # Section 2: Shortcuts
+        $shortcutCard = & $newCard $form 256 160 488 96 $colors.Surface $colors.Border 10
+        $null = & $newLabel $shortcutCard "SHORTCUTS · 快捷同步指令" 14 8 260 18 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $monoFont
+
+        $textShortcut = & $newCard $shortcutCard 14 30 224 54 $colors.Raised ([System.Drawing.Color]::Transparent) 8
+        $textBadge = & $newCard $textShortcut 8 10 34 34 $colors.Violet ([System.Drawing.Color]::Transparent) 6
         $badgeText = & $newLabel $textBadge "T" 0 0 34 34 10.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $monoFont
         $badgeText.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-        $null = & $newLabel $textShortcut "CTRL + C" 56 8 125 23 10.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $monoFont
-        $null = & $newLabel $textShortcut "发送文本 · 1 秒重复保护" 56 31 202 19 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $null = & $newLabel $textShortcut "CTRL + C" 48 8 168 20 9.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $monoFont
+        $null = & $newLabel $textShortcut "文本广播 · 1 秒防重" 48 28 168 18 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
 
-        $imageShortcut = & $newCard $shortcutCard 304 39 270 61 $colors.Raised ([System.Drawing.Color]::Transparent) 12
-        $imageBadge = & $newCard $imageShortcut 10 13 34 34 $colors.Cyan ([System.Drawing.Color]::Transparent) 17
+        $imageShortcut = & $newCard $shortcutCard 250 30 224 54 $colors.Raised ([System.Drawing.Color]::Transparent) 8
+        $imageBadge = & $newCard $imageShortcut 8 10 34 34 $colors.Cyan ([System.Drawing.Color]::Transparent) 6
         $badgeImage = & $newLabel $imageBadge "S" 0 0 34 34 10.0 ([System.Drawing.FontStyle]::Bold) $colors.Background $monoFont
         $badgeImage.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-        $null = & $newLabel $imageShortcut "CTRL + ALT + F12" 56 8 166 23 9.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $monoFont
-        $screenshotHotkeyState = & $newLabel $imageShortcut "检测中" 205 8 54 23 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+        $null = & $newLabel $imageShortcut "CTRL + ALT + F12" 48 8 120 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $monoFont
+        $screenshotHotkeyState = & $newLabel $imageShortcut "检测中" 168 8 48 20 7.8 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
         $screenshotHotkeyState.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
-        $null = & $newLabel $imageShortcut "静默发送整个虚拟桌面" 56 31 202 19 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $null = & $newLabel $imageShortcut "全屏静默截屏广播" 48 28 168 18 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
 
-        $activityCard = & $newCard $form 24 463 592 70 $colors.Surface $colors.Border 17
+        # Section 3: Last Relay Activity
+        $activityCard = & $newCard $form 256 266 488 58 $colors.Surface $colors.Border 10
         $activityAccent = New-Object System.Windows.Forms.Panel
-        $activityAccent.Location = New-Object System.Drawing.Point(0, 16)
+        $activityAccent.Location = New-Object System.Drawing.Point(0, 10)
         $activityAccent.Size = New-Object System.Drawing.Size(3, 38)
         $activityAccent.BackColor = $colors.Muted
         $activityCard.Controls.Add($activityAccent)
-        $null = & $newLabel $activityCard "LAST RELAY" 18 8 120 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $monoFont
-        $activityTitle = & $newLabel $activityCard "等待首次发送" 18 26 430 25 10.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $activityTime = & $newLabel $activityCard "—" 450 24 124 26 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $monoFont
+        $null = & $newLabel $activityCard "LAST ACTIVITY" 14 6 120 16 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Muted $monoFont
+        $activityTitle = & $newLabel $activityCard "等待首次发送" 14 24 350 24 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $activityTime = & $newLabel $activityCard "—" 366 22 108 24 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $monoFont
         $activityTime.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
 
-        $preferencesCard = & $newCard $form 24 545 592 154 $colors.Surface $colors.Border 17
-        $null = & $newLabel $preferencesCard "PREFERENCES" 18 9 180 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Blue $monoFont
-        $null = & $newLabel $preferencesCard "通知提醒" 18 32 110 21 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $null = & $newLabel $preferencesCard "接收内容和异常时显示" 18 52 210 18 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        # Section 4: Preferences & Security
+        $preferencesCard = & $newCard $form 256 334 488 310 $colors.Surface $colors.Border 10
+        $null = & $newLabel $preferencesCard "PREFERENCES · 偏好与安全设置" 14 9 320 18 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Blue $monoFont
+
+        # Row 1: Notifications
+        $null = & $newLabel $preferencesCard "气泡通知提醒" 14 30 180 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $null = & $newLabel $preferencesCard "收到剪贴板内容或网络异常时弹出系统气泡通知" 14 48 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
         $notifyToggle = New-Object ClipRelay.RelayToggle
-        $notifyToggle.Location = New-Object System.Drawing.Point(238, 39)
+        $notifyToggle.Location = New-Object System.Drawing.Point(426, 34)
         $notifyToggle.Checked = $script:Notifications
+        $notifyToggle.OnColor = $colors.Blue
         $preferencesCard.Controls.Add($notifyToggle)
 
-        $null = & $newLabel $preferencesCard "开机自启" 310 32 110 21 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $null = & $newLabel $preferencesCard "登录后自动保持接收" 310 52 205 18 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $div1 = New-Object System.Windows.Forms.Panel
+        $div1.Location = New-Object System.Drawing.Point(14, 68)
+        $div1.Size = New-Object System.Drawing.Size(460, 1)
+        $div1.BackColor = $colors.Border
+        $preferencesCard.Controls.Add($div1)
+
+        # Row 2: Auto Startup
+        $null = & $newLabel $preferencesCard "开机自动启动" 14 74 180 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $null = & $newLabel $preferencesCard "登录 Windows 后自动在后台保持接收与中继服务" 14 92 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
         $startupToggle = New-Object ClipRelay.RelayToggle
-        $startupToggle.Location = New-Object System.Drawing.Point(530, 39)
+        $startupToggle.Location = New-Object System.Drawing.Point(426, 78)
         $startupToggle.Checked = Test-StartupRegistration
+        $startupToggle.OnColor = $colors.Blue
         $preferencesCard.Controls.Add($startupToggle)
 
-        $null = & $newLabel $preferencesCard "本机端口" 18 78 78 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-        $portInput = & $newInput $preferencesCard ([string]$script:Port) 18 97 86 34 $false
-        $null = & $newLabel $preferencesCard "本机接收密钥" 122 78 110 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-        $tokenInput = & $newInput $preferencesCard $script:AccessToken 122 97 354 34 $true
-        $showTokenButton = & $newButton $preferencesCard "显示" 486 97 88 34 $colors.Raised $colors.Border $colors.Muted $colors.Border
-        $null = & $newLabel $preferencesCard "仅保护发往本机的请求；各目标密钥在【管理设备】中设置。" 122 132 452 16 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $div2 = New-Object System.Windows.Forms.Panel
+        $div2.Location = New-Object System.Drawing.Point(14, 112)
+        $div2.Size = New-Object System.Drawing.Size(460, 1)
+        $div2.BackColor = $colors.Border
+        $preferencesCard.Controls.Add($div2)
 
-        $footerHint = & $newLabel $form "保存端口变更时会更新防火墙并自动重启" 28 718 330 32 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $cancelButton = & $newButton $form "取消" 404 716 92 38 $colors.Surface $colors.Raised $colors.Muted $colors.Border
-        $saveButton = & $newButton $form "保存设置" 506 716 110 38 $colors.Cyan ([System.Drawing.Color]::FromArgb(91, 230, 224)) $colors.Background
+        # Row 3: mDNS Discovery
+        $null = & $newLabel $preferencesCard "局域网自动发现 (mDNS)" 14 118 200 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $null = & $newLabel $preferencesCard "开启后其他 ClipRelay 设备可在局域网内自动搜索到本机" 14 136 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $discoveryToggle = New-Object ClipRelay.RelayToggle
+        $discoveryToggle.Location = New-Object System.Drawing.Point(426, 122)
+        $discoveryToggle.Checked = $script:DiscoveryEnabled
+        $discoveryToggle.OnColor = $colors.Blue
+        $preferencesCard.Controls.Add($discoveryToggle)
+
+        $div3 = New-Object System.Windows.Forms.Panel
+        $div3.Location = New-Object System.Drawing.Point(14, 156)
+        $div3.Size = New-Object System.Drawing.Size(460, 1)
+        $div3.BackColor = $colors.Border
+        $preferencesCard.Controls.Add($div3)
+
+        # Row 4: Device Name
+        $null = & $newLabel $preferencesCard "发现设备名称" 14 162 140 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+        $deviceNameInput = & $newInput $preferencesCard $script:DeviceName 14 182 460 32 $false
+
+        # Row 5: Port & Token
+        $null = & $newLabel $preferencesCard "本机端口" 14 222 80 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+        $portInput = & $newInput $preferencesCard ([string]$script:Port) 14 242 86 32 $false
+        $null = & $newLabel $preferencesCard "本机接收密钥" 110 222 120 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+        $tokenInput = & $newInput $preferencesCard $script:AccessToken 110 242 290 32 $true
+        $showTokenButton = & $newButton $preferencesCard "显示" 408 242 66 32 $colors.Raised $colors.Border $colors.Muted $colors.Border
+        $showTokenButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
+
+        # Row 6: Security Hint
+        $null = & $newLabel $preferencesCard "发现仅公开名称与端口，不公开密钥；目标设备密钥在【管理设备】中单独维护。" 14 282 460 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+
+        # Footer Action Bar
+        $footerHint = & $newLabel $form "端口或发现配置变更时会自动重启接收服务" 256 658 240 34 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $cancelButton = & $newButton $form "取消" 520 654 100 40 $colors.Surface $colors.Border $colors.Muted $colors.Border
+        $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
+        $saveButton = & $newButton $form "保存设置" 628 654 116 40 $colors.Blue ([System.Drawing.Color]::FromArgb(74, 148, 245)) $colors.Text ([System.Drawing.Color]::Transparent)
+        $saveButton.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Bold)
 
         $setClipboardCommand = Get-Command Set-ClipboardTextWithRetry
-        $testPeersCommand = Get-Command Test-RelayPeersConnectivity
+        $startPeersTestCommand = Get-Command Start-RelayPeersConnectivityTest
+        $deliverySummaryCommand = Get-Command Get-RelayDeliverySummary
         $peerManagerCommand = Get-Command Show-RelayPeerManager
         $saveSettingsCommand = Get-Command Save-PeerConfiguration
         $snapshotCommand = Get-Command Get-RelayRuntimeSnapshot
@@ -3228,76 +4243,148 @@ function Show-RelayControlCenter {
 
         $updatePeerSummary = {
             $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
-            $peerCountLabel.Text = "$($enabledDraftPeers.Count)/$($draftPeers.Count) 台启用"
+            $peerCountLabel.Text = "$($enabledDraftPeers.Count) 台"
             $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
             foreach ($label in $summaryLabels) {
                 $label.Text = ""
                 $label.ForeColor = $colors.Muted
+                $label.Tag = $null
             }
             if ($enabledDraftPeers.Count -eq 0) {
                 $peerSummaryOne.Text = "● 没有启用的设备"
                 $peerSummaryOne.ForeColor = $colors.Danger
+                $sidebarHealthLabel.Text = "无目标"
+                $sidebarHealthLabel.ForeColor = $colors.Danger
                 return
             }
-            $visibleCount = [Math]::Min(2, $enabledDraftPeers.Count)
+            $visibleCount = if ($enabledDraftPeers.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledDraftPeers.Count) }
             for ($index = 0; $index -lt $visibleCount; $index++) {
                 $peer = $enabledDraftPeers[$index]
-                $summaryLabels[$index].Text = "● $($peer.name) · $($peer.address)"
+                $summaryLabels[$index].Text = "○ $($peer.name) · 待检测`n   $($peer.address)"
                 $summaryLabels[$index].ForeColor = $colors.Muted
+                $summaryLabels[$index].Tag = "pending"
             }
             if ($enabledDraftPeers.Count -gt 2) {
                 $peerSummaryTwo.Text = "+ 另有 $($enabledDraftPeers.Count - 1) 台设备"
+                $peerSummaryTwo.Tag = "summary"
             }
         }.GetNewClosure()
 
+        $checkState = [PSCustomObject]@{ Task = $null }
+        $applyCheckSummary = {
+            param($Summary)
+
+            if ($form.IsDisposed) {
+                return
+            }
+            if ($Summary.State -eq "success") {
+                $connectionPanel.BorderColor = $colors.Success
+                $connectionDot.ForeColor = $colors.Success
+                $connectionTitle.Text = "全部可用 · $($Summary.SuccessCount)/$($Summary.TotalCount) 台设备"
+                $sidebarHealthLabel.Text = "$($Summary.SuccessCount)/$($Summary.TotalCount) 台可用"
+                $sidebarHealthLabel.ForeColor = $colors.Success
+            }
+            elseif ($Summary.State -eq "partial") {
+                $connectionPanel.BorderColor = $colors.Violet
+                $connectionDot.ForeColor = $colors.Violet
+                $connectionTitle.Text = "部分可用 · $($Summary.SuccessCount)/$($Summary.TotalCount) 台设备"
+                $sidebarHealthLabel.Text = "$($Summary.SuccessCount)/$($Summary.TotalCount) 台可用"
+                $sidebarHealthLabel.ForeColor = $colors.Warning
+            }
+            else {
+                $connectionPanel.BorderColor = $colors.Danger
+                $connectionDot.ForeColor = $colors.Danger
+                $connectionTitle.Text = "所有广播设备均不可达"
+                $sidebarHealthLabel.Text = "$($Summary.SuccessCount)/$($Summary.TotalCount) 台可用"
+                $sidebarHealthLabel.ForeColor = $colors.Danger
+            }
+            $enabledPeersForStatus = @($draftPeers | Where-Object { [bool]$_.enabled })
+            $deliveryResults = if ($null -eq $Summary.Results) { @() } else { @($Summary.Results) }
+            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
+            $visibleCount = if ($enabledPeersForStatus.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledPeersForStatus.Count) }
+            for ($index = 0; $index -lt $visibleCount; $index++) {
+                $peer = $enabledPeersForStatus[$index]
+                $deliveryResult = if ($index -lt $deliveryResults.Count) { $deliveryResults[$index] } else { $null }
+                if ($null -ne $deliveryResult -and [bool]$deliveryResult.Success) {
+                    $summaryLabels[$index].Text = "● $($peer.name) · ✓ 可用`n   $($peer.address)"
+                    $summaryLabels[$index].ForeColor = $colors.Success
+                    $summaryLabels[$index].Tag = "available"
+                }
+                else {
+                    $summaryLabels[$index].Text = "● $($peer.name) · × 不可用`n   $($peer.address)"
+                    $summaryLabels[$index].ForeColor = $colors.Danger
+                    $summaryLabels[$index].Tag = "unavailable"
+                }
+            }
+            $connectionDetail.Text = "$($Summary.Detail) · $(Get-Date -Format 'HH:mm:ss')"
+        }.GetNewClosure()
+        $applyCheckFailure = {
+            param([string]$Message)
+
+            if ($form.IsDisposed) {
+                return
+            }
+            $connectionPanel.BorderColor = $colors.Danger
+            $connectionDot.ForeColor = $colors.Danger
+            $connectionTitle.Text = "无法检测广播设备"
+            $connectionDetail.Text = $Message
+            $sidebarHealthLabel.Text = "检测失败"
+            $sidebarHealthLabel.ForeColor = $colors.Danger
+            $enabledPeersForStatus = @($draftPeers | Where-Object { [bool]$_.enabled })
+            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
+            $visibleCount = if ($enabledPeersForStatus.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledPeersForStatus.Count) }
+            for ($index = 0; $index -lt $visibleCount; $index++) {
+                $peer = $enabledPeersForStatus[$index]
+                $summaryLabels[$index].Text = "● $($peer.name) · × 检测失败`n   $($peer.address)"
+                $summaryLabels[$index].ForeColor = $colors.Danger
+                $summaryLabels[$index].Tag = "unavailable"
+            }
+        }.GetNewClosure()
         $runCheck = {
             $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
             if ($enabledDraftPeers.Count -lt 1) {
+                $checkState.Task = $null
                 $connectionPanel.BorderColor = $colors.Danger
                 $connectionDot.ForeColor = $colors.Danger
                 $connectionTitle.Text = "没有启用的广播设备"
-                $connectionDetail.Text = "点击管理设备，至少启用一台接收端"
+                $connectionDetail.Text = "点击左侧【⚙ 管理目标设备】，至少启用一台接收端"
+                $sidebarHealthLabel.Text = "无目标"
+                $sidebarHealthLabel.ForeColor = $colors.Danger
                 $connectionPanel.Invalidate()
+                $testButton.Enabled = $true
+                $testButton.Text = "⚡ 检测全链路连接"
                 return
             }
 
             $testButton.Enabled = $false
-            $testButton.Text = "检测中"
+            $testButton.Text = "检测中..."
             $connectionPanel.BorderColor = $colors.Border
             $connectionDot.ForeColor = $colors.Muted
             $connectionTitle.Text = "正在并行检测 $($enabledDraftPeers.Count) 台设备"
-            $connectionDetail.Text = "每台设备独立响应，不会修改剪贴板"
+            $connectionDetail.Text = "每台设备独立响应，不会修改剪贴板内容"
+            $sidebarHealthLabel.Text = "检测中"
+            $sidebarHealthLabel.ForeColor = $colors.Warning
+            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
+            $visibleCount = if ($enabledDraftPeers.Count -gt 2) { 1 } else { [Math]::Min(2, $enabledDraftPeers.Count) }
+            for ($index = 0; $index -lt $visibleCount; $index++) {
+                $peer = $enabledDraftPeers[$index]
+                $summaryLabels[$index].Text = "○ $($peer.name) · 检测中`n   $($peer.address)"
+                $summaryLabels[$index].ForeColor = $colors.Muted
+                $summaryLabels[$index].Tag = "checking"
+            }
             $connectionPanel.Invalidate()
-            $form.Update()
             try {
-                $summary = & $testPeersCommand -Peers @($draftPeers) -TimeoutMilliseconds 5000
-                if ($summary.State -eq "success") {
-                    $connectionPanel.BorderColor = $colors.Success
-                    $connectionDot.ForeColor = $colors.Success
-                    $connectionTitle.Text = "全部可用 · $($summary.SuccessCount)/$($summary.TotalCount) 台设备"
+                $checkState.Task = & $startPeersTestCommand -Peers @($draftPeers) -TimeoutMilliseconds 5000
+                if ($null -eq $checkState.Task) {
+                    throw "连接检测任务未能启动。"
                 }
-                elseif ($summary.State -eq "partial") {
-                    $connectionPanel.BorderColor = $colors.Violet
-                    $connectionDot.ForeColor = $colors.Violet
-                    $connectionTitle.Text = "部分可用 · $($summary.SuccessCount)/$($summary.TotalCount) 台设备"
-                }
-                else {
-                    $connectionPanel.BorderColor = $colors.Danger
-                    $connectionDot.ForeColor = $colors.Danger
-                    $connectionTitle.Text = "所有广播设备均不可达"
-                }
-                $connectionDetail.Text = "$($summary.Detail) · $(Get-Date -Format 'HH:mm:ss')"
             }
             catch {
-                $connectionPanel.BorderColor = $colors.Danger
-                $connectionDot.ForeColor = $colors.Danger
-                $connectionTitle.Text = "无法检测广播设备"
-                $connectionDetail.Text = [string]$_.Exception.Message
-            }
-            finally {
+                $checkState.Task = $null
+                & $applyCheckFailure ([string]$_.Exception.Message)
                 $connectionPanel.Invalidate()
                 $testButton.Enabled = $true
-                $testButton.Text = "检测全部"
+                $testButton.Text = "⚡ 检测全链路连接"
             }
         }.GetNewClosure()
 
@@ -3319,13 +4406,13 @@ function Show-RelayControlCenter {
                 $localAddressValue.Text = [string]$localAddresses[$nextIndex].Address
             }
             $copyButton.Text = "复制"
-            $copyButton.TextColor = $colors.Cyan
+            $copyButton.TextColor = $colors.Text
         }.GetNewClosure())
         $managePeersButton.Add_Click({
-            $updatedPeers = @(& $peerManagerCommand -Owner $form -Peers @($draftPeers) -DefaultPort $script:Port -DefaultAccessToken "")
-            if ($updatedPeers.Count -gt 0) {
+            $updatedPeers = & $peerManagerCommand -Owner $form -Peers @($draftPeers) -DefaultPort $script:Port -DefaultAccessToken "" -LocalDeviceId $script:DeviceId
+            if ($null -ne $updatedPeers) {
                 $draftPeers.Clear()
-                foreach ($updatedPeer in $updatedPeers) {
+                foreach ($updatedPeer in @($updatedPeers)) {
                     $null = $draftPeers.Add($updatedPeer)
                 }
                 & $updatePeerSummary
@@ -3336,6 +4423,9 @@ function Show-RelayControlCenter {
         $showTokenButton.Add_Click({
             $tokenInput.TextBox.UseSystemPasswordChar = -not $tokenInput.TextBox.UseSystemPasswordChar
             $showTokenButton.Text = if ($tokenInput.TextBox.UseSystemPasswordChar) { "显示" } else { "隐藏" }
+        }.GetNewClosure())
+        $minimizeButton.Add_Click({
+            $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
         }.GetNewClosure())
         $closeButton.Add_Click({ $form.Close() }.GetNewClosure())
         $cancelButton.Add_Click({ $form.Close() }.GetNewClosure())
@@ -3355,7 +4445,9 @@ function Show-RelayControlCenter {
                     -ListenPort $parsedPort `
                     -AccessToken $tokenInput.TextBox.Text `
                     -StartupEnabled ([bool]$startupToggle.Checked) `
-                    -Peers @($draftPeers)
+                    -Peers @($draftPeers) `
+                    -DiscoveryEnabled ([bool]$discoveryToggle.Checked) `
+                    -DeviceName $deviceNameInput.TextBox.Text
                 if ($notifyToggle.Checked) {
                     & $notificationCommand -Title "ClipRelay 设置已保存" -Message "并行广播：$($enabledDraftPeers.Count) 台设备；本机端口：$parsedPort。"
                 }
@@ -3380,14 +4472,14 @@ function Show-RelayControlCenter {
                 $snapshot = & $snapshotCommand
                 if ($snapshot.ScreenshotHotkeyAvailable) {
                     $screenshotHotkeyState.Text = "可用"
-                    $screenshotHotkeyState.ForeColor = $colors.Cyan
+                    $screenshotHotkeyState.ForeColor = $colors.Success
                 }
                 else {
                     $screenshotHotkeyState.Text = "冲突"
                     $screenshotHotkeyState.ForeColor = $colors.Danger
                 }
                 if ($snapshot.State -eq "success") {
-                    $activityAccent.BackColor = $colors.Cyan
+                    $activityAccent.BackColor = $colors.Success
                     $activityTitle.ForeColor = $colors.Text
                 }
                 elseif ($snapshot.State -eq "partial") {
@@ -3404,10 +4496,41 @@ function Show-RelayControlCenter {
                 }
                 $activityTitle.Text = $snapshot.Detail
                 $activityTime.Text = if ($null -eq $snapshot.At) { "—" } else { $snapshot.At.ToString("HH:mm:ss") }
+                $sidebarLastRelayLabel.Text = if ($null -eq $snapshot.At) { "—" } else { $snapshot.At.ToString("HH:mm:ss") }
             }
             catch {
             }
         }.GetNewClosure())
+
+        $connectivityTimer = New-Object System.Windows.Forms.Timer
+        $connectivityTimer.Interval = 100
+        $connectivityTimer.Add_Tick({
+            if ($form.IsDisposed -or $null -eq $checkState.Task -or -not $checkState.Task.IsCompleted) {
+                return
+            }
+
+            $completedTask = $checkState.Task
+            $checkState.Task = $null
+            try {
+                $results = @($completedTask.GetAwaiter().GetResult())
+                $summary = & $deliverySummaryCommand -Results $results -Kind "检测"
+                & $applyCheckSummary $summary
+            }
+            catch {
+                & $applyCheckFailure ([string]$_.Exception.Message)
+            }
+            finally {
+                if (-not $form.IsDisposed) {
+                    $connectionPanel.Invalidate()
+                    $testButton.Enabled = $true
+                    $testButton.Text = "⚡ 检测全链路连接"
+                }
+            }
+        }.GetNewClosure())
+        $form.Tag = [PSCustomObject]@{
+            RuntimeTimer      = $runtimeTimer
+            ConnectivityTimer = $connectivityTimer
+        }
 
         $form.AcceptButton = $saveButton
         $form.CancelButton = $cancelButton
@@ -3415,25 +4538,40 @@ function Show-RelayControlCenter {
             $null = [ClipRelay.NativeMethods]::ShowWindow($form.Handle, [ClipRelay.NativeMethods]::SW_SHOW)
             $null = $form.Activate()
             $runtimeTimer.Start()
+            $connectivityTimer.Start()
             & $runCheck
         }.GetNewClosure())
+        # Do not use GetNewClosure here. It creates a dynamic module whose
+        # $script: scope is different from ClipRelay's actual script scope.
+        # Store the only local dependency on the form so this handler can reset
+        # the real application-level window state.
         $form.Add_FormClosed({
             param($sender, $eventArgs)
             try {
-                $runtimeTimer.Stop()
-                $runtimeTimer.Dispose()
+                $timerState = if ($null -ne $sender) { $sender.Tag } else { $null }
+                if ($null -ne $timerState) {
+                    foreach ($timer in @($timerState.RuntimeTimer, $timerState.ConnectivityTimer)) {
+                        if ($null -ne $timer) {
+                            $timer.Stop()
+                            $timer.Dispose()
+                        }
+                    }
+                    $sender.Tag = $null
+                }
                 if ($null -ne $sender) {
                     $sender.Dispose()
                 }
             }
             catch {
             }
+            $script:configurationForm = $null
             $script:configurationDialogOpen = $false
-        }.GetNewClosure())
+        })
         $null = $form.Show()
     }
     catch {
         $script:configurationDialogOpen = $false
+        $script:configurationForm = $null
         if ($null -ne $form) {
             try { $form.Dispose() } catch { }
         }
@@ -3497,6 +4635,9 @@ try {
                 port          = $script:Port
                 notifications = $script:Notifications
                 accessToken   = $script:AccessToken
+                deviceId      = $script:DeviceId
+                deviceName    = $script:DeviceName
+                discoveryEnabled = $script:DiscoveryEnabled
             }
             $cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:configPath -Encoding UTF8
         }
@@ -3532,6 +4673,20 @@ try {
     $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Any, $Port)
     $listener.Start()
     $acceptTask = $listener.AcceptTcpClientAsync()
+    if ($script:DiscoveryEnabled) {
+        try {
+            [ClipRelay.MdnsDiscovery]::Start(
+                $script:DeviceId,
+                $script:DeviceName,
+                $Port,
+                (-not [string]::IsNullOrWhiteSpace($script:AccessToken))
+            )
+            $mdnsStarted = $true
+        }
+        catch {
+            $discoveryStartupError = [string]$_.Exception.Message
+        }
+    }
     [ClipRelay.CopyHotkeyMonitor]::Start()
     $copyMonitorStarted = $true
 
@@ -3543,7 +4698,11 @@ try {
     }
 
     $startupPeerCount = @(Get-EnabledRelayPeers -Peers $script:Peers).Count
-    Write-Host "ClipRelay Windows 端已启动: 监听端口 $Port, 广播设备 $startupPeerCount 台"
+    $discoveryState = if ($mdnsStarted) { "mDNS 可发现" } elseif ($script:DiscoveryEnabled) { "mDNS 启动失败" } else { "mDNS 已关闭" }
+    Write-Host "ClipRelay Windows 端已启动: 监听端口 $Port, 广播设备 $startupPeerCount 台, $discoveryState"
+    if (-not [string]::IsNullOrWhiteSpace($discoveryStartupError) -and $script:Notifications) {
+        Show-ClipRelayNotification -Title "ClipRelay 自动发现不可用" -Message $discoveryStartupError -Icon Warning
+    }
     if (-not [ClipRelay.CopyHotkeyMonitor]::ScreenshotHotkeyAvailable) {
         Show-ClipRelayNotification -Title "ClipRelay 截图热键冲突" -Message "Ctrl+Alt+F12 已被其他程序注册，截图功能暂不可用；Ctrl+C 文本同步仍正常。关闭占用程序并重启 ClipRelay 后可重试。" -Icon Warning
     }
@@ -3587,6 +4746,9 @@ try {
     }
 }
 finally {
+    if ($mdnsStarted) {
+        [ClipRelay.MdnsDiscovery]::Stop()
+    }
     if ($copyMonitorStarted) {
         [ClipRelay.CopyHotkeyMonitor]::Stop()
     }

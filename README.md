@@ -13,11 +13,14 @@ Mac、Windows 与 Android 手机在同一局域网内互传文本和截图的小
 ## 工作原理
 
 - 每台设备运行一个 HTTP 服务（默认端口 `47632`）；文本使用 `POST /push`，JPEG 截图使用 `POST /push-image`。
+- Windows、Mac 和原生 Android 的接收服务启动后会通过 mDNS/DNS-SD 发布 `_cliprelay._tcp.local`；扫描端向局域网查询该服务，并从结果中取得设备名、地址、端口和是否需要访问密钥。Termux 兼容脚本仍使用手动地址。
 - Mac 按下 `Ctrl+Alt+G` 后，脚本模拟 `Cmd+C` 获取选中文本、恢复原剪贴板，再发送给对端。
 - Windows 直接监听普通的 `Ctrl+C`：当前应用照常完成复制，剪贴板更新后 ClipRelay 把新文本并行发送给所有启用的接收设备。
 - Windows 按 `Ctrl+Alt+F12` 时，在内存中截取并编码所有显示器一次，再把同一份 JPEG 并行发送给所有启用设备；不打开截图界面、不写文件，也不改本机剪贴板。
 - 对端收到后写入系统剪贴板并弹出通知，直接按 `Cmd+V` 或 `Ctrl+V` 即可粘贴。
-- 各平台使用相同协议，可以任意互传；Windows 可维护最多 16 个广播目标，其他脚本端仍可通过 `PEER` 指定单个接收方。
+- 各平台使用相同协议，可以任意互传；Windows 可维护最多 16 个广播目标，Mac 可从菜单栏扫描并选择单个接收方，手动地址始终保留为回退方案。
+- mDNS 声明包含随机设备 ID、显示名称、协议版本、平台、端口和认证状态，不包含访问密钥、剪贴板内容或历史记录。
+- 原生 Android 默认使用“品牌 + 型号”作为发现名称（例如 `realme RMX5002` 或 `OnePlus PHK110`），并在 TXT 记录中分别声明 `brand` 和 `model`；设置页仍可覆盖成自定义名称。
 
 ## Mac 端
 
@@ -29,9 +32,9 @@ cp init.lua ~/.hammerspoon/init.lua
 
 1. 打开 Hammerspoon，按提示授予「辅助功能」权限
    （系统设置 → 隐私与安全性 → 辅助功能）。
-2. 编辑 `~/.hammerspoon/init.lua`，把顶部的 `PEER` 改成对端设备的局域网 IP 或 `.local`
-   主机名。Mac 上可运行 `scutil --get LocalHostName`，假设输出
-   `Alice-Mac`，则填写 `Alice-Mac.local`。也可以直接填写局域网 IP。
+2. 默认可先保留顶部的 `DEFAULT_PEER`；启动后点击菜单栏的 `ClipRelay` → `扫描局域网设备…`
+   选择对端。所选地址、端口和访问密钥会持久保存。mDNS 不可用时，再把 `DEFAULT_PEER`
+   改为对端的局域网 IP 或 `.local` 主机名。
 3. 点 Hammerspoon 菜单栏图标 → Reload Config，看到「ClipRelay 已启动」即就绪。
 
 也可以使用一键安装脚本：
@@ -51,10 +54,10 @@ curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/mac-bootstrap
 - 安装后立即启动，系统托盘出现 ClipRelay 图标即表示运行中；
 - 左键点击托盘图标可打开深色“设备链路”控制台，查看并一键复制本机主机名（`.local`）或局域网 IP；
 - 控制台集中显示本机监听状态、文本/截图快捷键及冲突状态、广播链路和最近一次传输结果；
-- “管理设备”支持添加、编辑、停用和移除最多 16 个目标，每台设备可单独配置名称、地址、端口和访问密钥；
+- “管理设备”支持扫描、添加、编辑、停用和移除最多 16 个目标，每台设备可单独配置名称、地址、端口和访问密钥；
 - 支持修改本机监听端口、接收密钥、通知和开机自启，并可并行检测所有广播设备。
 
-在仓库根目录打开 PowerShell，执行（把 IP 换成接收方设备的局域网 IP）：
+在仓库根目录打开 PowerShell，执行（初始地址之后可由扫描结果替换）：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -71,12 +74,12 @@ $source = (Invoke-WebRequest -UseBasicParsing `
 
 添加防火墙规则时会出现一次 UAC 确认。安装完成后，正常按 `Ctrl+C` 即会同时复制
 到本机并广播；按 `Ctrl+Alt+F12` 会静默广播整个虚拟桌面的 JPEG 截图。接收的文本或
-截图会进入剪贴板。局域网内建议优先使用 IP，避免
-Windows 或 Android 环境无法解析 `.local`。
+截图会进入剪贴板。
 
 配置保存在 `%LOCALAPPDATA%\ClipRelay\config.json`。左键点击托盘图标，或右键选择
 `设置 / 配置对方设备...`：在“这台电脑”中切换本机主机名 (`.local`) 与局域网 IPv4，点击 `复制` 后发给对方；
-点击“管理设备”，为手机、另一台电脑等目标分别填写名称、局域网 IP/主机名、端口和访问密钥；点击 `检测全部` 会并行探测所有启用设备，且不会修改任何剪贴板。
+点击“管理设备”后选择 `扫描设备`，发现结果会按稳定设备 ID 合并进现有列表；已有设备的访问密钥和启用状态不会被覆盖。也可以继续手动填写名称、局域网 IP/主机名、端口和访问密钥。点击 `检测全部` 会并行探测所有启用设备，且不会修改任何剪贴板。
+在设置中可修改“局域网发现名称”或关闭“允许局域网发现”；这两项变化会在保存后重启后台服务。
 广播时单台设备离线不会阻止其他设备接收；界面会显示“全部送达”“部分送达”或“全部失败”，并保留逐设备结果。
 如果修改监听端口，ClipRelay 会申请更新专用网络防火墙规则并自动重启；这一步可能出现 UAC 确认。
 设备列表中某个目标的访问密钥，需要与该目标自己的“接收密钥”一致；主窗口的“本机接收密钥”只保护发往这台 Windows 电脑的请求。留空则兼容未启用认证的旧客户端。
@@ -109,7 +112,7 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass `
 1. 安装由 GitHub Actions 产出的 `ClipRelay-android-debug` APK，或按下节自行构建。
 2. 手机与电脑连接同一个可信局域网，打开 App，点击“开始接收”。
 3. 按系统提示允许“本地网络”和通知权限。部分厂商还需把 ClipRelay 的电池策略改为“不受限制”。
-4. App 会显示 `192.168.x.x:47632` 一类地址。点击“复制 IP”，在 Windows 托盘设置中打开“管理设备”，添加手机并填写该 IP；两边端口保持 `47632`。
+4. App 会显示 `192.168.x.x:47632` 一类地址，并在“允许局域网发现”开启时自动声明自己。在 Windows 托盘设置中打开“管理设备”并点击“扫描设备”即可添加手机；扫描不到时仍可复制 IP 手动添加。
 5. 在电脑正常按 `Ctrl+C` 可发送文本；按 `Ctrl+Alt+F12` 可发送所有显示器的截图。收到的内容会直接进入手机剪贴板。
 
 访问密钥默认为空。若在 Android 启用，Windows 的对应广播设备也要填写相同密钥，发送请求会携带
@@ -198,19 +201,24 @@ Mac 配置位于 `init.lua` 顶部：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PEER` | `peer-mac.local` | 对方设备的局域网 IP 或 `.local` 主机名 |
-| `PORT` | `47632` | HTTP 服务端口，两边需一致 |
+| `DEFAULT_PEER` | `peer-mac.local` | 尚未扫描选择设备时使用的手动回退地址 |
+| `LOCAL_PORT` | `47632` | 本机 HTTP 接收服务和 mDNS 声明端口 |
 | `HOTKEY_MODS` / `HOTKEY_KEY` | `ctrl` `alt` + `g` | 全局热键，冲突可改 |
+
+Mac 扫描选择的 `peer`、`peerPort`、`peerToken`，以及稳定的 `deviceId` 和发现开关保存在 Hammerspoon 的 `hs.settings` 中。
 
 Windows 配置位于 `%LOCALAPPDATA%\ClipRelay\config.json`：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `peer` | 安装时的 `-Peer` | 兼容旧版本的首个启用目标地址；实际广播以 `peers` 为准 |
-| `peers` | 从 `peer` 自动迁移 | 广播目标数组；每项包含 `name`、`address`、`port`、`accessToken` 和 `enabled` |
+| `peers` | 从 `peer` 自动迁移 | 广播目标数组；手动项包含名称、地址、端口、访问密钥和启用状态，扫描项还会保存设备 ID、平台和认证状态 |
 | `port` | `47632` | 本机接收服务端口 |
 | `notifications` | `true` | 是否在收到文本时弹出系统气泡通知（设为 `false` 进入静默同步模式） |
 | `accessToken` | 空 | 本机接收密钥；本机在非空时拒绝缺失或错误的 `X-ClipRelay-Token` |
+| `deviceId` | 首次安装生成的 UUID | 用于扫描去重和排除本机，不随设备名称或 IP 改变 |
+| `deviceName` | Windows 计算机名 | mDNS 中显示的发现名称 |
+| `discoveryEnabled` | `true` | 是否通过 mDNS 向当前局域网声明本机 ClipRelay 服务 |
 
 Windows 当前监听不带其他修饰键的 `Ctrl+C`。按键不会被 ClipRelay 拦截，前台应用
 仍按原方式完成复制；只有检测到剪贴板确实更新且内容为文本时才会发送。左键点击
@@ -233,6 +241,7 @@ ClipRelay 启动时会检测系统级热键冲突：
   内容前，请先从系统托盘退出 ClipRelay；鼠标右键菜单复制和 `Ctrl+Shift+C` 不会触发发送。
 - Mac 之间可以使用 `.local` 主机名，避免 DHCP 导致 IP 变化。
 - 部分 Windows/Android 环境无法稳定解析 `.local`，此时请使用局域网 IP，并在路由器中配置 DHCP 静态租约。
+- mDNS 标准使用 `224.0.0.251:5353`（IPv4）或 `ff02::fb:5353`（IPv6）组播，只在当前链路内工作；ClipRelay 当前从发现结果中选择 IPv4 作为发送地址。访客 Wi-Fi、AP 隔离、部分 VPN、防火墙或路由器的组播过滤会导致扫描不到；这不影响按 IP 手动配置。
 - 首次使用如 macOS 防火墙弹窗询问 Hammerspoon 是否接受传入连接，选择允许。
 - Android 13 及以上版本可能显示系统自带的剪贴板浮层；应用无法可靠关闭这个系统提示。
 - Windows 安装器创建的防火墙规则只允许“专用网络”；请勿为了使用本工具把公共网络改成专用网络。

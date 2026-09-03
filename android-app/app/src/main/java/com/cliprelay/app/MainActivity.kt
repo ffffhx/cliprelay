@@ -28,6 +28,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cliprelay.app.data.AppPreferences
 import com.cliprelay.app.data.AppSettings
+import com.cliprelay.app.data.FullscreenTextSize
 import com.cliprelay.app.data.HistoryRepository
 import com.cliprelay.app.data.ReceivedClip
 import com.cliprelay.app.runtime.ClipRelayRuntime
@@ -98,6 +99,13 @@ class MainActivity : ComponentActivity() {
                         ServiceController.restart(this)
                     },
                     onCopyClip = ::copyClipToClipboard,
+                    onSetFullscreenTextSize = { textSizeSp ->
+                        val updated = settings.copy(
+                            fullscreenTextSizeSp = FullscreenTextSize.normalize(textSizeSp),
+                        )
+                        AppPreferences.save(this, updated)
+                        settings = updated
+                    },
                     onSetFullscreenLandscape = ::setFullscreenLandscape,
                     onSetImmersiveFullscreen = ::setImmersiveFullscreen,
                     onCopyEndpoint = { endpoint -> copyToClipboard(endpoint) },

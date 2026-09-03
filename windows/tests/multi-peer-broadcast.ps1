@@ -205,6 +205,32 @@ finally {
     $serverTwo.Dispose()
 }
 
+$asyncServerOne = New-Object ClipRelayTests.OneShotHttpServer(200, 900)
+$asyncServerTwo = New-Object ClipRelayTests.OneShotHttpServer(200, 900)
+try {
+    $asyncTargets = @(
+        (New-TestTarget -Name "async-one" -Port $asyncServerOne.Port -Token ""),
+        (New-TestTarget -Name "async-two" -Port $asyncServerTwo.Port -Token "")
+    )
+    $asyncStart = [System.Diagnostics.Stopwatch]::StartNew()
+    $deliveryTask = [ClipRelay.RelayBroadcaster]::SendTextAsync($asyncTargets, '{"text":"background"}', 3000)
+    $asyncStart.Stop()
+    if ($null -eq $deliveryTask -or $deliveryTask.IsCompleted) {
+        throw "The asynchronous broadcast did not return a pending task."
+    }
+    if ($asyncStart.ElapsedMilliseconds -ge 500) {
+        throw "Starting an asynchronous broadcast blocked for $($asyncStart.ElapsedMilliseconds) ms."
+    }
+    $asyncResults = @($deliveryTask.GetAwaiter().GetResult())
+    if (@($asyncResults | Where-Object Success).Count -ne 2) {
+        throw "The asynchronous broadcast did not deliver to both receivers."
+    }
+}
+finally {
+    $asyncServerOne.Dispose()
+    $asyncServerTwo.Dispose()
+}
+
 $successServer = New-Object ClipRelayTests.OneShotHttpServer(200, 0)
 $failedServer = New-Object ClipRelayTests.OneShotHttpServer(503, 0)
 try {

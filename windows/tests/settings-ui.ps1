@@ -36,6 +36,35 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile(
 if ($parseErrors.Count -gt 0) {
     throw "cliprelay.ps1 has parse errors: $($parseErrors[0].Message)"
 }
+
+# GetNewClosure creates a dynamic module. Assigning a script-scoped variable
+# inside one writes to that private module instead of ClipRelay's script state.
+$closureScriptWrites = @()
+$closureInvocations = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
+        $node.Member.Value -eq "GetNewClosure"
+}, $true))
+foreach ($closureInvocation in $closureInvocations) {
+    $assignments = @($closureInvocation.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst]
+    }, $true))
+    foreach ($assignment in $assignments) {
+        $scriptVariables = @($assignment.Left.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                $node.VariablePath.IsScript
+        }, $true))
+        foreach ($scriptVariable in $scriptVariables) {
+            $closureScriptWrites += "$($scriptVariable.Extent.Text) at line $($scriptVariable.Extent.StartLineNumber)"
+        }
+    }
+}
+if ($closureScriptWrites.Count -gt 0) {
+    throw "GetNewClosure contains unsafe script-scoped writes: $($closureScriptWrites -join ', ')"
+}
+
 $functionAst = $ast.Find({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -47,10 +76,14 @@ if ($null -eq $functionAst) {
 Invoke-Expression $functionAst.Extent.Text
 
 $script:configurationDialogOpen = $false
+$script:configurationForm = $null
 $script:Port = 47632
 $script:Peer = "192.168.1.9"
 $script:Notifications = $true
 $script:AccessToken = ""
+$script:DeviceId = "local-device-id"
+$script:DeviceName = "Test PC"
+$script:DiscoveryEnabled = $true
 $script:appIcon = $null
 $script:Peers = @(
     [PSCustomObject]@{
@@ -70,6 +103,7 @@ $script:Peers = @(
         enabled = $true
     }
 )
+$script:connectivityTaskSource = New-Object 'System.Threading.Tasks.TaskCompletionSource[ClipRelay.RelayDeliveryResult[]]'
 
 function Get-LocalShareableAddresses {
     return @(
@@ -96,8 +130,23 @@ function Test-RelayPeersConnectivity {
         Results = @()
     }
 }
+function Start-RelayPeersConnectivityTest {
+    param([object[]]$Peers, [int]$TimeoutMilliseconds)
+    return $script:connectivityTaskSource.Task
+}
+function Get-RelayDeliverySummary {
+    param([ClipRelay.RelayDeliveryResult[]]$Results, [string]$Kind)
+    return [PSCustomObject]@{
+        State = "partial"
+        Detail = "probe delivered to 1/2 devices"
+        SuccessCount = 1
+        FailureCount = 1
+        TotalCount = 2
+        Results = @($Results)
+    }
+}
 function Show-RelayPeerManager {
-    param($Owner, [object[]]$Peers, [int]$DefaultPort, [string]$DefaultAccessToken)
+    param($Owner, [object[]]$Peers, [int]$DefaultPort, [string]$DefaultAccessToken, [string]$LocalDeviceId)
     return $null
 }
 function Save-PeerConfiguration {
@@ -107,7 +156,9 @@ function Save-PeerConfiguration {
         [int]$ListenPort,
         [string]$AccessToken,
         [bool]$StartupEnabled,
-        [object[]]$Peers
+        [object[]]$Peers,
+        [bool]$DiscoveryEnabled,
+        [string]$DeviceName
     )
     return $PeerAddress
 }
@@ -144,12 +195,72 @@ if ($null -eq $form) {
 if ($form.ClientSize.Width -lt 600 -or $form.ClientSize.Height -lt 700) {
     throw "The relay control center is unexpectedly small."
 }
+$testPeersButton = @($form.Controls.Find("TestPeersButton", $true)) | Select-Object -First 1
+if ($null -eq $testPeersButton -or $testPeersButton.Enabled) {
+    throw "The background connectivity check did not start without blocking the control center."
+}
 
 $largeHeader = @($form.Controls | Where-Object {
     $_ -is [System.Windows.Forms.Label] -and $_.Font.Size -ge 16
 }) | Select-Object -First 1
 if ($null -eq $largeHeader -or -not $largeHeader.Visible) {
     throw "The primary device-link heading is not visible."
+}
+
+$minimizeButton = $form.Controls["MinimizeButton"]
+if ($null -eq $minimizeButton -or -not $minimizeButton.Visible) {
+    throw "The control center does not expose a visible minimize button."
+}
+$minimizeButton.PerformClick()
+[System.Windows.Forms.Application]::DoEvents()
+if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized) {
+    throw "The minimize button did not minimize the control center."
+}
+Show-RelayControlCenter
+[System.Windows.Forms.Application]::DoEvents()
+if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Normal -or -not $form.Visible) {
+    throw "Reopening the control center did not restore its minimized window."
+}
+$availableResult = New-Object ClipRelay.RelayDeliveryResult
+$availableResult.Name = "phone"
+$availableResult.Address = "192.168.1.9:47632"
+$availableResult.Success = $true
+$unavailableResult = New-Object ClipRelay.RelayDeliveryResult
+$unavailableResult.Name = "computer"
+$unavailableResult.Address = "192.168.1.20:47632"
+$unavailableResult.Success = $false
+$script:connectivityTaskSource.SetResult([ClipRelay.RelayDeliveryResult[]]@($availableResult, $unavailableResult))
+for ($attempt = 0; $attempt -lt 50 -and -not $testPeersButton.Enabled; $attempt++) {
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Milliseconds 20
+}
+if (-not $testPeersButton.Enabled) {
+    throw "The completed background connectivity check did not update the control center."
+}
+
+$peerCountLabel = @($form.Controls.Find("PeerCountLabel", $true)) | Select-Object -First 1
+$onlineStatusLabel = @($form.Controls.Find("OnlineStatusLabel", $true)) | Select-Object -First 1
+$peerSummaryOne = @($form.Controls.Find("PeerSummaryOneLabel", $true)) | Select-Object -First 1
+$peerSummaryTwo = @($form.Controls.Find("PeerSummaryTwoLabel", $true)) | Select-Object -First 1
+$managePeersButton = @($form.Controls.Find("ManagePeersButton", $true)) | Select-Object -First 1
+if ($null -eq $peerCountLabel -or $null -eq $onlineStatusLabel -or
+    $null -eq $peerSummaryOne -or $null -eq $peerSummaryTwo -or $null -eq $managePeersButton) {
+    throw "The peer controls required for cancellation validation were not found."
+}
+if ($peerCountLabel.Text -notmatch '^2\s' -or $peerCountLabel.Text -match '/') {
+    throw "The broadcast target count still mixes enabled and total-device counts."
+}
+if ($onlineStatusLabel.Text -notmatch '^1/2\s') {
+    throw "The online status does not show available devices over checked devices."
+}
+if ($peerSummaryOne.Tag -ne "available" -or $peerSummaryTwo.Tag -ne "unavailable") {
+    throw "The target-node list does not distinguish available and unavailable devices."
+}
+$peerCountBeforeCancellation = $peerCountLabel.Text
+$managePeersButton.PerformClick()
+[System.Windows.Forms.Application]::DoEvents()
+if ($peerCountLabel.Text -ne $peerCountBeforeCancellation) {
+    throw "Cancelling the peer manager replaced the configured peers."
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ScreenshotPath)) {
@@ -165,4 +276,26 @@ if (-not [string]::IsNullOrWhiteSpace($ScreenshotPath)) {
 
 $form.Close()
 [System.Windows.Forms.Application]::DoEvents()
-Write-Output "PASS: the branded relay control center opens and lays out at the expected size."
+if ($script:configurationDialogOpen -or $null -ne $script:configurationForm) {
+    throw "Closing the control center did not reset its script-scoped lifecycle state."
+}
+
+# A stale disposed-form reference must self-heal instead of making subsequent
+# tray clicks silently return without opening a window.
+$script:configurationDialogOpen = $true
+$script:configurationForm = $form
+$script:connectivityTaskSource = New-Object 'System.Threading.Tasks.TaskCompletionSource[ClipRelay.RelayDeliveryResult[]]'
+Show-RelayControlCenter
+[System.Windows.Forms.Application]::DoEvents()
+$reopenedForm = $script:configurationForm
+if ($null -eq $reopenedForm -or $reopenedForm.IsDisposed -or [object]::ReferenceEquals($form, $reopenedForm)) {
+    throw "The control center did not recover from stale lifecycle state."
+}
+$reopenedForm.Close()
+[System.Windows.Forms.Application]::DoEvents()
+$script:connectivityTaskSource.SetResult([ClipRelay.RelayDeliveryResult[]]@())
+[System.Windows.Forms.Application]::DoEvents()
+if ($script:configurationDialogOpen -or $null -ne $script:configurationForm) {
+    throw "Closing the recovered control center did not reset its lifecycle state."
+}
+Write-Output "PASS: the control center marks each target's availability and stays responsive during background checks."

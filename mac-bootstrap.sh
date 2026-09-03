@@ -32,7 +32,7 @@ if [ -f "$INIT" ]; then
 else
   curl -fsSL "$BASE/init.lua" -o "$INIT"
 fi
-sed -i '' "s/^local PEER = .*/local PEER = \"$PEER\"/" "$INIT"
+sed -i '' "s/^local DEFAULT_PEER = .*/local DEFAULT_PEER = \"$PEER\"/" "$INIT"
 
 echo "==> 启动 Hammerspoon"
 # 刚装完 LaunchServices 可能还没注册，open -a 按名字会找不到，直接按路径打开

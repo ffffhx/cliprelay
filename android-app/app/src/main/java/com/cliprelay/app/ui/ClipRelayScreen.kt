@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -90,7 +91,9 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import com.cliprelay.app.data.AppPreferences
 import com.cliprelay.app.data.AppSettings
+import com.cliprelay.app.data.FullscreenTextSize
 import com.cliprelay.app.data.ReceivedClip
+import com.cliprelay.app.discovery.ClipRelayDiscovery
 import com.cliprelay.app.runtime.ReceiverPhase
 import com.cliprelay.app.runtime.ReceiverStatus
 import com.cliprelay.app.ui.theme.DeepRelay
@@ -114,6 +117,7 @@ fun ClipRelayScreen(
     onToggleReceiver: (Boolean) -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
     onCopyClip: (ReceivedClip) -> Unit,
+    onSetFullscreenTextSize: (Int) -> Unit,
     onSetFullscreenLandscape: (Boolean) -> Unit,
     onSetImmersiveFullscreen: (Boolean) -> Unit,
     onCopyEndpoint: (String) -> Unit,
@@ -140,6 +144,8 @@ fun ClipRelayScreen(
                         onSetFullscreenLandscape(false)
                     },
                     onCopy = onCopyClip,
+                    fullscreenTextSizeSp = settings.fullscreenTextSizeSp,
+                    onSetFullscreenTextSize = onSetFullscreenTextSize,
                     onSetLandscape = onSetFullscreenLandscape,
                 )
             }
@@ -522,11 +528,28 @@ private fun SettingsPanel(
         Text("接收设置", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(5.dp))
         Text(
-            text = "端口或密钥修改后，正在运行的接收站会自动重启。",
+            text = "设备名、发现方式、端口或密钥修改后，正在运行的接收站会自动重启。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(18.dp))
+
+        OutlinedTextField(
+            value = draft.deviceName,
+            onValueChange = {
+                draft = draft.copy(
+                    deviceName = it.replace('\n', ' ').replace('\r', ' ')
+                        .take(ClipRelayDiscovery.MAX_DEVICE_NAME_LENGTH),
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("局域网设备名称") },
+            supportingText = { Text("默认使用品牌 + 型号，也可以自定义") },
+            singleLine = true,
+            shape = RoundedCornerShape(15.dp),
+        )
+
+        Spacer(Modifier.height(10.dp))
 
         OutlinedTextField(
             value = portText,
@@ -575,11 +598,30 @@ private fun SettingsPanel(
             checked = draft.showNotificationPreview,
             onCheckedChange = { draft = draft.copy(showNotificationPreview = it) },
         )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+        SettingSwitch(
+            title = "允许局域网发现",
+            description = "通过 mDNS 公布设备名称和端口，不会公布密钥或剪贴板内容",
+            checked = draft.discoveryEnabled,
+            onCheckedChange = { draft = draft.copy(discoveryEnabled = it) },
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+        FullscreenTextSizeSetting(
+            value = draft.fullscreenTextSizeSp,
+            onValueChange = { draft = draft.copy(fullscreenTextSizeSp = it) },
+        )
 
         if (hasChanges) {
             Spacer(Modifier.height(14.dp))
             Button(
-                onClick = { onSave(normalizedDraft.copy(accessToken = draft.accessToken.trim())) },
+                onClick = {
+                    onSave(
+                        normalizedDraft.copy(
+                            accessToken = draft.accessToken.trim(),
+                            deviceName = ClipRelayDiscovery.normalizeDeviceName(draft.deviceName),
+                        ),
+                    )
+                },
                 enabled = portValid,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -587,6 +629,39 @@ private fun SettingsPanel(
                 Text(if (receiverRunning) "保存并重启接收" else "保存设置")
             }
         }
+    }
+}
+
+@Composable
+private fun FullscreenTextSizeSetting(
+    value: Int,
+    onValueChange: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text("全屏默认字号", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "打开文本全屏时使用，也可在全屏内即时调整",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        FontSizeStepper(
+            value = value,
+            onValueChange = onValueChange,
+            accent = RelayViolet,
+            background = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
 
@@ -783,6 +858,8 @@ private fun HistoryFullscreenViewer(
     initialClipId: Long,
     onDismiss: () -> Unit,
     onCopy: (ReceivedClip) -> Unit,
+    fullscreenTextSizeSp: Int,
+    onSetFullscreenTextSize: (Int) -> Unit,
     onSetLandscape: (Boolean) -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
@@ -815,6 +892,7 @@ private fun HistoryFullscreenViewer(
                 val pageClip = history[page]
                 FullscreenHistoryPage(
                     clip = pageClip,
+                    textSizeSp = fullscreenTextSizeSp,
                     onToggleControls = { controlsVisible = !controlsVisible },
                     onImageZoomedChange = { zoomed ->
                         if (zoomed) {
@@ -833,6 +911,8 @@ private fun HistoryFullscreenViewer(
                     currentPage = currentPage,
                     pageCount = history.size,
                     isLandscape = isLandscape,
+                    fullscreenTextSizeSp = fullscreenTextSizeSp,
+                    onSetFullscreenTextSize = onSetFullscreenTextSize,
                     onDismiss = onDismiss,
                     onCopy = { onCopy(currentClip) },
                     onSetLandscape = onSetLandscape,
@@ -850,6 +930,8 @@ private fun BoxScope.FullscreenControls(
     currentPage: Int,
     pageCount: Int,
     isLandscape: Boolean,
+    fullscreenTextSizeSp: Int,
+    onSetFullscreenTextSize: (Int) -> Unit,
     onDismiss: () -> Unit,
     onCopy: () -> Unit,
     onSetLandscape: (Boolean) -> Unit,
@@ -907,6 +989,29 @@ private fun BoxScope.FullscreenControls(
             pageCount = pageCount,
             accent = accent,
         )
+        if (!currentClip.isImage) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "全屏字号",
+                    color = Color(0xFFAFC5D7),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.weight(1f))
+                FontSizeStepper(
+                    value = fullscreenTextSizeSp,
+                    onValueChange = onSetFullscreenTextSize,
+                    accent = accent,
+                    background = Color(0xFF16354D),
+                    contentColor = Color.White,
+                )
+            }
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -934,6 +1039,55 @@ private fun BoxScope.FullscreenControls(
                 accent = accent,
                 onSetLandscape = onSetLandscape,
             )
+        }
+    }
+}
+
+@Composable
+private fun FontSizeStepper(
+    value: Int,
+    onValueChange: (Int) -> Unit,
+    accent: Color,
+    background: Color,
+    contentColor: Color,
+) {
+    val normalized = FullscreenTextSize.normalize(value)
+    Surface(
+        color = background,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                onClick = { onValueChange(FullscreenTextSize.decrease(normalized)) },
+                enabled = normalized > FullscreenTextSize.MIN_SP,
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = accent,
+                    disabledContentColor = contentColor.copy(alpha = 0.32f),
+                ),
+            ) {
+                Text("A−", fontWeight = FontWeight.Bold)
+            }
+            Text(
+                text = "$normalized sp",
+                modifier = Modifier.widthIn(min = 44.dp),
+                color = contentColor,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            TextButton(
+                onClick = { onValueChange(FullscreenTextSize.increase(normalized)) },
+                enabled = normalized < FullscreenTextSize.MAX_SP,
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = accent,
+                    disabledContentColor = contentColor.copy(alpha = 0.32f),
+                ),
+            ) {
+                Text("A+", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
@@ -1035,6 +1189,7 @@ private fun ArrivalPagerRail(page: Int, pageCount: Int, accent: Color) {
 @Composable
 private fun FullscreenHistoryPage(
     clip: ReceivedClip,
+    textSizeSp: Int,
     onToggleControls: () -> Unit,
     onImageZoomedChange: (Boolean) -> Unit,
 ) {
@@ -1067,8 +1222,8 @@ private fun FullscreenHistoryPage(
                     Text(
                         text = clip.text,
                         color = Color(0xFFF2F7FC),
-                        fontSize = 21.sp,
-                        lineHeight = 32.sp,
+                        fontSize = FullscreenTextSize.normalize(textSizeSp).sp,
+                        lineHeight = FullscreenTextSize.lineHeight(textSizeSp).sp,
                     )
                 }
             }
