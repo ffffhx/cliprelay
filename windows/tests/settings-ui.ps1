@@ -113,6 +113,8 @@ $script:Peers = @(
     }
 )
 $script:connectivityTaskSource = New-Object 'System.Threading.Tasks.TaskCompletionSource[ClipRelay.RelayDeliveryResult[]]'
+$script:managerDefaultPort = $null
+$script:managerLocalDeviceId = $null
 
 function Get-LocalShareableAddresses {
     return @(
@@ -162,6 +164,8 @@ function Get-RelayDeliverySummary {
 }
 function Show-RelayPeerManager {
     param($Owner, [object[]]$Peers, [int]$DefaultPort, [string]$DefaultAccessToken, [string]$LocalDeviceId)
+    $script:managerDefaultPort = $DefaultPort
+    $script:managerLocalDeviceId = $LocalDeviceId
     return $null
 }
 function Save-PeerConfiguration {
@@ -318,6 +322,10 @@ if ($peerDetailsPanel.Visible -or $peerSummaryToggle.Tag -ne "summary") {
 $peerCountBeforeCancellation = $peerCountLabel.Text
 $managePeersButton.PerformClick()
 [System.Windows.Forms.Application]::DoEvents()
+if ([int]$script:managerDefaultPort -ne $script:Port -or
+    [string]$script:managerLocalDeviceId -cne $script:DeviceId) {
+    throw "The control center did not pass the local identity and listening port into device scanning."
+}
 if ($peerCountLabel.Text -ne $peerCountBeforeCancellation) {
     throw "Cancelling the peer manager replaced the configured peers."
 }

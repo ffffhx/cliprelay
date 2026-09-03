@@ -4085,6 +4085,11 @@ function Show-RelayControlCenter {
         $displayFont = "Segoe UI Variable Display"
         $bodyFont = "Microsoft YaHei UI"
         $monoFont = "Cascadia Mono"
+        # GetNewClosure gives event handlers a private script scope. Capture
+        # these application values as ordinary locals before wiring callbacks,
+        # otherwise a later click sees an empty device ID and port 0.
+        $controlCenterDeviceId = [string]$script:DeviceId
+        $controlCenterListenPort = [int]$script:Port
         $draftPeers = New-Object System.Collections.ArrayList
         foreach ($configuredPeer in @(Copy-RelayPeers -Peers $script:Peers)) {
             $null = $draftPeers.Add($configuredPeer)
@@ -4742,7 +4747,12 @@ function Show-RelayControlCenter {
             $copyButton.TextColor = $colors.Text
         }.GetNewClosure())
         $managePeersButton.Add_Click({
-            $updatedPeers = & $peerManagerCommand -Owner $form -Peers @($draftPeers) -DefaultPort $script:Port -DefaultAccessToken "" -LocalDeviceId $script:DeviceId
+            $updatedPeers = & $peerManagerCommand `
+                -Owner $form `
+                -Peers @($draftPeers) `
+                -DefaultPort $controlCenterListenPort `
+                -DefaultAccessToken "" `
+                -LocalDeviceId $controlCenterDeviceId
             if ($null -ne $updatedPeers) {
                 $draftPeers.Clear()
                 foreach ($updatedPeer in @($updatedPeers)) {
@@ -4768,10 +4778,7 @@ function Show-RelayControlCenter {
                 if (-not [int]::TryParse($portInput.TextBox.Text.Trim(), [ref]$parsedPort)) {
                     throw "服务端口必须是整数。"
                 }
-                $localPeerFilter = & $removeLocalPeersCommand `
-                    -Peers @($draftPeers) `
-                    -LocalDeviceId $script:DeviceId `
-                    -LocalPort $parsedPort
+                $localPeerFilter = & $removeLocalPeersCommand -Peers @($draftPeers) -LocalDeviceId $controlCenterDeviceId -LocalPort $parsedPort
                 $peersToSave = @($localPeerFilter.Peers)
                 $enabledDraftPeers = @($peersToSave | Where-Object { [bool]$_.enabled })
                 if ($enabledDraftPeers.Count -lt 1) {
