@@ -142,12 +142,14 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 - APK 签名与已安装版本一致；
 - 文件 SHA-256 与发布清单一致。
 
-更新源默认是 GitHub 最新 Release 中的 `update.json`。推送形如 `android-v0.6.0` 的标签会触发
-`.github/workflows/android-release.yml`，构建并发布签名 APK 和更新清单。仓库需要预先配置
+更新源默认是 GitHub 最新 Release 中的 `update.json`。提高 `android-app/app/build.gradle.kts` 中的
+`versionCode` 和 `versionName` 并推送到 `main` 后，`.github/workflows/android-release.yml` 会自动运行测试、
+构建签名 APK、创建 `android-v<versionName>` 标签，并发布 APK 与更新清单；已经存在的同版本 Release
+不会重复发布。手工推送形如 `android-v0.6.0` 的标签或从 Actions 手动运行工作流仍可作为发布兜底。
+仓库需要预先配置
 `CLIPRELAY_KEYSTORE_BASE64`、`CLIPRELAY_STORE_PASSWORD`、`CLIPRELAY_KEY_ALIAS`、
 `CLIPRELAY_KEY_PASSWORD` 四个 Actions Secrets；这些值必须始终对应首次正式安装使用的签名密钥。
-发布前还要同步提高 `android-app/app/build.gradle.kts` 中的 `versionCode` 和 `versionName`，且标签必须
-等于 `android-v<versionName>`。
+手工标签必须等于 `android-v<versionName>`，且指向本次构建的提交，否则发布工作流会直接失败。
 
 OPPO、realme 等带厂商后台管理的手机，还需要在 ClipRelay 的“耗电管理”中开启“允许应用自启动”
 和“允许完全后台行为”。否则厂商系统可能拦截 `MY_PACKAGE_REPLACED`，导致 App 更新后要手动打开一次

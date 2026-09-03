@@ -2,11 +2,21 @@ name: Android Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "android-v*"
+    paths:
+      - "android-app/app/build.gradle.kts"
+      - ".github/workflows/android-release.yml"
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: android-release-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -15,23 +25,84 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Android release version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build_file="android-app/app/build.gradle.kts"
+          version_name="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$build_file" | head -n 1)"
+          version_code="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$build_file" | head -n 1)"
+          test -n "$version_name"
+          test -n "$version_code"
+
+          release_tag="android-v${version_name}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "$release_tag" ]]; then
+            echo "Pushed tag $GITHUB_REF_NAME does not match Android version $version_name." >&2
+            exit 1
+          fi
+
+          should_release=true
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            should_release=false
+            echo "Release $release_tag already exists; nothing to publish."
+          fi
+
+          tag_exists=false
+          if git rev-parse --verify --quiet "refs/tags/$release_tag" >/dev/null; then
+            tag_exists=true
+            tag_commit="$(git rev-list -n 1 "$release_tag")"
+            if [[ "$should_release" == "true" && "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "Tag $release_tag already points to $tag_commit instead of $GITHUB_SHA." >&2
+              exit 1
+            fi
+          fi
+
+          if [[ "$should_release" == "true" ]]; then
+            latest_tag="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+            if [[ -n "$latest_tag" ]]; then
+              latest_dir="$RUNNER_TEMP/cliprelay-latest-release"
+              mkdir -p "$latest_dir"
+              gh release download "$latest_tag" --pattern update.json --dir "$latest_dir"
+              latest_version_code="$(jq -r '.versionCode' "$latest_dir/update.json")"
+              if [[ ! "$latest_version_code" =~ ^[0-9]+$ || "$version_code" -le "$latest_version_code" ]]; then
+                echo "Android versionCode $version_code must be greater than released versionCode $latest_version_code." >&2
+                exit 1
+              fi
+            fi
+          fi
+
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-java@v5
+        if: steps.version.outputs.should_release == 'true'
         with:
           distribution: temurin
           java-version: "17"
 
       - uses: android-actions/setup-android@v4
+        if: steps.version.outputs.should_release == 'true'
         with:
           packages: ""
 
       - uses: gradle/actions/setup-gradle@v5
+        if: steps.version.outputs.should_release == 'true'
 
       - name: Install Android SDK
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         run: sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Prepare release signing
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.CLIPRELAY_KEYSTORE_BASE64 }}
@@ -52,24 +123,30 @@ jobs:
           } > android-app/keystore.properties
 
       - name: Verify and build signed APK
+        if: steps.version.outputs.should_release == 'true'
         working-directory: android-app
         run: ./gradlew testDebugUnitTest lintRelease assembleRelease --no-daemon
 
       - name: Prepare release assets
+        if: steps.version.outputs.should_release == 'true'
         id: assets
         shell: bash
+        env:
+          EXPECTED_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          EXPECTED_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
         run: |
           metadata="android-app/app/build/outputs/apk/release/output-metadata.json"
           version_name="$(jq -r '.elements[0].versionName' "$metadata")"
           version_code="$(jq -r '.elements[0].versionCode' "$metadata")"
-          expected_tag="android-v${version_name}"
-          test "$GITHUB_REF_NAME" = "$expected_tag"
+          test "$version_name" = "$EXPECTED_VERSION_NAME"
+          test "$version_code" = "$EXPECTED_VERSION_CODE"
 
           mkdir -p dist
           apk_name="ClipRelay-${version_name}.apk"
           cp android-app/app/build/outputs/apk/release/app-release.apk "dist/$apk_name"
           sha256="$(sha256sum "dist/$apk_name" | cut -d ' ' -f 1)"
-          apk_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${apk_name}"
+          apk_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${apk_name}"
           jq -n \
             --argjson versionCode "$version_code" \
             --arg versionName "$version_name" \
@@ -81,13 +158,24 @@ jobs:
           echo "apk_name=$apk_name" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          TAG_EXISTS: ${{ steps.version.outputs.tag_exists }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "dist/${{ steps.assets.outputs.apk_name }}" \
-            dist/update.json \
-            --verify-tag \
-            --generate-notes \
-            --title "ClipRelay Android ${GITHUB_REF_NAME#android-v}"
+          release_args=(
+            "$RELEASE_TAG"
+            "dist/${{ steps.assets.outputs.apk_name }}"
+            dist/update.json
+            --generate-notes
+            --latest
+            --title "ClipRelay Android ${RELEASE_TAG#android-v}"
+          )
+          if [[ "$TAG_EXISTS" == "true" ]]; then
+            release_args+=(--verify-tag)
+          else
+            release_args+=(--target "$GITHUB_SHA")
+          fi
+          gh release create "${release_args[@]}"
