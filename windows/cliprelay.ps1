@@ -61,6 +61,29 @@ namespace ClipRelay
     {
         public const uint PM_REMOVE = 0x0001;
         public const int SW_SHOW = 5;
+        public const int WM_NCLBUTTONDOWN = 0x00A1;
+        public const int HTCAPTION = 2;
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public static void AttachDrag(Control control, Form form)
+        {
+            if (control == null || form == null)
+                return;
+            control.MouseDown += delegate(object sender, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    ReleaseCapture();
+                    SendMessage(form.Handle, WM_NCLBUTTONDOWN, new IntPtr(HTCAPTION), IntPtr.Zero);
+                }
+            };
+        }
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -1349,9 +1372,9 @@ namespace ClipRelay
             FlatStyle = FlatStyle.Flat;
             FlatAppearance.BorderSize = 0;
             CornerRadius = 10;
-            FillColor = Color.FromArgb(47, 128, 237);
+            FillColor = Color.FromArgb(59, 130, 246);
             HoverColor = Color.FromArgb(74, 148, 245);
-            PressedColor = Color.FromArgb(38, 105, 196);
+            PressedColor = Color.FromArgb(37, 99, 235);
             BorderColor = Color.Transparent;
             TextColor = Color.White;
             Cursor = Cursors.Hand;
@@ -1448,8 +1471,8 @@ namespace ClipRelay
                 ControlStyles.ResizeRedraw,
                 true);
             Size = new Size(44, 24);
-            OnColor = Color.FromArgb(61, 214, 208);
-            OffColor = Color.FromArgb(58, 83, 104);
+            OnColor = Color.FromArgb(59, 130, 246);
+            OffColor = Color.FromArgb(38, 44, 60);
             KnobColor = Color.White;
             Cursor = Cursors.Hand;
             TabStop = true;
@@ -2690,342 +2713,6 @@ function Get-RelayRuntimeSnapshot {
     }
 }
 
-function Show-PeerConfiguration {
-    if ($script:configurationDialogOpen) {
-        return
-    }
-
-    $script:configurationDialogOpen = $true
-    $form = $null
-    $settingsPort = $script:Port
-    $savePeerConfigurationCommand = Get-Command Save-PeerConfiguration
-    try {
-        [System.Windows.Forms.Application]::EnableVisualStyles()
-
-        $form = New-Object System.Windows.Forms.Form
-        $form.Text = "ClipRelay 设置"
-        $baseFont = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Regular)
-        $form.Font = $baseFont
-        $form.BackColor = [System.Drawing.Color]::FromArgb(250, 251, 252)
-        if ($null -ne $script:appIcon) {
-            $form.Icon = $script:appIcon
-        }
-        $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-        $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-        $form.MaximizeBox = $false
-        $form.MinimizeBox = $false
-        $form.ShowInTaskbar = $true
-        $form.TopMost = $true
-        $form.ClientSize = New-Object System.Drawing.Size(460, 474)
-
-        # Header Title & Subtitle
-        $headerTitle = New-Object System.Windows.Forms.Label
-        $headerTitle.Text = "ClipRelay 局域网剪贴板同步"
-        $headerTitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 11.0, [System.Drawing.FontStyle]::Bold)
-        $headerTitle.ForeColor = [System.Drawing.Color]::FromArgb(30, 41, 59)
-        $headerTitle.Location = New-Object System.Drawing.Point(18, 14)
-        $headerTitle.AutoSize = $true
-
-        $headerSubtitle = New-Object System.Windows.Forms.Label
-        $headerSubtitle.Text = "支持 Windows / Mac / Android 设备间实时同步剪贴板文本"
-        $headerSubtitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.5, [System.Drawing.FontStyle]::Regular)
-        $headerSubtitle.ForeColor = [System.Drawing.Color]::FromArgb(100, 116, 139)
-        $headerSubtitle.Location = New-Object System.Drawing.Point(18, 38)
-        $headerSubtitle.AutoSize = $true
-
-        $headerDivider = New-Object System.Windows.Forms.Panel
-        $headerDivider.Location = New-Object System.Drawing.Point(18, 62)
-        $headerDivider.Size = New-Object System.Drawing.Size(424, 1)
-        $headerDivider.BackColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
-
-        # Section 1: This PC Local Address
-        $localAddressLabel = New-Object System.Windows.Forms.Label
-        $localAddressLabel.Text = "本机设备地址（发给对方填入）："
-        $localAddressLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Bold)
-        $localAddressLabel.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85)
-        $localAddressLabel.AutoSize = $true
-        $localAddressLabel.Location = New-Object System.Drawing.Point(18, 74)
-
-        $localAddressBox = New-Object System.Windows.Forms.ComboBox
-        $localAddressBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-        $localAddressBox.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Regular)
-        $localAddressBox.Location = New-Object System.Drawing.Point(18, 98)
-        $localAddressBox.Size = New-Object System.Drawing.Size(316, 26)
-
-        $copyButton = New-Object System.Windows.Forms.Button
-        $copyButton.Text = "复制"
-        $copyButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Regular)
-        $copyButton.Location = New-Object System.Drawing.Point(344, 97)
-        $copyButton.Size = New-Object System.Drawing.Size(98, 28)
-        $copyButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-        $copyButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(203, 213, 225)
-        $copyButton.BackColor = [System.Drawing.Color]::FromArgb(241, 245, 249)
-        $copyButton.ForeColor = [System.Drawing.Color]::FromArgb(30, 41, 59)
-        $copyButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-
-        $localAddresses = @(Get-LocalShareableAddresses)
-        if ($localAddresses.Count -gt 0) {
-            $localAddressBox.DisplayMember = "Display"
-            $localAddressBox.ValueMember = "Address"
-            $localAddressBox.Items.AddRange([object[]]$localAddresses)
-            $localAddressBox.SelectedIndex = 0
-        }
-        else {
-            $null = $localAddressBox.Items.Add("未检测到局域网地址")
-            $localAddressBox.SelectedIndex = 0
-            $copyButton.Enabled = $false
-        }
-
-        # Section 2: Peer Address Input
-        $peerLabel = New-Object System.Windows.Forms.Label
-        $peerLabel.Text = "对方设备地址（主机名或 IP）："
-        $peerLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Bold)
-        $peerLabel.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85)
-        $peerLabel.AutoSize = $true
-        $peerLabel.Location = New-Object System.Drawing.Point(18, 136)
-
-        $peerTextBox = New-Object System.Windows.Forms.TextBox
-        $peerTextBox.Text = $script:Peer
-        $peerTextBox.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.5, [System.Drawing.FontStyle]::Regular)
-        $peerTextBox.Location = New-Object System.Drawing.Point(18, 158)
-        $peerTextBox.Size = New-Object System.Drawing.Size(316, 26)
-
-        $testButton = New-Object System.Windows.Forms.Button
-        $testButton.Text = "检测连接"
-        $testButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Regular)
-        $testButton.Location = New-Object System.Drawing.Point(344, 157)
-        $testButton.Size = New-Object System.Drawing.Size(98, 28)
-        $testButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-        $testButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(199, 210, 254)
-        $testButton.BackColor = [System.Drawing.Color]::FromArgb(238, 242, 255)
-        $testButton.ForeColor = [System.Drawing.Color]::FromArgb(79, 70, 229)
-        $testButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-
-        $hintLabel = New-Object System.Windows.Forms.Label
-        $hintLabel.Text = "提示：支持输入电脑名 (如 Alice-Mac.local) 或局域网 IP (如 192.168.1.119)"
-        $hintLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.5, [System.Drawing.FontStyle]::Regular)
-        $hintLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 116, 139)
-        $hintLabel.AutoSize = $true
-        $hintLabel.Location = New-Object System.Drawing.Point(18, 189)
-
-        # Section 3: Connection Status Card
-        $statusPanel = New-Object System.Windows.Forms.Panel
-        $statusPanel.Location = New-Object System.Drawing.Point(18, 214)
-        $statusPanel.Size = New-Object System.Drawing.Size(424, 120)
-        $statusPanel.BackColor = [System.Drawing.Color]::FromArgb(255, 251, 235)
-        $statusPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-
-        $statusTitleLabel = New-Object System.Windows.Forms.Label
-        $statusTitleLabel.Location = New-Object System.Drawing.Point(12, 10)
-        $statusTitleLabel.Size = New-Object System.Drawing.Size(398, 20)
-        $statusTitleLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Bold)
-        $statusTitleLabel.ForeColor = [System.Drawing.Color]::FromArgb(217, 119, 6)
-        $statusTitleLabel.Text = "⏳ 正在检测与对方设备的连接状态..."
-        $statusPanel.Controls.Add($statusTitleLabel)
-
-        $statusDetailLabel = New-Object System.Windows.Forms.Label
-        $statusDetailLabel.Location = New-Object System.Drawing.Point(12, 34)
-        $statusDetailLabel.Size = New-Object System.Drawing.Size(398, 78)
-        $statusDetailLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.5, [System.Drawing.FontStyle]::Regular)
-        $statusDetailLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 53, 15)
-        $statusDetailLabel.Text = "正在尝试连接..."
-        $statusPanel.Controls.Add($statusDetailLabel)
-
-        # Section 4: Preferences (Notifications Toggle)
-        $notifyCheckBox = New-Object System.Windows.Forms.CheckBox
-        $notifyCheckBox.Text = "开启气泡通知（取消勾选即开启静默模式，彻底不弹窗）"
-        $notifyCheckBox.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.0, [System.Drawing.FontStyle]::Regular)
-        $notifyCheckBox.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85)
-        $notifyCheckBox.Checked = $script:Notifications
-        $notifyCheckBox.AutoSize = $true
-        $notifyCheckBox.Location = New-Object System.Drawing.Point(18, 346)
-        $notifyCheckBox.Cursor = [System.Windows.Forms.Cursors]::Hand
-
-        # Section 5: Footer
-        $footerDivider = New-Object System.Windows.Forms.Panel
-        $footerDivider.Location = New-Object System.Drawing.Point(18, 376)
-        $footerDivider.Size = New-Object System.Drawing.Size(424, 1)
-        $footerDivider.BackColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
-
-        $portLabel = New-Object System.Windows.Forms.Label
-        $portLabel.Text = "服务端口: $script:Port    修改后点击保存立即生效"
-        $portLabel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8.5, [System.Drawing.FontStyle]::Regular)
-        $portLabel.ForeColor = [System.Drawing.Color]::FromArgb(148, 163, 184)
-        $portLabel.AutoSize = $true
-        $portLabel.Location = New-Object System.Drawing.Point(18, 388)
-
-        $saveButton = New-Object System.Windows.Forms.Button
-        $saveButton.Text = "保 存"
-        $saveButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.5, [System.Drawing.FontStyle]::Bold)
-        $saveButton.Size = New-Object System.Drawing.Size(96, 34)
-        $saveButton.Location = New-Object System.Drawing.Point(242, 420)
-        $saveButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-        $saveButton.FlatAppearance.BorderSize = 0
-        $saveButton.BackColor = [System.Drawing.Color]::FromArgb(37, 99, 235)
-        $saveButton.ForeColor = [System.Drawing.Color]::White
-        $saveButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-
-        $cancelButton = New-Object System.Windows.Forms.Button
-        $cancelButton.Text = "取 消"
-        $cancelButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9.5, [System.Drawing.FontStyle]::Regular)
-        $cancelButton.Size = New-Object System.Drawing.Size(94, 34)
-        $cancelButton.Location = New-Object System.Drawing.Point(348, 420)
-        $cancelButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-        $cancelButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(203, 213, 225)
-        $cancelButton.BackColor = [System.Drawing.Color]::FromArgb(241, 245, 249)
-        $cancelButton.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85)
-        $cancelButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $cancelButton.Add_Click({ $form.Close() }.GetNewClosure())
-
-        # GetNewClosure keeps these locals alive after Show-PeerConfiguration
-        # returns. The settings form is modeless ($form.Show), so event
-        # handlers fire after this function's locals would otherwise be gone;
-        # StrictMode then throws "variable $copyButton is not set".
-        $runCheck = {
-            $currentPeer = $peerTextBox.Text.Trim()
-            if ([string]::IsNullOrWhiteSpace($currentPeer)) {
-                $statusPanel.BackColor = [System.Drawing.Color]::FromArgb(243, 244, 246)
-                $statusTitleLabel.ForeColor = [System.Drawing.Color]::FromArgb(107, 114, 128)
-                $statusTitleLabel.Text = "○ 待检测：请输入对方设备地址并点击检测"
-                $statusDetailLabel.ForeColor = [System.Drawing.Color]::FromArgb(107, 114, 128)
-                $statusDetailLabel.Text = "输入对方主机名或 IP 后点击右侧【检测连接】。"
-                return
-            }
-
-            $testButton.Enabled = $false
-            $testButton.Text = "检测中..."
-            $statusPanel.BackColor = [System.Drawing.Color]::FromArgb(255, 251, 235)
-            $statusTitleLabel.ForeColor = [System.Drawing.Color]::FromArgb(217, 119, 6)
-            $statusTitleLabel.Text = "⏳ 正在检测与对方设备的连接状态..."
-            $statusDetailLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 53, 15)
-            $statusDetailLabel.Text = "正在向 $currentPeer`:$settingsPort 发送与复制相同的 POST /push..."
-            $form.Update()
-
-            try {
-                $null = Test-PeerConnectivity -Address $currentPeer -Port $settingsPort -TimeoutMilliseconds 5000
-                $statusPanel.BackColor = [System.Drawing.Color]::FromArgb(236, 253, 245)
-                $statusTitleLabel.ForeColor = [System.Drawing.Color]::FromArgb(5, 150, 105)
-                $statusTitleLabel.Text = "● 发送成功：对方已完整响应 POST /push"
-                $statusDetailLabel.ForeColor = [System.Drawing.Color]::FromArgb(6, 95, 70)
-                $statusDetailLabel.Text = "检测与复制发送使用同一条 HTTP 路径。对端：$currentPeer`:$settingsPort"
-            }
-            catch {
-                $failureMessage = [string]$_.Exception.Message
-                $failureTitle = "无法连接"
-                if ($failureMessage -match "^([^：]+)：") {
-                    $failureTitle = $Matches[1]
-                }
-                $statusPanel.BackColor = [System.Drawing.Color]::FromArgb(254, 242, 242)
-                $statusTitleLabel.ForeColor = [System.Drawing.Color]::FromArgb(220, 38, 38)
-                $statusTitleLabel.Text = "● $failureTitle"
-                $statusDetailLabel.ForeColor = [System.Drawing.Color]::FromArgb(153, 27, 27)
-                $statusDetailLabel.Text = $failureMessage
-            }
-            finally {
-                $testButton.Text = "检测连接"
-                $testButton.Enabled = $true
-            }
-        }.GetNewClosure()
-
-        $copyButton.Add_Click({
-            if ($localAddresses.Count -gt 0 -and $localAddressBox.SelectedIndex -ge 0) {
-                $selectedItem = $localAddressBox.SelectedItem
-                $textToCopy = if ($null -ne $selectedItem -and $selectedItem.PSObject.Properties["Address"]) { [string]$selectedItem.Address } else { [string]$selectedItem }
-                Set-ClipboardTextWithRetry -Text $textToCopy
-                $copyButton.Text = "✓ 已复制!"
-                $copyButton.ForeColor = [System.Drawing.Color]::FromArgb(5, 150, 105)
-            }
-        }.GetNewClosure())
-        $localAddressBox.Add_SelectedIndexChanged({
-            $copyButton.Text = "复制"
-            $copyButton.ForeColor = [System.Drawing.Color]::FromArgb(30, 41, 59)
-        }.GetNewClosure())
-
-        $testButton.Add_Click($runCheck)
-
-        $saveButton.Add_Click({
-            try {
-                $notificationsEnabled = [bool]$notifyCheckBox.Checked
-                $normalized = & $savePeerConfigurationCommand -PeerAddress $peerTextBox.Text -Notifications $notificationsEnabled
-                if ($notificationsEnabled) {
-                    Show-ClipRelayNotification -Title "ClipRelay 设置已保存" -Message "已将对方地址更新为 $normalized`:$settingsPort。"
-                }
-                $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-                $form.Close()
-            }
-            catch {
-                $null = [System.Windows.Forms.MessageBox]::Show(
-                    $form,
-                    $_.Exception.Message,
-                    "无法保存设置",
-                    [System.Windows.Forms.MessageBoxButtons]::OK,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-            }
-        }.GetNewClosure())
-
-        $form.AcceptButton = $saveButton
-        $form.CancelButton = $cancelButton
-        $form.Controls.AddRange(@(
-            $headerTitle,
-            $headerSubtitle,
-            $headerDivider,
-            $localAddressLabel,
-            $localAddressBox,
-            $copyButton,
-            $peerLabel,
-            $peerTextBox,
-            $testButton,
-            $hintLabel,
-            $statusPanel,
-            $notifyCheckBox,
-            $footerDivider,
-            $portLabel,
-            $saveButton,
-            $cancelButton
-        ))
-        $form.Add_Shown({
-            # A process launched with `-WindowStyle Hidden` can also hide the
-            # first top-level WinForms window. Explicitly show the dialog once
-            # its handle exists so the tray-only startup remains invisible
-            # without suppressing the settings window.
-            $null = [ClipRelay.NativeMethods]::ShowWindow(
-                $form.Handle,
-                [ClipRelay.NativeMethods]::SW_SHOW
-            )
-            $null = $form.Activate()
-            $peerTextBox.Focus()
-            $peerTextBox.SelectAll()
-            if (-not [string]::IsNullOrWhiteSpace($peerTextBox.Text)) {
-                & $runCheck
-            }
-        }.GetNewClosure())
-
-        # Modeless: ShowDialog() blocks the STA loop, so incoming POST /push
-        # is never handled while settings are open. TCP detect still succeeds
-        # (the OS backlog accepts the handshake) which looks like a false green.
-        $form.Add_FormClosed({
-            param($sender, $eventArgs)
-            try {
-                if ($null -ne $sender) {
-                    $sender.Dispose()
-                }
-            }
-            catch {
-            }
-            $script:configurationDialogOpen = $false
-        })
-        $null = $form.Show()
-    }
-    catch {
-        $script:configurationDialogOpen = $false
-        if ($null -ne $form) {
-            try { $form.Dispose() } catch { }
-        }
-        throw
-    }
-}
-
 function Get-ClipboardTextWithRetry {
     $lastError = $null
     for ($attempt = 0; $attempt -lt 10; $attempt++) {
@@ -3561,17 +3248,24 @@ function Show-RelayPeerEditor {
     )
 
     $colors = @{
-        Background = [System.Drawing.Color]::FromArgb(7, 19, 30)
-        Surface    = [System.Drawing.Color]::FromArgb(16, 33, 49)
-        Raised     = [System.Drawing.Color]::FromArgb(19, 44, 63)
-        Field      = [System.Drawing.Color]::FromArgb(10, 31, 48)
-        Border     = [System.Drawing.Color]::FromArgb(37, 71, 94)
-        Text       = [System.Drawing.Color]::FromArgb(232, 241, 250)
-        Muted      = [System.Drawing.Color]::FromArgb(157, 176, 193)
-        Cyan       = [System.Drawing.Color]::FromArgb(61, 214, 208)
-        Violet     = [System.Drawing.Color]::FromArgb(139, 110, 246)
-        Success    = [System.Drawing.Color]::FromArgb(71, 207, 155)
-        Danger     = [System.Drawing.Color]::FromArgb(255, 122, 114)
+        Background  = [System.Drawing.Color]::FromArgb(17, 19, 24)
+        Surface     = [System.Drawing.Color]::FromArgb(23, 26, 36)
+        SurfaceAlt  = [System.Drawing.Color]::FromArgb(28, 32, 44)
+        Raised      = [System.Drawing.Color]::FromArgb(32, 37, 52)
+        Field       = [System.Drawing.Color]::FromArgb(18, 20, 28)
+        Border      = [System.Drawing.Color]::FromArgb(38, 44, 60)
+        BorderLight = [System.Drawing.Color]::FromArgb(50, 58, 80)
+        Text        = [System.Drawing.Color]::FromArgb(241, 245, 249)
+        TextDim     = [System.Drawing.Color]::FromArgb(203, 213, 225)
+        Muted       = [System.Drawing.Color]::FromArgb(148, 163, 184)
+        Subtle      = [System.Drawing.Color]::FromArgb(100, 116, 139)
+        Cyan        = [System.Drawing.Color]::FromArgb(56, 189, 248)
+        Blue        = [System.Drawing.Color]::FromArgb(59, 130, 246)
+        BlueLight   = [System.Drawing.Color]::FromArgb(96, 165, 250)
+        Violet      = [System.Drawing.Color]::FromArgb(139, 92, 246)
+        Success     = [System.Drawing.Color]::FromArgb(16, 185, 129)
+        Warning     = [System.Drawing.Color]::FromArgb(251, 191, 36)
+        Danger      = [System.Drawing.Color]::FromArgb(244, 63, 94)
     }
     $bodyFont = "Microsoft YaHei UI"
     $monoFont = "Cascadia Mono"
@@ -3618,17 +3312,20 @@ function Show-RelayPeerEditor {
     }
     $newInput = {
         param($Parent, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height, [bool]$Password = $false)
-        $container = & $newCard $Parent $X $Y $Width $Height $colors.Field $colors.Border 9
+        $container = & $newCard $Parent $X $Y $Width $Height $colors.Field $colors.Border 8
         $textBox = New-Object System.Windows.Forms.TextBox
         $textBox.Text = $Text
-        $textBox.Location = New-Object System.Drawing.Point(11, 8)
-        $textBox.Size = New-Object System.Drawing.Size(($Width - 22), ($Height - 12))
+        $textBox.Location = New-Object System.Drawing.Point(10, 7)
+        $textBox.Size = New-Object System.Drawing.Size(($Width - 20), ($Height - 12))
         $textBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
         $textBox.BackColor = $colors.Field
         $textBox.ForeColor = $colors.Text
         $textBox.Font = New-Object System.Drawing.Font($bodyFont, 9.5)
         $textBox.UseSystemPasswordChar = $Password
         $container.Controls.Add($textBox)
+        $container.Add_Click({ $textBox.Focus() }.GetNewClosure())
+        $textBox.Add_Enter({ $container.BorderColor = $colors.Blue; $container.Invalidate() }.GetNewClosure())
+        $textBox.Add_Leave({ $container.BorderColor = $colors.Border; $container.Invalidate() }.GetNewClosure())
         return [PSCustomObject]@{ Container = $container; TextBox = $textBox }
     }
 
@@ -3657,31 +3354,39 @@ function Show-RelayPeerEditor {
     $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
     if ($null -ne $script:appIcon) { $form.Icon = $script:appIcon }
 
-    $null = & $newLabel $form "RELAY DESTINATION" 26 14 220 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
-    $null = & $newLabel $form "接收设备" 26 35 220 32 17.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-    $closeButton = & $newButton $form "×" 450 18 28 28 $colors.Background $colors.Raised $colors.Muted
+    $headerSmall = & $newLabel $form "RELAY DESTINATION" 26 14 220 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
+    $headerBig = & $newLabel $form "接收设备" 26 35 220 32 17.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+    $closeButton = & $newButton $form "×" 450 18 28 28 $colors.Background $colors.Danger $colors.Muted
     $closeButton.Font = New-Object System.Drawing.Font("Segoe UI", 14.0)
 
-    $editorCard = & $newCard $form 24 82 452 286 $colors.Surface $colors.Border 16
-    $null = & $newLabel $editorCard "设备名称" 18 14 190 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-    $nameInput = & $newInput $editorCard $peerName 18 34 416 36 $false
-    $null = & $newLabel $editorCard "局域网地址" 18 80 190 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-    $addressInput = & $newInput $editorCard $peerAddress 18 100 270 36 $false
-    $null = & $newLabel $editorCard "端口" 306 80 70 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-    $peerPortInput = & $newInput $editorCard ([string]$peerPort) 306 100 128 36 $false
-    $null = & $newLabel $editorCard "访问密钥（这台目标设备）" 18 146 260 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-    $peerTokenInput = & $newInput $editorCard $peerToken 18 166 318 36 $true
-    $showTokenButton = & $newButton $editorCard "显示" 346 166 88 36 $colors.Raised $colors.Border $colors.Muted $colors.Border
-    $null = & $newLabel $editorCard "加入广播" 18 218 110 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-    $enabledToggle = New-Object ClipRelay.RelayToggle
-    $enabledToggle.Location = New-Object System.Drawing.Point(125, 218)
-    $enabledToggle.Checked = $peerEnabled
-    $editorCard.Controls.Add($enabledToggle)
-    $testState = & $newLabel $editorCard "保存前可先检测该设备" 18 250 266 22 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-    $testButton = & $newButton $editorCard "检测设备" 326 240 108 34 $colors.Raised $colors.Border $colors.Cyan $colors.Border
+    [ClipRelay.NativeMethods]::AttachDrag($headerSmall, $form)
+    [ClipRelay.NativeMethods]::AttachDrag($headerBig, $form)
 
-    $cancelButton = & $newButton $form "取消" 282 390 92 40 $colors.Surface $colors.Raised $colors.Muted $colors.Border
-    $saveButton = & $newButton $form "保存设备" 384 390 92 40 $colors.Cyan ([System.Drawing.Color]::FromArgb(91, 230, 224)) $colors.Background
+    $editorCard = & $newCard $form 24 82 452 286 $colors.Surface $colors.Border 12
+    $null = & $newLabel $editorCard "设备名称" 18 14 190 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+    $nameInput = & $newInput $editorCard $peerName 18 34 416 34 $false
+    $null = & $newLabel $editorCard "局域网地址" 18 78 190 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+    $addressInput = & $newInput $editorCard $peerAddress 18 98 270 34 $false
+    $null = & $newLabel $editorCard "端口" 306 78 70 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+    $peerPortInput = & $newInput $editorCard ([string]$peerPort) 306 98 128 34 $false
+    $null = & $newLabel $editorCard "访问密钥（这台目标设备）" 18 142 260 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
+    $peerTokenInput = & $newInput $editorCard $peerToken 18 162 318 34 $true
+    $showTokenButton = & $newButton $editorCard "显示" 346 162 88 34 $colors.Raised $colors.Border $colors.Muted $colors.Border
+    $showTokenButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
+    $null = & $newLabel $editorCard "加入广播" 18 214 110 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+    $enabledToggle = New-Object ClipRelay.RelayToggle
+    $enabledToggle.Location = New-Object System.Drawing.Point(125, 214)
+    $enabledToggle.Checked = $peerEnabled
+    $enabledToggle.OnColor = $colors.Blue
+    $editorCard.Controls.Add($enabledToggle)
+    $testState = & $newLabel $editorCard "保存前可先检测该设备" 18 248 266 22 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+    $testButton = & $newButton $editorCard "检测设备" 326 242 108 34 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
+    $testButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
+
+    $cancelButton = & $newButton $form "取消" 282 390 92 40 $colors.Surface $colors.Border $colors.Muted $colors.Border
+    $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
+    $saveButton = & $newButton $form "保存设备" 384 390 92 40 $colors.Blue ([System.Drawing.Color]::FromArgb(74, 148, 245)) $colors.Text ([System.Drawing.Color]::Transparent)
+    $saveButton.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Bold)
 
     $testPeerCommand = Get-Command Test-PeerConnectivity
     $normalizePeersCommand = Get-Command Get-NormalizedRelayPeers
@@ -3760,15 +3465,24 @@ function Show-RelayPeerManager {
     )
 
     $colors = @{
-        Background = [System.Drawing.Color]::FromArgb(7, 19, 30)
-        Surface    = [System.Drawing.Color]::FromArgb(16, 33, 49)
-        Raised     = [System.Drawing.Color]::FromArgb(19, 44, 63)
-        Border     = [System.Drawing.Color]::FromArgb(37, 71, 94)
-        Text       = [System.Drawing.Color]::FromArgb(232, 241, 250)
-        Muted      = [System.Drawing.Color]::FromArgb(157, 176, 193)
-        Cyan       = [System.Drawing.Color]::FromArgb(61, 214, 208)
-        Violet     = [System.Drawing.Color]::FromArgb(139, 110, 246)
-        Danger     = [System.Drawing.Color]::FromArgb(255, 122, 114)
+        Background  = [System.Drawing.Color]::FromArgb(17, 19, 24)
+        Surface     = [System.Drawing.Color]::FromArgb(23, 26, 36)
+        SurfaceAlt  = [System.Drawing.Color]::FromArgb(28, 32, 44)
+        Raised      = [System.Drawing.Color]::FromArgb(32, 37, 52)
+        Field       = [System.Drawing.Color]::FromArgb(18, 20, 28)
+        Border      = [System.Drawing.Color]::FromArgb(38, 44, 60)
+        BorderLight = [System.Drawing.Color]::FromArgb(50, 58, 80)
+        Text        = [System.Drawing.Color]::FromArgb(241, 245, 249)
+        TextDim     = [System.Drawing.Color]::FromArgb(203, 213, 225)
+        Muted       = [System.Drawing.Color]::FromArgb(148, 163, 184)
+        Subtle      = [System.Drawing.Color]::FromArgb(100, 116, 139)
+        Cyan        = [System.Drawing.Color]::FromArgb(56, 189, 248)
+        Blue        = [System.Drawing.Color]::FromArgb(59, 130, 246)
+        BlueLight   = [System.Drawing.Color]::FromArgb(96, 165, 250)
+        Violet      = [System.Drawing.Color]::FromArgb(139, 92, 246)
+        Success     = [System.Drawing.Color]::FromArgb(16, 185, 129)
+        Warning     = [System.Drawing.Color]::FromArgb(251, 191, 36)
+        Danger      = [System.Drawing.Color]::FromArgb(244, 63, 94)
     }
     $bodyFont = "Microsoft YaHei UI"
     $monoFont = "Cascadia Mono"
@@ -3820,12 +3534,16 @@ function Show-RelayPeerManager {
     $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
     if ($null -ne $script:appIcon) { $form.Icon = $script:appIcon }
 
-    $null = & $newLabel $form "FAN-OUT ROUTES" 26 14 220 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
-    $null = & $newLabel $form "广播设备" 26 35 220 32 17.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+    $headerSmall = & $newLabel $form "FAN-OUT ROUTES" 26 14 220 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
+    $headerBig = & $newLabel $form "广播设备" 26 35 220 32 17.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
     $countLabel = & $newLabel $form "" 300 35 188 32 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
     $countLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
-    $closeButton = & $newButton $form "×" 510 18 28 28 $colors.Background $colors.Raised $colors.Muted
+    $closeButton = & $newButton $form "×" 510 18 28 28 $colors.Background $colors.Danger $colors.Muted
     $closeButton.Font = New-Object System.Drawing.Font("Segoe UI", 14.0)
+
+    [ClipRelay.NativeMethods]::AttachDrag($headerSmall, $form)
+    [ClipRelay.NativeMethods]::AttachDrag($headerBig, $form)
+    [ClipRelay.NativeMethods]::AttachDrag($countLabel, $form)
 
     $listHost = New-Object System.Windows.Forms.Panel
     $listHost.Location = New-Object System.Drawing.Point(24, 86)
@@ -3836,13 +3554,17 @@ function Show-RelayPeerManager {
     $emptyLabel = & $newLabel $listHost "尚未添加设备" 0 140 490 40 11.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
     $emptyLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 
-    $addButton = & $newButton $form "+ 添加设备" 24 494 116 38 $colors.Surface $colors.Raised $colors.Cyan $colors.Border
+    $addButton = & $newButton $form "+ 添加设备" 24 494 116 38 $colors.Surface $colors.Raised $colors.BlueLight $colors.Border
+    $addButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
     $scanButton = & $newButton $form "扫描设备" 148 494 116 38 $colors.Surface $colors.Raised $colors.Violet $colors.Border
+    $scanButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
     $scanButton.Name = "ScanDevicesButton"
     $hintLabel = & $newLabel $form "自动发现后仍需确认应用" 278 494 258 38 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
     $hintLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
     $cancelButton = & $newButton $form "取消" 340 542 92 36 $colors.Surface $colors.Raised $colors.Muted $colors.Border
-    $saveButton = & $newButton $form "应用设备" 442 542 94 36 $colors.Cyan ([System.Drawing.Color]::FromArgb(91, 230, 224)) $colors.Background
+    $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
+    $saveButton = & $newButton $form "应用设备" 442 542 94 36 $colors.Blue ([System.Drawing.Color]::FromArgb(74, 148, 245)) $colors.Text ([System.Drawing.Color]::Transparent)
+    $saveButton.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Bold)
 
     $editorCommand = Get-Command Show-RelayPeerEditor
     $normalizePeersCommand = Get-Command Get-NormalizedRelayPeers
@@ -3874,6 +3596,7 @@ function Show-RelayPeerManager {
                     $toggle = New-Object ClipRelay.RelayToggle
                     $toggle.Location = New-Object System.Drawing.Point(14, 19)
                     $toggle.Checked = [bool]$peer.enabled
+                    $toggle.OnColor = $colors.Blue
                     $row.Controls.Add($toggle)
                     $name = & $newLabel $row ([string]$peer.name) 70 7 145 24 9.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
                     $address = & $newLabel $row "$($peer.address):$($peer.port)" 70 31 244 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $monoFont
@@ -3885,7 +3608,7 @@ function Show-RelayPeerManager {
                         $auth = & $newLabel $row "需密钥" 286 8 58 21 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Danger $bodyFont
                         $auth.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
                     }
-                    $editButton = & $newButton $row "编辑" 354 14 58 34 $colors.Raised $colors.Border $colors.Cyan $colors.Border
+                    $editButton = & $newButton $row "编辑" 354 14 58 34 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
                     $removeButton = & $newButton $row "移除" 420 14 58 34 $colors.Surface $colors.Border $colors.Muted $colors.Border
 
                     # These row handlers are closures created inside $refreshRows, which is
@@ -4190,6 +3913,7 @@ function Show-RelayControlCenter {
             $textBox.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Regular)
             $textBox.UseSystemPasswordChar = $Password
             $container.Controls.Add($textBox)
+            $container.Add_Click({ $textBox.Focus() }.GetNewClosure())
             $textBox.Add_Enter({ $container.BorderColor = $colors.Blue; $container.Invalidate() }.GetNewClosure())
             $textBox.Add_Leave({ $container.BorderColor = $colors.Border; $container.Invalidate() }.GetNewClosure())
             return [PSCustomObject]@{ Container = $container; TextBox = $textBox }
@@ -4223,8 +3947,13 @@ function Show-RelayControlCenter {
         $brandLogo = & $newCard $sidebarPanel 18 18 36 36 $colors.Blue ([System.Drawing.Color]::Transparent) 8
         $logoText = & $newLabel $brandLogo "CR" 0 0 36 36 12.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $monoFont
         $logoText.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-        $null = & $newLabel $sidebarPanel "ClipRelay" 62 16 156 22 13.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $displayFont
-        $null = & $newLabel $sidebarPanel "局域网剪贴板中继" 63 38 156 16 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $brandTitle = & $newLabel $sidebarPanel "ClipRelay" 62 16 156 22 13.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $displayFont
+        $brandSubtitle = & $newLabel $sidebarPanel "局域网剪贴板中继" 63 38 156 16 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+
+        [ClipRelay.NativeMethods]::AttachDrag($brandLogo, $form)
+        [ClipRelay.NativeMethods]::AttachDrag($logoText, $form)
+        [ClipRelay.NativeMethods]::AttachDrag($brandTitle, $form)
+        [ClipRelay.NativeMethods]::AttachDrag($brandSubtitle, $form)
 
         # Live Server Status Hero Card
         $statusHeroCard = & $newCard $sidebarPanel 16 68 204 136 $colors.SurfaceAlt $colors.Border 10
@@ -4327,9 +4056,13 @@ function Show-RelayControlCenter {
 
         # --- Right Main Workspace ---
         # Top Header & Window Controls
-        $null = & $newLabel $form "CLIP / RELAY" 256 14 200 16 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
+        $topCategoryHeader = & $newLabel $form "CLIP / RELAY" 256 14 200 16 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
         $largeHeader = & $newLabel $form "设备链路工作区" 256 30 320 32 16.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $displayFont
-        $null = & $newLabel $form "跨平台剪贴板与全屏截图实时并行中继 · 仅用于可信局域网" 256 62 390 18 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $topSubHeader = & $newLabel $form "跨平台剪贴板与全屏截图实时并行中继 · 仅用于可信局域网" 256 62 390 18 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+
+        [ClipRelay.NativeMethods]::AttachDrag($topCategoryHeader, $form)
+        [ClipRelay.NativeMethods]::AttachDrag($largeHeader, $form)
+        [ClipRelay.NativeMethods]::AttachDrag($topSubHeader, $form)
 
         $minimizeButton = & $newButton $form "−" 676 18 32 30 $colors.Background $colors.Raised $colors.Muted
         $minimizeButton.Name = "MinimizeButton"
@@ -4337,7 +4070,7 @@ function Show-RelayControlCenter {
         $minimizeButton.AccessibleName = "最小化"
         $minimizeButton.TabStop = $false
 
-        $closeButton = & $newButton $form "×" 714 18 32 30 $colors.Background $colors.Raised $colors.Muted
+        $closeButton = & $newButton $form "×" 714 18 32 30 $colors.Background $colors.Danger $colors.Muted
         $closeButton.Name = "CloseButton"
         $closeButton.Font = New-Object System.Drawing.Font("Segoe UI", 14.0, [System.Drawing.FontStyle]::Regular)
         $closeButton.AccessibleName = "关闭"
@@ -4728,6 +4461,16 @@ function Show-RelayControlCenter {
 
         & $updatePeerSummary
 
+        $copyResetTimer = New-Object System.Windows.Forms.Timer
+        $copyResetTimer.Interval = 2000
+        $copyResetTimer.Add_Tick({
+            $copyResetTimer.Stop()
+            if (-not $form.IsDisposed) {
+                $copyButton.Text = "复制"
+                $copyButton.TextColor = $colors.Text
+            }
+        }.GetNewClosure())
+
         $copyButton.Add_Click({
             $selectedIndex = [int]$localAddressField.Tag
             if ($localAddresses.Count -gt 0 -and $selectedIndex -ge 0) {
@@ -4735,6 +4478,8 @@ function Show-RelayControlCenter {
                 & $setClipboardCommand -Text $address
                 $copyButton.Text = "已复制"
                 $copyButton.TextColor = $colors.Success
+                $copyResetTimer.Stop()
+                $copyResetTimer.Start()
             }
         }.GetNewClosure())
         $switchAddressButton.Add_Click({
@@ -4743,6 +4488,7 @@ function Show-RelayControlCenter {
                 $localAddressField.Tag = $nextIndex
                 $localAddressValue.Text = [string]$localAddresses[$nextIndex].Address
             }
+            $copyResetTimer.Stop()
             $copyButton.Text = "复制"
             $copyButton.TextColor = $colors.Text
         }.GetNewClosure())
@@ -4875,6 +4621,7 @@ function Show-RelayControlCenter {
         $form.Tag = [PSCustomObject]@{
             RuntimeTimer      = $runtimeTimer
             ConnectivityTimer = $connectivityTimer
+            CopyResetTimer    = $copyResetTimer
         }
 
         $form.AcceptButton = $saveButton
@@ -4895,7 +4642,7 @@ function Show-RelayControlCenter {
             try {
                 $timerState = if ($null -ne $sender) { $sender.Tag } else { $null }
                 if ($null -ne $timerState) {
-                    foreach ($timer in @($timerState.RuntimeTimer, $timerState.ConnectivityTimer)) {
+                    foreach ($timer in @($timerState.RuntimeTimer, $timerState.ConnectivityTimer, $timerState.CopyResetTimer)) {
                         if ($null -ne $timer) {
                             $timer.Stop()
                             $timer.Dispose()
