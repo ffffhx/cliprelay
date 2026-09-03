@@ -1265,15 +1265,174 @@ namespace ClipRelay
         private const int WM_NCHITTEST = 0x0084;
         private const int HTCLIENT = 1;
         private const int HTCAPTION = 2;
+        private const float DesignDpi = 96.0f;
+        private readonly HashSet<Control> dpiRegisteredControls = new HashSet<Control>();
+        private bool dpiLayoutEnabled;
+        private bool dpiLayoutApplied;
+        private float layoutScale = 1.0f;
+        private Size unconstrainedClientSize;
 
         public RelayForm()
         {
             FormBorderStyle = FormBorderStyle.None;
             DoubleBuffered = true;
             CornerRadius = 20;
+            AutoScaleMode = AutoScaleMode.None;
         }
 
         public int CornerRadius { get; set; }
+        public float LayoutScale { get { return layoutScale; } }
+        public Size UnconstrainedClientSize { get { return unconstrainedClientSize; } }
+
+        public Point DpiPoint(int x, int y)
+        {
+            return new Point(ScaleLogicalPixel(x), ScaleLogicalPixel(y));
+        }
+
+        public Size DpiSize(int width, int height)
+        {
+            return new Size(ScaleLogicalPixel(width), ScaleLogicalPixel(height));
+        }
+
+        private int ScaleLogicalPixel(int value)
+        {
+            return (int)Math.Round(value * layoutScale);
+        }
+
+        // ClipRelay's forms are authored at 96 DPI and their controls are
+        // created at runtime. WinForms cannot infer that design DPI when
+        // AutoScaleMode is enabled before those controls exist, so high-DPI
+        // Windows installations used to enlarge only the text. Arm scaling
+        // after construction and apply it once the form is on its target
+        // screen, immediately before its first paint.
+        public void EnableDpiLayout()
+        {
+            if (dpiLayoutApplied)
+                return;
+            dpiLayoutEnabled = true;
+        }
+
+        // Kept public so the DPI regression test can exercise every scale on
+        // one machine without changing the user's Windows display settings.
+        public void ApplyDpiLayoutForTesting(float currentDpi, Size workingArea)
+        {
+            dpiLayoutEnabled = true;
+            ApplyDpiLayout(currentDpi, new Rectangle(Point.Empty, workingArea), false);
+        }
+
+        protected override void OnLoad(EventArgs eventArgs)
+        {
+            if (dpiLayoutEnabled && !dpiLayoutApplied)
+            {
+                Rectangle workingArea = Screen.FromControl(this).WorkingArea;
+                ApplyDpiLayout(GetCurrentDpi(), workingArea, true);
+            }
+            base.OnLoad(eventArgs);
+        }
+
+        private float GetCurrentDpi()
+        {
+            try
+            {
+                using (Graphics graphics = CreateGraphics())
+                    return Math.Max(DesignDpi, graphics.DpiX);
+            }
+            catch
+            {
+                return DesignDpi;
+            }
+        }
+
+        private void ApplyDpiLayout(float currentDpi, Rectangle workingArea, bool centerWindow)
+        {
+            if (dpiLayoutApplied)
+                return;
+
+            dpiLayoutApplied = true;
+            layoutScale = Math.Max(1.0f, currentDpi / DesignDpi);
+            Size designClientSize = ClientSize;
+            SuspendLayout();
+            try
+            {
+                if (Math.Abs(layoutScale - 1.0f) > 0.001f)
+                {
+                    // Scaling a top-level Form directly lets WinForms silently
+                    // cap its height to the current monitor before we can make
+                    // the clipped area scrollable. Scale the runtime-authored
+                    // control tree first and size the window explicitly below.
+                    SizeF factor = new SizeF(layoutScale, layoutScale);
+                    foreach (Control child in Controls)
+                        child.Scale(factor);
+                }
+
+                unconstrainedClientSize = new Size(
+                    (int)Math.Round(designClientSize.Width * layoutScale),
+                    (int)Math.Round(designClientSize.Height * layoutScale));
+                RegisterDpiControlTree(this);
+                ConstrainToWorkingArea(workingArea.Size);
+                if (centerWindow)
+                    CenterInWorkingArea(workingArea);
+            }
+            finally
+            {
+                ResumeLayout(true);
+            }
+        }
+
+        private void RegisterDpiControlTree(Control control)
+        {
+            if (control == null || !dpiRegisteredControls.Add(control))
+                return;
+
+            control.ControlAdded += HandleDpiControlAdded;
+            foreach (Control child in control.Controls)
+                RegisterDpiControlTree(child);
+        }
+
+        private void HandleDpiControlAdded(object sender, ControlEventArgs eventArgs)
+        {
+            Control addedControl = eventArgs.Control;
+            if (!dpiLayoutApplied || addedControl == null || dpiRegisteredControls.Contains(addedControl))
+                return;
+
+            if (Math.Abs(layoutScale - 1.0f) > 0.001f)
+                addedControl.Scale(new SizeF(layoutScale, layoutScale));
+            RegisterDpiControlTree(addedControl);
+        }
+
+        private void ConstrainToWorkingArea(Size workingArea)
+        {
+            int maxWidth = Math.Max(1, workingArea.Width - 24);
+            int maxHeight = Math.Max(1, workingArea.Height - 24);
+            bool needsVerticalScroll = unconstrainedClientSize.Height > maxHeight;
+            int availableWidth = maxWidth - (needsVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0);
+            bool needsHorizontalScroll = unconstrainedClientSize.Width > availableWidth;
+
+            if (!needsVerticalScroll && !needsHorizontalScroll)
+            {
+                AutoScroll = false;
+                AutoScrollMinSize = Size.Empty;
+                ClientSize = unconstrainedClientSize;
+                return;
+            }
+
+            AutoScroll = true;
+            AutoScrollMinSize = unconstrainedClientSize;
+            int clientWidth = Math.Min(
+                maxWidth,
+                unconstrainedClientSize.Width + (needsVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0));
+            int clientHeight = Math.Min(
+                maxHeight,
+                unconstrainedClientSize.Height + (needsHorizontalScroll ? SystemInformation.HorizontalScrollBarHeight : 0));
+            ClientSize = new Size(Math.Max(1, clientWidth), Math.Max(1, clientHeight));
+        }
+
+        private void CenterInWorkingArea(Rectangle workingArea)
+        {
+            int x = workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2);
+            int y = workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2);
+            Location = new Point(x, y);
+        }
 
         protected override CreateParams CreateParams
         {
@@ -1308,7 +1467,7 @@ namespace ClipRelay
                 int x = unchecked((short)(long)message.LParam);
                 int y = unchecked((short)((long)message.LParam >> 16));
                 Point clientPoint = PointToClient(new Point(x, y));
-                if (clientPoint.Y >= 0 && clientPoint.Y < 76)
+                if (clientPoint.Y >= 0 && clientPoint.Y < (int)Math.Round(76 * layoutScale))
                     message.Result = new IntPtr(HTCAPTION);
             }
         }
@@ -3351,7 +3510,6 @@ function Show-RelayPeerEditor {
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $form.ShowInTaskbar = $false
     $form.TopMost = $true
-    $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
     if ($null -ne $script:appIcon) { $form.Icon = $script:appIcon }
 
     $headerSmall = & $newLabel $form "RELAY DESTINATION" 26 14 220 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
@@ -3449,6 +3607,7 @@ function Show-RelayPeerEditor {
 
     $form.AcceptButton = $saveButton
     $form.CancelButton = $cancelButton
+    $form.EnableDpiLayout()
     $dialogResult = if ($null -ne $Owner) { $form.ShowDialog($Owner) } else { $form.ShowDialog() }
     $result = if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) { $form.Tag } else { $null }
     $form.Dispose()
@@ -3531,7 +3690,6 @@ function Show-RelayPeerManager {
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $form.ShowInTaskbar = $false
     $form.TopMost = $true
-    $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
     if ($null -ne $script:appIcon) { $form.Icon = $script:appIcon }
 
     $headerSmall = & $newLabel $form "FAN-OUT ROUTES" 26 14 220 20 8.5 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
@@ -3754,6 +3912,7 @@ function Show-RelayPeerManager {
     & $refreshRows
     $form.AcceptButton = $saveButton
     $form.CancelButton = $cancelButton
+    $form.EnableDpiLayout()
     $dialogResult = if ($null -ne $Owner) { $form.ShowDialog($Owner) } else { $form.ShowDialog() }
     $result = if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) { @($form.Tag) } else { $null }
     $form.Dispose()
@@ -3929,7 +4088,6 @@ function Show-RelayControlCenter {
         $form.MinimizeBox = $false
         $form.ShowInTaskbar = $true
         $form.TopMost = $true
-        $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
         if ($null -ne $script:appIcon) {
             $form.Icon = $script:appIcon
         }
@@ -4208,15 +4366,15 @@ function Show-RelayControlCenter {
                 $peerDetailsPanel.Controls.Remove($control)
                 $control.Dispose()
             }
-            $peerDetailsPanel.AutoScrollMinSize = New-Object System.Drawing.Size(0, 0)
+            $peerDetailsPanel.AutoScrollMinSize = $form.DpiSize(0, 0)
             $peerDetailsPanel.Visible = $false
             $peerSummaryHint.Visible = $true
             $peerSummaryOne.Visible = $true
-            $peerSummaryOne.Location = New-Object System.Drawing.Point(12, 32)
-            $peerSummaryOne.Size = New-Object System.Drawing.Size(180, 34)
+            $peerSummaryOne.Location = $form.DpiPoint(12, 32)
+            $peerSummaryOne.Size = $form.DpiSize(180, 34)
             $peerSummaryTwo.Visible = $false
-            $peerSummaryTwo.Location = New-Object System.Drawing.Point(12, 70)
-            $peerSummaryTwo.Size = New-Object System.Drawing.Size(180, 34)
+            $peerSummaryTwo.Location = $form.DpiPoint(12, 70)
+            $peerSummaryTwo.Size = $form.DpiSize(180, 34)
             $peerSummaryToggle.Visible = $false
             $peerSummaryToggle.Tag = $null
 
@@ -4250,8 +4408,8 @@ function Show-RelayControlCenter {
                 $peerSummaryOne.Visible = $false
                 $peerSummaryTwo.Visible = $false
                 $peerSummaryHint.Visible = $false
-                $peerSummaryToggle.Location = New-Object System.Drawing.Point(12, 30)
-                $peerSummaryToggle.Size = New-Object System.Drawing.Size(180, 28)
+                $peerSummaryToggle.Location = $form.DpiPoint(12, 30)
+                $peerSummaryToggle.Size = $form.DpiSize(180, 28)
                 $peerSummaryToggle.Text = "▲ 收起设备列表"
                 $peerSummaryToggle.AccessibleName = "收起目标设备列表"
                 $peerSummaryToggle.Tag = "expanded"
@@ -4273,7 +4431,7 @@ function Show-RelayControlCenter {
                     $statusLabel.Tag = $status.State
                     $peerDetailsPanel.Controls.Add($statusLabel)
                 }
-                $peerDetailsPanel.AutoScrollMinSize = New-Object System.Drawing.Size(0, ($statuses.Count * 44))
+                $peerDetailsPanel.AutoScrollMinSize = $form.DpiSize(0, ($statuses.Count * 44))
                 return
             }
 
@@ -4290,8 +4448,8 @@ function Show-RelayControlCenter {
             }
             if ($enabledDraftPeers.Count -gt 2) {
                 $peerSummaryTwo.Visible = $false
-                $peerSummaryToggle.Location = New-Object System.Drawing.Point(12, 70)
-                $peerSummaryToggle.Size = New-Object System.Drawing.Size(180, 30)
+                $peerSummaryToggle.Location = $form.DpiPoint(12, 70)
+                $peerSummaryToggle.Size = $form.DpiSize(180, 30)
                 $peerSummaryToggle.Text = "＋ 另有 $($enabledDraftPeers.Count - 1) 台 · 展开"
                 $peerSummaryToggle.AccessibleName = "展开全部 $($enabledDraftPeers.Count) 台目标设备"
                 $peerSummaryToggle.Tag = "summary"
@@ -4626,6 +4784,7 @@ function Show-RelayControlCenter {
 
         $form.AcceptButton = $saveButton
         $form.CancelButton = $cancelButton
+        $form.EnableDpiLayout()
         $form.Add_Shown({
             $null = [ClipRelay.NativeMethods]::ShowWindow($form.Handle, [ClipRelay.NativeMethods]::SW_SHOW)
             $null = $form.Activate()
