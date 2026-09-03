@@ -20,8 +20,11 @@ foreach ($functionName in @(
     "Get-PropertyValue",
     "Get-NormalizedPeerAddress",
     "Get-NormalizedDeviceName",
+    "Get-LocalRelayAddresses",
+    "Test-IsLocalRelayPeer",
     "Get-NormalizedRelayPeers",
     "Copy-RelayPeers",
+    "Remove-LocalRelayPeers",
     "Get-EnabledRelayPeers",
     "Save-PeerConfiguration"
 )) {
@@ -134,6 +137,14 @@ try {
             port = 47999
             accessToken = "computer-secret"
             enabled = $true
+        },
+        [PSCustomObject]@{
+            id = "LOCAL-DEVICE-ID"
+            name = "Test PC"
+            address = "192.168.1.5"
+            port = 47888
+            accessToken = ""
+            enabled = $true
         }
     )
     $null = Save-PeerConfiguration `
@@ -144,7 +155,7 @@ try {
         -StartupEnabled $true `
         -Peers $multiPeers
     $savedMulti = Get-Content -LiteralPath $temporaryConfig -Raw | ConvertFrom-Json
-    if (@($savedMulti.peers).Count -ne 2) { throw "The multi-peer list was not persisted." }
+    if (@($savedMulti.peers).Count -ne 2) { throw "The multi-peer list retained the local device or lost a remote peer." }
     if ($savedMulti.peers[0].accessToken -ne "phone-secret" -or $savedMulti.peers[1].accessToken -ne "computer-secret") {
         throw "Per-device access tokens were not persisted independently."
     }

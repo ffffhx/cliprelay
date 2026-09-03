@@ -1554,6 +1554,156 @@ function Get-NormalizedDeviceName {
     return $normalized
 }
 
+function Get-LocalRelayAddresses {
+    param([string[]]$AdditionalAddresses = @())
+
+    $addressKeys = @{}
+    $addAddress = {
+        param([string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return
+        }
+        $key = $Value.Trim().TrimEnd(".").ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($key)) {
+            $addressKeys[$key] = $true
+        }
+    }
+
+    foreach ($loopbackAddress in @("localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0", "[::]", "::")) {
+        & $addAddress $loopbackAddress
+    }
+
+    foreach ($hostName in @([Environment]::MachineName, [System.Net.Dns]::GetHostName())) {
+        if ([string]::IsNullOrWhiteSpace($hostName)) {
+            continue
+        }
+        & $addAddress $hostName
+        & $addAddress "$hostName.local"
+        try {
+            foreach ($resolvedAddress in [System.Net.Dns]::GetHostAddresses($hostName)) {
+                & $addAddress $resolvedAddress.ToString()
+            }
+        }
+        catch {
+        }
+    }
+
+    try {
+        foreach ($networkInterface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($networkInterface.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up) {
+                continue
+            }
+            foreach ($unicastAddress in $networkInterface.GetIPProperties().UnicastAddresses) {
+                & $addAddress $unicastAddress.Address.ToString()
+            }
+        }
+    }
+    catch {
+    }
+
+    foreach ($additionalAddress in @($AdditionalAddresses)) {
+        & $addAddress $additionalAddress
+    }
+
+    return @($addressKeys.Keys)
+}
+
+function Test-IsLocalRelayPeer {
+    param(
+        [object]$Peer,
+        [string]$LocalDeviceId = "",
+        [int]$LocalPort = 0,
+        [string[]]$LocalAddresses = @()
+    )
+
+    if ($null -eq $Peer) {
+        return $false
+    }
+
+    $peerId = [string](Get-PropertyValue -Object $Peer -Name "Id")
+    if ([string]::IsNullOrWhiteSpace($peerId)) {
+        $peerId = [string](Get-PropertyValue -Object $Peer -Name "id")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($peerId) -and
+        -not [string]::IsNullOrWhiteSpace($LocalDeviceId) -and
+        [string]::Equals($peerId.Trim(), $LocalDeviceId.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    if ($LocalPort -lt 1) {
+        return $false
+    }
+    $peerPortValue = Get-PropertyValue -Object $Peer -Name "Port"
+    if ($null -eq $peerPortValue) {
+        $peerPortValue = Get-PropertyValue -Object $Peer -Name "port"
+    }
+    if ($null -eq $peerPortValue -or [int]$peerPortValue -ne $LocalPort) {
+        return $false
+    }
+
+    $peerAddress = [string](Get-PropertyValue -Object $Peer -Name "Address")
+    if ([string]::IsNullOrWhiteSpace($peerAddress)) {
+        $peerAddress = [string](Get-PropertyValue -Object $Peer -Name "address")
+    }
+    if ([string]::IsNullOrWhiteSpace($peerAddress)) {
+        return $false
+    }
+    $peerAddressKey = $peerAddress.Trim().TrimEnd(".").ToLowerInvariant()
+    $knownLocalAddresses = if (@($LocalAddresses).Count -gt 0) {
+        @($LocalAddresses)
+    }
+    else {
+        @(Get-LocalRelayAddresses)
+    }
+    foreach ($localAddress in $knownLocalAddresses) {
+        if ([string]::IsNullOrWhiteSpace($localAddress)) {
+            continue
+        }
+        if ($peerAddressKey -ceq $localAddress.Trim().TrimEnd(".").ToLowerInvariant()) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Remove-LocalRelayPeers {
+    param(
+        [object[]]$Peers,
+        [string]$LocalDeviceId = "",
+        [int]$LocalPort = 0,
+        [string[]]$LocalAddresses = @()
+    )
+
+    $knownLocalAddresses = if (@($LocalAddresses).Count -gt 0) {
+        @($LocalAddresses)
+    }
+    else {
+        @(Get-LocalRelayAddresses)
+    }
+    $remotePeers = New-Object System.Collections.ArrayList
+    $removedPeers = New-Object System.Collections.ArrayList
+    foreach ($peer in @(Copy-RelayPeers -Peers $Peers)) {
+        if (Test-IsLocalRelayPeer `
+            -Peer $peer `
+            -LocalDeviceId $LocalDeviceId `
+            -LocalPort $LocalPort `
+            -LocalAddresses $knownLocalAddresses) {
+            $null = $removedPeers.Add($peer)
+        }
+        else {
+            $null = $remotePeers.Add($peer)
+        }
+    }
+
+    return [PSCustomObject]@{
+        Peers        = @($remotePeers)
+        RemovedPeers = @($removedPeers)
+        Removed      = $removedPeers.Count
+    }
+}
+
 function Get-NormalizedRelayPeers {
     param(
         [object[]]$Peers,
@@ -1653,11 +1803,23 @@ function Find-ClipRelayDevices {
     param(
         [ValidateRange(200, 15000)]
         [int]$TimeoutMilliseconds = 1800,
-        [string]$LocalDeviceId = $script:DeviceId
+        [string]$LocalDeviceId = $script:DeviceId,
+        [int]$LocalPort = $script:Port,
+        [string[]]$LocalAddresses = @()
     )
 
+    $knownLocalAddresses = if (@($LocalAddresses).Count -gt 0) {
+        @($LocalAddresses)
+    }
+    else {
+        @(Get-LocalRelayAddresses)
+    }
     return @([ClipRelay.MdnsDiscovery]::Discover($TimeoutMilliseconds) | Where-Object {
-        [string]::IsNullOrWhiteSpace($LocalDeviceId) -or [string]$_.Id -cne $LocalDeviceId
+        -not (Test-IsLocalRelayPeer `
+            -Peer $_ `
+            -LocalDeviceId $LocalDeviceId `
+            -LocalPort $LocalPort `
+            -LocalAddresses $knownLocalAddresses)
     })
 }
 
@@ -1668,11 +1830,23 @@ function Merge-DiscoveredRelayDevices {
         [int]$DefaultPort = 47632,
         [string]$DefaultAccessToken = "",
         [string]$LocalDeviceId = "",
+        [string[]]$LocalAddresses = @(),
         [int]$MaximumPeers = 16
     )
 
+    $knownLocalAddresses = if (@($LocalAddresses).Count -gt 0) {
+        @($LocalAddresses)
+    }
+    else {
+        @(Get-LocalRelayAddresses)
+    }
+    $localPeerFilter = Remove-LocalRelayPeers `
+        -Peers $Peers `
+        -LocalDeviceId $LocalDeviceId `
+        -LocalPort $DefaultPort `
+        -LocalAddresses $knownLocalAddresses
     $merged = New-Object System.Collections.ArrayList
-    foreach ($peer in @(Copy-RelayPeers -Peers $Peers)) {
+    foreach ($peer in @($localPeerFilter.Peers)) {
         $null = $merged.Add($peer)
     }
     $added = 0
@@ -1684,7 +1858,11 @@ function Merge-DiscoveredRelayDevices {
             $deviceId = [string](Get-PropertyValue -Object $device -Name "id")
         }
         if ([string]::IsNullOrWhiteSpace($deviceId) -or
-            (-not [string]::IsNullOrWhiteSpace($LocalDeviceId) -and $deviceId -ceq $LocalDeviceId)) {
+            (Test-IsLocalRelayPeer `
+                -Peer $device `
+                -LocalDeviceId $LocalDeviceId `
+                -LocalPort $DefaultPort `
+                -LocalAddresses $knownLocalAddresses)) {
             continue
         }
         $address = [string](Get-PropertyValue -Object $device -Name "Address")
@@ -1710,7 +1888,7 @@ function Merge-DiscoveredRelayDevices {
         $matchIndex = -1
         for ($index = 0; $index -lt $merged.Count; $index++) {
             $existing = $merged[$index]
-            if ([string]$existing.id -ceq $deviceId -or
+            if ([string]::Equals([string]$existing.id, $deviceId, [StringComparison]::OrdinalIgnoreCase) -or
                 (([string]$existing.address).Equals($address, [StringComparison]::OrdinalIgnoreCase) -and
                     [int]$existing.port -eq $devicePort)) {
                 $matchIndex = $index
@@ -1748,6 +1926,7 @@ function Merge-DiscoveredRelayDevices {
         Updated      = $updated
         AuthRequired = $authRequired
         Discovered   = @($DiscoveredDevices).Count
+        Removed      = $localPeerFilter.Removed
     }
 }
 
@@ -1878,10 +2057,18 @@ function Save-PeerConfiguration {
             platform    = ""
         })
     }
-    $normalizedPeers = @(Get-NormalizedRelayPeers -Peers $Peers -DefaultPort $ListenPort -DefaultAccessToken $normalizedAccessToken)
+    $normalizedPeerCandidates = @(Get-NormalizedRelayPeers -Peers $Peers -DefaultPort $ListenPort -DefaultAccessToken $normalizedAccessToken)
+    $localPeerFilter = Remove-LocalRelayPeers `
+        -Peers $normalizedPeerCandidates `
+        -LocalDeviceId $script:DeviceId `
+        -LocalPort $ListenPort
+    $normalizedPeers = @($localPeerFilter.Peers)
+    if ($normalizedPeers.Count -lt 1) {
+        throw "本机不能作为目标设备。请添加至少一台其他设备。"
+    }
     $enabledPeers = @(Get-EnabledRelayPeers -Peers $normalizedPeers)
     if ($enabledPeers.Count -lt 1) {
-        throw "至少需要启用一台接收设备。"
+        throw "至少需要启用一台远端接收设备。"
     }
     $primaryPeer = $enabledPeers[0]
     $normalized = [string]$primaryPeer.address
@@ -2360,10 +2547,18 @@ if ($peerWasExplicitlyProvided -or $null -eq $configuredPeers -or @($configuredP
 else {
     $peerSeed = @($configuredPeers)
 }
-$script:Peers = @(Get-NormalizedRelayPeers -Peers $peerSeed -DefaultPort $Port -DefaultAccessToken $script:AccessToken)
+$normalizedPeerSeed = @(Get-NormalizedRelayPeers -Peers $peerSeed -DefaultPort $Port -DefaultAccessToken $script:AccessToken)
+$localPeerFilter = Remove-LocalRelayPeers `
+    -Peers $normalizedPeerSeed `
+    -LocalDeviceId $script:DeviceId `
+    -LocalPort $Port
+$script:Peers = @($localPeerFilter.Peers)
+if ($localPeerFilter.Removed -gt 0) {
+    $configRequiresDiscoveryMigration = $true
+}
 $enabledConfiguredPeers = @(Get-EnabledRelayPeers -Peers $script:Peers)
 if ($enabledConfiguredPeers.Count -lt 1) {
-    throw "ClipRelay 配置中没有启用的接收设备。"
+    throw "ClipRelay 配置中没有启用的远端接收设备；本机不能作为目标设备。"
 }
 $Peer = [string]$enabledConfiguredPeers[0].address
 
@@ -3578,7 +3773,11 @@ function Show-RelayPeerManager {
     $bodyFont = "Microsoft YaHei UI"
     $monoFont = "Cascadia Mono"
     $peerList = New-Object System.Collections.ArrayList
-    foreach ($peer in @(Copy-RelayPeers -Peers $Peers)) { $null = $peerList.Add($peer) }
+    $localPeerFilter = Remove-LocalRelayPeers `
+        -Peers $Peers `
+        -LocalDeviceId $LocalDeviceId `
+        -LocalPort $DefaultPort
+    foreach ($peer in @($localPeerFilter.Peers)) { $null = $peerList.Add($peer) }
 
     $newLabel = {
         param($Parent, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height, [single]$Size, $Style, $Color, [string]$FontName = $bodyFont)
@@ -3778,7 +3977,10 @@ function Show-RelayPeerManager {
         $hintLabel.ForeColor = $colors.Muted
         $form.Update()
         try {
-            $devices = @(& $findDevicesCommand -TimeoutMilliseconds 1800 -LocalDeviceId $LocalDeviceId)
+            $devices = @(& $findDevicesCommand `
+                -TimeoutMilliseconds 1800 `
+                -LocalDeviceId $LocalDeviceId `
+                -LocalPort $DefaultPort)
             $merge = & $mergeDevicesCommand `
                 -Peers @($peerList) `
                 -DiscoveredDevices $devices `
@@ -4250,6 +4452,7 @@ function Show-RelayControlCenter {
         $startPeersTestCommand = Get-Command Start-RelayPeersConnectivityTest
         $deliverySummaryCommand = Get-Command Get-RelayDeliverySummary
         $peerManagerCommand = Get-Command Show-RelayPeerManager
+        $removeLocalPeersCommand = Get-Command Remove-LocalRelayPeers
         $saveSettingsCommand = Get-Command Save-PeerConfiguration
         $snapshotCommand = Get-Command Get-RelayRuntimeSnapshot
         $notificationCommand = Get-Command Show-ClipRelayNotification
@@ -4565,9 +4768,14 @@ function Show-RelayControlCenter {
                 if (-not [int]::TryParse($portInput.TextBox.Text.Trim(), [ref]$parsedPort)) {
                     throw "服务端口必须是整数。"
                 }
-                $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
+                $localPeerFilter = & $removeLocalPeersCommand `
+                    -Peers @($draftPeers) `
+                    -LocalDeviceId $script:DeviceId `
+                    -LocalPort $parsedPort
+                $peersToSave = @($localPeerFilter.Peers)
+                $enabledDraftPeers = @($peersToSave | Where-Object { [bool]$_.enabled })
                 if ($enabledDraftPeers.Count -lt 1) {
-                    throw "至少需要启用一台接收设备。"
+                    throw "至少需要启用一台远端接收设备；本机不能作为目标设备。"
                 }
                 $normalized = & $saveSettingsCommand `
                     -PeerAddress ([string]$enabledDraftPeers[0].address) `
@@ -4575,7 +4783,7 @@ function Show-RelayControlCenter {
                     -ListenPort $parsedPort `
                     -AccessToken $tokenInput.TextBox.Text `
                     -StartupEnabled ([bool]$startupToggle.Checked) `
-                    -Peers @($draftPeers) `
+                    -Peers $peersToSave `
                     -DiscoveryEnabled ([bool]$discoveryToggle.Checked) `
                     -DeviceName $deviceNameInput.TextBox.Text
                 if ($notifyToggle.Checked) {

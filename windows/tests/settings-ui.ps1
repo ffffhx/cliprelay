@@ -124,6 +124,10 @@ function Get-LocalShareableAddresses {
 function Test-StartupRegistration { return $true }
 function Set-ClipboardTextWithRetry { param([string]$Text) }
 function Copy-RelayPeers { param([object[]]$Peers); return @($Peers) }
+function Remove-LocalRelayPeers {
+    param([object[]]$Peers, [string]$LocalDeviceId, [int]$LocalPort, [string[]]$LocalAddresses)
+    return [PSCustomObject]@{ Peers = @($Peers); RemovedPeers = @(); Removed = 0 }
+}
 function Test-PeerConnectivity {
     param([string]$Address, [int]$Port, [int]$TimeoutMilliseconds, [string]$AccessToken)
     return "ok"

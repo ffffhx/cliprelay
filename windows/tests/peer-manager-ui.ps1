@@ -68,6 +68,14 @@ function Copy-RelayPeers {
         }
     })
 }
+function Remove-LocalRelayPeers {
+    param([object[]]$Peers, [string]$LocalDeviceId, [int]$LocalPort, [string[]]$LocalAddresses)
+    return [PSCustomObject]@{
+        Peers = @(Copy-RelayPeers -Peers $Peers)
+        RemovedPeers = @()
+        Removed = 0
+    }
+}
 function Get-NormalizedRelayPeers {
     param([object[]]$Peers, [int]$DefaultPort, [string]$DefaultAccessToken)
     return @($Peers)
@@ -77,7 +85,7 @@ function Test-PeerConnectivity {
     return "ok"
 }
 function Find-ClipRelayDevices {
-    param([int]$TimeoutMilliseconds, [string]$LocalDeviceId)
+    param([int]$TimeoutMilliseconds, [string]$LocalDeviceId, [int]$LocalPort)
     return @()
 }
 function Merge-DiscoveredRelayDevices {
