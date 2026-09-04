@@ -135,6 +135,14 @@ $peers = @(
         platform = "windows"
     }
 )
+$script:peerChangeCount = 0
+$script:lastChangedPeers = @()
+$onPeersChanged = {
+    param([object[]]$Peers)
+    $script:peerChangeCount++
+    $script:lastChangedPeers = @(Copy-RelayPeers -Peers $Peers)
+    return $true
+}
 
 $captured = $false
 $timer = New-Object System.Windows.Forms.Timer
@@ -153,6 +161,13 @@ $timer.Add_Tick({
         $manager.Close()
         throw "The peer manager does not expose a visible mDNS scan button."
     }
+    $autoSaveLabel = $manager.Controls["PeerAutoSaveStatusLabel"]
+    $footerCloseButton = $manager.Controls["ClosePeerManagerButton"]
+    if ($null -eq $autoSaveLabel -or $null -eq $footerCloseButton -or
+        @($manager.Controls | Where-Object { $_.Text -eq (-join ([char[]]@(0x5E94, 0x7528, 0x8BBE, 0x5907))) }).Count -gt 0) {
+        $manager.Close()
+        throw "The peer manager still exposes an apply/cancel step instead of autosave."
+    }
     if (-not [string]::IsNullOrWhiteSpace($ScreenshotPath)) {
         $bitmap = New-Object System.Drawing.Bitmap($manager.Width, $manager.Height)
         try {
@@ -167,7 +182,7 @@ $timer.Add_Tick({
     $manager.Close()
 })
 $timer.Start()
-$null = Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken ""
+$null = Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "" -OnPeersChanged $onPeersChanged
 $timer.Dispose()
 if (-not $script:captured) { throw "The peer manager did not open for validation." }
 
@@ -186,24 +201,28 @@ $toggleTimer.Add_Tick({
     $probeCountLabel = $controls |
         Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -match "^\d+/\d+ " } |
         Select-Object -First 1
-    $probeApplyButton = $manager.Controls |
-        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
-        Select-Object -Last 1
-    if ($null -eq $probeToggle -or $null -eq $probeCountLabel -or $null -eq $probeApplyButton) {
+    $probeCloseButton = $manager.Controls["ClosePeerManagerButton"]
+    if ($null -eq $probeToggle -or $null -eq $probeCountLabel -or $null -eq $probeCloseButton) {
         $manager.Close()
         throw "The peer manager toggle controls were not found."
     }
 
+    $changeCountBeforeToggle = $script:peerChangeCount
     $probeToggle.Checked = $false
     if ($probeCountLabel.Text -notmatch "^1/2 ") {
         $manager.Close()
         throw "Toggling a peer did not update the enabled-device count."
     }
+    if ($script:peerChangeCount -ne ($changeCountBeforeToggle + 1) -or
+        [bool]$script:lastChangedPeers[0].enabled) {
+        $manager.Close()
+        throw "Toggling a peer did not persist immediately."
+    }
     $script:toggleApplied = $true
-    $probeApplyButton.PerformClick()
+    $probeCloseButton.PerformClick()
 })
 $toggleTimer.Start()
-$toggledPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "")
+$toggledPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "" -OnPeersChanged $onPeersChanged)
 $toggleTimer.Dispose()
 if (-not $script:toggleApplied) { throw "The peer toggle regression check did not run." }
 if ($toggledPeers.Count -ne 2 -or [bool]$toggledPeers[0].enabled -or -not [bool]$toggledPeers[1].enabled) {
@@ -235,18 +254,21 @@ $removeTimer.Add_Tick({
     $probeCountLabel = $controls |
         Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -match "^\d+/\d+ " } |
         Select-Object -First 1
-    $probeApplyButton = $manager.Controls |
-        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
-        Select-Object -Last 1
+    $probeCloseButton = $manager.Controls["ClosePeerManagerButton"]
     if ($null -eq $probeCountLabel -or $probeCountLabel.Text -notmatch "^1/1 ") {
         $manager.Close()
         throw "Removing a peer did not refresh the enabled-device count."
     }
+    if ($null -eq $probeCloseButton -or $script:lastChangedPeers.Count -ne 1 -or
+        $script:lastChangedPeers[0].id -ne "computer") {
+        $manager.Close()
+        throw "Removing a peer did not persist immediately."
+    }
     $script:removeApplied = $true
-    $probeApplyButton.PerformClick()
+    $probeCloseButton.PerformClick()
 })
 $removeTimer.Start()
-$remainingPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "")
+$remainingPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "" -OnPeersChanged $onPeersChanged)
 $removeTimer.Dispose()
 if (-not $script:removeApplied) { throw "The peer removal regression check did not run." }
 if ($remainingPeers.Count -ne 1 -or $remainingPeers[0].id -ne "computer") {
@@ -302,18 +324,20 @@ $editManagerTimer.Add_Tick({
     $renamedLabel = $controls |
         Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -eq "Renamed Phone" } |
         Select-Object -First 1
-    $probeApplyButton = $manager.Controls |
-        Where-Object { $_.GetType().FullName -eq "ClipRelay.RelayButton" } |
-        Select-Object -Last 1
-    if ($null -eq $renamedLabel -or $null -eq $probeApplyButton) {
+    $probeCloseButton = $manager.Controls["ClosePeerManagerButton"]
+    if ($null -eq $renamedLabel -or $null -eq $probeCloseButton) {
         $manager.Close()
         throw "Editing a peer did not refresh its displayed name."
     }
+    if ($script:lastChangedPeers.Count -ne 2 -or $script:lastChangedPeers[0].name -ne "Renamed Phone") {
+        $manager.Close()
+        throw "Editing a peer did not persist immediately."
+    }
     $script:editApplied = $true
-    $probeApplyButton.PerformClick()
+    $probeCloseButton.PerformClick()
 })
 $editManagerTimer.Start()
-$editedPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "")
+$editedPeers = @(Show-RelayPeerManager -Owner $null -Peers $peers -DefaultPort 47632 -DefaultAccessToken "" -OnPeersChanged $onPeersChanged)
 $editManagerTimer.Dispose()
 if (-not $script:editApplied) { throw "The peer edit regression check did not run." }
 if ($editedPeers.Count -ne 2 -or $editedPeers[0].name -ne "Renamed Phone") {

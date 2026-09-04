@@ -3620,7 +3620,8 @@ function Show-RelayPeerManager {
         [object[]]$Peers,
         [int]$DefaultPort,
         [string]$DefaultAccessToken = "",
-        [string]$LocalDeviceId = ""
+        [string]$LocalDeviceId = "",
+        [scriptblock]$OnPeersChanged = $null
     )
 
     $colors = @{
@@ -3717,18 +3718,49 @@ function Show-RelayPeerManager {
     $scanButton = & $newButton $form "扫描设备" 148 494 116 38 $colors.Surface $colors.Raised $colors.Violet $colors.Border
     $scanButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
     $scanButton.Name = "ScanDevicesButton"
-    $hintLabel = & $newLabel $form "自动发现后仍需确认应用" 278 494 258 38 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+    $hintLabel = & $newLabel $form "扫描结果会自动保存" 278 494 258 38 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
     $hintLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
-    $cancelButton = & $newButton $form "取消" 340 542 92 36 $colors.Surface $colors.Raised $colors.Muted $colors.Border
-    $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
-    $saveButton = & $newButton $form "应用设备" 442 542 94 36 $colors.Blue ([System.Drawing.Color]::FromArgb(74, 148, 245)) $colors.Text ([System.Drawing.Color]::Transparent)
-    $saveButton.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Bold)
+    $autoSaveLabel = & $newLabel $form "● 开关与设备更改会自动保存" 24 542 396 36 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Success $bodyFont
+    $autoSaveLabel.Name = "PeerAutoSaveStatusLabel"
+    $footerCloseButton = & $newButton $form "关闭" 442 542 94 36 $colors.Surface $colors.Raised $colors.TextDim $colors.Border
+    $footerCloseButton.Name = "ClosePeerManagerButton"
+    $footerCloseButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
 
     $editorCommand = Get-Command Show-RelayPeerEditor
+    $copyPeersCommand = Get-Command Copy-RelayPeers
     $normalizePeersCommand = Get-Command Get-NormalizedRelayPeers
     $findDevicesCommand = Get-Command Find-ClipRelayDevices
     $mergeDevicesCommand = Get-Command Merge-DiscoveredRelayDevices
     $refreshState = [PSCustomObject]@{ Command = $null }
+    $changeState = [PSCustomObject]@{ Reverting = $false }
+    $persistPeers = {
+        try {
+            $normalized = @(& $normalizePeersCommand `
+                -Peers @($peerList) `
+                -DefaultPort $DefaultPort `
+                -DefaultAccessToken $DefaultAccessToken)
+            if (@($normalized | Where-Object { $_.enabled }).Count -lt 1) {
+                throw "至少需要启用一台接收设备。"
+            }
+
+            if ($null -ne $OnPeersChanged) {
+                $saveResult = & $OnPeersChanged -Peers @($normalized)
+                if ($saveResult -is [bool] -and -not $saveResult) {
+                    throw "更改未能保存，请检查控制中心中的设置。"
+                }
+            }
+
+            $form.Tag = @($normalized)
+            $autoSaveLabel.Text = "● 已自动保存 · $(Get-Date -Format 'HH:mm:ss')"
+            $autoSaveLabel.ForeColor = $colors.Success
+            return $true
+        }
+        catch {
+            $autoSaveLabel.Text = "● $($_.Exception.Message)"
+            $autoSaveLabel.ForeColor = $colors.Danger
+            return $false
+        }
+    }.GetNewClosure()
     $refreshRows = $null
     $refreshRows = {
         $listHost.SuspendLayout()
@@ -3783,14 +3815,34 @@ function Show-RelayPeerManager {
                         DefaultPort       = $DefaultPort
                         DefaultAccessToken = $DefaultAccessToken
                         RefreshState      = $refreshState
+                        PersistCommand    = $persistPeers
+                        ChangeState       = $changeState
                     }
 
                     $toggle.Add_CheckedChanged({
                         $context = $rowEventContext
+                        if ($context.ChangeState.Reverting) {
+                            return
+                        }
+                        $matchedPeerIndex = -1
+                        $previousEnabled = $false
                         for ($peerIndex = 0; $peerIndex -lt $context.PeerList.Count; $peerIndex++) {
                             if ([string]$context.PeerList[$peerIndex].id -eq $context.PeerId) {
+                                $matchedPeerIndex = $peerIndex
+                                $previousEnabled = [bool]$context.PeerList[$peerIndex].enabled
                                 $context.PeerList[$peerIndex].enabled = [bool]$context.Toggle.Checked
                                 break
+                            }
+                        }
+                        $persistCommand = $context.PersistCommand
+                        if ($matchedPeerIndex -ge 0 -and -not (& $persistCommand)) {
+                            $context.ChangeState.Reverting = $true
+                            try {
+                                $context.PeerList[$matchedPeerIndex].enabled = $previousEnabled
+                                $context.Toggle.Checked = $previousEnabled
+                            }
+                            finally {
+                                $context.ChangeState.Reverting = $false
                             }
                         }
                         $context.CountLabel.Text = "$(@($context.PeerList | Where-Object { $_.enabled }).Count)/$($context.PeerList.Count) 台已启用"
@@ -3802,7 +3854,12 @@ function Show-RelayPeerManager {
                                 $editCommand = $context.EditorCommand
                                 $edited = & $editCommand -Owner $context.OwnerForm -Peer $context.PeerList[$peerIndex] -DefaultPort $context.DefaultPort -DefaultAccessToken $context.DefaultAccessToken
                                 if ($null -ne $edited) {
+                                    $previousPeer = $context.PeerList[$peerIndex]
                                     $context.PeerList[$peerIndex] = $edited
+                                    $persistCommand = $context.PersistCommand
+                                    if (-not (& $persistCommand)) {
+                                        $context.PeerList[$peerIndex] = $previousPeer
+                                    }
                                     $refreshCommand = $context.RefreshState.Command
                                     & $refreshCommand
                                 }
@@ -3814,7 +3871,12 @@ function Show-RelayPeerManager {
                         $context = $rowEventContext
                         for ($peerIndex = 0; $peerIndex -lt $context.PeerList.Count; $peerIndex++) {
                             if ([string]$context.PeerList[$peerIndex].id -eq $context.PeerId) {
+                                $removedPeer = $context.PeerList[$peerIndex]
                                 $context.PeerList.RemoveAt($peerIndex)
+                                $persistCommand = $context.PersistCommand
+                                if (-not (& $persistCommand)) {
+                                    $context.PeerList.Insert($peerIndex, $removedPeer)
+                                }
                                 $refreshCommand = $context.RefreshState.Command
                                 & $refreshCommand
                                 break
@@ -3848,6 +3910,9 @@ function Show-RelayPeerManager {
         $edited = & $editorCommand -Owner $form -Peer $seed -DefaultPort $DefaultPort -DefaultAccessToken $DefaultAccessToken
         if ($null -ne $edited) {
             $null = $peerList.Add($edited)
+            if (-not (& $persistPeers)) {
+                $peerList.RemoveAt($peerList.Count - 1)
+            }
             & $refreshRows
         }
     }.GetNewClosure())
@@ -3858,6 +3923,7 @@ function Show-RelayPeerManager {
         $hintLabel.ForeColor = $colors.Muted
         $form.Update()
         try {
+            $previousPeers = @(& $copyPeersCommand -Peers @($peerList))
             $devices = @(& $findDevicesCommand `
                 -TimeoutMilliseconds 1800 `
                 -LocalDeviceId $LocalDeviceId `
@@ -3871,6 +3937,10 @@ function Show-RelayPeerManager {
                 -MaximumPeers 16
             $peerList.Clear()
             foreach ($mergedPeer in @($merge.Peers)) { $null = $peerList.Add($mergedPeer) }
+            if (-not (& $persistPeers)) {
+                $peerList.Clear()
+                foreach ($previousPeer in $previousPeers) { $null = $peerList.Add($previousPeer) }
+            }
             & $refreshRows
             if ($merge.Discovered -eq 0) {
                 $hintLabel.Text = "未发现设备；可继续手动添加"
@@ -3892,29 +3962,14 @@ function Show-RelayPeerManager {
         }
     }.GetNewClosure())
     $closeButton.Add_Click({ $form.Close() }.GetNewClosure())
-    $cancelButton.Add_Click({ $form.Close() }.GetNewClosure())
-    $saveButton.Add_Click({
-        try {
-            $normalized = @(& $normalizePeersCommand -Peers @($peerList) -DefaultPort $DefaultPort -DefaultAccessToken $DefaultAccessToken)
-            if (@($normalized | Where-Object { $_.enabled }).Count -lt 1) {
-                throw "至少需要启用一台接收设备。"
-            }
-            $form.Tag = $normalized
-            $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-            $form.Close()
-        }
-        catch {
-            $hintLabel.Text = [string]$_.Exception.Message
-            $hintLabel.ForeColor = $colors.Danger
-        }
-    }.GetNewClosure())
+    $footerCloseButton.Add_Click({ $form.Close() }.GetNewClosure())
 
     & $refreshRows
-    $form.AcceptButton = $saveButton
-    $form.CancelButton = $cancelButton
+    $form.Tag = @(& $normalizePeersCommand -Peers @($peerList) -DefaultPort $DefaultPort -DefaultAccessToken $DefaultAccessToken)
+    $form.CancelButton = $footerCloseButton
     $form.EnableDpiLayout()
-    $dialogResult = if ($null -ne $Owner) { $form.ShowDialog($Owner) } else { $form.ShowDialog() }
-    $result = if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) { @($form.Tag) } else { $null }
+    $null = if ($null -ne $Owner) { $form.ShowDialog($Owner) } else { $form.ShowDialog() }
+    $result = @($form.Tag)
     $form.Dispose()
     return $result
 }
@@ -4281,6 +4336,7 @@ function Show-RelayControlCenter {
         $null = & $newLabel $preferencesCard "气泡通知提醒" 14 30 180 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
         $null = & $newLabel $preferencesCard "收到剪贴板内容或网络异常时弹出系统气泡通知" 14 48 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
         $notifyToggle = New-Object ClipRelay.RelayToggle
+        $notifyToggle.Name = "NotificationToggle"
         $notifyToggle.Location = New-Object System.Drawing.Point(426, 34)
         $notifyToggle.Checked = $script:Notifications
         $notifyToggle.OnColor = $colors.Blue
@@ -4296,6 +4352,7 @@ function Show-RelayControlCenter {
         $null = & $newLabel $preferencesCard "开机自动启动" 14 74 180 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
         $null = & $newLabel $preferencesCard "登录 Windows 后自动在后台保持接收与中继服务" 14 92 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
         $startupToggle = New-Object ClipRelay.RelayToggle
+        $startupToggle.Name = "StartupToggle"
         $startupToggle.Location = New-Object System.Drawing.Point(426, 78)
         $startupToggle.Checked = Test-StartupRegistration
         $startupToggle.OnColor = $colors.Blue
@@ -4311,6 +4368,7 @@ function Show-RelayControlCenter {
         $null = & $newLabel $preferencesCard "局域网自动发现 (mDNS)" 14 118 200 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
         $null = & $newLabel $preferencesCard "开启后其他 ClipRelay 设备可在局域网内自动搜索到本机" 14 136 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
         $discoveryToggle = New-Object ClipRelay.RelayToggle
+        $discoveryToggle.Name = "DiscoveryToggle"
         $discoveryToggle.Location = New-Object System.Drawing.Point(426, 122)
         $discoveryToggle.Checked = $script:DiscoveryEnabled
         $discoveryToggle.OnColor = $colors.Blue
@@ -4325,24 +4383,27 @@ function Show-RelayControlCenter {
         # Row 4: Device Name
         $null = & $newLabel $preferencesCard "发现设备名称" 14 162 140 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
         $deviceNameInput = & $newInput $preferencesCard $script:DeviceName 14 182 460 32 $false
+        $deviceNameInput.TextBox.Name = "DeviceNameInput"
 
         # Row 5: Port & Token
         $null = & $newLabel $preferencesCard "本机端口" 14 222 80 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
         $portInput = & $newInput $preferencesCard ([string]$script:Port) 14 242 86 32 $false
+        $portInput.TextBox.Name = "PortInput"
         $null = & $newLabel $preferencesCard "本机接收密钥" 110 222 120 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
         $tokenInput = & $newInput $preferencesCard $script:AccessToken 110 242 290 32 $true
+        $tokenInput.TextBox.Name = "AccessTokenInput"
         $showTokenButton = & $newButton $preferencesCard "显示" 408 242 66 32 $colors.Raised $colors.Border $colors.Muted $colors.Border
         $showTokenButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
 
         # Row 6: Security Hint
         $null = & $newLabel $preferencesCard "发现仅公开名称与端口，不公开密钥；目标设备密钥在【管理设备】中单独维护。" 14 282 460 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
 
-        # Footer Action Bar
-        $footerHint = & $newLabel $form "端口或发现配置变更时会自动重启接收服务" 256 658 240 34 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
-        $cancelButton = & $newButton $form "取消" 520 654 100 40 $colors.Surface $colors.Border $colors.Muted $colors.Border
+        # Footer: settings commit as they are changed, so there is no second save step.
+        $autoSaveLabel = & $newLabel $form "● 更改会自动保存" 256 658 344 34 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Success $bodyFont
+        $autoSaveLabel.Name = "AutoSaveStatusLabel"
+        $cancelButton = & $newButton $form "关闭" 628 654 116 40 $colors.Surface $colors.Border $colors.TextDim $colors.Border
+        $cancelButton.Name = "CloseSettingsButton"
         $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
-        $saveButton = & $newButton $form "保存设置" 628 654 116 40 $colors.Blue ([System.Drawing.Color]::FromArgb(74, 148, 245)) $colors.Text ([System.Drawing.Color]::Transparent)
-        $saveButton.Font = New-Object System.Drawing.Font($bodyFont, 9.5, [System.Drawing.FontStyle]::Bold)
 
         $setClipboardCommand = Get-Command Set-ClipboardTextWithRetry
         $startPeersTestCommand = Get-Command Start-RelayPeersConnectivityTest
@@ -4351,7 +4412,78 @@ function Show-RelayControlCenter {
         $removeLocalPeersCommand = Get-Command Remove-LocalRelayPeers
         $saveSettingsCommand = Get-Command Save-PeerConfiguration
         $snapshotCommand = Get-Command Get-RelayRuntimeSnapshot
-        $notificationCommand = Get-Command Show-ClipRelayNotification
+
+        $autoSaveState = [PSCustomObject]@{ Active = $false }
+        $setAutoSaveStatus = {
+            param(
+                [string]$Text,
+                [System.Drawing.Color]$Color
+            )
+
+            if (-not $form.IsDisposed) {
+                $autoSaveLabel.Text = $Text
+                $autoSaveLabel.ForeColor = $Color
+            }
+        }.GetNewClosure()
+        $saveCurrentSettings = {
+            param([bool]$ShowErrors = $true)
+
+            if ($autoSaveState.Active -or $form.IsDisposed) {
+                return $false
+            }
+
+            $autoSaveState.Active = $true
+            try {
+                & $setAutoSaveStatus "● 正在保存…" $colors.Warning
+
+                $parsedPort = 0
+                if (-not [int]::TryParse($portInput.TextBox.Text.Trim(), [ref]$parsedPort)) {
+                    throw "服务端口必须是整数。"
+                }
+                if ($parsedPort -lt 1 -or $parsedPort -gt 65535) {
+                    throw "服务端口必须是 1 到 65535 之间的整数。"
+                }
+
+                $localPeerFilter = & $removeLocalPeersCommand `
+                    -Peers @($draftPeers) `
+                    -LocalDeviceId $controlCenterDeviceId `
+                    -LocalPort $parsedPort
+                $peersToSave = @($localPeerFilter.Peers)
+                $enabledDraftPeers = @($peersToSave | Where-Object { [bool]$_.enabled })
+                if ($enabledDraftPeers.Count -lt 1) {
+                    throw "至少需要启用一台远端接收设备；本机不能作为目标设备。"
+                }
+
+                $null = & $saveSettingsCommand `
+                    -PeerAddress ([string]$enabledDraftPeers[0].address) `
+                    -Notifications ([bool]$notifyToggle.Checked) `
+                    -ListenPort $parsedPort `
+                    -AccessToken $tokenInput.TextBox.Text `
+                    -StartupEnabled ([bool]$startupToggle.Checked) `
+                    -Peers $peersToSave `
+                    -DiscoveryEnabled ([bool]$discoveryToggle.Checked) `
+                    -DeviceName $deviceNameInput.TextBox.Text
+
+                & $setAutoSaveStatus "● 已自动保存 · $(Get-Date -Format 'HH:mm:ss')" $colors.Success
+                return $true
+            }
+            catch {
+                & $setAutoSaveStatus "● 更改尚未保存" $colors.Danger
+                if ($ShowErrors) {
+                    $null = [System.Windows.Forms.MessageBox]::Show(
+                        $form,
+                        $_.Exception.Message,
+                        "无法自动保存设置",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                }
+                return $false
+            }
+            finally {
+                $autoSaveState.Active = $false
+            }
+        }.GetNewClosure()
 
         $peerSidebarState = [PSCustomObject]@{
             Expanded = $false
@@ -4617,6 +4749,27 @@ function Show-RelayControlCenter {
             }
         }.GetNewClosure()
 
+        $applyManagedPeers = {
+            param([object[]]$Peers)
+
+            $previousPeers = @($draftPeers)
+            $draftPeers.Clear()
+            foreach ($updatedPeer in @($Peers)) {
+                $null = $draftPeers.Add($updatedPeer)
+            }
+            & $updatePeerSummary
+            if (& $saveCurrentSettings) {
+                return $true
+            }
+
+            $draftPeers.Clear()
+            foreach ($previousPeer in $previousPeers) {
+                $null = $draftPeers.Add($previousPeer)
+            }
+            & $updatePeerSummary
+            return $false
+        }.GetNewClosure()
+
         & $updatePeerSummary
 
         $copyResetTimer = New-Object System.Windows.Forms.Timer
@@ -4651,22 +4804,36 @@ function Show-RelayControlCenter {
             $copyButton.TextColor = $colors.Text
         }.GetNewClosure())
         $managePeersButton.Add_Click({
-            $updatedPeers = & $peerManagerCommand `
+            $managerDefaultPort = $controlCenterListenPort
+            $parsedManagerPort = 0
+            if ([int]::TryParse($portInput.TextBox.Text.Trim(), [ref]$parsedManagerPort) -and
+                $parsedManagerPort -ge 1 -and $parsedManagerPort -le 65535) {
+                $managerDefaultPort = $parsedManagerPort
+            }
+            $null = & $peerManagerCommand `
                 -Owner $form `
                 -Peers @($draftPeers) `
-                -DefaultPort $controlCenterListenPort `
+                -DefaultPort $managerDefaultPort `
                 -DefaultAccessToken "" `
-                -LocalDeviceId $controlCenterDeviceId
-            if ($null -ne $updatedPeers) {
-                $draftPeers.Clear()
-                foreach ($updatedPeer in @($updatedPeers)) {
-                    $null = $draftPeers.Add($updatedPeer)
-                }
-                & $updatePeerSummary
-                & $runCheck
-            }
+                -LocalDeviceId $controlCenterDeviceId `
+                -OnPeersChanged $applyManagedPeers
+            & $runCheck
         }.GetNewClosure())
         $testButton.Add_Click($runCheck)
+        $notifyToggle.Add_CheckedChanged({
+            $null = & $saveCurrentSettings
+        }.GetNewClosure())
+        $startupToggle.Add_CheckedChanged({
+            $null = & $saveCurrentSettings
+        }.GetNewClosure())
+        $discoveryToggle.Add_CheckedChanged({
+            $null = & $saveCurrentSettings
+        }.GetNewClosure())
+        foreach ($settingsTextBox in @($deviceNameInput.TextBox, $portInput.TextBox, $tokenInput.TextBox)) {
+            $settingsTextBox.Add_Leave({
+                $null = & $saveCurrentSettings
+            }.GetNewClosure())
+        }
         $showTokenButton.Add_Click({
             $tokenInput.TextBox.UseSystemPasswordChar = -not $tokenInput.TextBox.UseSystemPasswordChar
             $showTokenButton.Text = if ($tokenInput.TextBox.UseSystemPasswordChar) { "显示" } else { "隐藏" }
@@ -4676,43 +4843,6 @@ function Show-RelayControlCenter {
         }.GetNewClosure())
         $closeButton.Add_Click({ $form.Close() }.GetNewClosure())
         $cancelButton.Add_Click({ $form.Close() }.GetNewClosure())
-        $saveButton.Add_Click({
-            try {
-                $parsedPort = 0
-                if (-not [int]::TryParse($portInput.TextBox.Text.Trim(), [ref]$parsedPort)) {
-                    throw "服务端口必须是整数。"
-                }
-                $localPeerFilter = & $removeLocalPeersCommand -Peers @($draftPeers) -LocalDeviceId $controlCenterDeviceId -LocalPort $parsedPort
-                $peersToSave = @($localPeerFilter.Peers)
-                $enabledDraftPeers = @($peersToSave | Where-Object { [bool]$_.enabled })
-                if ($enabledDraftPeers.Count -lt 1) {
-                    throw "至少需要启用一台远端接收设备；本机不能作为目标设备。"
-                }
-                $normalized = & $saveSettingsCommand `
-                    -PeerAddress ([string]$enabledDraftPeers[0].address) `
-                    -Notifications ([bool]$notifyToggle.Checked) `
-                    -ListenPort $parsedPort `
-                    -AccessToken $tokenInput.TextBox.Text `
-                    -StartupEnabled ([bool]$startupToggle.Checked) `
-                    -Peers $peersToSave `
-                    -DiscoveryEnabled ([bool]$discoveryToggle.Checked) `
-                    -DeviceName $deviceNameInput.TextBox.Text
-                if ($notifyToggle.Checked) {
-                    & $notificationCommand -Title "ClipRelay 设置已保存" -Message "并行广播：$($enabledDraftPeers.Count) 台设备；本机端口：$parsedPort。"
-                }
-                $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-                $form.Close()
-            }
-            catch {
-                $null = [System.Windows.Forms.MessageBox]::Show(
-                    $form,
-                    $_.Exception.Message,
-                    "无法保存设置",
-                    [System.Windows.Forms.MessageBoxButtons]::OK,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-            }
-        }.GetNewClosure())
 
         $runtimeTimer = New-Object System.Windows.Forms.Timer
         $runtimeTimer.Interval = 750
@@ -4782,7 +4912,6 @@ function Show-RelayControlCenter {
             CopyResetTimer    = $copyResetTimer
         }
 
-        $form.AcceptButton = $saveButton
         $form.CancelButton = $cancelButton
         $form.EnableDpiLayout()
         $form.Add_Shown({
@@ -4791,6 +4920,13 @@ function Show-RelayControlCenter {
             $runtimeTimer.Start()
             $connectivityTimer.Start()
             & $runCheck
+        }.GetNewClosure())
+        $form.Add_FormClosing({
+            param($sender, $eventArgs)
+            if ($eventArgs.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing -and
+                -not (& $saveCurrentSettings)) {
+                $eventArgs.Cancel = $true
+            }
         }.GetNewClosure())
         # Do not use GetNewClosure here. It creates a dynamic module whose
         # $script: scope is different from ClipRelay's actual script scope.

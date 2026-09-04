@@ -115,6 +115,10 @@ $script:Peers = @(
 $script:connectivityTaskSource = New-Object 'System.Threading.Tasks.TaskCompletionSource[ClipRelay.RelayDeliveryResult[]]'
 $script:managerDefaultPort = $null
 $script:managerLocalDeviceId = $null
+$script:managerResult = $null
+$script:saveCallCount = 0
+$script:lastSavedNotifications = $null
+$script:lastSavedPeers = @()
 
 function Get-LocalShareableAddresses {
     return @(
@@ -163,10 +167,22 @@ function Get-RelayDeliverySummary {
     }
 }
 function Show-RelayPeerManager {
-    param($Owner, [object[]]$Peers, [int]$DefaultPort, [string]$DefaultAccessToken, [string]$LocalDeviceId)
+    param(
+        $Owner,
+        [object[]]$Peers,
+        [int]$DefaultPort,
+        [string]$DefaultAccessToken,
+        [string]$LocalDeviceId,
+        [scriptblock]$OnPeersChanged
+    )
     $script:managerDefaultPort = $DefaultPort
     $script:managerLocalDeviceId = $LocalDeviceId
-    return $null
+    $result = $script:managerResult
+    $script:managerResult = $null
+    if ($null -ne $result -and $null -ne $OnPeersChanged) {
+        $null = & $OnPeersChanged -Peers @($result)
+    }
+    return $result
 }
 function Save-PeerConfiguration {
     param(
@@ -179,6 +195,9 @@ function Save-PeerConfiguration {
         [bool]$DiscoveryEnabled,
         [string]$DeviceName
     )
+    $script:saveCallCount++
+    $script:lastSavedNotifications = $Notifications
+    $script:lastSavedPeers = @($Peers)
     return $PeerAddress
 }
 function Get-RelayRuntimeSnapshot {
@@ -270,10 +289,21 @@ $peerSummaryTwo = @($form.Controls.Find("PeerSummaryTwoLabel", $true)) | Select-
 $peerSummaryToggle = @($form.Controls.Find("PeerSummaryToggleButton", $true)) | Select-Object -First 1
 $peerDetailsPanel = @($form.Controls.Find("PeerDetailsPanel", $true)) | Select-Object -First 1
 $managePeersButton = @($form.Controls.Find("ManagePeersButton", $true)) | Select-Object -First 1
+$autoSaveStatusLabel = @($form.Controls.Find("AutoSaveStatusLabel", $true)) | Select-Object -First 1
+$closeSettingsButton = @($form.Controls.Find("CloseSettingsButton", $true)) | Select-Object -First 1
+$notificationToggle = @($form.Controls.Find("NotificationToggle", $true)) | Select-Object -First 1
 if ($null -eq $peerCountLabel -or $null -eq $onlineStatusLabel -or
     $null -eq $peerSummaryOne -or $null -eq $peerSummaryTwo -or
-    $null -eq $peerSummaryToggle -or $null -eq $peerDetailsPanel -or $null -eq $managePeersButton) {
+    $null -eq $peerSummaryToggle -or $null -eq $peerDetailsPanel -or $null -eq $managePeersButton -or
+    $null -eq $autoSaveStatusLabel -or $null -eq $closeSettingsButton -or $null -eq $notificationToggle) {
     throw "The peer controls required for cancellation validation were not found."
+}
+$manualSaveText = -join ([char[]]@(0x4FDD, 0x5B58, 0x8BBE, 0x7F6E))
+$closeText = -join ([char[]]@(0x5173, 0x95ED))
+$autoSaveText = -join ([char[]]@(0x81EA, 0x52A8, 0x4FDD, 0x5B58))
+if ($source -match ('\$newButton\s+\$form\s+"' + [regex]::Escape($manualSaveText) + '"') -or
+    $closeSettingsButton.Text -ne $closeText -or $autoSaveStatusLabel.Text -notmatch $autoSaveText) {
+    throw "The control center still exposes a second manual settings-save step."
 }
 if ($peerCountLabel.Text -notmatch '^3\s' -or $peerCountLabel.Text -match '/') {
     throw "The broadcast target count still mixes enabled and total-device counts."
@@ -328,6 +358,36 @@ if ([int]$script:managerDefaultPort -ne $script:Port -or
 }
 if ($peerCountLabel.Text -ne $peerCountBeforeCancellation) {
     throw "Cancelling the peer manager replaced the configured peers."
+}
+
+$saveCountBeforeNotificationToggle = $script:saveCallCount
+$notificationToggle.Checked = -not $notificationToggle.Checked
+[System.Windows.Forms.Application]::DoEvents()
+$savedText = -join ([char[]]@(0x5DF2, 0x81EA, 0x52A8, 0x4FDD, 0x5B58))
+if ($script:saveCallCount -ne ($saveCountBeforeNotificationToggle + 1) -or
+    [bool]$script:lastSavedNotifications -ne [bool]$notificationToggle.Checked -or
+    $autoSaveStatusLabel.Text -notmatch $savedText) {
+    throw "Changing the notification toggle did not save immediately."
+}
+
+$script:managerResult = @($script:Peers) + @(
+    [PSCustomObject]@{
+        id = "yifan"
+        name = "YIFAN"
+        address = "192.168.1.7"
+        port = 47632
+        accessToken = ""
+        enabled = $true
+    }
+)
+$saveCountBeforePeerUpdate = $script:saveCallCount
+$managePeersButton.PerformClick()
+[System.Windows.Forms.Application]::DoEvents()
+if ($script:saveCallCount -ne ($saveCountBeforePeerUpdate + 1) -or
+    @($script:lastSavedPeers).Count -ne 4 -or
+    @($script:lastSavedPeers | Where-Object { $_.name -eq "YIFAN" }).Count -ne 1 -or
+    $peerCountLabel.Text -notmatch '^4\s') {
+    throw "A device-manager change did not save the target list immediately."
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ScreenshotPath)) {
