@@ -144,3 +144,45 @@ if (Test-IsLocalRelayPeer `
 }
 
 Write-Output "PASS: discovery removes local identities and endpoints without overwriting remote secrets or enablement."
+
+$knownPeers = @($existingPeers[0], [PSCustomObject]@{
+    id = "offline-id"
+    name = "Offline PC"
+    address = "192.168.1.40"
+    port = 47632
+    accessToken = "offline-secret"
+    enabled = $true
+    requiresAuth = $false
+    platform = "windows"
+})
+$refreshDevices = @([PSCustomObject]@{
+    Id = "unrelated-device"
+    Name = "Old phone"
+    Address = "192.168.1.18"
+    Port = 47632
+}) + $discovered
+$refresh = Merge-DiscoveredRelayDevices `
+    -Peers $knownPeers -DiscoveredDevices $refreshDevices `
+    -LocalDeviceId "local-id" -LocalAddresses @("192.168.1.5", "uckf.local") -ExistingOnly
+if ($refresh.Added -ne 0 -or $refresh.Updated -ne 1 -or @($refresh.Peers).Count -ne 2) {
+    throw "Refreshing known endpoints added an unknown device or lost an offline peer."
+}
+$refreshedPhone = @($refresh.Peers | Where-Object id -eq "phone-id")[0]
+if ($refreshedPhone.address -ne "192.168.1.28" -or $refreshedPhone.port -ne 47633 -or
+    $refreshedPhone.name -ne "Old phone" -or $refreshedPhone.accessToken -ne "phone-secret" -or
+    $refreshedPhone.enabled -or $refreshedPhone.requiresAuth) {
+    throw "Endpoint refresh changed a device preference or matched an unrelated device at its old IP."
+}
+if ($knownPeers[0].address -ne "192.168.1.18" -or $refresh.Peers[1].address -ne "192.168.1.40") {
+    throw "Endpoint refresh mutated the input or changed an undiscovered device."
+}
+$unchanged = Merge-DiscoveredRelayDevices `
+    -Peers $refresh.Peers -DiscoveredDevices $refreshDevices `
+    -LocalDeviceId "local-id" -LocalAddresses @("192.168.1.5", "uckf.local") -ExistingOnly
+if ($unchanged.Updated -ne 0) { throw "Unchanged endpoints triggered another settings save." }
+$emptyScan = Merge-DiscoveredRelayDevices `
+    -Peers $knownPeers -DiscoveredDevices @() -LocalAddresses @("192.168.1.5") -ExistingOnly
+if ($emptyScan.Updated -ne 0 -or @($emptyScan.Peers).Count -ne 2) {
+    throw "An empty scan did not preserve the saved devices."
+}
+Write-Output "PASS: connectivity refresh follows device IDs, preserves preferences and offline peers, and never adds devices."

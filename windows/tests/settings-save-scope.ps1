@@ -18,6 +18,7 @@ if ($parseErrors.Count -gt 0) {
 
 foreach ($functionName in @(
     "Get-PropertyValue",
+    "Read-ClipRelayConfiguration",
     "Get-NormalizedPeerAddress",
     "Get-NormalizedDeviceName",
     "Get-LocalRelayAddresses",
@@ -166,7 +167,39 @@ try {
         throw "Changing destinations without changing the local port requested a restart."
     }
 
+    $disabledPeers = @(Copy-RelayPeers -Peers $script:Peers)
+    foreach ($peer in $disabledPeers) { $peer.enabled = $false }
+    foreach ($roster in @(
+        [PSCustomObject]@{ Peers = $disabledPeers; Count = 2 },
+        [PSCustomObject]@{ Peers = @(); Count = 0 }
+    )) {
+        $null = Save-PeerConfiguration -Peers $roster.Peers -Notifications $true -ListenPort 47888 -StartupEnabled $true
+        $pausedConfig = Get-Content -LiteralPath $temporaryConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (@($pausedConfig.peers).Count -ne $roster.Count -or
+            @($pausedConfig.peers | Where-Object enabled).Count -ne 0 -or
+            $null -ne $script:pushUri -or $script:Peer -ne "" -or
+            $script:restartRequested -or $script:stopRequested) {
+            throw "An all-disabled or empty roster did not persist without stopping the receiver."
+        }
+        # Execute the real configuration-loading section without starting a tray
+        # process, listener, or keyboard hook. Restart must not revive a legacy peer.
+        $source = Get-Content -LiteralPath $clientPath -Raw -Encoding UTF8
+        $startupStart = $source.IndexOf('$configPath = Join-Path $PSScriptRoot "config.json"')
+        $startupEnd = $source.IndexOf('$mutex = $null', $startupStart)
+        $startupSource = $source.Substring($startupStart, $startupEnd - $startupStart).Replace(
+            '$configPath = Join-Path $PSScriptRoot "config.json"', '$configPath = $temporaryConfig'
+        )
+        & {
+            $Peer = ""
+            $Port = 0
+            Invoke-Expression $startupSource
+            if (@($script:Peers).Count -ne $roster.Count -or $enabledConfiguredPeers.Count -ne 0 -or $Peer -ne "") {
+                throw "Reloading a paused or empty roster re-enabled a destination."
+            }
+        }
+    }
     Write-Output "PASS: settings save migrates legacy config and persists independent multi-peer ports and tokens."
+    Write-Output "PASS: disabled and empty rosters persist and reload without restarting the receiver or reviving legacy targets."
 }
 finally {
     Remove-Item -LiteralPath $temporaryConfig -Force -ErrorAction SilentlyContinue

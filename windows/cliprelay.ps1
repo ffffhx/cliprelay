@@ -790,6 +790,15 @@ namespace ClipRelay
             }
         }
 
+        public static Task<DiscoveredDevice[]> DiscoverAsync(int timeoutMilliseconds)
+        {
+            return Task.Factory.StartNew(
+                () => Discover(timeoutMilliseconds),
+                CancellationToken.None,
+                TaskCreationOptions.DenyChildAttach,
+                TaskScheduler.Default);
+        }
+
         public static DiscoveredDevice[] Discover(int timeoutMilliseconds)
         {
             if (timeoutMilliseconds < 200 || timeoutMilliseconds > 15000)
@@ -1894,9 +1903,6 @@ function Get-NormalizedRelayPeers {
     )
 
     $sourcePeers = @($Peers)
-    if ($sourcePeers.Count -lt 1) {
-        throw "至少需要添加一台接收设备。"
-    }
     if ($sourcePeers.Count -gt 16) {
         throw "最多可以配置 16 台接收设备。"
     }
@@ -2005,6 +2011,15 @@ function Find-ClipRelayDevices {
     })
 }
 
+function Start-ClipRelayDeviceDiscovery {
+    param(
+        [ValidateRange(200, 15000)]
+        [int]$TimeoutMilliseconds = 1800
+    )
+
+    return [ClipRelay.MdnsDiscovery]::DiscoverAsync($TimeoutMilliseconds)
+}
+
 function Merge-DiscoveredRelayDevices {
     param(
         [object[]]$Peers,
@@ -2013,7 +2028,8 @@ function Merge-DiscoveredRelayDevices {
         [string]$DefaultAccessToken = "",
         [string]$LocalDeviceId = "",
         [string[]]$LocalAddresses = @(),
-        [int]$MaximumPeers = 16
+        [int]$MaximumPeers = 16,
+        [switch]$ExistingOnly
     )
 
     $knownLocalAddresses = if (@($LocalAddresses).Count -gt 0) {
@@ -2071,7 +2087,8 @@ function Merge-DiscoveredRelayDevices {
         for ($index = 0; $index -lt $merged.Count; $index++) {
             $existing = $merged[$index]
             if ([string]::Equals([string]$existing.id, $deviceId, [StringComparison]::OrdinalIgnoreCase) -or
-                (([string]$existing.address).Equals($address, [StringComparison]::OrdinalIgnoreCase) -and
+                (-not $ExistingOnly -and
+                    ([string]$existing.address).Equals($address, [StringComparison]::OrdinalIgnoreCase) -and
                     [int]$existing.port -eq $devicePort)) {
                 $matchIndex = $index
                 break
@@ -2079,6 +2096,16 @@ function Merge-DiscoveredRelayDevices {
         }
         if ($matchIndex -ge 0) {
             $existing = $merged[$matchIndex]
+            if ($ExistingOnly) {
+                # A reused IP or display name is not a device identity. Refresh
+                # only a known ID's endpoint; retain the user's other settings.
+                if ($existing.address -ine $address -or [int]$existing.port -ne $devicePort) {
+                    $existing.address = $address
+                    $existing.port = $devicePort
+                    $updated++
+                }
+                continue
+            }
             $existing.id = $deviceId
             $existing.name = $deviceName
             $existing.address = $address
@@ -2088,7 +2115,7 @@ function Merge-DiscoveredRelayDevices {
             $updated++
             continue
         }
-        if ($merged.Count -ge $MaximumPeers) { continue }
+        if ($ExistingOnly -or $merged.Count -ge $MaximumPeers) { continue }
         $null = $merged.Add([PSCustomObject][ordered]@{
             id           = $deviceId
             name         = $deviceName
@@ -2245,15 +2272,12 @@ function Save-PeerConfiguration {
         -LocalDeviceId $script:DeviceId `
         -LocalPort $ListenPort
     $normalizedPeers = @($localPeerFilter.Peers)
-    if ($normalizedPeers.Count -lt 1) {
+    if (@($Peers).Count -gt 0 -and $normalizedPeers.Count -lt 1) {
         throw "本机不能作为目标设备。请添加至少一台其他设备。"
     }
     $enabledPeers = @(Get-EnabledRelayPeers -Peers $normalizedPeers)
-    if ($enabledPeers.Count -lt 1) {
-        throw "至少需要启用一台远端接收设备。"
-    }
-    $primaryPeer = $enabledPeers[0]
-    $normalized = [string]$primaryPeer.address
+    $primaryPeer = if ($enabledPeers.Count -gt 0) { $enabledPeers[0] } else { $null }
+    $normalized = if ($null -ne $primaryPeer) { [string]$primaryPeer.address } else { "" }
 
     $portChanged = $ListenPort -ne $script:Port
     $discoveryChanged = $DiscoveryEnabled -ne $script:DiscoveryEnabled -or
@@ -2277,9 +2301,11 @@ function Save-PeerConfiguration {
     $configuration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:configPath -Encoding UTF8
 
     $script:Peer = $normalized
-    $script:Peers = Copy-RelayPeers -Peers $normalizedPeers
+    $script:Peers = @(Copy-RelayPeers -Peers $normalizedPeers)
     $script:Port = $ListenPort
-    $script:pushUri = (New-Object System.UriBuilder("http", $normalized, ([int]$primaryPeer.port), "push")).Uri
+    $script:pushUri = if ($null -ne $primaryPeer) {
+        (New-Object System.UriBuilder("http", $normalized, ([int]$primaryPeer.port), "push")).Uri
+    } else { $null }
     $script:Notifications = $Notifications
     $script:AccessToken = $normalizedAccessToken
     $script:DeviceName = $normalizedDeviceName
@@ -2713,8 +2739,8 @@ if ($script:DeviceId.Length -gt 128) {
 $script:DeviceName = Get-NormalizedDeviceName -Value $configuredDeviceName
 $script:DiscoveryEnabled = if ($null -eq $configuredDiscoveryEnabled) { $true } else { [bool]$configuredDiscoveryEnabled }
 
-$configuredPeers = Get-PropertyValue -Object $configuration -Name "peers"
-if ($peerWasExplicitlyProvided -or $null -eq $configuredPeers -or @($configuredPeers).Count -eq 0) {
+$hasConfiguredPeers = $null -ne $configuration -and $null -ne $configuration.PSObject.Properties["peers"]
+if ($peerWasExplicitlyProvided -or -not $hasConfiguredPeers) {
     $peerSeed = @([PSCustomObject]@{
         id          = if ($peerWasExplicitlyProvided) { "command-line-peer" } else { "legacy-peer" }
         name        = if ($peerWasExplicitlyProvided) { "命令行设备" } else { "原有设备" }
@@ -2727,7 +2753,7 @@ if ($peerWasExplicitlyProvided -or $null -eq $configuredPeers -or @($configuredP
     })
 }
 else {
-    $peerSeed = @($configuredPeers)
+    $peerSeed = @($configuration.peers)
 }
 $normalizedPeerSeed = @(Get-NormalizedRelayPeers -Peers $peerSeed -DefaultPort $Port -DefaultAccessToken $script:AccessToken)
 $localPeerFilter = Remove-LocalRelayPeers `
@@ -2739,10 +2765,7 @@ if ($localPeerFilter.Removed -gt 0) {
     $configRequiresDiscoveryMigration = $true
 }
 $enabledConfiguredPeers = @(Get-EnabledRelayPeers -Peers $script:Peers)
-if ($enabledConfiguredPeers.Count -lt 1) {
-    throw "ClipRelay 配置中没有启用的远端接收设备；本机不能作为目标设备。"
-}
-$Peer = [string]$enabledConfiguredPeers[0].address
+$Peer = if ($enabledConfiguredPeers.Count -gt 0) { [string]$enabledConfiguredPeers[0].address } else { "" }
 
 if ($configRequiresDiscoveryMigration) {
     $migratedConfiguration = [ordered]@{
@@ -2763,8 +2786,10 @@ if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne [System.Threadin
 }
 
 $pushUri = $null
-Set-ActivePeerAddress -Value $Peer
-$script:pushUri = (New-Object System.UriBuilder("http", $Peer, ([int]$enabledConfiguredPeers[0].port), "push")).Uri
+if ($enabledConfiguredPeers.Count -gt 0) {
+    Set-ActivePeerAddress -Value $Peer
+    $script:pushUri = (New-Object System.UriBuilder("http", $Peer, ([int]$enabledConfiguredPeers[0].port), "push")).Uri
+}
 $mutex = $null
 $ownsMutex = $false
 $listener = $null
@@ -3116,6 +3141,7 @@ function Send-ClipboardTextUnlessDuplicate {
 function Send-CopiedClipboard {
     param([uint32]$PreviousSequence)
 
+    if (@(Get-EnabledRelayPeers).Count -eq 0) { return }
     try {
         $clipboardChanged = $false
         for ($attempt = 0; $attempt -lt 75; $attempt++) {
@@ -3150,6 +3176,7 @@ function Send-CopiedClipboard {
 }
 
 function Send-VirtualDesktopScreenshot {
+    if (@(Get-EnabledRelayPeers).Count -eq 0) { return }
     # Capture and encode without invoking the Snipping Tool, touching the
     # local clipboard, or writing a temporary image file.
     try {
@@ -4056,7 +4083,7 @@ function Show-RelayControlCenter {
             $label.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
             $Parent.Controls.Add($label)
             return $label
-        }
+        }.GetNewClosure()
 
         $newCard = {
             param(
@@ -4077,7 +4104,7 @@ function Show-RelayControlCenter {
             $card.CornerRadius = $Radius
             $Parent.Controls.Add($card)
             return $card
-        }
+        }.GetNewClosure()
 
         $newButton = {
             param(
@@ -4104,7 +4131,7 @@ function Show-RelayControlCenter {
             $button.BorderColor = $BorderColor
             $Parent.Controls.Add($button)
             return $button
-        }
+        }.GetNewClosure()
 
         $newInput = {
             param(
@@ -4239,28 +4266,20 @@ function Show-RelayControlCenter {
 
         # Sidebar Target Nodes Card
         $sidebarPeersCard = & $newCard $sidebarPanel 16 374 204 260 $colors.SurfaceAlt $colors.Border 10
-        $null = & $newLabel $sidebarPeersCard "TARGET NODES" 12 9 120 16 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $monoFont
-        $peerSummaryOne = & $newLabel $sidebarPeersCard "" 12 32 180 34 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $peerSummaryOne.Name = "PeerSummaryOneLabel"
-        $peerSummaryTwo = & $newLabel $sidebarPeersCard "" 12 70 180 34 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $peerSummaryTwo.Name = "PeerSummaryTwoLabel"
-        $peerSummaryToggle = & $newButton $sidebarPeersCard "" 12 70 180 30 $colors.SurfaceAlt $colors.Raised $colors.BlueLight $colors.Border
-        $peerSummaryToggle.Name = "PeerSummaryToggleButton"
-        $peerSummaryToggle.CornerRadius = 6
-        $peerSummaryToggle.Font = New-Object System.Drawing.Font($bodyFont, 8.0, [System.Drawing.FontStyle]::Bold)
-        $peerSummaryToggle.Visible = $false
-        $peerSummaryHint = & $newLabel $sidebarPeersCard "多目标广播独立响应`n不阻断剪贴板主流程" 12 110 180 32 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $null = & $newLabel $sidebarPeersCard "TARGET NODES" 12 9 104 16 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $monoFont
+        $addPeerButton = & $newButton $sidebarPeersCard "+ 添加" 130 5 62 24 $colors.SurfaceAlt $colors.Raised $colors.BlueLight
+        $addPeerButton.Name = "AddPeerButton"
+        $addPeerButton.Font = New-Object System.Drawing.Font($bodyFont, 8.0, [System.Drawing.FontStyle]::Bold)
         $peerDetailsPanel = New-Object System.Windows.Forms.Panel
         $peerDetailsPanel.Name = "PeerDetailsPanel"
-        $peerDetailsPanel.Location = New-Object System.Drawing.Point(12, 64)
-        $peerDetailsPanel.Size = New-Object System.Drawing.Size(180, 136)
-        $peerDetailsPanel.BackColor = [System.Drawing.Color]::Transparent
+        $peerDetailsPanel.Location = New-Object System.Drawing.Point(8, 32)
+        $peerDetailsPanel.Size = New-Object System.Drawing.Size(188, 192)
+        $peerDetailsPanel.BackColor = $colors.SurfaceAlt
         $peerDetailsPanel.AutoScroll = $true
-        $peerDetailsPanel.Visible = $false
         $sidebarPeersCard.Controls.Add($peerDetailsPanel)
-        $managePeersButton = & $newButton $sidebarPeersCard "⚙ 管理目标设备" 12 210 180 38 $colors.Field $colors.Border $colors.BlueLight $colors.Border
-        $managePeersButton.Name = "ManagePeersButton"
-        $managePeersButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
+        $scanPeersButton = & $newButton $sidebarPeersCard "扫描添加设备" 12 229 180 24 $colors.SurfaceAlt $colors.Raised $colors.BlueLight
+        $scanPeersButton.Name = "ScanPeersButton"
+        $scanPeersButton.Font = New-Object System.Drawing.Font($bodyFont, 7.8, [System.Drawing.FontStyle]::Regular)
 
         # Sidebar Probe Button
         $testButton = & $newButton $sidebarPanel "⚡ 检测全链路连接" 16 652 204 46 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
@@ -4396,7 +4415,7 @@ function Show-RelayControlCenter {
         $showTokenButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
 
         # Row 6: Security Hint
-        $null = & $newLabel $preferencesCard "发现仅公开名称与端口，不公开密钥；目标设备密钥在【管理设备】中单独维护。" 14 282 460 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $null = & $newLabel $preferencesCard "目标设备的地址与密钥可从左侧设备行的【··· → 编辑设备】中修改。" 14 282 460 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
 
         # Footer: settings commit as they are changed, so there is no second save step.
         $autoSaveLabel = & $newLabel $form "● 更改会自动保存" 256 658 344 34 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Success $bodyFont
@@ -4406,9 +4425,12 @@ function Show-RelayControlCenter {
         $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
 
         $setClipboardCommand = Get-Command Set-ClipboardTextWithRetry
+        $startDiscoveryCommand = Get-Command Start-ClipRelayDeviceDiscovery
+        $mergeDevicesCommand = Get-Command Merge-DiscoveredRelayDevices
         $startPeersTestCommand = Get-Command Start-RelayPeersConnectivityTest
         $deliverySummaryCommand = Get-Command Get-RelayDeliverySummary
-        $peerManagerCommand = Get-Command Show-RelayPeerManager
+        $peerEditorCommand = Get-Command Show-RelayPeerEditor
+        $copyPeersCommand = Get-Command Copy-RelayPeers
         $removeLocalPeersCommand = Get-Command Remove-LocalRelayPeers
         $saveSettingsCommand = Get-Command Save-PeerConfiguration
         $snapshotCommand = Get-Command Get-RelayRuntimeSnapshot
@@ -4450,12 +4472,8 @@ function Show-RelayControlCenter {
                     -LocalPort $parsedPort
                 $peersToSave = @($localPeerFilter.Peers)
                 $enabledDraftPeers = @($peersToSave | Where-Object { [bool]$_.enabled })
-                if ($enabledDraftPeers.Count -lt 1) {
-                    throw "至少需要启用一台远端接收设备；本机不能作为目标设备。"
-                }
-
                 $null = & $saveSettingsCommand `
-                    -PeerAddress ([string]$enabledDraftPeers[0].address) `
+                    -PeerAddress $(if ($enabledDraftPeers.Count -gt 0) { [string]$enabledDraftPeers[0].address } else { "" }) `
                     -Notifications ([bool]$notifyToggle.Checked) `
                     -ListenPort $parsedPort `
                     -AccessToken $tokenInput.TextBox.Text `
@@ -4485,108 +4503,79 @@ function Show-RelayControlCenter {
             }
         }.GetNewClosure()
 
-        $peerSidebarState = [PSCustomObject]@{
-            Expanded = $false
-            Statuses = @()
-        }
+        $peerSidebarState = [PSCustomObject]@{ Statuses = @() }
+        # Shared callbacks let freshly rendered rows use the current draft list.
+        $peerActions = [PSCustomObject]@{ Commit = $null; Toggle = $null; Edit = $null; Remove = $null }
         $renderPeerSidebar = {
+            $rowActions = $peerActions
             $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
-            $statuses = @($peerSidebarState.Statuses)
             $peerCountLabel.Text = "$($enabledDraftPeers.Count) 台"
-
-            foreach ($control in @($peerDetailsPanel.Controls)) {
-                $peerDetailsPanel.Controls.Remove($control)
-                $control.Dispose()
-            }
-            $peerDetailsPanel.AutoScrollMinSize = $form.DpiSize(0, 0)
-            $peerDetailsPanel.Visible = $false
-            $peerSummaryHint.Visible = $true
-            $peerSummaryOne.Visible = $true
-            $peerSummaryOne.Location = $form.DpiPoint(12, 32)
-            $peerSummaryOne.Size = $form.DpiSize(180, 34)
-            $peerSummaryTwo.Visible = $false
-            $peerSummaryTwo.Location = $form.DpiPoint(12, 70)
-            $peerSummaryTwo.Size = $form.DpiSize(180, 34)
-            $peerSummaryToggle.Visible = $false
-            $peerSummaryToggle.Tag = $null
-
-            foreach ($label in @($peerSummaryOne, $peerSummaryTwo)) {
-                $label.Text = ""
-                $label.ForeColor = $colors.Muted
-                $label.Tag = $null
-            }
-
-            if ($enabledDraftPeers.Count -eq 0) {
-                $peerSidebarState.Expanded = $false
-                $peerSummaryOne.Text = "● 没有启用的设备"
-                $peerSummaryOne.ForeColor = $colors.Danger
-                return
-            }
-
-            if ($statuses.Count -ne $enabledDraftPeers.Count) {
-                $statuses = @($enabledDraftPeers | ForEach-Object {
-                    [PSCustomObject]@{
-                        Peer = $_
-                        State = "pending"
-                        Marker = "○"
-                        StatusText = "待检测"
-                        Color = $colors.Muted
-                    }
-                })
-                $peerSidebarState.Statuses = $statuses
-            }
-
-            if ($peerSidebarState.Expanded -and $enabledDraftPeers.Count -gt 2) {
-                $peerSummaryOne.Visible = $false
-                $peerSummaryTwo.Visible = $false
-                $peerSummaryHint.Visible = $false
-                $peerSummaryToggle.Location = $form.DpiPoint(12, 30)
-                $peerSummaryToggle.Size = $form.DpiSize(180, 28)
-                $peerSummaryToggle.Text = "▲ 收起设备列表"
-                $peerSummaryToggle.AccessibleName = "收起目标设备列表"
-                $peerSummaryToggle.Tag = "expanded"
-                $peerSummaryToggle.Visible = $true
-                $peerDetailsPanel.Visible = $true
-
-                for ($index = 0; $index -lt $statuses.Count; $index++) {
-                    $status = $statuses[$index]
-                    $statusLabel = New-Object System.Windows.Forms.Label
-                    $statusLabel.Name = "PeerExpandedStatusLabel$index"
-                    $statusLabel.Text = "$($status.Marker) $($status.Peer.name)`n   $($status.StatusText) · $($status.Peer.address)"
-                    $statusLabel.Location = New-Object System.Drawing.Point(0, ($index * 44))
-                    $statusLabel.Size = New-Object System.Drawing.Size(158, 42)
-                    $statusLabel.Font = New-Object System.Drawing.Font($bodyFont, 7.8, [System.Drawing.FontStyle]::Regular)
-                    $statusLabel.ForeColor = $status.Color
-                    $statusLabel.BackColor = [System.Drawing.Color]::Transparent
-                    $statusLabel.AutoEllipsis = $true
-                    $statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-                    $statusLabel.Tag = $status.State
-                    $peerDetailsPanel.Controls.Add($statusLabel)
+            $scrollY = -$peerDetailsPanel.AutoScrollPosition.Y
+            $peerDetailsPanel.SuspendLayout()
+            try {
+                foreach ($control in @($peerDetailsPanel.Controls)) {
+                    if ($control.ContextMenuStrip) { $control.ContextMenuStrip.Dispose() }
+                    $peerDetailsPanel.Controls.Remove($control)
+                    $control.Dispose()
                 }
-                $peerDetailsPanel.AutoScrollMinSize = $form.DpiSize(0, ($statuses.Count * 44))
-                return
-            }
+                $peerDetailsPanel.AutoScrollMinSize = $form.DpiSize(0, 0)
+                if ($draftPeers.Count -eq 0) {
+                    $emptyLabel = & $newLabel $peerDetailsPanel "尚未添加设备" 8 48 164 28 9.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+                    $emptyLabel.Name = "EmptyPeersLabel"
+                    $emptyLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+                }
+                for ($index = 0; $index -lt $draftPeers.Count; $index++) {
+                    $peer = $draftPeers[$index]
+                    $peerId = [string]$peer.id
+                    $status = @($peerSidebarState.Statuses | Where-Object {
+                        $_.Peer.id -eq $peerId -and $_.Peer.address -eq $peer.address -and $_.Peer.port -eq $peer.port
+                    }) | Select-Object -First 1
+                    $state = if (-not $peer.enabled) { "disabled" } elseif ($null -ne $status) { $status.State } else { "pending" }
+                    $statusText = if (-not $peer.enabled) { "已停用" } elseif ($null -ne $status) { $status.StatusText } else { "待检测" }
+                    $statusColor = if (-not $peer.enabled) { $colors.Subtle } elseif ($null -ne $status) { $status.Color } else { $colors.Muted }
+                    $row = & $newCard $peerDetailsPanel 0 ($index * 64) 168 60 $colors.Surface $colors.Border 7
+                    $row.Name = "PeerRow$index"
+                    $nameLabel = & $newLabel $row ([string]$peer.name) 8 4 116 20 8.0 ([System.Drawing.FontStyle]::Bold) $colors.TextDim $bodyFont
+                    $nameLabel.Name = "PeerNameLabel$index"
+                    $addressLabel = & $newLabel $row ([string]$peer.address) 8 23 126 16 7.2 ([System.Drawing.FontStyle]::Regular) $colors.Muted $monoFont
+                    $addressLabel.Name = "PeerAddressLabel$index"
+                    $stateLabel = & $newLabel $row $statusText 8 39 126 16 7.2 ([System.Drawing.FontStyle]::Regular) $statusColor $bodyFont
+                    $stateLabel.Name = "PeerStatusLabel$index"
+                    $stateLabel.Tag = $state
+                    $toggle = New-Object ClipRelay.RelayToggle
+                    $toggle.Name = "PeerEnabledToggle$index"
+                    $toggle.Location = New-Object System.Drawing.Point(128, 7)
+                    $toggle.Size = New-Object System.Drawing.Size(32, 18)
+                    $toggle.Checked = [bool]$peer.enabled
+                    $toggle.OnColor = $colors.Blue
+                    $toggle.AccessibleName = "向 $($peer.name) 发送"
+                    $row.Controls.Add($toggle)
+                    $toggle.Add_CheckedChanged({
+                        $null = & $rowActions.Toggle -Id $peerId -Enabled ([bool]$toggle.Checked)
+                    }.GetNewClosure())
 
-            $peerSidebarState.Expanded = $false
-            $visibleCount = [Math]::Min(2, $statuses.Count)
-            $summaryLabels = @($peerSummaryOne, $peerSummaryTwo)
-            for ($index = 0; $index -lt $visibleCount; $index++) {
-                if ($enabledDraftPeers.Count -gt 2 -and $index -eq 1) { break }
-                $status = $statuses[$index]
-                $summaryLabels[$index].Text = "$($status.Marker) $($status.Peer.name) · $($status.StatusText)`n   $($status.Peer.address)"
-                $summaryLabels[$index].ForeColor = $status.Color
-                $summaryLabels[$index].Tag = $status.State
-                $summaryLabels[$index].Visible = $true
+                    $menu = New-Object System.Windows.Forms.ContextMenuStrip
+                    $menu.Font = New-Object System.Drawing.Font($bodyFont, 9.0)
+                    $editItem = New-Object System.Windows.Forms.ToolStripMenuItem("编辑设备")
+                    $editItem.Name = "EditPeerItem"
+                    $editItem.Add_Click({ $null = & $rowActions.Edit -Id $peerId }.GetNewClosure())
+                    $removeItem = New-Object System.Windows.Forms.ToolStripMenuItem("移除设备")
+                    $removeItem.Name = "RemovePeerItem"
+                    $removeItem.Add_Click({ $null = & $rowActions.Remove -Id $peerId }.GetNewClosure())
+                    $null = $menu.Items.Add($editItem)
+                    $null = $menu.Items.Add($removeItem)
+                    $row.ContextMenuStrip = $menu
+                    $moreButton = & $newButton $row "···" 140 33 22 22 $colors.Surface $colors.Raised $colors.Muted
+                    $moreButton.Name = "PeerMoreButton$index"
+                    $moreButton.AccessibleName = "$($peer.name) 的更多操作"
+                    $moreButton.Add_Click({
+                        $menu.Show($moreButton, (New-Object System.Drawing.Point(0, $moreButton.Height)))
+                    }.GetNewClosure())
+                }
+                $peerDetailsPanel.AutoScrollMinSize = $form.DpiSize(0, ($draftPeers.Count * 64))
+                $peerDetailsPanel.AutoScrollPosition = New-Object System.Drawing.Point(0, $scrollY)
             }
-            if ($enabledDraftPeers.Count -gt 2) {
-                $peerSummaryTwo.Visible = $false
-                $peerSummaryToggle.Location = $form.DpiPoint(12, 70)
-                $peerSummaryToggle.Size = $form.DpiSize(180, 30)
-                $peerSummaryToggle.Text = "＋ 另有 $($enabledDraftPeers.Count - 1) 台 · 展开"
-                $peerSummaryToggle.AccessibleName = "展开全部 $($enabledDraftPeers.Count) 台目标设备"
-                $peerSummaryToggle.Tag = "summary"
-                $peerSummaryToggle.Visible = $true
-            }
+            finally { $peerDetailsPanel.ResumeLayout() }
         }.GetNewClosure()
 
         $updatePeerSummary = {
@@ -4595,29 +4584,16 @@ function Show-RelayControlCenter {
                 [PSCustomObject]@{
                     Peer = $_
                     State = "pending"
-                    Marker = "○"
                     StatusText = "待检测"
                     Color = $colors.Muted
                 }
             })
-            if ($enabledDraftPeers.Count -eq 0) {
-                $peerSidebarState.Expanded = $false
-                $sidebarHealthLabel.Text = "无目标"
-                $sidebarHealthLabel.ForeColor = $colors.Danger
-            }
+            $sidebarHealthLabel.Text = if ($enabledDraftPeers.Count -eq 0) { "已暂停" } else { "待检测" }
+            $sidebarHealthLabel.ForeColor = $colors.Muted
             & $renderPeerSidebar
         }.GetNewClosure()
 
-        $peerSummaryToggle.Add_Click({
-            $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
-            if ($enabledDraftPeers.Count -gt 2) {
-                $peerSidebarState.Expanded = -not [bool]$peerSidebarState.Expanded
-                & $renderPeerSidebar
-                $sidebarPeersCard.Invalidate()
-            }
-        }.GetNewClosure())
-
-        $checkState = [PSCustomObject]@{ Task = $null }
+        $checkState = [PSCustomObject]@{ Task = $null; Phase = ""; DiscoveryDetail = ""; AddDiscovered = $false }
         $applyCheckSummary = {
             param($Summary)
 
@@ -4670,7 +4646,7 @@ function Show-RelayControlCenter {
                 }
             })
             & $renderPeerSidebar
-            $connectionDetail.Text = "$($Summary.Detail) · $(Get-Date -Format 'HH:mm:ss')"
+            $connectionDetail.Text = "$($checkState.DiscoveryDetail)$($Summary.Detail) · $(Get-Date -Format 'HH:mm:ss')"
         }.GetNewClosure()
         $applyCheckFailure = {
             param([string]$Message)
@@ -4696,33 +4672,19 @@ function Show-RelayControlCenter {
             })
             & $renderPeerSidebar
         }.GetNewClosure()
-        $runCheck = {
+        $beginProbe = {
             $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
-            if ($enabledDraftPeers.Count -lt 1) {
-                $checkState.Task = $null
-                $connectionPanel.BorderColor = $colors.Danger
-                $connectionDot.ForeColor = $colors.Danger
-                $connectionTitle.Text = "没有启用的广播设备"
-                $connectionDetail.Text = "点击左侧【⚙ 管理目标设备】，至少启用一台接收端"
-                $sidebarHealthLabel.Text = "无目标"
-                $sidebarHealthLabel.ForeColor = $colors.Danger
-                $peerSidebarState.Expanded = $false
-                $peerSidebarState.Statuses = @()
-                & $renderPeerSidebar
-                $connectionPanel.Invalidate()
-                $testButton.Enabled = $true
-                $testButton.Text = "⚡ 检测全链路连接"
+            if ($enabledDraftPeers.Count -eq 0) {
+                $connectionTitle.Text = "已暂停发送"
+                $connectionDetail.Text = "开启左侧设备的开关即可恢复发送，本机仍可接收"
+                & $updatePeerSummary
                 return
             }
-
-            $testButton.Enabled = $false
+            $checkState.Phase = "probe"
             $testButton.Text = "检测中..."
-            $connectionPanel.BorderColor = $colors.Border
-            $connectionDot.ForeColor = $colors.Muted
             $connectionTitle.Text = "正在并行检测 $($enabledDraftPeers.Count) 台设备"
-            $connectionDetail.Text = "每台设备独立响应，不会修改剪贴板内容"
+            $connectionDetail.Text = "$($checkState.DiscoveryDetail)每台设备独立响应，不会修改剪贴板内容"
             $sidebarHealthLabel.Text = "检测中"
-            $sidebarHealthLabel.ForeColor = $colors.Warning
             $peerSidebarState.Statuses = @($enabledDraftPeers | ForEach-Object {
                 [PSCustomObject]@{
                     Peer = $_
@@ -4733,19 +4695,73 @@ function Show-RelayControlCenter {
                 }
             })
             & $renderPeerSidebar
+            $checkState.Task = & $startPeersTestCommand -Peers @($draftPeers) -TimeoutMilliseconds 5000
+            if ($null -eq $checkState.Task) {
+                throw "连接检测任务未能启动。"
+            }
+        }.GetNewClosure()
+        $runCheck = {
+            param([switch]$AddDiscovered)
+
+            if ($null -ne $checkState.Task) { return }
+            $enabledDraftPeers = @($draftPeers | Where-Object { [bool]$_.enabled })
+            if ($enabledDraftPeers.Count -lt 1 -and -not $AddDiscovered) {
+                $checkState.Task = $null
+                $connectionPanel.BorderColor = $colors.Border
+                $connectionDot.ForeColor = $colors.Muted
+                $connectionTitle.Text = "已暂停发送"
+                $connectionDetail.Text = "在左侧添加或开启设备即可发送，本机仍可接收"
+                $sidebarHealthLabel.Text = "已暂停"
+                $sidebarHealthLabel.ForeColor = $colors.Muted
+                $peerSidebarState.Statuses = @()
+                & $renderPeerSidebar
+                $connectionPanel.Invalidate()
+                $testButton.Enabled = $true
+                $testButton.Text = "⚡ 检测全链路连接"
+                return
+            }
+
+            $testButton.Enabled = $false
+            $scanPeersButton.Enabled = $false
+            $testButton.Text = "更新地址中..."
+            $checkState.Phase = "discovery"
+            $checkState.AddDiscovered = [bool]$AddDiscovered
+            $checkState.DiscoveryDetail = ""
+            $connectionPanel.BorderColor = $colors.Border
+            $connectionDot.ForeColor = $colors.Muted
+            $connectionTitle.Text = if ($AddDiscovered) { "正在扫描局域网设备" } else { "正在查找设备的最新地址" }
+            $connectionDetail.Text = if ($AddDiscovered) { "发现的设备会加入左侧列表，可随时开关或编辑" } else { "扫描局域网，更新已保存设备的 IP 和端口后检测连接" }
+            $sidebarHealthLabel.Text = "更新地址中"
+            $sidebarHealthLabel.ForeColor = $colors.Warning
+            $peerSidebarState.Statuses = @($enabledDraftPeers | ForEach-Object {
+                [PSCustomObject]@{
+                    Peer = $_
+                    State = "checking"
+                    Marker = "○"
+                    StatusText = "更新地址中"
+                    Color = $colors.Muted
+                }
+            })
+            & $renderPeerSidebar
             $connectionPanel.Invalidate()
             try {
-                $checkState.Task = & $startPeersTestCommand -Peers @($draftPeers) -TimeoutMilliseconds 5000
+                $checkState.Task = & $startDiscoveryCommand -TimeoutMilliseconds 1800
                 if ($null -eq $checkState.Task) {
-                    throw "连接检测任务未能启动。"
+                    throw "设备扫描任务未能启动。"
                 }
             }
             catch {
                 $checkState.Task = $null
-                & $applyCheckFailure ([string]$_.Exception.Message)
-                $connectionPanel.Invalidate()
-                $testButton.Enabled = $true
-                $testButton.Text = "⚡ 检测全链路连接"
+                $checkState.DiscoveryDetail = "扫描失败，按已保存地址检测 · "
+                try { & $beginProbe }
+                catch {
+                    $checkState.Task = $null
+                    & $applyCheckFailure ([string]$_.Exception.Message)
+                    $connectionPanel.Invalidate()
+                    $testButton.Enabled = $true
+                    $scanPeersButton.Enabled = $true
+                    $testButton.Text = "⚡ 检测全链路连接"
+                }
             }
         }.GetNewClosure()
 
@@ -4768,6 +4784,57 @@ function Show-RelayControlCenter {
             }
             & $updatePeerSummary
             return $false
+        }.GetNewClosure()
+
+        $peerActions.Commit = {
+            param([object[]]$Peers)
+
+            if (-not (& $applyManagedPeers -Peers $Peers)) { return $false }
+            # Ignore any in-flight result for the old roster. Switching a device
+            # must take effect immediately, even during discovery or a probe.
+            $checkState.Task = $null
+            $checkState.DiscoveryDetail = ""
+            $testButton.Enabled = $true
+            $testButton.Text = "⚡ 检测全链路连接"
+            $scanPeersButton.Enabled = $true
+            $enabledCount = @($draftPeers | Where-Object enabled).Count
+            $connectionTitle.Text = if ($enabledCount -eq 0) { "已暂停发送" } else { "已启用 $enabledCount 台设备 · 待检测" }
+            $connectionDetail.Text = if ($enabledCount -eq 0) { "开启设备开关即可恢复发送，本机仍可接收" } else { "设备选择已保存，下一次复制会发送给已开启的设备" }
+            $connectionPanel.BorderColor = $colors.Border
+            $connectionDot.ForeColor = $colors.Muted
+            $connectionPanel.Invalidate()
+            return $true
+        }.GetNewClosure()
+        $peerActions.Toggle = {
+            param([string]$Id, [bool]$Enabled)
+            $updated = @(& $copyPeersCommand -Peers @($draftPeers))
+            foreach ($peer in $updated) {
+                if ($peer.id -eq $Id) { $peer.enabled = $Enabled }
+            }
+            return & $peerActions.Commit -Peers $updated
+        }.GetNewClosure()
+        $peerActions.Edit = {
+            param([string]$Id = "")
+            if ([string]::IsNullOrEmpty($Id) -and $draftPeers.Count -ge 16) {
+                & $setAutoSaveStatus "● 最多可添加 16 台设备" $colors.Warning
+                return
+            }
+            $selectedPeer = @($draftPeers | Where-Object { $_.id -eq $Id }) | Select-Object -First 1
+            $edited = & $peerEditorCommand -Owner $form -Peer $selectedPeer -DefaultPort $controlCenterListenPort -DefaultAccessToken ""
+            if ($null -eq $edited) { return }
+            $updated = @(& $copyPeersCommand -Peers @($draftPeers))
+            if ([string]::IsNullOrEmpty($Id)) { $updated += $edited }
+            else {
+                for ($index = 0; $index -lt $updated.Count; $index++) {
+                    if ($updated[$index].id -eq $Id) { $updated[$index] = $edited; break }
+                }
+            }
+            $null = & $peerActions.Commit -Peers $updated
+        }.GetNewClosure()
+        $peerActions.Remove = {
+            param([string]$Id)
+            $updated = @($draftPeers | Where-Object { $_.id -ne $Id })
+            $null = & $peerActions.Commit -Peers $updated
         }.GetNewClosure()
 
         & $updatePeerSummary
@@ -4803,23 +4870,9 @@ function Show-RelayControlCenter {
             $copyButton.Text = "复制"
             $copyButton.TextColor = $colors.Text
         }.GetNewClosure())
-        $managePeersButton.Add_Click({
-            $managerDefaultPort = $controlCenterListenPort
-            $parsedManagerPort = 0
-            if ([int]::TryParse($portInput.TextBox.Text.Trim(), [ref]$parsedManagerPort) -and
-                $parsedManagerPort -ge 1 -and $parsedManagerPort -le 65535) {
-                $managerDefaultPort = $parsedManagerPort
-            }
-            $null = & $peerManagerCommand `
-                -Owner $form `
-                -Peers @($draftPeers) `
-                -DefaultPort $managerDefaultPort `
-                -DefaultAccessToken "" `
-                -LocalDeviceId $controlCenterDeviceId `
-                -OnPeersChanged $applyManagedPeers
-            & $runCheck
-        }.GetNewClosure())
-        $testButton.Add_Click($runCheck)
+        $addPeerButton.Add_Click({ $null = & $peerActions.Edit }.GetNewClosure())
+        $scanPeersButton.Add_Click({ & $runCheck -AddDiscovered }.GetNewClosure())
+        $testButton.Add_Click({ & $runCheck }.GetNewClosure())
         $notifyToggle.Add_CheckedChanged({
             $null = & $saveCurrentSettings
         }.GetNewClosure())
@@ -4891,18 +4944,48 @@ function Show-RelayControlCenter {
             $completedTask = $checkState.Task
             $checkState.Task = $null
             try {
+                if ($checkState.Phase -eq "discovery") {
+                    $devices = @()
+                    try {
+                        $devices = @($completedTask.GetAwaiter().GetResult())
+                        if ($devices.Count -eq 0) {
+                            $checkState.DiscoveryDetail = "未发现设备，按已保存地址检测 · "
+                        }
+                    }
+                    catch {
+                        $checkState.DiscoveryDetail = "扫描失败，按已保存地址检测 · "
+                    }
+                    $merge = & $mergeDevicesCommand `
+                        -Peers @($draftPeers) `
+                        -DiscoveredDevices $devices `
+                        -DefaultPort $controlCenterListenPort `
+                        -LocalDeviceId $controlCenterDeviceId `
+                        -ExistingOnly:(-not $checkState.AddDiscovered)
+                    if ($merge.Updated -gt 0 -or $merge.Removed -gt 0 -or $merge.Added -gt 0) {
+                        if (-not (& $applyManagedPeers -Peers @($merge.Peers))) {
+                            throw "设备地址未能保存，请检查设置后重试。"
+                        }
+                        $checkState.DiscoveryDetail = if ($checkState.AddDiscovered) { "已新增 $($merge.Added) 台，更新 $($merge.Updated) 台 · " } else { "已更新 $($merge.Updated) 台设备地址 · " }
+                    }
+                    & $beginProbe
+                    return
+                }
                 $results = @($completedTask.GetAwaiter().GetResult())
                 $summary = & $deliverySummaryCommand -Results $results -Kind "检测"
                 & $applyCheckSummary $summary
             }
             catch {
+                $checkState.Task = $null
                 & $applyCheckFailure ([string]$_.Exception.Message)
             }
             finally {
                 if (-not $form.IsDisposed) {
                     $connectionPanel.Invalidate()
-                    $testButton.Enabled = $true
-                    $testButton.Text = "⚡ 检测全链路连接"
+                    if ($null -eq $checkState.Task) {
+                        $testButton.Enabled = $true
+                        $scanPeersButton.Enabled = $true
+                        $testButton.Text = "⚡ 检测全链路连接"
+                    }
                 }
             }
         }.GetNewClosure())
