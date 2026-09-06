@@ -1,0 +1,55 @@
+name: Android Cloud Sync
+
+on:
+  workflow_run:
+    workflows: [Android Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-cloud-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download published release and upload to Tencent Cloud
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEPLOY_KEY: ${{ secrets.CLIPRELAY_UPDATES_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.CLIPRELAY_UPDATES_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          mkdir -m 700 "$RUNNER_TEMP/cliprelay-ssh"
+          key="$RUNNER_TEMP/cliprelay-ssh/key"
+          hosts="$RUNNER_TEMP/cliprelay-ssh/known_hosts"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$hosts"
+          mkdir dist
+          tag="$(gh release view --json tagName --jq .tagName)"
+          gh release download "$tag" --pattern update.json --dir dist
+          version="$(jq -r .versionName dist/update.json)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          apk="ClipRelay-${version}.apk"
+          gh release download "$tag" --pattern "$apk" --dir dist
+          digest="$(jq -r .sha256 dist/update.json)"
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          (cd dist && printf '%s  %s\n' "$digest" "$apk" | sha256sum -c -)
+          tar -C dist -cf - update.json "$apk" | ssh \
+            -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
+            -o ConnectTimeout=20 cliprelay-updates@124.221.36.36 publish
+          curl --fail --silent --show-error --retry 3 \
+            'https://124-221-36-36.anyip.dev:8443/cliprelay/update.json'
