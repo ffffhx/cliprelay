@@ -67,4 +67,4 @@ cmd.exe /c start "" "$lnk"
 ## 其他端
 
 - Mac：只操作已安装的 Hammerspoon（拷/改 `~/.hammerspoon/init.lua` 后 Reload）。不要在终端里挂一个 lua 进程当客户端。
-- Android：在 Termux 里跑 `receiver.py` / `send.sh`，不要把接收端塞进 agent 终端前台长驻。
+- Android：使用 `android-app/` 原生 APK，由 App 的前台服务保持接收；不要把接收端塞进 agent 终端前台长驻。

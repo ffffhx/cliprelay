@@ -8,17 +8,17 @@ Mac、Windows 与 Android 手机在同一局域网内互传文本和截图的小
 
 - Mac 端基于 [Hammerspoon](https://www.hammerspoon.org/)，每台 Mac 一个 `init.lua`，无需构建。
 - Windows 端基于系统自带的 PowerShell 5.1 和 .NET，无需安装第三方运行时。
-- Android 端优先使用仓库维护的原生 APK；`android/` 目录仍保留 Termux 双向互传方案。
+- Android 端使用仓库维护的原生 APK，工程位于 `android-app/`，接收电脑发送的文本和截图。
 
 ## 工作原理
 
 - 每台设备运行一个 HTTP 服务（默认端口 `47632`）；文本使用 `POST /push`，JPEG 截图使用 `POST /push-image`。
-- Windows、Mac 和原生 Android 的接收服务启动后会通过 mDNS/DNS-SD 发布 `_cliprelay._tcp.local`；扫描端向局域网查询该服务，并从结果中取得设备名、地址、端口和是否需要访问密钥。Termux 兼容脚本仍使用手动地址。
+- Windows、Mac 和原生 Android 的接收服务启动后会通过 mDNS/DNS-SD 发布 `_cliprelay._tcp.local`；扫描端向局域网查询该服务，并从结果中取得设备名、地址、端口和是否需要访问密钥。
 - Mac 按下 `Ctrl+Alt+G` 后，脚本模拟 `Cmd+C` 获取选中文本、恢复原剪贴板，再发送给对端。
 - Windows 直接监听普通的 `Ctrl+C`：当前应用照常完成复制，剪贴板更新后 ClipRelay 把新文本并行发送给所有启用的接收设备。
 - Windows 按 `Ctrl+Alt+F12` 时，在内存中截取并编码所有显示器一次，再把同一份 JPEG 并行发送给所有启用设备；不打开截图界面、不写文件，也不改本机剪贴板。
 - 对端收到后写入系统剪贴板并弹出通知，直接按 `Cmd+V` 或 `Ctrl+V` 即可粘贴。
-- 各平台使用相同协议，可以任意互传；Windows 可维护最多 16 个广播目标，Mac 可从菜单栏扫描并选择单个接收方，手动地址始终保留为回退方案。
+- 各平台使用相同协议；Windows 和 Mac 支持发送与接收，Android 当前支持接收；Windows 可维护最多 16 个广播目标，Mac 可从菜单栏扫描并选择单个接收方，手动地址始终保留为回退方案。
 - mDNS 声明包含随机设备 ID、显示名称、协议版本、平台、端口和认证状态，不包含访问密钥、剪贴板内容或历史记录。
 - 原生 Android 默认使用“品牌 + 型号”作为发现名称（例如 `realme RMX5002` 或 `OnePlus PHK110`），并在 TXT 记录中分别声明 `brand` 和 `model`；设置页仍可覆盖成自定义名称。
 
@@ -98,14 +98,14 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass `
   -File .\windows\cliprelay.ps1 -Peer 192.168.1.100
 ```
 
-## Android 端（原生 APK，推荐）
+## Android 端（原生 APK）
 
 原生工程位于 [`android-app/`](android-app/)，支持 Android 8.0 及以上版本。App 会运行一个
 带常驻通知的前台接收服务，支持文本 `/push` 和截图 `/push-image`。收到内容后会：
 
 - 将文本或截图写入手机系统剪贴板；
 - 弹出可关闭内容预览的通知；
-- 在 App 内保留最近 30 条文本与截图，点击进入无系统栏的沉浸式全屏，左右滑动切换；全屏图片支持 1×–5× 双指缩放与放大后拖动；轻点内容可显示复制、关闭及横竖屏控制；
+- 在 App 内保留最近 30 条文本与截图，点击进入无系统栏的沉浸式全屏，左右滑动切换；全屏图片支持 1×–5× 双指缩放与放大后拖动，拖到左右边缘后松手，再向外滑动可切换相邻的图片或文字；轻点内容可显示复制、关闭及横竖屏控制；
 - 根据设置在手机重启或 App 更新后恢复接收。
 
 ### 使用 APK
@@ -156,47 +156,7 @@ OPPO、realme 等带厂商后台管理的手机，还需要在 ClipRelay 的“�
 和“允许完全后台行为”。否则厂商系统可能拦截 `MY_PACKAGE_REPLACED`，导致 App 更新后要手动打开一次
 才能恢复接收。标准 Android 设备不需要额外设置。
 
-Android 10 及以上版本不允许普通后台 App 持续读取其他 App 的剪贴板，因此 APK 当前聚焦于
-稳定接收“电脑 → 手机”。如需“手机 → 电脑”，可继续使用下面的 Termux 小部件方案。
-
-## Android 端（Termux 兼容方案）
-
-需要三个 App（建议从 F-Droid 安装，Play 商店版本已停更）：
-
-- **Termux**：跑脚本本体
-- **Termux:API**：读写剪贴板、弹通知
-- **Termux:Widget**（可选）：把"发送"做成桌面一键小部件
-- **Termux:Boot**（可选）：开机自动启动接收端
-
-在 Termux 里执行：
-
-```bash
-pkg install python curl jq termux-api
-mkdir -p ~/cliprelay
-# 把本仓库 android/receiver.py 和 android/send.sh 拷到 ~/cliprelay/
-chmod +x ~/cliprelay/send.sh
-# 编辑 send.sh 顶部的 PEER 为接收方设备的局域网 IP 或 .local 主机名
-```
-
-- **启动接收端**（收对端设备发来的文本，写剪贴板 + 通知）：
-
-  ```bash
-  termux-wake-lock
-  python ~/cliprelay/receiver.py
-  ```
-
-- **发送**（把手机剪贴板推到 Mac）：
-
-  ```bash
-  ~/cliprelay/send.sh
-  ```
-
-  一键化：`mkdir -p ~/.shortcuts && cp ~/cliprelay/send.sh ~/.shortcuts/`，
-  然后在桌面添加 Termux:Widget 小部件，点一下即发。
-
-- **开机自启**（可选）：`mkdir -p ~/.termux/boot && cp android/boot-cliprelay.sh ~/.termux/boot/`
-
-另：在系统设置里把 Termux 的电池优化关掉，否则后台会被杀。
+Android APK 当前支持接收电脑发送的文本和截图，尚未提供“手机 → 电脑”的发送功能。
 
 ## 配置项
 

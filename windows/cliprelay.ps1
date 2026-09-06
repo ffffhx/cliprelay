@@ -4169,7 +4169,7 @@ function Show-RelayControlCenter {
         $form.MaximizeBox = $false
         $form.MinimizeBox = $false
         $form.ShowInTaskbar = $true
-        $form.TopMost = $true
+        $form.TopMost = $false
         if ($null -ne $script:appIcon) {
             $form.Icon = $script:appIcon
         }
@@ -4295,6 +4295,19 @@ function Show-RelayControlCenter {
         [ClipRelay.NativeMethods]::AttachDrag($topCategoryHeader, $form)
         [ClipRelay.NativeMethods]::AttachDrag($largeHeader, $form)
         [ClipRelay.NativeMethods]::AttachDrag($topSubHeader, $form)
+
+        $pinButton = & $newButton $form "Pin" 594 18 76 30 $colors.Background $colors.Raised $colors.Muted
+        $pinButton.Name = "PinButton"
+        $pinButton.AccessibleName = "置顶窗口"
+        $pinButton.Add_Click({
+            $form.TopMost = -not $form.TopMost
+            $pinButton.Text = if ($form.TopMost) { "已置顶" } else { "Pin" }
+            $pinButton.AccessibleName = if ($form.TopMost) { "取消置顶" } else { "置顶窗口" }
+            $pinButton.FillColor = if ($form.TopMost) { $colors.Blue } else { $colors.Background }
+            $pinButton.HoverColor = if ($form.TopMost) { $colors.BlueLight } else { $colors.Raised }
+            $pinButton.TextColor = if ($form.TopMost) { $colors.Text } else { $colors.Muted }
+            $pinButton.Invalidate()
+        }.GetNewClosure())
 
         $minimizeButton = & $newButton $form "−" 676 18 32 30 $colors.Background $colors.Raised $colors.Muted
         $minimizeButton.Name = "MinimizeButton"

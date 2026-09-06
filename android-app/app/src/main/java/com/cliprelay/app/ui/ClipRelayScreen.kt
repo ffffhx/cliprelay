@@ -65,6 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -107,6 +108,7 @@ import java.text.DateFormat
 import java.util.Date
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.abs
 
 @Composable
 fun ClipRelayScreen(
@@ -865,7 +867,6 @@ private fun HistoryFullscreenViewer(
     BackHandler(onBack = onDismiss)
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var controlsVisible by remember { mutableStateOf(false) }
-    var zoomedClipId by remember { mutableStateOf<Long?>(null) }
     val initialPage = remember(history, initialClipId) {
         history.indexOfFirst { it.id == initialClipId }.coerceAtLeast(0)
     }
@@ -887,20 +888,12 @@ private fun HistoryFullscreenViewer(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
                 key = { history[it].id },
-                userScrollEnabled = zoomedClipId == null,
             ) { page ->
                 val pageClip = history[page]
                 FullscreenHistoryPage(
                     clip = pageClip,
                     textSizeSp = fullscreenTextSizeSp,
                     onToggleControls = { controlsVisible = !controlsVisible },
-                    onImageZoomedChange = { zoomed ->
-                        if (zoomed) {
-                            zoomedClipId = pageClip.id
-                        } else if (zoomedClipId == pageClip.id) {
-                            zoomedClipId = null
-                        }
-                    },
                 )
             }
 
@@ -1191,7 +1184,6 @@ private fun FullscreenHistoryPage(
     clip: ReceivedClip,
     textSizeSp: Int,
     onToggleControls: () -> Unit,
-    onImageZoomedChange: (Boolean) -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     Box(
@@ -1208,7 +1200,6 @@ private fun FullscreenHistoryPage(
         if (clip.isImage) {
             FullscreenHistoryImage(
                 clip = clip,
-                onZoomedChange = onImageZoomedChange,
             )
         } else {
             SelectionContainer {
@@ -1234,7 +1225,6 @@ private fun FullscreenHistoryPage(
 @Composable
 private fun FullscreenHistoryImage(
     clip: ReceivedClip,
-    onZoomedChange: (Boolean) -> Unit,
 ) {
     val bitmap = rememberDecodedBitmap(
         path = clip.imagePath,
@@ -1244,15 +1234,11 @@ private fun FullscreenHistoryImage(
     var scale by remember(clip.id) { mutableStateOf(MIN_IMAGE_SCALE) }
     var offset by remember(clip.id) { mutableStateOf(Offset.Zero) }
     var viewportSize by remember(clip.id) { mutableStateOf(IntSize.Zero) }
-    val isZoomed = scale > MIN_IMAGE_SCALE + IMAGE_ZOOM_EPSILON
-
-    LaunchedEffect(isZoomed) {
-        onZoomedChange(isZoomed)
-    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .clipToBounds()
             .onSizeChanged { size ->
                 viewportSize = size
                 offset = clampImageOffset(
@@ -1270,19 +1256,36 @@ private fun FullscreenHistoryImage(
                     Modifier.pointerInput(clip.id, bitmap, viewportSize) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
-                            var imageOwnsGesture = scale > MIN_IMAGE_SCALE + IMAGE_ZOOM_EPSILON
+                            var imageOwnsGesture = false
+                            var accumulatedPan = Offset.Zero
 
                             do {
                                 val event = awaitPointerEvent()
+                                if (event.changes.any { it.isConsumed }) break
                                 val pressedPointers = event.changes.count { it.pressed }
+                                val panChange = event.calculatePan()
                                 if (pressedPointers >= 2) {
                                     imageOwnsGesture = true
+                                } else if (!imageOwnsGesture) {
+                                    accumulatedPan += panChange
+                                    if (accumulatedPan.getDistance() > viewConfiguration.touchSlop) {
+                                        val clampedPan = clampImageOffset(
+                                            offset = offset + accumulatedPan,
+                                            scale = scale,
+                                            viewportSize = viewportSize,
+                                            imageWidth = bitmap.width,
+                                            imageHeight = bitmap.height,
+                                        ) - offset
+                                        // Decide once per drag: pan inside the image, or let
+                                        // the pager handle an outward swipe at its edge.
+                                        imageOwnsGesture = shouldImageOwnPan(accumulatedPan, clampedPan)
+                                        if (!imageOwnsGesture) break
+                                    }
                                 }
 
                                 if (imageOwnsGesture) {
                                     val oldScale = scale
                                     val zoomChange = event.calculateZoom()
-                                    val panChange = event.calculatePan()
                                     val hasTransform =
                                         zoomChange != 1f || panChange != Offset.Zero
                                     if (!hasTransform) continue
@@ -1352,6 +1355,13 @@ private fun FullscreenHistoryImage(
         }
     }
 }
+
+internal fun shouldImageOwnPan(pan: Offset, availablePan: Offset): Boolean =
+    if (abs(pan.x) > abs(pan.y)) {
+        abs(availablePan.x) > IMAGE_ZOOM_EPSILON
+    } else {
+        abs(availablePan.y) > IMAGE_ZOOM_EPSILON
+    }
 
 internal fun clampImageOffset(
     offset: Offset,

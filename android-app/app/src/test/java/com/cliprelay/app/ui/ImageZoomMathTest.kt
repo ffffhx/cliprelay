@@ -3,9 +3,34 @@ package com.cliprelay.app.ui
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntSize
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ImageZoomMathTest {
+    @Test
+    fun horizontalSwipeAtEitherEdgeBelongsToPagerEvenWithVerticalDrift() {
+        for (direction in listOf(-1f, 1f)) {
+            assertFalse(shouldImageOwnPan(Offset(80f * direction, 12f), Offset(0f, 12f)))
+        }
+    }
+
+    @Test
+    fun horizontalSwipeInsideImageRemainsAnImagePan() {
+        assertTrue(shouldImageOwnPan(Offset(-80f, 12f), Offset(-40f, 12f)))
+        assertTrue(shouldImageOwnPan(Offset(80f, 12f), Offset(40f, 12f)))
+    }
+
+    @Test
+    fun verticalDragDoesNotBecomePageSwipe() {
+        assertTrue(shouldImageOwnPan(Offset(12f, 80f), Offset(0f, 80f)))
+    }
+
+    @Test
+    fun fittedImageLeavesHorizontalSwipesToPager() {
+        assertFalse(shouldImageOwnPan(Offset(80f, 12f), Offset.Zero))
+    }
+
     @Test
     fun zoomKeepsGestureFocusInPlaceAndAppliesPan() {
         val result = transformImageOffset(
