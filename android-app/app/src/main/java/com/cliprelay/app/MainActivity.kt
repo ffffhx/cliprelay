@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,25 +27,50 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.ViewModelProvider
 import com.cliprelay.app.data.AppPreferences
 import com.cliprelay.app.data.AppSettings
 import com.cliprelay.app.data.FullscreenTextSize
 import com.cliprelay.app.data.HistoryRepository
+import com.cliprelay.app.data.ImageGallery
 import com.cliprelay.app.data.ReceivedClip
 import com.cliprelay.app.runtime.ClipRelayRuntime
 import com.cliprelay.app.runtime.ReceiverPhase
 import com.cliprelay.app.runtime.ReceiverStatus
 import com.cliprelay.app.service.ServiceController
 import com.cliprelay.app.ui.ClipRelayScreen
+import com.cliprelay.app.ui.ClipActionSession
 import com.cliprelay.app.ui.theme.ClipRelayTheme
 import com.cliprelay.app.update.ApkInstaller
 import com.cliprelay.app.update.AppUpdater
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private var startReceiverAfterPermission = false
     private var waitingForInstallPermission = false
     private var immersiveFullscreen = false
+    private val clipActions by lazy { ViewModelProvider(this)[ClipActionSession::class.java] }
+    private var pendingImagePath: String? = null
+    private var pendingImageId: Long? = null
+
+    private val galleryPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val path = pendingImagePath
+        val id = pendingImageId
+        pendingImagePath = null
+        pendingImageId = null
+        if (granted && path != null && id != null) {
+            saveImageToGallery(path, id)
+        } else if (!granted) {
+            Toast.makeText(this, "未保存：需要允许存储权限才能保存到相册", Toast.LENGTH_LONG).show()
+        }
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -65,6 +91,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingImagePath = savedInstanceState?.getString("pendingGalleryImage")
+        pendingImageId = savedInstanceState?.takeIf { it.containsKey("pendingGalleryImageId") }
+            ?.getLong("pendingGalleryImageId")
         enableEdgeToEdge()
         AppUpdater.startAutomaticChecks(this)
 
@@ -99,6 +128,10 @@ class MainActivity : ComponentActivity() {
                         ServiceController.restart(this)
                     },
                     onCopyClip = ::copyClipToClipboard,
+                    onSaveImage = ::requestSaveImage,
+                    savingImageId = clipActions.savingImageId,
+                    copiedClipIds = clipActions.copiedClipIds,
+                    savedImageIds = clipActions.savedImageIds,
                     onSetFullscreenTextSize = { textSizeSp ->
                         val updated = settings.copy(
                             fullscreenTextSizeSp = FullscreenTextSize.normalize(textSizeSp),
@@ -118,6 +151,55 @@ class MainActivity : ComponentActivity() {
                     onDownloadUpdate = { AppUpdater.download(this) },
                     onInstallUpdate = ::requestInstallUpdate,
                 )
+            }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("pendingGalleryImage", pendingImagePath)
+        pendingImageId?.let { outState.putLong("pendingGalleryImageId", it) }
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun requestSaveImage(clip: ReceivedClip) {
+        if (!clip.isImage || clipActions.savingImageId != null || pendingImagePath != null ||
+            clip.id in clipActions.savedImageIds
+        ) return
+        val path = clip.imagePath ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingImagePath = path
+            pendingImageId = clip.id
+            galleryPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            saveImageToGallery(path, clip.id)
+        }
+    }
+
+    private fun saveImageToGallery(path: String, id: Long) {
+        if (clipActions.savingImageId != null || id in clipActions.savedImageIds) return
+        clipActions.savingImageId = id
+        val context = applicationContext
+        lifecycleScope.launch {
+            try {
+                // Finish copying and report the outcome even if the activity is closed mid-save.
+                withContext(NonCancellable) {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { ImageGallery.save(context, path) }
+                    }
+                    val message = result.fold(
+                        onSuccess = {
+                            clipActions.saved(id)
+                            "已保存到相册 · ClipRelay"
+                        },
+                        onFailure = { "保存失败：${it.localizedMessage ?: "请检查存储空间后重试"}" },
+                    )
+                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                clipActions.savingImageId = null
             }
         }
     }
@@ -169,15 +251,21 @@ class MainActivity : ComponentActivity() {
     private fun copyToClipboard(text: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("ClipRelay", text))
+        Toast.makeText(this, "复制成功", Toast.LENGTH_SHORT).show()
     }
 
     private fun copyClipToClipboard(clip: ReceivedClip) {
         if (!clip.isImage) {
             copyToClipboard(clip.text)
+            clipActions.copied(clip.id)
             return
         }
 
-        val imageFile = clip.imagePath?.let(::File)?.takeIf(File::isFile) ?: return
+        val imageFile = clip.imagePath?.let(::File)?.takeIf(File::isFile)
+        if (imageFile == null) {
+            Toast.makeText(this, "复制失败：图片文件已不存在", Toast.LENGTH_SHORT).show()
+            return
+        }
         val imageUri = FileProvider.getUriForFile(
             this,
             "$packageName.fileprovider",
@@ -185,6 +273,8 @@ class MainActivity : ComponentActivity() {
         )
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newUri(contentResolver, "ClipRelay screenshot", imageUri))
+        clipActions.copied(clip.id)
+        Toast.makeText(this, "复制成功", Toast.LENGTH_SHORT).show()
     }
 
     private fun setFullscreenLandscape(landscape: Boolean) {

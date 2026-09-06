@@ -119,6 +119,10 @@ fun ClipRelayScreen(
     onToggleReceiver: (Boolean) -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
     onCopyClip: (ReceivedClip) -> Unit,
+    onSaveImage: (ReceivedClip) -> Unit,
+    savingImageId: Long?,
+    copiedClipIds: Set<Long>,
+    savedImageIds: Set<Long>,
     onSetFullscreenTextSize: (Int) -> Unit,
     onSetFullscreenLandscape: (Boolean) -> Unit,
     onSetImmersiveFullscreen: (Boolean) -> Unit,
@@ -146,6 +150,10 @@ fun ClipRelayScreen(
                         onSetFullscreenLandscape(false)
                     },
                     onCopy = onCopyClip,
+                    onSaveImage = onSaveImage,
+                    savingImageId = savingImageId,
+                    copiedClipIds = copiedClipIds,
+                    savedImageIds = savedImageIds,
                     fullscreenTextSizeSp = settings.fullscreenTextSizeSp,
                     onSetFullscreenTextSize = onSetFullscreenTextSize,
                     onSetLandscape = onSetFullscreenLandscape,
@@ -216,6 +224,10 @@ fun ClipRelayScreen(
                         onSetImmersiveFullscreen(true)
                     },
                     onCopy = { onCopyClip(clip) },
+                    onSaveImage = { onSaveImage(clip) },
+                    savingImageId = savingImageId,
+                    copied = clip.id in copiedClipIds,
+                    saved = clip.id in savedImageIds,
                 )
             }
         }
@@ -759,6 +771,10 @@ private fun HistoryItem(
     clip: ReceivedClip,
     onOpen: () -> Unit,
     onCopy: () -> Unit,
+    onSaveImage: () -> Unit,
+    savingImageId: Long?,
+    copied: Boolean,
+    saved: Boolean,
 ) {
     val time = remember(clip.receivedAt) {
         DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(clip.receivedAt))
@@ -806,10 +822,17 @@ private fun HistoryItem(
                     letterSpacing = 1.sp,
                 )
                 Spacer(Modifier.width(4.dp))
-                TextButton(onClick = onCopy) { Text("复制") }
+                TextButton(onClick = onCopy) { Text(if (copied) "已复制" else "复制") }
             }
             if (clip.isImage) {
                 HistoryImageThumbnail(clip)
+                TextButton(onClick = onSaveImage, enabled = !saved && savingImageId == null) {
+                    Text(when {
+                        saved -> "已保存"
+                        savingImageId == clip.id -> "保存中…"
+                        else -> "保存到相册"
+                    })
+                }
             } else {
                 Text(
                     text = clip.text,
@@ -860,6 +883,10 @@ private fun HistoryFullscreenViewer(
     initialClipId: Long,
     onDismiss: () -> Unit,
     onCopy: (ReceivedClip) -> Unit,
+    onSaveImage: (ReceivedClip) -> Unit,
+    savingImageId: Long?,
+    copiedClipIds: Set<Long>,
+    savedImageIds: Set<Long>,
     fullscreenTextSizeSp: Int,
     onSetFullscreenTextSize: (Int) -> Unit,
     onSetLandscape: (Boolean) -> Unit,
@@ -908,6 +935,10 @@ private fun HistoryFullscreenViewer(
                     onSetFullscreenTextSize = onSetFullscreenTextSize,
                     onDismiss = onDismiss,
                     onCopy = { onCopy(currentClip) },
+                    onSaveImage = { onSaveImage(currentClip) },
+                    savingImageId = savingImageId,
+                    copied = currentClip.id in copiedClipIds,
+                    saved = currentClip.id in savedImageIds,
                     onSetLandscape = onSetLandscape,
                     onHide = { controlsVisible = false },
                 )
@@ -927,6 +958,10 @@ private fun BoxScope.FullscreenControls(
     onSetFullscreenTextSize: (Int) -> Unit,
     onDismiss: () -> Unit,
     onCopy: () -> Unit,
+    onSaveImage: () -> Unit,
+    savingImageId: Long?,
+    copied: Boolean,
+    saved: Boolean,
     onSetLandscape: (Boolean) -> Unit,
     onHide: () -> Unit,
 ) {
@@ -966,7 +1001,7 @@ private fun BoxScope.FullscreenControls(
             onClick = onCopy,
             colors = ButtonDefaults.textButtonColors(contentColor = accent),
         ) {
-            Text("复制")
+            Text(if (copied) "已复制" else "复制")
         }
     }
 
@@ -982,7 +1017,20 @@ private fun BoxScope.FullscreenControls(
             pageCount = pageCount,
             accent = accent,
         )
-        if (!currentClip.isImage) {
+        if (currentClip.isImage) {
+            TextButton(
+                onClick = onSaveImage,
+                enabled = !saved && savingImageId == null,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                colors = ButtonDefaults.textButtonColors(contentColor = accent),
+            ) {
+                Text(when {
+                    saved -> "已保存"
+                    savingImageId == currentClip.id -> "保存中…"
+                    else -> "保存到相册"
+                })
+            }
+        } else {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
