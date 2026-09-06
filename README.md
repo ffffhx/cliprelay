@@ -147,10 +147,14 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 - 文件 SHA-256 与发布清单一致。
 
 更新源默认是腾讯云 HTTPS 服务，版本清单和 APK 都从腾讯云下载，手机无需连接 GitHub。部署说明见
-[`deploy/README.md`](deploy/README.md)。提高 `android-app/app/build.gradle.kts` 中的
-`versionCode` 和 `versionName` 并推送到 `main` 后，`.github/workflows/android-release.yml` 会自动运行测试、
-构建签名 APK、创建 `android-v<versionName>` 标签，并发布 APK 与更新清单；已经存在的同版本 Release
-不会重复发布。随后 Android Cloud Sync 会把已发布文件同步到腾讯云，失败时可单独重跑同步工作流。手工推送形如 `android-v0.6.0` 的标签或从 Actions 手动运行工作流仍可作为发布兜底。
+[`deploy/README.md`](deploy/README.md)。推送 `android-app/`、正式发布工作流或版本脚本的改动到 `main`
+后，`.github/workflows/android-release.yml` 会自动运行测试、构建签名 APK、创建
+`android-v<versionName>` 标签，并发布 APK 与更新清单。无需手动修改版本号：如果当前版本不高于
+已发布版本，工作流会递增补丁号和 `versionCode`，验证构建成功后将版本修改提交回 `main`；
+手动指定的更高版本号会保留。没有未发布的 Android 改动时，重复运行不会产生新版本。
+发布任务串行执行，并取最新 `main`；构建期间分支有新提交时不会强推覆盖，后续任务会处理最新代码。
+随后 Android Cloud Sync 会同步文件到腾讯云，并校验线上版本和 APK 哈希；失败时可单独重跑同步工作流。
+手工推送形如 `android-v0.6.0` 的标签或从 Actions 手动运行工作流仍可作为发布兜底。
 仓库需要预先配置
 `CLIPRELAY_KEYSTORE_BASE64`、`CLIPRELAY_STORE_PASSWORD`、`CLIPRELAY_KEY_ALIAS`、
 `CLIPRELAY_KEY_PASSWORD` 四个 Actions Secrets；这些值必须始终对应首次正式安装使用的签名密钥。

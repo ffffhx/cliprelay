@@ -52,4 +52,12 @@ jobs:
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
             -o ConnectTimeout=20 cliprelay-updates@124.221.36.36 publish
           curl --fail --silent --show-error --retry 3 \
-            'https://124-221-36-36.anyip.dev:8443/cliprelay/update.json'
+            "https://124-221-36-36.anyip.dev:8443/cliprelay/update.json?verify=$GITHUB_RUN_ID" \
+            -o "$RUNNER_TEMP/cloud-update.json"
+          jq -e --arg version "$version" --arg digest "$digest" \
+            --argjson code "$(jq -r .versionCode dist/update.json)" \
+            '.versionName == $version and .versionCode == $code and .sha256 == $digest' \
+            "$RUNNER_TEMP/cloud-update.json"
+          curl --fail --silent --show-error --retry 3 \
+            "$(jq -r .apkUrl "$RUNNER_TEMP/cloud-update.json")" -o "$RUNNER_TEMP/cloud.apk"
+          printf '%s  %s\n' "$digest" "$RUNNER_TEMP/cloud.apk" | sha256sum -c -
