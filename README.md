@@ -143,10 +143,11 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 - APK 签名与已安装版本一致；
 - 文件 SHA-256 与发布清单一致。
 
-更新源默认是 GitHub 最新 Release 中的 `update.json`。提高 `android-app/app/build.gradle.kts` 中的
+更新源默认是腾讯云 HTTPS 服务，版本清单和 APK 都从腾讯云下载，手机无需连接 GitHub。部署说明见
+[`deploy/README.md`](deploy/README.md)。提高 `android-app/app/build.gradle.kts` 中的
 `versionCode` 和 `versionName` 并推送到 `main` 后，`.github/workflows/android-release.yml` 会自动运行测试、
 构建签名 APK、创建 `android-v<versionName>` 标签，并发布 APK 与更新清单；已经存在的同版本 Release
-不会重复发布。手工推送形如 `android-v0.6.0` 的标签或从 Actions 手动运行工作流仍可作为发布兜底。
+不会重复发布。随后 Android Cloud Sync 会把已发布文件同步到腾讯云，失败时可单独重跑同步工作流。手工推送形如 `android-v0.6.0` 的标签或从 Actions 手动运行工作流仍可作为发布兜底。
 仓库需要预先配置
 `CLIPRELAY_KEYSTORE_BASE64`、`CLIPRELAY_STORE_PASSWORD`、`CLIPRELAY_KEY_ALIAS`、
 `CLIPRELAY_KEY_PASSWORD` 四个 Actions Secrets；这些值必须始终对应首次正式安装使用的签名密钥。
