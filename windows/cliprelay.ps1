@@ -3145,7 +3145,7 @@ function Send-CopiedClipboard {
     try {
         # Give the foreground application time to copy first. If Ctrl+C does
         # not change the clipboard, send its current text after this window.
-        for ($attempt = 0; $attempt -lt 75; $attempt++) {
+        for ($attempt = 0; $attempt -lt 15; $attempt++) {
             if ([ClipRelay.NativeMethods]::GetClipboardSequenceNumber() -ne $PreviousSequence) {
                 break
             }
