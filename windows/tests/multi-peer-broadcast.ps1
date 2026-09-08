@@ -280,4 +280,43 @@ finally {
     $imageTwo.Dispose()
 }
 
-Write-Output "PASS: text and image fan-out runs in parallel, preserves per-device auth, and reports partial delivery."
+# Exercise the Ctrl+C fallback through the production clipboard reader and
+# broadcaster, with a loopback receiver instead of the user's saved devices.
+foreach ($functionName in @("Get-ClipboardTextWithRetry", "Send-CopiedClipboard")) {
+    $functionAst = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq $functionName
+    }, $true)
+    Invoke-Expression $functionAst.Extent.Text
+}
+function Get-EnabledRelayPeers { return "loopback-test" }
+function Send-ClipboardTextUnlessDuplicate {
+    param([string]$Text)
+    $payload = @{ text = $Text } | ConvertTo-Json -Compress
+    $result = @([ClipRelay.RelayBroadcaster]::SendText($script:fallbackTargets, $payload, 3000))
+    if (@($result | Where-Object Success).Count -ne 1) { throw "Fallback HTTP delivery failed" }
+    return $true
+}
+function Set-LastTransferStatus { throw "Unexpected fallback failure" }
+$script:Notifications = $false
+$fallbackServer = New-Object ClipRelayTests.OneShotHttpServer(200, 0)
+$savedClipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+try {
+    $script:fallbackTargets = @((New-TestTarget -Name "fallback" -Port $fallbackServer.Port -Token ""))
+    $markdown = "# Clipboard fallback`n`n**Keep Markdown** and ``inline code``."
+    [System.Windows.Forms.Clipboard]::SetText($markdown)
+    Send-CopiedClipboard -PreviousSequence ([ClipRelay.NativeMethods]::GetClipboardSequenceNumber())
+    $received = [Text.Encoding]::UTF8.GetString($fallbackServer.Body) | ConvertFrom-Json
+    if ($fallbackServer.Path -ne "/push" -or $received.text -cne $markdown) {
+        throw "Fallback did not deliver unchanged Markdown to /push"
+    }
+}
+finally {
+    $fallbackServer.Dispose()
+    if ($null -ne $savedClipboard) {
+        [System.Windows.Forms.Clipboard]::SetDataObject($savedClipboard, $true)
+    } else { [System.Windows.Forms.Clipboard]::Clear() }
+}
+
+Write-Output "PASS: parallel authenticated broadcasts, partial delivery, and unchanged clipboard Markdown over HTTP."

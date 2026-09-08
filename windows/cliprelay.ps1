@@ -2912,7 +2912,7 @@ function Get-ClipboardTextWithRetry {
         }
     }
 
-    throw "Cannot read the selected text: $($lastError.Exception.Message)"
+    throw "Cannot read clipboard text: $($lastError.Exception.Message)"
 }
 
 function Set-ClipboardTextWithRetry {
@@ -3143,17 +3143,13 @@ function Send-CopiedClipboard {
 
     if (@(Get-EnabledRelayPeers).Count -eq 0) { return }
     try {
-        $clipboardChanged = $false
+        # Give the foreground application time to copy first. If Ctrl+C does
+        # not change the clipboard, send its current text after this window.
         for ($attempt = 0; $attempt -lt 75; $attempt++) {
             if ([ClipRelay.NativeMethods]::GetClipboardSequenceNumber() -ne $PreviousSequence) {
-                $clipboardChanged = $true
                 break
             }
             Start-Sleep -Milliseconds 20
-        }
-
-        if (-not $clipboardChanged) {
-            return
         }
 
         $copiedText = Get-ClipboardTextWithRetry
