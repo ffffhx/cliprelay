@@ -110,6 +110,7 @@ import java.util.Date
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.abs
+import kotlinx.coroutines.launch
 
 @Composable
 fun ClipRelayScreen(
@@ -903,6 +904,23 @@ internal fun HistoryFullscreenViewer(
     val pagerState = rememberPagerState(initialPage = initialPage) { history.size }
     val currentPage = pagerState.currentPage.coerceIn(0, history.lastIndex)
     val currentClip = history[currentPage]
+    var knownArrivalIds by remember { mutableStateOf(history.map { it.id }.toSet()) }
+    var pendingArrivalIds by remember { mutableStateOf(emptySet<Long>()) }
+    var arrivalExpanded by remember { mutableStateOf(false) }
+    val arrivalScope = androidx.compose.runtime.rememberCoroutineScope()
+    androidx.compose.runtime.LaunchedEffect(history) {
+        val ids = history.map { it.id }.toSet()
+        val added = ids - knownArrivalIds
+        pendingArrivalIds = pendingArrivalIds.intersect(ids) + added
+        knownArrivalIds = ids
+        if (added.isNotEmpty()) arrivalExpanded = true
+    }
+    androidx.compose.runtime.LaunchedEffect(pendingArrivalIds) {
+        if (pendingArrivalIds.isNotEmpty()) {
+            kotlinx.coroutines.delay(4500)
+            arrivalExpanded = false
+        }
+    }
     val receivedTime = remember(currentClip.receivedAt) {
         DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
             .format(Date(currentClip.receivedAt))
@@ -925,7 +943,6 @@ internal fun HistoryFullscreenViewer(
                     clip = pageClip,
                     textSizeSp = fullscreenTextSizeSp,
                     markdownPreview = markdownPreview,
-                    controlsVisible = controlsVisible,
                     onHorizontalGesture = { markdownScrolling = it },
                     onToggleControls = { controlsVisible = !controlsVisible },
                 )
@@ -951,6 +968,35 @@ internal fun HistoryFullscreenViewer(
                     markdownPreview = markdownPreview,
                     onToggleMarkdown = { markdownPreview = !markdownPreview },
                 )
+            }
+            if (pendingArrivalIds.isNotEmpty()) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = if (controlsVisible) 76.dp else 12.dp, end = 12.dp)
+                        .widthIn(max = 320.dp),
+                    color = Color(0xFF163D50),
+                    shape = RoundedCornerShape(18.dp),
+                    shadowElevation = 6.dp,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(modifier = Modifier.weight(1f, fill = false), onClick = {
+                            val newestPending = history.indexOfFirst { it.id in pendingArrivalIds }
+                            pendingArrivalIds = emptySet()
+                            if (newestPending >= 0) arrivalScope.launch { pagerState.scrollToPage(newestPending) }
+                        }) {
+                            Text(
+                                if (arrivalExpanded) "收到 ${pendingArrivalIds.size} 条新内容 · 点击查看"
+                                else "新内容 ${pendingArrivalIds.size}",
+                                color = SignalCyan,
+                                fontSize = 13.sp,
+                            )
+                        }
+                        TextButton(onClick = { pendingArrivalIds = emptySet() }) {
+                            Text("忽略", color = Color(0xFFAFC5D7), fontSize = 12.sp)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1248,7 +1294,6 @@ private fun FullscreenHistoryPage(
     clip: ReceivedClip,
     textSizeSp: Int,
     markdownPreview: Boolean,
-    controlsVisible: Boolean,
     onHorizontalGesture: (Boolean) -> Unit,
     onToggleControls: () -> Unit,
 ) {
@@ -1274,7 +1319,6 @@ private fun FullscreenHistoryPage(
                     modifier = Modifier
                         .widthIn(max = 720.dp)
                         .fillMaxWidth()
-                        .padding(top = if (controlsVisible) 76.dp else 0.dp, bottom = if (controlsVisible) 160.dp else 0.dp)
                         .verticalScroll(rememberScrollState())
                         .testTag("markdown-reader")
                         .padding(horizontal = 24.dp, vertical = 30.dp),

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsDisplayed
@@ -33,6 +34,49 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class MarkdownPreviewTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
+
+    @Test fun controlsOverlayTextAndNewArrivalsStayDiscoverable() {
+        val original = ReceivedClip(id = 1, text = "阅读中的正文", receivedAt = 0)
+        val history = mutableStateOf(listOf(original))
+        rule.activity.setContent {
+            MaterialTheme {
+                HistoryFullscreenViewer(
+                    history = history.value, initialClipId = 1, onDismiss = {},
+                    onCopy = {}, onSaveImage = {}, savingImageId = null,
+                    copiedClipIds = emptySet(), savedImageIds = emptySet(),
+                    fullscreenTextSizeSp = 17, onSetFullscreenTextSize = {}, onSetLandscape = {},
+                )
+            }
+        }
+        rule.waitUntil(10_000) {
+            rule.onAllNodes(hasText(original.text), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        val before = rule.onNodeWithText(original.text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        rule.onNodeWithText("隐藏控制").performClick()
+        assertEquals(before, rule.onNodeWithText(original.text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot)
+        rule.runOnIdle {
+            history.value = listOf(
+                ReceivedClip(id = 3, text = "新到达的正文2", receivedAt = 2),
+                ReceivedClip(id = 2, text = "新到达的正文1", receivedAt = 1), original,
+            )
+        }
+        rule.onNodeWithText("收到 2 条新内容 · 点击查看").assertIsDisplayed()
+        rule.onNodeWithText(original.text, useUnmergedTree = true).assertIsDisplayed()
+        rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
+            File(rule.activity.getExternalFilesDir(null), "arrival-banner-qa.png").outputStream().use {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+        }
+        rule.waitUntil(7_000) {
+            rule.onAllNodes(hasText("新内容 2")).fetchSemanticsNodes().isNotEmpty()
+        }
+        rule.onNodeWithText("新内容 2").performClick()
+        rule.waitUntil(5_000) {
+            rule.onAllNodes(hasText("新到达的正文2")).fetchSemanticsNodes().isNotEmpty()
+        }
+        rule.onNodeWithText("新到达的正文2").assertIsDisplayed()
+        rule.onNodeWithText("新内容 2").assertDoesNotExist()
+    }
 
     @Test fun fullscreenSwitchesSourceAndKeepsReadingControls() {
         val source = "# 标题验收\n\n**加粗正文**与 `code`。"
