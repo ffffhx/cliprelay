@@ -36,6 +36,38 @@ import java.io.File
 class MarkdownPreviewTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
 
+    @Test fun preservesClipboardLineBreaks() {
+        val source = "**第一行加粗**\n第二行正文\n第三行正文\n\n独立段落\n\n- 列表项\n  列表内换行\n\n> 引用第一行\n> 引用第二行"
+        val content = mutableStateOf(source)
+        rule.activity.setContent {
+            MaterialTheme {
+                HistoryFullscreenViewer(
+                    history = listOf(ReceivedClip(id = 1, text = content.value, receivedAt = 0)),
+                    initialClipId = 1, onDismiss = {}, onCopy = {}, onSaveImage = {}, savingImageId = null,
+                    copiedClipIds = emptySet(), savedImageIds = emptySet(),
+                    fullscreenTextSizeSp = 17, onSetFullscreenTextSize = {}, onSetLandscape = {},
+                )
+            }
+        }
+        rule.onNodeWithText("隐藏控制").performClick()
+        for (lineEnding in listOf("\n", "\r\n")) {
+            rule.runOnIdle { content.value = source.replace("\n", lineEnding) }
+            rule.waitUntil(10_000) {
+                rule.onAllNodes(hasText("第一行加粗\n第二行正文\n第三行正文"), useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            rule.onNodeWithText("第一行加粗\n第二行正文\n第三行正文", useUnmergedTree = true).assertIsDisplayed()
+            rule.onNodeWithText("独立段落", useUnmergedTree = true).assertIsDisplayed()
+            rule.onNodeWithText("列表项\n 列表内换行", useUnmergedTree = true).assertIsDisplayed()
+            rule.onNodeWithText("引用第一行\n引用第二行", useUnmergedTree = true).assertIsDisplayed()
+        }
+        rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
+            File(rule.activity.getExternalFilesDir(null), "markdown-linebreaks-qa.png").outputStream().use {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+        }
+    }
+
     @Test fun controlsOverlayTextAndNewArrivalsStayDiscoverable() {
         val original = ReceivedClip(id = 1, text = "阅读中的正文", receivedAt = 0)
         val history = mutableStateOf(listOf(original))

@@ -40,6 +40,8 @@ import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.rememberMarkdownState
+import com.mikepenz.markdown.model.markdownAnnotator
+import com.mikepenz.markdown.model.markdownAnnotatorConfig
 import dev.snipme.highlights.Highlights
 import dev.snipme.highlights.model.SyntaxThemes
 
@@ -54,8 +56,11 @@ internal fun MarkdownPreview(text: String, textSizeSp: Int, onHorizontalGesture:
         fontWeight = FontWeight.Bold,
     )
     val code = body.copy(fontFamily = FontFamily.Monospace, fontSize = (size * 0.9f).sp)
+    val previewText = remember(text) { text.replace("\r\n", "\n").replace('\r', '\n') }
     Markdown(
-        markdownState = rememberMarkdownState(text),
+        markdownState = rememberMarkdownState(previewText),
+        // Clipboard text uses single newlines as visible line breaks.
+        annotator = remember { markdownAnnotator(markdownAnnotatorConfig(eolAsNewLine = true)) },
         colors = markdownColor(
             text = Color(0xFFF2F7FC),
             codeBackground = Color(0xFF122C40),
