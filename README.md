@@ -108,6 +108,10 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass `
 - 在 App 内保留最近 30 条文本与截图，点击进入无系统栏的沉浸式全屏，左右滑动切换；全屏图片支持 1×–5× 双指缩放与放大后拖动，拖到左右边缘后松手，再向外滑动可切换相邻的图片或文字；轻点内容可显示复制、关闭及横竖屏控制；
 - 根据设置在手机重启或 App 更新后恢复接收。
 
+文本全屏阅读默认渲染 Markdown，支持标题、列表、引用、表格、链接及带语法高亮的代码块。
+顶部可切换“查看原文 / Markdown 预览”，全文复制始终保留原始 Markdown；代码块支持横向滚动和“复制代码”。
+轻点正文可显示或隐藏控制栏，字号调整、横竖屏和左右切换历史仍可使用。此功能渲染收到的文本，不涉及 `.md` 文件传输。
+
 收到的图片可在历史卡片或全屏预览的控制栏点击“保存到相册”，原图会复制到 `Pictures/ClipRelay`，清空接收历史不会删除已保存的相册图片。Android 8–9 首次保存时需允许存储权限。
 本次打开 App 期间，操作成功的内容会显示“已保存”或“已复制”，列表与全屏同步；切到后台或旋转屏幕保留状态，关闭 App 页面或结束进程后重新打开恢复默认文案。“已复制”仍可再次复制，“已保存”不重复写入相册。
 
@@ -134,6 +138,11 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 可安装的 Debug APK 位于 `android-app/app/build/outputs/apk/debug/app-debug.apk`。正式分发时
 请使用自己的 Android 签名密钥构建并签名 Release APK；不要把签名文件提交到仓库。
+
+已有正式版的真机可使用相同签名的 QA 构建运行 Markdown 界面测试：配置本地签名后，执行
+`./gradlew connectedQaAndroidTest -PcliprelayTestBuildType=qa`。测试覆盖预览/原文切换、字号、代码复制、
+横向滚动与横屏，并在 App 的外部文件目录保存 `markdown-*-qa.png` 截图；测试结束后安装正式 Release 包。
+手动验收文本见 [`android-app/markdown-preview-demo.md`](android-app/markdown-preview-demo.md)。
 
 ### App 自动更新
 

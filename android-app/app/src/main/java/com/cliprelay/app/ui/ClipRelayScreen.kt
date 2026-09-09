@@ -3,6 +3,7 @@ package com.cliprelay.app.ui
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.content.res.Configuration
+import androidx.compose.ui.platform.testTag
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -878,7 +879,7 @@ private fun HistoryImageThumbnail(clip: ReceivedClip) {
 }
 
 @Composable
-private fun HistoryFullscreenViewer(
+internal fun HistoryFullscreenViewer(
     history: List<ReceivedClip>,
     initialClipId: Long,
     onDismiss: () -> Unit,
@@ -893,7 +894,9 @@ private fun HistoryFullscreenViewer(
 ) {
     BackHandler(onBack = onDismiss)
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    var controlsVisible by remember { mutableStateOf(false) }
+    var controlsVisible by remember { mutableStateOf(history.firstOrNull { it.id == initialClipId }?.isImage == false) }
+    var markdownPreview by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
+    var markdownScrolling by remember { mutableStateOf(false) }
     val initialPage = remember(history, initialClipId) {
         history.indexOfFirst { it.id == initialClipId }.coerceAtLeast(0)
     }
@@ -913,6 +916,7 @@ private fun HistoryFullscreenViewer(
         Box(modifier = Modifier.fillMaxSize()) {
             HorizontalPager(
                 state = pagerState,
+                userScrollEnabled = !markdownScrolling,
                 modifier = Modifier.fillMaxSize(),
                 key = { history[it].id },
             ) { page ->
@@ -920,6 +924,9 @@ private fun HistoryFullscreenViewer(
                 FullscreenHistoryPage(
                     clip = pageClip,
                     textSizeSp = fullscreenTextSizeSp,
+                    markdownPreview = markdownPreview,
+                    controlsVisible = controlsVisible,
+                    onHorizontalGesture = { markdownScrolling = it },
                     onToggleControls = { controlsVisible = !controlsVisible },
                 )
             }
@@ -941,6 +948,8 @@ private fun HistoryFullscreenViewer(
                     saved = currentClip.id in savedImageIds,
                     onSetLandscape = onSetLandscape,
                     onHide = { controlsVisible = false },
+                    markdownPreview = markdownPreview,
+                    onToggleMarkdown = { markdownPreview = !markdownPreview },
                 )
             }
         }
@@ -964,6 +973,8 @@ private fun BoxScope.FullscreenControls(
     saved: Boolean,
     onSetLandscape: (Boolean) -> Unit,
     onHide: () -> Unit,
+    markdownPreview: Boolean,
+    onToggleMarkdown: () -> Unit,
 ) {
     val accent = if (currentClip.isImage) SignalCyan else RelayViolet
 
@@ -996,6 +1007,11 @@ private fun BoxScope.FullscreenControls(
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
             )
+        }
+        if (!currentClip.isImage) {
+            TextButton(onClick = onToggleMarkdown) {
+                Text(if (markdownPreview) "查看原文" else "Markdown 预览", color = SignalCyan)
+            }
         }
         TextButton(
             onClick = onCopy,
@@ -1231,6 +1247,9 @@ private fun ArrivalPagerRail(page: Int, pageCount: Int, accent: Color) {
 private fun FullscreenHistoryPage(
     clip: ReceivedClip,
     textSizeSp: Int,
+    markdownPreview: Boolean,
+    controlsVisible: Boolean,
+    onHorizontalGesture: (Boolean) -> Unit,
     onToggleControls: () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -1255,10 +1274,14 @@ private fun FullscreenHistoryPage(
                     modifier = Modifier
                         .widthIn(max = 720.dp)
                         .fillMaxWidth()
+                        .padding(top = if (controlsVisible) 76.dp else 0.dp, bottom = if (controlsVisible) 160.dp else 0.dp)
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 28.dp, vertical = 30.dp),
+                        .testTag("markdown-reader")
+                        .padding(horizontal = 24.dp, vertical = 30.dp),
                 ) {
-                    Text(
+                    if (markdownPreview) {
+                        MarkdownPreview(text = clip.text, textSizeSp = textSizeSp, onHorizontalGesture = onHorizontalGesture)
+                    } else Text(
                         text = clip.text,
                         color = Color(0xFFF2F7FC),
                         fontSize = FullscreenTextSize.normalize(textSizeSp).sp,

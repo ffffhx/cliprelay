@@ -69,6 +69,14 @@ android {
                 "proguard-rules.pro",
             )
         }
+        create("qa") {
+            initWith(getByName("release"))
+            // Use the release certificate on real devices without stripping APIs
+            // used only by the instrumentation runner.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            matchingFallbacks += "release"
+        }
     }
 
     compileOptions {
@@ -80,6 +88,8 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testBuildType = providers.gradleProperty("cliprelayTestBuildType").orElse("debug").get()
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -106,6 +116,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
+    // 0.38.1 retains Java 17 compatibility, including its syntax highlighter.
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.38.1")
+    implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.38.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 
