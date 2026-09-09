@@ -908,6 +908,17 @@ internal fun HistoryFullscreenViewer(
     var pendingArrivalIds by remember { mutableStateOf(emptySet<Long>()) }
     var arrivalExpanded by remember { mutableStateOf(false) }
     val arrivalScope = androidx.compose.runtime.rememberCoroutineScope()
+    androidx.compose.runtime.LaunchedEffect(pagerState) {
+        androidx.compose.runtime.snapshotFlow {
+            if (pagerState.isScrollInProgress) null
+            else pagerState.layoutInfo.visiblePagesInfo
+                .firstOrNull { it.index == pagerState.settledPage }?.key as? Long
+        }.collect { viewedId ->
+            // Use the laid-out stable key: prepending arrivals can temporarily leave
+            // the page index pointing at a different item in the updated history.
+            if (viewedId != null) pendingArrivalIds = pendingArrivalIds - viewedId
+        }
+    }
     androidx.compose.runtime.LaunchedEffect(history) {
         val ids = history.map { it.id }.toSet()
         val added = ids - knownArrivalIds

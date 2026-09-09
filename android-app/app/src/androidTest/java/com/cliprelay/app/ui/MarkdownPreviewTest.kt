@@ -21,6 +21,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.test.swipeUp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cliprelay.app.MainActivity
@@ -76,6 +77,22 @@ class MarkdownPreviewTest {
         }
         rule.onNodeWithText("新到达的正文2").assertIsDisplayed()
         rule.onNodeWithText("新内容 2").assertDoesNotExist()
+
+        rule.runOnIdle {
+            history.value = listOf(
+                ReceivedClip(id = 5, text = "手动查看第二条", receivedAt = 4),
+                ReceivedClip(id = 4, text = "手动查看第一条", receivedAt = 3),
+            ) + history.value
+        }
+        rule.onNodeWithText("收到 2 条新内容 · 点击查看").assertIsDisplayed()
+        rule.onNodeWithText("新到达的正文2").assertIsDisplayed()
+        rule.onRoot().performTouchInput { swipeRight() }
+        rule.onNodeWithText("手动查看第一条").assertIsDisplayed()
+        rule.onNodeWithText("收到 1 条新内容 · 点击查看").assertIsDisplayed()
+        rule.onRoot().performTouchInput { swipeRight() }
+        rule.onNodeWithText("手动查看第二条").assertIsDisplayed()
+        rule.onNodeWithText("收到 1 条新内容 · 点击查看").assertDoesNotExist()
+        rule.onNodeWithText("新内容 1").assertDoesNotExist()
     }
 
     @Test fun fullscreenSwitchesSourceAndKeepsReadingControls() {
