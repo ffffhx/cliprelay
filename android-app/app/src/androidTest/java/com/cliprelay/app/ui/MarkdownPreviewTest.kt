@@ -36,6 +36,33 @@ import java.io.File
 class MarkdownPreviewTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
 
+    @Test fun keepsContinuousListItemsCompact() {
+        val source = "独立段落一\n\n独立段落二\n\n- 紧凑项目一\n- 紧凑项目二\n\n分隔正文\n\n- 宽松项目一\n\n- 宽松项目二"
+        rule.activity.setContent {
+            MaterialTheme {
+                HistoryFullscreenViewer(
+                    history = listOf(ReceivedClip(id = 1, text = source, receivedAt = 0)),
+                    initialClipId = 1, onDismiss = {}, onCopy = {}, onSaveImage = {}, savingImageId = null,
+                    copiedClipIds = emptySet(), savedImageIds = emptySet(),
+                    fullscreenTextSizeSp = 17, onSetFullscreenTextSize = {}, onSetLandscape = {},
+                )
+            }
+        }
+        rule.onNodeWithText("隐藏控制").performClick()
+        rule.waitUntil(10_000) {
+            rule.onAllNodes(hasText("宽松项目二"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        fun top(text: String) = rule.onNodeWithText(text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
+        val compact = top("紧凑项目二") - top("紧凑项目一")
+        val loose = top("宽松项目二") - top("宽松项目一")
+        org.junit.Assert.assertTrue("Blank-separated list should have a larger gap: $loose > $compact", loose > compact * 1.3f)
+        rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
+            File(rule.activity.getExternalFilesDir(null), "markdown-list-spacing-qa.png").outputStream().use {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+        }
+    }
+
     @Test fun preservesClipboardLineBreaks() {
         val source = "**第一行加粗**\n第二行正文\n第三行正文\n\n独立段落\n\n- 列表项\n  列表内换行\n\n> 引用第一行\n> 引用第二行"
         val content = mutableStateOf(source)

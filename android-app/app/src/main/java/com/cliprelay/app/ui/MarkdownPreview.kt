@@ -32,6 +32,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.dp
 import com.cliprelay.app.data.FullscreenTextSize
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
@@ -83,7 +84,7 @@ internal fun MarkdownPreview(text: String, textSizeSp: Int, onHorizontalGesture:
                 MarkdownParagraph(
                     content = component.content,
                     node = component.node,
-                    modifier = Modifier.padding(bottom = paragraphGap),
+                    modifier = Modifier.padding(bottom = if (needsParagraphGap(component.content, component.node)) paragraphGap else 0.dp),
                     style = component.typography.paragraph,
                 )
             },
