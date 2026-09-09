@@ -14,6 +14,7 @@ data class AppSettings(
     val fullscreenTextSizeSp: Int,
     val deviceName: String,
     val discoveryEnabled: Boolean,
+    val fullscreenDarkMode: Boolean = true,
 )
 
 object AppPreferences {
@@ -28,6 +29,7 @@ object AppPreferences {
     private const val KEY_NOTIFICATION_PREVIEW = "notification_preview"
     private const val KEY_ACCESS_TOKEN = "access_token"
     private const val KEY_FULLSCREEN_TEXT_SIZE_SP = "fullscreen_text_size_sp"
+    private const val KEY_FULLSCREEN_DARK_MODE = "fullscreen_dark_mode"
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_DEVICE_NAME = "device_name"
     private const val KEY_DEVICE_NAME_VERSION = "device_name_version"
@@ -46,6 +48,7 @@ object AppPreferences {
             ),
             deviceName = loadDeviceName(preferences),
             discoveryEnabled = preferences.getBoolean(KEY_DISCOVERY_ENABLED, true),
+            fullscreenDarkMode = preferences.getBoolean(KEY_FULLSCREEN_DARK_MODE, true),
         )
     }
 
@@ -62,6 +65,7 @@ object AppPreferences {
             putString(KEY_DEVICE_NAME, ClipRelayDiscovery.normalizeDeviceName(settings.deviceName))
             putInt(KEY_DEVICE_NAME_VERSION, DEVICE_NAME_VERSION_BRAND_AND_MODEL)
             putBoolean(KEY_DISCOVERY_ENABLED, settings.discoveryEnabled)
+            putBoolean(KEY_FULLSCREEN_DARK_MODE, settings.fullscreenDarkMode)
         }
     }
 

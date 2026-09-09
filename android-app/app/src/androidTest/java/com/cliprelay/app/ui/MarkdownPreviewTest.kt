@@ -36,6 +36,55 @@ import java.io.File
 class MarkdownPreviewTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
 
+    @Test fun switchesPreviewThemeAndPersistsChoice() {
+        val context = rule.activity
+        val original = com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode
+        val dark = mutableStateOf(true)
+        val source = "# 阅读主题\n\n正文与 `inline code`。\n\n```kotlin\nval answer = 42\n```\n\n| 名称 | 数值 |\n| --- | --- |\n| 示例 | 42 |"
+        try {
+            rule.activity.setContent {
+                MaterialTheme {
+                    HistoryFullscreenViewer(
+                        history = listOf(ReceivedClip(id = 1, text = source, receivedAt = 0)),
+                        initialClipId = 1, onDismiss = {}, onCopy = {}, onSaveImage = {}, savingImageId = null,
+                        copiedClipIds = emptySet(), savedImageIds = emptySet(),
+                        fullscreenTextSizeSp = 17, onSetFullscreenTextSize = {}, onSetLandscape = {},
+                        darkMode = dark.value,
+                        onSetDarkMode = {
+                            dark.value = it
+                            val settings = com.cliprelay.app.data.AppPreferences.load(context)
+                            com.cliprelay.app.data.AppPreferences.save(context, settings.copy(fullscreenDarkMode = it))
+                        },
+                    )
+                }
+            }
+            rule.onNodeWithText("切换浅色").performClick()
+            rule.onNodeWithText("切换深色").assertIsDisplayed()
+            assertEquals(false, com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode)
+            rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
+                assertEquals(android.graphics.Color.WHITE, bitmap.getPixel(bitmap.width - 2, bitmap.height / 2))
+                File(context.getExternalFilesDir(null), "preview-light-qa.png").outputStream().use {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+                }
+            }
+            rule.onNodeWithText("查看原文").performClick()
+            rule.onNodeWithText(source, useUnmergedTree = true).assertIsDisplayed()
+            rule.onNodeWithText("Markdown 预览").performClick()
+            rule.onNodeWithText("切换深色").performClick()
+            rule.onNodeWithText("切换浅色").assertIsDisplayed()
+            assertEquals(true, com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode)
+            rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
+                assertEquals(android.graphics.Color.rgb(16, 18, 20), bitmap.getPixel(bitmap.width - 2, bitmap.height / 2))
+                File(context.getExternalFilesDir(null), "preview-dark-qa.png").outputStream().use {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+                }
+            }
+        } finally {
+            val settings = com.cliprelay.app.data.AppPreferences.load(context)
+            com.cliprelay.app.data.AppPreferences.save(context, settings.copy(fullscreenDarkMode = original))
+        }
+    }
+
     @Test fun keepsContinuousListItemsCompact() {
         val source = "独立段落一\n\n独立段落二\n\n- 紧凑项目一\n- 紧凑项目二\n\n分隔正文\n\n- 宽松项目一\n\n- 宽松项目二"
         rule.activity.setContent {

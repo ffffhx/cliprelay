@@ -140,6 +140,11 @@ class MainActivity : ComponentActivity() {
                         settings = updated
                     },
                     onSetFullscreenLandscape = ::setFullscreenLandscape,
+                    onSetFullscreenDarkMode = { dark ->
+                        val updated = settings.copy(fullscreenDarkMode = dark)
+                        AppPreferences.save(this, updated)
+                        settings = updated
+                    },
                     onSetImmersiveFullscreen = ::setImmersiveFullscreen,
                     onCopyEndpoint = { endpoint -> copyToClipboard(endpoint) },
                     onShareEndpoint = { endpoint -> shareEndpoint(endpoint, settings) },

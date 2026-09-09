@@ -126,6 +126,7 @@ fun ClipRelayScreen(
     copiedClipIds: Set<Long>,
     savedImageIds: Set<Long>,
     onSetFullscreenTextSize: (Int) -> Unit,
+    onSetFullscreenDarkMode: (Boolean) -> Unit,
     onSetFullscreenLandscape: (Boolean) -> Unit,
     onSetImmersiveFullscreen: (Boolean) -> Unit,
     onCopyEndpoint: (String) -> Unit,
@@ -159,6 +160,8 @@ fun ClipRelayScreen(
                     fullscreenTextSizeSp = settings.fullscreenTextSizeSp,
                     onSetFullscreenTextSize = onSetFullscreenTextSize,
                     onSetLandscape = onSetFullscreenLandscape,
+                    darkMode = settings.fullscreenDarkMode,
+                    onSetDarkMode = onSetFullscreenDarkMode,
                 )
             }
             return
@@ -622,6 +625,12 @@ private fun SettingsPanel(
             onCheckedChange = { draft = draft.copy(discoveryEnabled = it) },
         )
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+        SettingSwitch(
+            title = "预览暗黑模式",
+            description = "开启为黑底白字，关闭为白底黑字",
+            checked = draft.fullscreenDarkMode,
+            onCheckedChange = { draft = draft.copy(fullscreenDarkMode = it) },
+        )
         FullscreenTextSizeSetting(
             value = draft.fullscreenTextSizeSp,
             onValueChange = { draft = draft.copy(fullscreenTextSizeSp = it) },
@@ -892,6 +901,8 @@ internal fun HistoryFullscreenViewer(
     fullscreenTextSizeSp: Int,
     onSetFullscreenTextSize: (Int) -> Unit,
     onSetLandscape: (Boolean) -> Unit,
+    darkMode: Boolean = true,
+    onSetDarkMode: (Boolean) -> Unit = {},
 ) {
     BackHandler(onBack = onDismiss)
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -937,74 +948,86 @@ internal fun HistoryFullscreenViewer(
             .format(Date(currentClip.receivedAt))
     }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = DeepRelay,
-        contentColor = Color.White,
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            HorizontalPager(
-                state = pagerState,
-                userScrollEnabled = !markdownScrolling,
+    val palette = remember(darkMode) { PreviewColors(darkMode) }
+    androidx.compose.runtime.CompositionLocalProvider(LocalPreviewColors provides palette) {
+        MaterialTheme(colorScheme = if (darkMode) androidx.compose.material3.darkColorScheme(
+            background = palette.background, onBackground = palette.text,
+            surface = palette.surface, onSurface = palette.text, primary = palette.accent,
+        ) else androidx.compose.material3.lightColorScheme(
+            background = palette.background, onBackground = palette.text,
+            surface = palette.surface, onSurface = palette.text, primary = palette.accent,
+        )) {
+            Surface(
                 modifier = Modifier.fillMaxSize(),
-                key = { history[it].id },
-            ) { page ->
-                val pageClip = history[page]
-                FullscreenHistoryPage(
-                    clip = pageClip,
-                    textSizeSp = fullscreenTextSizeSp,
-                    markdownPreview = markdownPreview,
-                    onHorizontalGesture = { markdownScrolling = it },
-                    onToggleControls = { controlsVisible = !controlsVisible },
-                )
-            }
+                color = palette.background,
+                contentColor = palette.text,
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    HorizontalPager(
+                        state = pagerState,
+                        userScrollEnabled = !markdownScrolling,
+                        modifier = Modifier.fillMaxSize(),
+                        key = { history[it].id },
+                    ) { page ->
+                        val pageClip = history[page]
+                        FullscreenHistoryPage(
+                            clip = pageClip,
+                            textSizeSp = fullscreenTextSizeSp,
+                            markdownPreview = markdownPreview,
+                            onHorizontalGesture = { markdownScrolling = it },
+                            onToggleControls = { controlsVisible = !controlsVisible },
+                        )
+                    }
 
-            if (controlsVisible) {
-                FullscreenControls(
-                    currentClip = currentClip,
-                    receivedTime = receivedTime,
-                    currentPage = currentPage,
-                    pageCount = history.size,
-                    isLandscape = isLandscape,
-                    fullscreenTextSizeSp = fullscreenTextSizeSp,
-                    onSetFullscreenTextSize = onSetFullscreenTextSize,
-                    onDismiss = onDismiss,
-                    onCopy = { onCopy(currentClip) },
-                    onSaveImage = { onSaveImage(currentClip) },
-                    savingImageId = savingImageId,
-                    copied = currentClip.id in copiedClipIds,
-                    saved = currentClip.id in savedImageIds,
-                    onSetLandscape = onSetLandscape,
-                    onHide = { controlsVisible = false },
-                    markdownPreview = markdownPreview,
-                    onToggleMarkdown = { markdownPreview = !markdownPreview },
-                )
-            }
-            if (pendingArrivalIds.isNotEmpty()) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = if (controlsVisible) 76.dp else 12.dp, end = 12.dp)
-                        .widthIn(max = 320.dp),
-                    color = Color(0xFF163D50),
-                    shape = RoundedCornerShape(18.dp),
-                    shadowElevation = 6.dp,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(modifier = Modifier.weight(1f, fill = false), onClick = {
-                            val newestPending = history.indexOfFirst { it.id in pendingArrivalIds }
-                            pendingArrivalIds = emptySet()
-                            if (newestPending >= 0) arrivalScope.launch { pagerState.scrollToPage(newestPending) }
-                        }) {
-                            Text(
-                                if (arrivalExpanded) "收到 ${pendingArrivalIds.size} 条新内容 · 点击查看"
-                                else "新内容 ${pendingArrivalIds.size}",
-                                color = SignalCyan,
-                                fontSize = 13.sp,
-                            )
-                        }
-                        TextButton(onClick = { pendingArrivalIds = emptySet() }) {
-                            Text("忽略", color = Color(0xFFAFC5D7), fontSize = 12.sp)
+                    if (controlsVisible) {
+                        FullscreenControls(
+                            currentClip = currentClip,
+                            receivedTime = receivedTime,
+                            currentPage = currentPage,
+                            pageCount = history.size,
+                            isLandscape = isLandscape,
+                            fullscreenTextSizeSp = fullscreenTextSizeSp,
+                            onSetFullscreenTextSize = onSetFullscreenTextSize,
+                            onDismiss = onDismiss,
+                            onCopy = { onCopy(currentClip) },
+                            onSaveImage = { onSaveImage(currentClip) },
+                            savingImageId = savingImageId,
+                            copied = currentClip.id in copiedClipIds,
+                            saved = currentClip.id in savedImageIds,
+                            onSetLandscape = onSetLandscape,
+                            onHide = { controlsVisible = false },
+                            markdownPreview = markdownPreview,
+                            onToggleMarkdown = { markdownPreview = !markdownPreview },
+                            onSetDarkMode = onSetDarkMode,
+                        )
+                    }
+                    if (pendingArrivalIds.isNotEmpty()) {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = if (controlsVisible) 76.dp else 12.dp, end = 12.dp)
+                                .widthIn(max = 320.dp),
+                            color = palette.surface,
+                            shape = RoundedCornerShape(18.dp),
+                            shadowElevation = 6.dp,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(modifier = Modifier.weight(1f, fill = false), onClick = {
+                                    val newestPending = history.indexOfFirst { it.id in pendingArrivalIds }
+                                    pendingArrivalIds = emptySet()
+                                    if (newestPending >= 0) arrivalScope.launch { pagerState.scrollToPage(newestPending) }
+                                }) {
+                                    Text(
+                                        if (arrivalExpanded) "收到 ${pendingArrivalIds.size} 条新内容 · 点击查看"
+                                        else "新内容 ${pendingArrivalIds.size}",
+                                        color = palette.link,
+                                        fontSize = 13.sp,
+                                    )
+                                }
+                                TextButton(onClick = { pendingArrivalIds = emptySet() }) {
+                                    Text("忽略", color = palette.secondary, fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }
@@ -1032,20 +1055,22 @@ private fun BoxScope.FullscreenControls(
     onHide: () -> Unit,
     markdownPreview: Boolean,
     onToggleMarkdown: () -> Unit,
+    onSetDarkMode: (Boolean) -> Unit,
 ) {
-    val accent = if (currentClip.isImage) SignalCyan else RelayViolet
+    val palette = LocalPreviewColors.current
+    val accent = palette.accent
 
     Row(
         modifier = Modifier
             .align(Alignment.TopCenter)
             .fillMaxWidth()
-            .background(DeepRelay.copy(alpha = 0.88f))
+            .background(palette.background.copy(alpha = 0.88f))
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         TextButton(
             onClick = onDismiss,
-            colors = ButtonDefaults.textButtonColors(contentColor = Color.White),
+            colors = ButtonDefaults.textButtonColors(contentColor = palette.text),
         ) {
             Text("关闭")
         }
@@ -1060,14 +1085,14 @@ private fun BoxScope.FullscreenControls(
             )
             Text(
                 text = receivedTime,
-                color = Color(0xFFAFC5D7),
+                color = palette.secondary,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
             )
         }
         if (!currentClip.isImage) {
             TextButton(onClick = onToggleMarkdown) {
-                Text(if (markdownPreview) "查看原文" else "Markdown 预览", color = SignalCyan)
+                Text(if (markdownPreview) "查看原文" else "Markdown 预览", color = palette.link)
             }
         }
         TextButton(
@@ -1082,7 +1107,7 @@ private fun BoxScope.FullscreenControls(
         modifier = Modifier
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
-            .background(DeepRelay.copy(alpha = 0.88f))
+            .background(palette.background.copy(alpha = 0.88f))
             .padding(top = 5.dp, bottom = 8.dp),
     ) {
         ArrivalPagerRail(
@@ -1112,17 +1137,20 @@ private fun BoxScope.FullscreenControls(
             ) {
                 Text(
                     text = "全屏字号",
-                    color = Color(0xFFAFC5D7),
+                    color = palette.secondary,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
                 )
+                TextButton(onClick = { onSetDarkMode(!palette.dark) }) {
+                    Text(if (palette.dark) "切换浅色" else "切换深色", color = accent, fontSize = 12.sp)
+                }
                 Spacer(Modifier.weight(1f))
                 FontSizeStepper(
                     value = fullscreenTextSizeSp,
                     onValueChange = onSetFullscreenTextSize,
                     accent = accent,
-                    background = Color(0xFF16354D),
-                    contentColor = Color.White,
+                    background = palette.surface,
+                    contentColor = palette.text,
                 )
             }
         }
@@ -1134,7 +1162,7 @@ private fun BoxScope.FullscreenControls(
         ) {
             Text(
                 text = "%02d / %02d".format(currentPage + 1, pageCount),
-                color = Color.White,
+                color = palette.text,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp,
@@ -1143,7 +1171,7 @@ private fun BoxScope.FullscreenControls(
             Spacer(Modifier.weight(1f))
             TextButton(
                 onClick = onHide,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFAFC5D7)),
+                colors = ButtonDefaults.textButtonColors(contentColor = palette.secondary),
             ) {
                 Text(if (pageCount > 1) "左右滑动 · 隐藏" else "隐藏控制")
             }
@@ -1213,7 +1241,7 @@ private fun OrientationSelector(
     onSetLandscape: (Boolean) -> Unit,
 ) {
     Surface(
-        color = Color(0xFF16354D),
+        color = LocalPreviewColors.current.surface,
         shape = RoundedCornerShape(12.dp),
     ) {
         Row(modifier = Modifier.padding(3.dp)) {
@@ -1259,7 +1287,7 @@ private fun OrientationChoice(
     ) {
         Text(
             text = label,
-            color = if (selected) DeepRelay else Color(0xFFAFC5D7),
+            color = if (selected) LocalPreviewColors.current.background else LocalPreviewColors.current.secondary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
         )
@@ -1338,7 +1366,7 @@ private fun FullscreenHistoryPage(
                         MarkdownPreview(text = clip.text, textSizeSp = textSizeSp, onHorizontalGesture = onHorizontalGesture)
                     } else Text(
                         text = clip.text,
-                        color = Color(0xFFF2F7FC),
+                        color = LocalPreviewColors.current.text,
                         fontSize = FullscreenTextSize.normalize(textSizeSp).sp,
                         lineHeight = FullscreenTextSize.lineHeight(textSizeSp).sp,
                     )

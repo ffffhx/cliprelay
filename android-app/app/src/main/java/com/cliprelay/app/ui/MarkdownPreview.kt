@@ -24,7 +24,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Velocity
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -52,6 +51,7 @@ import dev.snipme.highlights.model.SyntaxThemes
 /** Rendering is display-only; history and the full-text copy action retain the source. */
 @Composable
 internal fun MarkdownPreview(text: String, textSizeSp: Int, onHorizontalGesture: (Boolean) -> Unit = {}) {
+    val palette = LocalPreviewColors.current
     val size = FullscreenTextSize.normalize(textSizeSp)
     val body = TextStyle(fontSize = size.sp, lineHeight = FullscreenTextSize.lineHeight(size).sp)
     fun heading(scale: Float) = body.copy(
@@ -67,13 +67,19 @@ internal fun MarkdownPreview(text: String, textSizeSp: Int, onHorizontalGesture:
         // Clipboard text uses single newlines as visible line breaks.
         annotator = remember { markdownAnnotator(markdownAnnotatorConfig(eolAsNewLine = true)) },
         colors = markdownColor(
-            text = Color(0xFFF2F7FC),
-            codeBackground = Color(0xFF122C40),
-            inlineCodeBackground = Color(0xFF234357),
-            dividerColor = Color(0xFF36566C),
-            tableBackground = Color(0xFF10293C),
+            text = palette.text,
+            codeBackground = palette.code,
+            inlineCodeBackground = palette.inlineCode,
+            dividerColor = palette.divider,
+            tableBackground = palette.code,
         ),
         typography = markdownTypography(
+            textLink = androidx.compose.ui.text.TextLinkStyles(
+                style = androidx.compose.ui.text.SpanStyle(
+                    color = palette.link,
+                    textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                ),
+            ),
             h1 = heading(1.65f), h2 = heading(1.4f), h3 = heading(1.2f),
             h4 = heading(1.1f), h5 = heading(1f), h6 = heading(1f),
             text = body, paragraph = body, ordered = body, bullet = body,
@@ -130,17 +136,18 @@ private fun MarkdownScrollRegion(onGesture: (Boolean) -> Unit, content: @Composa
 
 @Composable
 private fun RelayCodeBlock(code: String, language: String?, style: TextStyle) {
+    val palette = LocalPreviewColors.current
     val context = LocalContext.current
     var copied by remember(code) { mutableStateOf(false) }
-    val highlighter = remember { Highlights.Builder().theme(SyntaxThemes.default(darkMode = true)) }
+    val highlighter = remember(palette.dark) { Highlights.Builder().theme(SyntaxThemes.default(darkMode = palette.dark)) }
     Column(Modifier.testTag("markdown-code")) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(language?.takeIf { it.isNotBlank() } ?: "代码", color = Color(0xFF9CB7CC), fontSize = 12.sp)
+            Text(language?.takeIf { it.isNotBlank() } ?: "代码", color = palette.secondary, fontSize = 12.sp)
             TextButton(onClick = {
                 context.getSystemService(ClipboardManager::class.java)
                     .setPrimaryClip(ClipData.newPlainText("ClipRelay code", code))
                 copied = true
-            }) { Text(if (copied) "已复制" else "复制代码", color = Color(0xFF6EDBEB)) }
+            }) { Text(if (copied) "已复制" else "复制代码", color = palette.link) }
         }
         MarkdownHighlightedCode(code = code, language = language, style = style, highlightsBuilder = highlighter)
     }
