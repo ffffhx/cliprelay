@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -25,6 +26,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -36,6 +38,7 @@ import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
 import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
 import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCode
 import com.mikepenz.markdown.compose.elements.MarkdownTable
+import com.mikepenz.markdown.compose.elements.MarkdownParagraph
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
@@ -57,6 +60,7 @@ internal fun MarkdownPreview(text: String, textSizeSp: Int, onHorizontalGesture:
     )
     val code = body.copy(fontFamily = FontFamily.Monospace, fontSize = (size * 0.9f).sp)
     val previewText = remember(text) { text.replace("\r\n", "\n").replace('\r', '\n') }
+    val paragraphGap = with(LocalDensity.current) { body.lineHeight.toDp() }
     Markdown(
         markdownState = rememberMarkdownState(previewText),
         // Clipboard text uses single newlines as visible line breaks.
@@ -75,6 +79,14 @@ internal fun MarkdownPreview(text: String, textSizeSp: Int, onHorizontalGesture:
             list = body, quote = body, table = body, code = code, inlineCode = code,
         ),
         components = markdownComponents(
+            paragraph = { component ->
+                MarkdownParagraph(
+                    content = component.content,
+                    node = component.node,
+                    modifier = Modifier.padding(bottom = paragraphGap),
+                    style = component.typography.paragraph,
+                )
+            },
             codeFence = { component ->
                 MarkdownCodeFence(component.content, component.node, component.typography.code) { value, language, style ->
                     MarkdownScrollRegion(onHorizontalGesture) { RelayCodeBlock(value, language, style) }
