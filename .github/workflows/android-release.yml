@@ -43,7 +43,8 @@ jobs:
           set -euo pipefail
           # Listing releases fails on API/auth errors instead of treating them as a first release.
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
-          latest_tag="$(jq -r '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("android-v")))][0].tag_name // empty' "$RUNNER_TEMP/releases.json")"
+          # The API listing order is not semantic version order (0.6.10 can follow 0.6.9).
+          latest_tag="$(jq -r '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("android-v")))] | sort_by(.tag_name | ltrimstr("android-v") | split(".") | map(tonumber)) | last | .tag_name // empty' "$RUNNER_TEMP/releases.json")"
           if [[ -n "$latest_tag" ]]; then
             if git diff --quiet "$latest_tag" HEAD -- android-app .github/workflows/android-release.yml scripts; then
               echo "Android sources already published as $latest_tag."
