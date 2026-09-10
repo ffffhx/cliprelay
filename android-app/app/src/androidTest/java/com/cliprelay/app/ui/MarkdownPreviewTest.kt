@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasAnyDescendant
@@ -41,6 +42,15 @@ class MarkdownPreviewTest {
         val original = com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode
         val dark = mutableStateOf(true)
         val source = "# 阅读主题\n\n正文与 `inline code`。\n\n```kotlin\nval answer = 42\n```\n\n| 名称 | 数值 |\n| --- | --- |\n| 示例 | 42 |"
+        fun awaitCodeContrast(darkMode: Boolean) {
+            rule.waitUntil(10_000) {
+                val node = rule.onAllNodes(hasText("val answer = 42"), useUnmergedTree = true)
+                    .fetchSemanticsNodes().firstOrNull()
+                val text = node?.config?.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Text) { emptyList() }?.firstOrNull()
+                val color = text?.spanStyles?.lastOrNull { it.start <= 11 && it.end > 11 }?.item?.color
+                color != null && if (darkMode) color.luminance() > 0.5f else color.luminance() < 0.5f
+            }
+        }
         try {
             rule.activity.setContent {
                 MaterialTheme {
@@ -61,6 +71,7 @@ class MarkdownPreviewTest {
             rule.onNodeWithText("切换浅色").performClick()
             rule.onNodeWithText("切换深色").assertIsDisplayed()
             assertEquals(false, com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode)
+            awaitCodeContrast(false)
             rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
                 assertEquals(android.graphics.Color.WHITE, bitmap.getPixel(bitmap.width - 2, bitmap.height / 2))
                 File(context.getExternalFilesDir(null), "preview-light-qa.png").outputStream().use {
@@ -73,6 +84,7 @@ class MarkdownPreviewTest {
             rule.onNodeWithText("切换深色").performClick()
             rule.onNodeWithText("切换浅色").assertIsDisplayed()
             assertEquals(true, com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode)
+            awaitCodeContrast(true)
             rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
                 assertEquals(android.graphics.Color.rgb(16, 18, 20), bitmap.getPixel(bitmap.width - 2, bitmap.height / 2))
                 File(context.getExternalFilesDir(null), "preview-dark-qa.png").outputStream().use {

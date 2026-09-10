@@ -149,6 +149,9 @@ private fun RelayCodeBlock(code: String, language: String?, style: TextStyle) {
                 copied = true
             }) { Text(if (copied) "已复制" else "复制代码", color = palette.link) }
         }
-        MarkdownHighlightedCode(code = code, language = language, style = style, highlightsBuilder = highlighter)
+        // The renderer caches highlights by code alone, so rebuild them when the preview theme changes.
+        androidx.compose.runtime.key(palette.dark) {
+            MarkdownHighlightedCode(code = code, language = language, style = style, highlightsBuilder = highlighter)
+        }
     }
 }
