@@ -2975,6 +2975,57 @@ function New-RelayBroadcastTargets {
     return $targets.ToArray()
 }
 
+function Invoke-RelayBroadcastWithRecovery {
+    param([object[]]$Peers, [scriptblock]$Send, [switch]$NoRecovery)
+
+    $enabled = @(Get-EnabledRelayPeers -Peers $Peers)
+    $results = @(& $Send -Peers $enabled)
+    if ($NoRecovery -or -not $script:DiscoveryEnabled) { return $results }
+    $failedIndexes = @()
+    for ($index = 0; $index -lt $results.Count; $index++) {
+        $result = $results[$index]
+        if (-not $result.Success -and $result.StatusCode -eq 0 -and
+            $result.ErrorKind -in @("ConnectFailure", "NameResolutionFailure", "Timeout", "SendFailure", "ReceiveFailure", "ConnectionClosed")) {
+            $failedIndexes += $index
+        }
+    }
+    if ($failedIndexes.Count -eq 0) { return $results }
+
+    try {
+        $devices = @(Find-ClipRelayDevices -TimeoutMilliseconds 1800)
+        $merge = Merge-DiscoveredRelayDevices -Peers $enabled -DiscoveredDevices $devices `
+            -DefaultPort $script:Port -LocalDeviceId $script:DeviceId -ExistingOnly
+        $updated = @($merge.Peers)
+        $retryPeers = @()
+        $retryIndexes = @()
+        $savedPeers = @(Copy-RelayPeers -Peers $script:Peers)
+        foreach ($index in $failedIndexes) {
+            $old = $enabled[$index]
+            $fresh = @($updated | Where-Object { $_.id -eq $old.id }) | Select-Object -First 1
+            $saved = @($savedPeers | Where-Object { $_.id -eq $old.id -and $_.enabled }) | Select-Object -First 1
+            if ($null -eq $fresh -or $null -eq $saved) { continue }
+            # Never change targets by display name/IP alone, or retry an unchanged endpoint.
+            if ($fresh.address -ieq $old.address -and [int]$fresh.port -eq [int]$old.port) { continue }
+            if ($saved.address -ine $old.address -or [int]$saved.port -ne [int]$old.port) { continue }
+            $saved.address = $fresh.address
+            $saved.port = $fresh.port
+            $retryPeers += $saved
+            $retryIndexes += $index
+        }
+        if ($retryPeers.Count -eq 0) { return $results }
+        $null = Save-PeerConfiguration -Peers $savedPeers -Notifications $script:Notifications
+    }
+    catch {
+        # Discovery/configuration failure must not discard deliveries that already succeeded.
+        return $results
+    }
+    $retried = @(& $Send -Peers $retryPeers)
+    for ($index = 0; $index -lt $retried.Count; $index++) {
+        $results[$retryIndexes[$index]] = $retried[$index]
+    }
+    return $results
+}
+
 function Invoke-RelayTextBroadcast {
     param(
         [string]$Text,
@@ -2988,8 +3039,12 @@ function Invoke-RelayTextBroadcast {
         $payload.probe = $true
     }
     $json = $payload | ConvertTo-Json -Compress
-    $targets = New-RelayBroadcastTargets -Peers $Peers
-    return ([ClipRelay.RelayBroadcaster]::SendText($targets, $json, $TimeoutMilliseconds))
+    $send = {
+        param([object[]]$Peers)
+        $targets = New-RelayBroadcastTargets -Peers $Peers
+        [ClipRelay.RelayBroadcaster]::SendText($targets, $json, $TimeoutMilliseconds)
+    }.GetNewClosure()
+    return Invoke-RelayBroadcastWithRecovery -Peers $Peers -Send $send -NoRecovery:$Probe
 }
 
 function Invoke-RelayImageBroadcast {
@@ -3002,14 +3057,12 @@ function Invoke-RelayImageBroadcast {
     if ($Frame.Bytes.Length -lt 1 -or $Frame.Bytes.Length -gt 26214400) {
         throw "Screenshot payload is empty or exceeds 25 MiB."
     }
-    $targets = New-RelayBroadcastTargets -Peers $Peers
-    return ([ClipRelay.RelayBroadcaster]::SendImage(
-        $targets,
-        $Frame.Bytes,
-        $Frame.Width,
-        $Frame.Height,
-        $TimeoutMilliseconds
-    ))
+    $send = {
+        param([object[]]$Peers)
+        $targets = New-RelayBroadcastTargets -Peers $Peers
+        [ClipRelay.RelayBroadcaster]::SendImage($targets, $Frame.Bytes, $Frame.Width, $Frame.Height, $TimeoutMilliseconds)
+    }.GetNewClosure()
+    return Invoke-RelayBroadcastWithRecovery -Peers $Peers -Send $send
 }
 
 function Get-RelayDeliveryFailureText {
@@ -3131,7 +3184,7 @@ function Send-ClipboardTextUnlessDuplicate {
     $results = @(Send-TextToPeer -Text $Text)
     $summary = Get-RelayDeliverySummary -Results $results -Kind "文本"
     $script:lastSentClipboardText = $Text
-    $script:lastSentClipboardPeer = $routeSignature
+    $script:lastSentClipboardPeer = Get-RelayPeerRouteSignature
     $script:lastSentClipboardPort = $script:Port
     $script:lastSentClipboardAtUtc = $NowUtc
     Set-LastTransferStatus -State $summary.State -Kind "TEXT" -Detail $summary.Detail -Results $results
