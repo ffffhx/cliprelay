@@ -10,6 +10,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasTestTag
@@ -36,6 +37,32 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class MarkdownPreviewTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
+
+    @Test fun pageButtonsWorkWithHiddenControlsAndStopAtEnds() {
+        rule.activity.setContent {
+            MaterialTheme {
+                HistoryFullscreenViewer(
+                    history = listOf(
+                        ReceivedClip(id = 2, text = "Newest page", receivedAt = 0),
+                        ReceivedClip(id = 1, text = "Older page", receivedAt = 0),
+                    ),
+                    initialClipId = 2, onDismiss = {}, onCopy = {}, onSaveImage = {},
+                    savingImageId = null, copiedClipIds = emptySet(), savedImageIds = emptySet(),
+                    fullscreenTextSizeSp = 17, onSetFullscreenTextSize = {}, onSetLandscape = {},
+                )
+            }
+        }
+        rule.onNodeWithText("上一页").assertIsNotEnabled()
+        rule.onNodeWithText("左右滑动 · 隐藏").performClick()
+        rule.onNodeWithText("下一页").assertIsDisplayed().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("2 / 2").assertIsDisplayed()
+        rule.onNodeWithText("下一页").assertIsNotEnabled()
+        rule.onNodeWithText("上一页").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("1 / 2").assertIsDisplayed()
+        rule.onNodeWithText("上一页").assertIsNotEnabled()
+    }
 
     @Test fun switchesPreviewThemeAndPersistsChoice() {
         val context = rule.activity

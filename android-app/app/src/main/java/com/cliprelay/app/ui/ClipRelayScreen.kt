@@ -1001,6 +1001,28 @@ internal fun HistoryFullscreenViewer(
                             onSetDarkMode = onSetDarkMode,
                         )
                     }
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                        color = palette.surface.copy(alpha = 0.94f),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                enabled = currentPage > 0 && !pagerState.isScrollInProgress,
+                                onClick = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                            ) { Text("上一页") }
+                            Text(
+                                text = "${currentPage + 1} / ${history.size}",
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                                fontSize = 13.sp,
+                                color = palette.secondary,
+                            )
+                            TextButton(
+                                enabled = currentPage < history.lastIndex && !pagerState.isScrollInProgress,
+                                onClick = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
+                            ) { Text("下一页") }
+                        }
+                    }
                     if (pendingArrivalIds.isNotEmpty()) {
                         Surface(
                             modifier = Modifier
@@ -1108,7 +1130,7 @@ private fun BoxScope.FullscreenControls(
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
             .background(palette.background.copy(alpha = 0.88f))
-            .padding(top = 5.dp, bottom = 8.dp),
+            .padding(top = 5.dp, bottom = 56.dp),
     ) {
         ArrivalPagerRail(
             page = currentPage,
