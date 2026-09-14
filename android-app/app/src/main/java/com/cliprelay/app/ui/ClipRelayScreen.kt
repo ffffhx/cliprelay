@@ -227,6 +227,7 @@ fun ClipRelayScreen(
                     onOpen = {
                         fullscreenClipId = clip.id
                         onSetImmersiveFullscreen(true)
+                        onSetFullscreenLandscape(true)
                     },
                     onCopy = { onCopyClip(clip) },
                     onSaveImage = { onSaveImage(clip) },
