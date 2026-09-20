@@ -137,6 +137,12 @@ function Get-LocalShareableAddresses {
 }
 
 function Test-StartupRegistration { return $true }
+function Show-RelayUpdates { param([System.Windows.Forms.Form]$Owner) $script:updatesOwner = $Owner }
+function Get-RelayUpdateSnapshot { return [PSCustomObject]@{ CurrentVersion='0.1.0'; Release=$null } }
+function Show-ScreenSharing {
+    param([System.Windows.Forms.Form]$Owner)
+    $script:screenShareOwner = $Owner
+}
 function Set-ClipboardTextWithRetry { param([string]$Text) }
 function Start-ClipRelayDeviceDiscovery {
     param([int]$TimeoutMilliseconds)
@@ -244,6 +250,18 @@ $largeHeader = @($form.Controls | Where-Object {
 if ($null -eq $largeHeader -or -not $largeHeader.Visible) {
     throw "The primary device-link heading is not visible."
 }
+$screenShareButton = @($form.Controls.Find("ScreenShareButton", $true)) | Select-Object -First 1
+if ($null -eq $screenShareButton -or -not $screenShareButton.Visible) {
+    throw "The control center does not expose screen sharing."
+}
+$screenShareButton.PerformClick()
+if ($script:screenShareOwner -ne $form) {
+    throw "The screen-sharing entry did not open from the control center."
+}
+$updateButton = @($form.Controls.Find('UpdateButton', $true)) | Select-Object -First 1
+if ($null -eq $updateButton) { throw 'Update entry missing from control center' }
+$updateButton.PerformClick()
+if ($script:updatesOwner -ne $form) { throw 'Update dialog was not opened with the control center as owner' }
 
 $minimizeButton = $form.Controls["MinimizeButton"]
 if ($null -eq $minimizeButton -or -not $minimizeButton.Visible) {

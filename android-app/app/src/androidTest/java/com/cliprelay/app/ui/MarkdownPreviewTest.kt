@@ -64,6 +64,38 @@ class MarkdownPreviewTest {
         rule.onNodeWithText("上一页").assertIsNotEnabled()
     }
 
+    @Test fun remoteNavigationStopsAtEndsAndDetachesOnDismiss() {
+        val visible = mutableStateOf(true)
+        rule.activity.setContent {
+            MaterialTheme {
+                if (visible.value) HistoryFullscreenViewer(
+                    history = listOf(
+                        ReceivedClip(id = 2, text = "Newest page", receivedAt = 0),
+                        ReceivedClip(id = 1, text = "Older page", receivedAt = 0),
+                    ),
+                    initialClipId = 2, onDismiss = {}, onCopy = {}, onSaveImage = {},
+                    savingImageId = null, copiedClipIds = emptySet(), savedImageIds = emptySet(),
+                    fullscreenTextSizeSp = 17, onSetFullscreenTextSize = {}, onSetLandscape = {},
+                )
+            }
+        }
+        fun navigate(delta: Int) {
+            rule.runOnIdle { org.junit.Assert.assertTrue(com.cliprelay.app.runtime.PreviewRemote.navigate(delta)) }
+            rule.waitForIdle()
+        }
+        navigate(-1)
+        rule.onNodeWithText("1 / 2").assertIsDisplayed()
+        navigate(1)
+        rule.onNodeWithText("2 / 2").assertIsDisplayed()
+        navigate(1)
+        rule.onNodeWithText("2 / 2").assertIsDisplayed()
+        navigate(-1)
+        rule.onNodeWithText("1 / 2").assertIsDisplayed()
+        rule.runOnIdle { visible.value = false }
+        rule.waitForIdle()
+        rule.runOnIdle { org.junit.Assert.assertFalse(com.cliprelay.app.runtime.PreviewRemote.navigate(1)) }
+    }
+
     @Test fun switchesPreviewThemeAndPersistsChoice() {
         val context = rule.activity
         val original = com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode

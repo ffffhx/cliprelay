@@ -1,8 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$Peer,
+    [string]$Peer = '',
 
     [ValidateRange(1, 65535)]
     [int]$Port = 47632,
@@ -61,7 +59,7 @@ function Stop-InstalledClient {
     $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
             ($_.Name -ieq "powershell.exe" -or $_.Name -ieq "pwsh.exe") -and
-            $null -ne $_.CommandLine -and $_.CommandLine -match $clientPattern
+            $null -ne $_.CommandLine -and $_.CommandLine -notmatch '-NonInteractive' -and $_.CommandLine -match $clientPattern
         }
 
     foreach ($process in $processes) {
@@ -72,21 +70,44 @@ function Stop-InstalledClient {
 }
 
 Write-Host "==> Installing ClipRelay to $installDirectory"
+$existingConfig = $null
+if (Test-Path -LiteralPath $configPath) {
+    # Fail before stopping the app if settings cannot be read; never replace them.
+    $existingConfig = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $PSBoundParameters.ContainsKey('Peer') -and $null -ne $existingConfig.PSObject.Properties['peer']) {
+        $Peer = [string]$existingConfig.peer
+    }
+    if (-not $PSBoundParameters.ContainsKey('Port') -and $null -ne $existingConfig.PSObject.Properties['port']) {
+        $Port = [int]$existingConfig.port
+        if ($Port -lt 1 -or $Port -gt 65535) { throw 'Existing port is invalid.' }
+    }
+    if (-not $PSBoundParameters.ContainsKey('NoStartup')) { $NoStartup = -not (Test-Path -LiteralPath $shortcutPath) }
+}
 $null = New-Item -ItemType Directory -Path $installDirectory -Force
+Stop-InstalledClient
+$videoExecutable = Join-Path $installDirectory 'screen-share\engine\electron.exe'
+Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -ieq $videoExecutable } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Install-ScriptFile -Name "cliprelay.ps1" -Destination $clientPath
 Install-ScriptFile -Name "uninstall.ps1" -Destination $uninstallerPath
 Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
-
-$existingConfig = $null
-if (Test-Path -LiteralPath $configPath) {
-    try {
-        # Windows PowerShell 5.1 otherwise reads UTF-8 without a BOM through
-        # the active ANSI code page and corrupts non-ASCII discovery names.
-        $existingConfig = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    }
-    catch {
+foreach ($file in @('updates.ps1', 'update-client.cs', 'version.json')) {
+    Install-ScriptFile -Name $file -Destination (Join-Path $installDirectory $file)
+}
+$screenShareDirectory = Join-Path $installDirectory 'screen-share'
+New-Item -ItemType Directory -Path $screenShareDirectory -Force | Out-Null
+foreach ($file in @('main.js', 'preload.js', 'package.json', 'share.html', 'share.css', 'share.js', 'bridge.ps1', 'setup.ps1', 'RESEARCH.md')) {
+    Install-ScriptFile -Name "screen-share/$file" -Destination (Join-Path $screenShareDirectory $file)
+}
+$bundledEngine = Join-Path $PSScriptRoot 'screen-share\engine'
+if (Test-Path (Join-Path $bundledEngine 'electron.exe')) {
+    if ([IO.Path]::GetFullPath($bundledEngine) -ine [IO.Path]::GetFullPath((Join-Path $screenShareDirectory 'engine'))) {
+        Copy-Item -LiteralPath $bundledEngine -Destination $screenShareDirectory -Recurse -Force
     }
 }
+& (Join-Path $screenShareDirectory 'setup.ps1') -Destination $screenShareDirectory
+
 $notifications = $true
 $accessToken = ""
 $deviceId = [Guid]::NewGuid().ToString("N")
@@ -115,11 +136,11 @@ if ($null -ne $existingConfig) {
         $discoveryEnabled = [bool]$existingDiscoveryEnabled.Value
     }
     $existingPeers = $existingConfig.PSObject.Properties["peers"]
-    if ($null -ne $existingPeers -and @($existingPeers.Value).Count -gt 0) {
+    if ($null -ne $existingPeers) {
         $peers = @($existingPeers.Value)
     }
 }
-if ($null -eq $peers) {
+if ($null -eq $peers -and -not [string]::IsNullOrWhiteSpace($Peer)) {
     $peers = @([ordered]@{
         id          = "installed-peer"
         name        = "接收设备"
@@ -131,16 +152,17 @@ if ($null -eq $peers) {
         platform    = ""
     })
 }
-$primaryPeer = @($peers | Where-Object {
+if ($null -eq $peers) { $peers = @() }
+$primaryPeer = $peers | Where-Object {
     $enabledProperty = $_.PSObject.Properties["enabled"]
     $null -eq $enabledProperty -or [bool]$enabledProperty.Value
-} | Select-Object -First 1)[0]
+} | Select-Object -First 1
 if ($null -eq $primaryPeer) {
-    $primaryPeer = @($peers)[0]
+    $primaryPeer = $peers | Select-Object -First 1
 }
 $configuration = [ordered]@{
-    peer          = [string]$primaryPeer.address
-    peers         = $peers
+    peer          = $(if ($null -ne $primaryPeer) { [string]$primaryPeer.address } else { '' })
+    peers         = @($peers)
     port          = $Port
     notifications = $notifications
     accessToken   = $accessToken
@@ -211,7 +233,13 @@ else {
 Write-Host "==> Starting ClipRelay"
 Stop-InstalledClient
 $arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clientPath`""
-$clientProcess = Start-Process -FilePath $windowsPowerShell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+$startInfo = New-Object Diagnostics.ProcessStartInfo
+$startInfo.FileName = $windowsPowerShell
+$startInfo.Arguments = $arguments
+$startInfo.WorkingDirectory = $installDirectory
+$startInfo.UseShellExecute = $false
+$startInfo.CreateNoWindow = $true
+$clientProcess = [Diagnostics.Process]::Start($startInfo)
 Start-Sleep -Milliseconds 800
 if ($clientProcess.HasExited) {
     throw "ClipRelay failed to start. Run this command in PowerShell to see the error:`n$windowsPowerShell -NoProfile -STA -ExecutionPolicy Bypass -File `"$clientPath`""

@@ -13,6 +13,42 @@ import java.util.concurrent.atomic.AtomicReference
 
 class ClipRelayHttpServerTest {
     @Test
+    fun previewNavigationRequiresAuthValidDirectionAndActiveViewer() {
+        val listening = CountDownLatch(1)
+        val port = AtomicReference<Int>()
+        val commands = mutableListOf<Int>()
+        var active = false
+        val server = ClipRelayHttpServer(0, { "secret" }, object : ClipRelayHttpServer.Listener {
+            override fun onListening(value: Int) { port.set(value); listening.countDown() }
+            override fun onTextReceived(text: String) { error("Must not change clipboard") }
+            override fun onImageReceived(bytes: ByteArray, mediaType: String) = Unit
+            override fun onFailure(message: String) = Unit
+            override fun onPreviewNavigate(delta: Int): Boolean {
+                if (!active) return false
+                commands.add(delta)
+                return true
+            }
+        })
+        fun navigate(body: String, token: String? = "secret") = postBytes(
+            port.get(), "/preview/navigate", body.toByteArray(StandardCharsets.UTF_8),
+            "application/json", token,
+        ).substringBefore('\r')
+        try {
+            server.start()
+            assertTrue(listening.await(3, TimeUnit.SECONDS))
+            assertEquals("HTTP/1.1 401 Unauthorized", navigate("{\"direction\":\"next\"}", null))
+            assertEquals("HTTP/1.1 409 Conflict", navigate("{\"direction\":\"next\"}"))
+            assertEquals("HTTP/1.1 400 Bad Request", navigate("{\"direction\":\"other\"}"))
+            assertEquals("HTTP/1.1 400 Bad Request", navigate("invalid"))
+            assertEquals("HTTP/1.1 413 Payload Too Large", navigate("x".repeat(1025)))
+            active = true
+            assertEquals("HTTP/1.1 200 OK", navigate("{\"direction\":\"previous\"}"))
+            assertEquals("HTTP/1.1 200 OK", navigate("{\"direction\":\"next\"}"))
+            assertEquals(listOf(-1, 1), commands)
+        } finally { server.stop() }
+    }
+
+    @Test
     fun acceptsLegacyPushWhenAccessTokenIsEmpty() {
         val listening = CountDownLatch(1)
         val received = CountDownLatch(1)

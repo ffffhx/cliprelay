@@ -20,6 +20,7 @@ class ClipRelayHttpServer(
         fun onListening(port: Int)
         fun onTextReceived(text: String)
         fun onImageReceived(bytes: ByteArray, mediaType: String)
+        fun onPreviewNavigate(delta: Int): Boolean = false
         fun onFailure(message: String)
     }
 
@@ -78,9 +79,10 @@ class ClipRelayHttpServer(
                 val requestPath = request.path.substringBefore('?')
                 when {
                     request.method != "POST" -> respond(output, 405, "Method Not Allowed")
-                    requestPath != "/push" && requestPath != "/push-image" ->
+                    requestPath !in setOf("/push", "/push-image", "/preview/navigate") ->
                         respond(output, 404, "Not Found")
                     !isAuthorized(request) -> respond(output, 401, "Unauthorized")
+                    requestPath == "/preview/navigate" -> handlePreviewNavigate(request, output)
                     requestPath == "/push-image" -> handleImagePush(request, output)
                     else -> handleTextPush(request, output)
                 }
@@ -101,6 +103,21 @@ class ClipRelayHttpServer(
             ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
             ?.substringAfter(' ')
         return headerToken == expected || bearerToken == expected
+    }
+
+    private fun handlePreviewNavigate(request: HttpRequest, output: BufferedOutputStream) {
+        if (request.body.size > 1024) {
+            respond(output, 413, "Payload Too Large")
+            return
+        }
+        val payload = JSONObject(request.body.toString(StandardCharsets.UTF_8))
+        val delta = when (payload.optString("direction")) {
+            "previous" -> -1
+            "next" -> 1
+            else -> { respond(output, 400, "Invalid direction"); return }
+        }
+        if (listener.onPreviewNavigate(delta)) respond(output, 200, "ok", reason = "OK")
+        else respond(output, 409, "Preview unavailable or busy")
     }
 
     private fun handleTextPush(request: HttpRequest, output: BufferedOutputStream) {
@@ -175,6 +192,7 @@ class ClipRelayHttpServer(
         401 -> "Unauthorized"
         404 -> "Not Found"
         405 -> "Method Not Allowed"
+        409 -> "Conflict"
         411 -> "Length Required"
         413 -> "Payload Too Large"
         415 -> "Unsupported Media Type"

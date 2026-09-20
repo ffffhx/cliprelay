@@ -1,0 +1,14 @@
+# Video screen sharing
+
+Research checked 2026-09-20:
+
+- [Deskreen](https://github.com/pavlobu/deskreen) demonstrates desktop capture → WebRTC → remote viewer, including screen/window selection. Current repository is AGPL-3.0. We borrow the architecture, not its source.
+- [RustDesk video service](https://github.com/rustdesk/rustdesk/blob/master/src/server/video_service.rs) illustrates native capture, encoder selection and backpressure. Building that native codec stack is substantially more invasive than integrating a maintained WebRTC engine here.
+- [WebRTC samples](https://github.com/webrtc/samples/tree/gh-pages/src/content/peerconnection/pc1) document offer/answer and track lifecycle.
+- [WebView2 distribution](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution) provides a maintained Windows Chromium/WebRTC engine without packaging Electron.
+
+Implementation: a pinned Electron 44.4.3 video companion, display capture initiated by the user, 30 fps target, adaptive video bitrate, LAN ICE without external STUN/TURN, existing ClipRelay HTTP port for authenticated invitations and session-bound signaling. Media is a WebRTC video track, never JPEG polling. Receiver explicitly accepts an invitation. Closing either window terminates the session. Existing clipboard and phone paging remain independent. The local tray-to-companion bridge binds only loopback and uses a random per-process secret. The installer verifies the official release SHA-256 checksum and retains Electron's license files.
+
+WebView2 was investigated first, but even a standalone minimal window intermittently failed during controller creation with HRESULT 0x8007139F on the development machine. The shipped implementation uses its own runtime to make installation reproducible. Capture follows the public [Electron desktopCapturer API](https://www.electronjs.org/docs/latest/api/desktop-capturer). A local start captures the Windows primary display automatically, matched by display ID; no window/source picker is shown. Incoming invitations never authorize local capture. The sender shows sharing status instead of a recursive screen preview.
+
+Acceptance includes real primary-display capture, decoded live video, measured frame rate/bitrate, first frame and stop behavior, cancellation/decline, unauthorized and malformed signaling, connection loss, installed independent tray lifecycle, and a second physical Windows PC. The primary-display flow passed physical LAN testing at 1920×1080 and a median 29 fps, including fullscreen and receiver stop. Test-only WebRTC statistics report network RTT, encoding, decoding and jitter-buffer component averages; these are not end-to-end display latency measurements.

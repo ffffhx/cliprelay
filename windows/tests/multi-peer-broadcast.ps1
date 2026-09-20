@@ -280,6 +280,20 @@ finally {
     $imageTwo.Dispose()
 }
 
+foreach ($direction in @("previous", "next")) {
+    $remote = New-Object ClipRelayTests.OneShotHttpServer(200, 0)
+    try {
+        $targets = @((New-TestTarget -Name "phone" -Port $remote.Port -Token "remote-secret"))
+        $task = [ClipRelay.RelayBroadcaster]::NavigatePreviewAsync($targets, $direction, 3000)
+        $result = $task.GetAwaiter().GetResult()[0]
+        $payload = [Text.Encoding]::UTF8.GetString($remote.Body) | ConvertFrom-Json
+        if (-not $result.Success -or $remote.Path -ne "/preview/navigate" -or
+            $payload.direction -ne $direction -or $remote.Token -ne "remote-secret") {
+            throw "Authenticated preview navigation failed: $direction"
+        }
+    } finally { $remote.Dispose() }
+}
+
 # Exercise the Ctrl+C fallback through the production clipboard reader and
 # broadcaster, with a loopback receiver instead of the user's saved devices.
 foreach ($functionName in @("Get-ClipboardTextWithRetry", "Send-CopiedClipboard")) {

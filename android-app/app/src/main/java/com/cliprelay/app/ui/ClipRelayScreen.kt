@@ -111,6 +111,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.abs
 import kotlinx.coroutines.launch
+import androidx.lifecycle.repeatOnLifecycle
 
 @Composable
 fun ClipRelayScreen(
@@ -914,6 +915,22 @@ internal fun HistoryFullscreenViewer(
         history.indexOfFirst { it.id == initialClipId }.coerceAtLeast(0)
     }
     val pagerState = rememberPagerState(initialPage = initialPage) { history.size }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(pagerState, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            val queue = com.cliprelay.app.runtime.PreviewRemote.attach()
+            try {
+                for (delta in queue) {
+                    val lastPage = pagerState.pageCount - 1
+                    if (lastPage >= 0) {
+                        pagerState.animateScrollToPage((pagerState.currentPage + delta).coerceIn(0, lastPage))
+                    }
+                }
+            } finally {
+                com.cliprelay.app.runtime.PreviewRemote.detach(queue)
+            }
+        }
+    }
     val currentPage = pagerState.currentPage.coerceIn(0, history.lastIndex)
     val currentClip = history[currentPage]
     var knownArrivalIds by remember { mutableStateOf(history.map { it.id }.toSet()) }

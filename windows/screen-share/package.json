@@ -1,0 +1,8 @@
+{
+  "name": "cliprelay-screen-share",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ClipRelay Windows WebRTC screen sharing",
+  "main": "main.js",
+  "license": "MIT"
+}

@@ -459,6 +459,19 @@ namespace ClipRelay
 
     public static class RelayBroadcaster
     {
+        public static Task<RelayDeliveryResult[]> NavigatePreviewAsync(
+            RelayTarget[] targets, string direction, int timeoutMilliseconds)
+        {
+            if (direction != "previous" && direction != "next")
+                throw new ArgumentException("Invalid preview direction", "direction");
+            byte[] body = System.Text.Encoding.UTF8.GetBytes(
+                "{\"direction\":\"" + direction + "\"}");
+            return Task.Factory.StartNew(
+                () => Send(targets, "/preview/navigate", "application/json; charset=utf-8",
+                    body, timeoutMilliseconds, 0, 0),
+                CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+        }
+
         public static RelayDeliveryResult[] SendText(
             RelayTarget[] targets,
             string json,
@@ -2797,6 +2810,7 @@ $notifyIcon = $null
 $appIcon = $null
 $trayMenu = $null
 $peerMenuItem = $null
+$previewRemoteForm = $null
 $notifyMenuItem = $null
 $screenshotHotkeyMenuItem = $null
 $copyMonitorStarted = $false
@@ -2863,6 +2877,7 @@ function Show-ClipRelayNotification {
     if ($Message.Length -gt 240) {
         $Message = $Message.Substring(0, 240)
     }
+    $script:relayUpdateBalloon = $false
     $script:notifyIcon.ShowBalloonTip(3000, $Title, $Message, $Icon)
 }
 
@@ -3024,6 +3039,260 @@ function Invoke-RelayBroadcastWithRecovery {
         $results[$retryIndexes[$index]] = $retried[$index]
     }
     return $results
+}
+
+function Initialize-ScreenSharing {
+    . (Join-Path $PSScriptRoot 'screen-share/bridge.ps1')
+}
+
+function Show-ScreenSharing {
+    param([System.Windows.Forms.Form]$Owner)
+    try {
+        $existing = @([Windows.Forms.Application]::OpenForms | Where-Object Name -eq 'ScreenSharePicker')
+        if ($existing.Count -gt 0) { $existing[0].Activate(); return }
+        Initialize-ScreenSharing
+        $peers = @($script:Peers | Where-Object {
+            $platform = [string](Get-PropertyValue -Object $_ -Name 'platform')
+            [string]::IsNullOrWhiteSpace($platform) -or $platform -eq 'windows'
+        })
+        $colors = @{
+            Background = [Drawing.Color]::FromArgb(17, 19, 24)
+            Surface = [Drawing.Color]::FromArgb(23, 26, 36)
+            Raised = [Drawing.Color]::FromArgb(32, 37, 52)
+            Border = [Drawing.Color]::FromArgb(38, 44, 60)
+            Text = [Drawing.Color]::FromArgb(241, 245, 249)
+            Muted = [Drawing.Color]::FromArgb(148, 163, 184)
+            Cyan = [Drawing.Color]::FromArgb(56, 189, 248)
+            Blue = [Drawing.Color]::FromArgb(59, 130, 246)
+            BlueLight = [Drawing.Color]::FromArgb(96, 165, 250)
+            Selected = [Drawing.Color]::FromArgb(25, 39, 64)
+            Danger = [Drawing.Color]::FromArgb(244, 63, 94)
+        }
+        $bodyFont = 'Microsoft YaHei UI'
+        $newLabel = {
+            param($Parent, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height,
+                [single]$Size, $Color, [bool]$Bold = $false, [string]$FontName = $bodyFont)
+            $label = New-Object Windows.Forms.Label
+            $label.Text = $Text
+            $label.SetBounds($X, $Y, $Width, $Height)
+            $style = if ($Bold) { [Drawing.FontStyle]::Bold } else { [Drawing.FontStyle]::Regular }
+            $label.Font = New-Object Drawing.Font($FontName, $Size, $style)
+            $label.ForeColor = $Color
+            $label.BackColor = [Drawing.Color]::Transparent
+            $label.AutoEllipsis = $true
+            $label.TextAlign = [Drawing.ContentAlignment]::MiddleLeft
+            $Parent.Controls.Add($label)
+            return $label
+        }.GetNewClosure()
+        $newButton = {
+            param($Parent, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height, $Fill, $Hover, $TextColor, $Border)
+            $button = New-Object ClipRelay.RelayButton
+            $button.Text = $Text
+            $button.SetBounds($X, $Y, $Width, $Height)
+            $button.Font = New-Object Drawing.Font($bodyFont, 9.0, [Drawing.FontStyle]::Bold)
+            $button.BackColor = $Fill
+            $button.FillColor = $Fill
+            $button.HoverColor = $Hover
+            $button.PressedColor = [Windows.Forms.ControlPaint]::Dark($Fill)
+            $button.TextColor = $TextColor
+            $button.BorderColor = $Border
+            $Parent.Controls.Add($button)
+            return $button
+        }.GetNewClosure()
+        $listHeight = [Math]::Min(3, [Math]::Max(1, $peers.Count)) * 84
+        $form = New-Object ClipRelay.RelayForm
+        $form.Text = 'ClipRelay 屏幕共享'
+        $form.Name = 'ScreenSharePicker'
+        $form.ClientSize = New-Object Drawing.Size(560, (288 + $listHeight))
+        $form.BackColor = $colors.Background
+        $form.Font = New-Object Drawing.Font($bodyFont, 9.0)
+        $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
+        $form.ShowInTaskbar = $null -eq $Owner
+        $form.KeyPreview = $true
+        if ($null -ne $script:appIcon) { $form.Icon = $script:appIcon }
+        $brand = & $newLabel $form 'CLIP / RELAY' 26 16 260 20 8.5 $colors.Cyan $true 'Cascadia Mono'
+        $heading = & $newLabel $form '屏幕共享' 24 40 400 36 20 $colors.Text $true 'Segoe UI Variable Display'
+        $description = & $newLabel $form '选择观看你屏幕的电脑' 26 83 470 22 9.5 $colors.Muted
+        foreach ($label in @($brand, $heading, $description)) { [ClipRelay.NativeMethods]::AttachDrag($label, $form) }
+        $close = & $newButton $form '×' 502 16 32 32 $colors.Background $colors.Danger $colors.Muted ([Drawing.Color]::Transparent)
+        $close.Name = 'CloseScreenSharePickerButton'
+        $close.AccessibleName = '关闭屏幕共享选择'
+        $close.Font = New-Object Drawing.Font('Segoe UI', 14.0)
+        $close.Add_Click({ $form.Close() }.GetNewClosure())
+        $null = & $newLabel $form '接收电脑' 26 119 250 20 8.5 $colors.Muted $true
+        $count = & $newLabel $form "$($peers.Count) 台已添加" 394 119 140 20 8.0 $colors.Muted
+        $count.TextAlign = [Drawing.ContentAlignment]::MiddleRight
+        $list = New-Object Windows.Forms.Panel
+        $list.Name = 'ScreenSharePeerList'
+        $list.SetBounds(24, 145, 512, $listHeight)
+        $list.BackColor = $colors.Background
+        $list.AutoScroll = $true
+        $form.Controls.Add($list)
+        $state = [PSCustomObject]@{ SelectedIndex = -1; Rows = (New-Object Collections.ArrayList) }
+        $selectPeer = {
+            param([int]$Index)
+            $state.SelectedIndex = $Index
+            foreach ($row in $state.Rows) {
+                $selected = $row.Index -eq $Index
+                $fill = if ($selected) { $colors.Selected } else { $colors.Surface }
+                $row.Button.BackColor = $fill
+                $row.Button.FillColor = $fill
+                $row.Button.BorderColor = if ($selected) { $colors.Blue } else { $colors.Border }
+                $row.Button.AccessibleDescription = if ($selected) { '已选择' } else { '点击选择接收电脑' }
+                $row.Mark.Text = if ($selected) { '✓ 已选择' } else { '选择' }
+                $row.Mark.ForeColor = if ($selected) { $colors.BlueLight } else { $colors.Muted }
+                $row.Button.Invalidate($true)
+            }
+        }.GetNewClosure()
+        $rowWidth = if ($peers.Count -gt 3) { 490 } else { 512 }
+        for ($index = 0; $index -lt $peers.Count; $index++) {
+            $peer = $peers[$index]
+            $row = & $newButton $list '' 0 ($index * 84) $rowWidth 76 $colors.Surface $colors.Raised $colors.Text $colors.Border
+            $row.Name = "ScreenSharePeer$index"
+            $row.AccessibleName = "$($peer.name)，$($peer.address)"
+            $row.TabIndex = $index
+            $icon = & $newLabel $row ([string][char]0xE7F4) 18 20 34 36 21 $colors.BlueLight $false 'Segoe MDL2 Assets'
+            $title = & $newLabel $row ([string]$peer.name) 68 12 ($rowWidth - 174) 25 11 $colors.Text $true
+            $address = & $newLabel $row ([string]$peer.address) 68 39 ($rowWidth - 174) 23 8.5 $colors.Muted $false 'Cascadia Mono'
+            $mark = & $newLabel $row '选择' ($rowWidth - 92) 25 78 24 8.5 $colors.Muted
+            $mark.TextAlign = [Drawing.ContentAlignment]::MiddleRight
+            [void]$state.Rows.Add([PSCustomObject]@{ Index = $index; Button = $row; Mark = $mark })
+            $rowIndex = $index
+            $choose = { & $selectPeer $rowIndex }.GetNewClosure()
+            $row.Add_Click($choose)
+            foreach ($label in @($icon, $title, $address, $mark)) {
+                $label.Cursor = [Windows.Forms.Cursors]::Hand
+                $label.Add_Click($choose)
+            }
+        }
+        if ($peers.Count -gt 0) { & $selectPeer 0 }
+        else {
+            $null = & $newLabel $list '还没有可共享的电脑' 14 6 470 30 11 $colors.Text $true
+            $null = & $newLabel $list '先回到控制中心，添加另一台 Windows 电脑。' 14 39 470 25 9 $colors.Muted
+        }
+        $hint = & $newLabel $form "将共享整个主屏幕，无需再选择画面。`n对方接受邀请后，即可实时观看。" 26 (157 + $listHeight) 508 46 9 $colors.Muted
+        $hint.Name = 'ScreenShareHint'
+        $line = New-Object Windows.Forms.Panel
+        $line.SetBounds(24, (216 + $listHeight), 512, 1)
+        $line.BackColor = $colors.Border
+        $form.Controls.Add($line)
+        $cancel = & $newButton $form '取消' 264 (232 + $listHeight) 90 40 $colors.Surface $colors.Raised $colors.Muted $colors.Border
+        $cancel.Name = 'CancelScreenShareButton'
+        $cancel.Add_Click({ $form.Close() }.GetNewClosure())
+        $start = & $newButton $form '开始共享 →' 366 (232 + $listHeight) 170 40 $colors.Blue $colors.BlueLight $colors.Text ([Drawing.Color]::Transparent)
+        $start.Name = 'StartScreenShareButton'
+        $start.Enabled = $peers.Count -gt 0
+        $form.AcceptButton = $start
+        $form.CancelButton = $cancel
+        $localName = $script:DeviceName
+        $localPort = $script:Port
+        $shareCommand = Get-Command Invoke-ScreenShareCommand
+        $start.Add_Click({
+            if ($state.SelectedIndex -lt 0) { return }
+            $start.Enabled = $false
+            try {
+                $null = & $shareCommand -Command @{ action='start'; peer=$peers[$state.SelectedIndex]; localName=$localName; localPort=[int]$localPort }
+                $form.Close()
+            } catch {
+                $hint.Text = $_.Exception.Message
+                $hint.ForeColor = $colors.Danger
+                $start.Enabled = $true
+            }
+        }.GetNewClosure())
+        $form.EnableDpiLayout()
+        if ($null -ne $Owner) { $form.Show($Owner) } else { $form.Show() }
+    } catch { [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, '屏幕共享') }
+}
+
+function Show-PhonePreviewRemote {
+    if ($null -ne $script:previewRemoteForm -and -not $script:previewRemoteForm.IsDisposed) {
+        $script:previewRemoteForm.Activate()
+        return
+    }
+    $devices = @(Get-EnabledRelayPeers -Peers $script:Peers)
+    if ($devices.Count -eq 0) {
+        [void][System.Windows.Forms.MessageBox]::Show("请先在设置中添加并启用手机。", "手机翻页")
+        return
+    }
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "手机全屏预览 · 遥控翻页"
+    $form.ClientSize = New-Object System.Drawing.Size(440, 190)
+    $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $form.MaximizeBox = $false
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $form.KeyPreview = $true
+    $picker = New-Object System.Windows.Forms.ComboBox
+    $picker.SetBounds(16, 16, 408, 28)
+    $picker.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    foreach ($device in $devices) { [void]$picker.Items.Add("$($device.name) · $($device.address)") }
+    $picker.SelectedIndex = 0
+    $previous = New-Object System.Windows.Forms.Button
+    $previous.Text = "← 上一页"
+    $previous.SetBounds(16, 60, 196, 44)
+    $next = New-Object System.Windows.Forms.Button
+    $next.Text = "下一页 →"
+    $next.SetBounds(228, 60, 196, 44)
+    $status = New-Object System.Windows.Forms.Label
+    $status.SetBounds(16, 118, 408, 60)
+    $status.Text = "手机打开全屏预览后，点击按钮或在本窗口按 ← / → 翻页。"
+    $form.Controls.AddRange(@($picker, $previous, $next, $status))
+    $state = @{ Task = $null }
+    $send = {
+        param([string]$Direction)
+        if ($null -ne $state.Task) { return }
+        try {
+            $targets = New-RelayBroadcastTargets -Peers @($devices[$picker.SelectedIndex])
+            $state.Task = [ClipRelay.RelayBroadcaster]::NavigatePreviewAsync($targets, $Direction, 3000)
+            $picker.Enabled = $false
+            $previous.Enabled = $false
+            $next.Enabled = $false
+            $status.Text = "正在发送翻页指令…"
+        } catch { $status.Text = "发送失败：$($_.Exception.Message)" }
+    }.GetNewClosure()
+    $previous.Add_Click({ & $send "previous" }.GetNewClosure())
+    $next.Add_Click({ & $send "next" }.GetNewClosure())
+    $form.Add_KeyDown({
+        param($sender, $event)
+        if ($event.KeyCode -eq [System.Windows.Forms.Keys]::Left -or
+            $event.KeyCode -eq [System.Windows.Forms.Keys]::Right) {
+            $event.SuppressKeyPress = $true
+            $direction = if ($event.KeyCode -eq [System.Windows.Forms.Keys]::Left) { "previous" } else { "next" }
+            & $send $direction
+        }
+    }.GetNewClosure())
+    # Buttons normally consume arrows as focus navigation; route them through KeyDown.
+    foreach ($control in @($picker, $previous, $next)) {
+        $control.Add_PreviewKeyDown({
+            param($sender, $event)
+            if ($event.KeyCode -in @([System.Windows.Forms.Keys]::Left, [System.Windows.Forms.Keys]::Right)) {
+                $event.IsInputKey = $true
+            }
+        })
+    }
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 50
+    $timer.Add_Tick({
+        if ($null -eq $state.Task -or -not $state.Task.IsCompleted) { return }
+        try {
+            $result = $state.Task.GetAwaiter().GetResult()[0]
+            $status.Text = if ($result.Success) { "翻页指令已接收（到达首尾页时停留）。← / → 继续翻页。" }
+                elseif ($result.StatusCode -eq 409) { "请让手机停留在前台全屏预览，稍后重试。" }
+                elseif ($result.StatusCode -eq 404) { "手机尚不支持遥控翻页，请更新手机端。" }
+                elseif ($result.StatusCode -eq 401) { "访问令牌不匹配，请检查设备设置。" }
+                else { "发送失败，请检查手机连接。$($result.ErrorMessage)" }
+        } catch { $status.Text = "发送失败：$($_.Exception.Message)" }
+        finally {
+            $state.Task = $null
+            $picker.Enabled = $true
+            $previous.Enabled = $true
+            $next.Enabled = $true
+        }
+    }.GetNewClosure())
+    $form.Add_FormClosed({ $timer.Stop(); $timer.Dispose(); $form.Dispose() }.GetNewClosure())
+    $script:previewRemoteForm = $form
+    $timer.Start()
+    $form.Show()
 }
 
 function Invoke-RelayTextBroadcast {
@@ -3366,17 +3635,44 @@ function Handle-Client {
     }
 
     if ($request.Method -ne "POST" -or
-        ($request.Path -ne "/push" -and $request.Path -ne "/push-image")) {
+        ($request.Path -notin @('/push', '/push-image', '/screen/invite', '/screen/message'))) {
         Send-HttpResponse -Stream $request.Stream -StatusCode 404 -Reason "Not Found" -Body "not found"
         return
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($script:AccessToken)) {
+    if ($request.Path -ne '/screen/message' -and -not [string]::IsNullOrWhiteSpace($script:AccessToken)) {
         $providedAccessToken = [string]$request.Headers["X-ClipRelay-Token"]
         if ($providedAccessToken -cne $script:AccessToken) {
             Send-HttpResponse -Stream $request.Stream -StatusCode 401 -Reason "Unauthorized" -Body "unauthorized"
             return
         }
+    }
+
+    if ($request.Path -in @('/screen/invite', '/screen/message')) {
+        $status = 503
+        try {
+            if ($request.BodyBytes.Length -gt 262144) { $status = 413 }
+            else {
+                $body = [Text.Encoding]::UTF8.GetString($request.BodyBytes)
+                $data = $null
+                try { $data = $body | ConvertFrom-Json -ErrorAction Stop } catch { $status = 400 }
+                if ($null -eq $data) {
+                    Send-HttpResponse -Stream $request.Stream -StatusCode 400 -Reason 'Bad Request' -Body 'invalid JSON'
+                    return
+                }
+                Initialize-ScreenSharing
+                $address = ([Net.IPEndPoint]$Client.Client.RemoteEndPoint).Address.ToString()
+                try {
+                    $result = Invoke-ScreenShareCommand -Command @{ action='signal'; path=$request.Path; data=$data; remoteAddress=$address } -NoStart:($request.Path -eq '/screen/message')
+                    $status = if ($null -eq $result) { 401 } else { [int]$result.status }
+                } catch [Net.WebException] {
+                    if ($null -ne $_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+                    else { $status = 503 }
+                }
+            }
+        } catch { $status = 503 }
+        Send-HttpResponse -Stream $request.Stream -StatusCode $status -Reason $(if ($status -lt 300) { 'OK' } else { 'Error' }) -Body ([string]$status)
+        return
     }
 
     if ($request.Path -eq "/push-image") {
@@ -4339,7 +4635,7 @@ function Show-RelayControlCenter {
         # Top Header & Window Controls
         $topCategoryHeader = & $newLabel $form "CLIP / RELAY" 256 14 200 16 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Cyan $monoFont
         $largeHeader = & $newLabel $form "设备链路工作区" 256 30 320 32 16.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $displayFont
-        $topSubHeader = & $newLabel $form "跨平台剪贴板与全屏截图实时并行中继 · 仅用于可信局域网" 256 62 390 18 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $topSubHeader = & $newLabel $form "剪贴板、截图与实时屏幕共享 · 仅用于可信局域网" 256 62 390 18 8.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
 
         [ClipRelay.NativeMethods]::AttachDrag($topCategoryHeader, $form)
         [ClipRelay.NativeMethods]::AttachDrag($largeHeader, $form)
@@ -4373,9 +4669,14 @@ function Show-RelayControlCenter {
         # Section 1: Connection Health Banner
         $connectionPanel = & $newCard $form 256 86 488 64 $colors.Surface $colors.Border 10
         $connectionDot = & $newLabel $connectionPanel "●" 14 10 16 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-        $connectionTitle = & $newLabel $connectionPanel "准备检测链路" 32 8 440 22 9.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $connectionTitle = & $newLabel $connectionPanel "准备检测链路" 32 8 278 22 9.5 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
         $connectionTitle.Name = "ConnectionTitleLabel"
-        $connectionDetail = & $newLabel $connectionPanel "点击左侧【⚡ 检测全链路连接】可对所有启用的目标发起并行测试" 32 32 440 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $connectionDetail = & $newLabel $connectionPanel "点击左侧按钮，检测已启用的设备" 32 32 278 20 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $screenShareButton = & $newButton $connectionPanel "屏幕共享" 328 15 146 34 $colors.Blue $colors.BlueLight $colors.Text
+        $screenShareButton.Name = "ScreenShareButton"
+        $screenShareButton.AccessibleName = "屏幕共享"
+        $showScreenSharingCommand = Get-Command Show-ScreenSharing
+        $screenShareButton.Add_Click({ & $showScreenSharingCommand -Owner $form }.GetNewClosure())
 
         # Section 2: Shortcuts
         $shortcutCard = & $newCard $form 256 160 488 96 $colors.Surface $colors.Border 10
@@ -4480,8 +4781,13 @@ function Show-RelayControlCenter {
         $null = & $newLabel $preferencesCard "目标设备的地址与密钥可从左侧设备行的【··· → 编辑设备】中修改。" 14 282 460 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
 
         # Footer: settings commit as they are changed, so there is no second save step.
-        $autoSaveLabel = & $newLabel $form "● 更改会自动保存" 256 658 344 34 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Success $bodyFont
+        $autoSaveLabel = & $newLabel $form "● 更改会自动保存" 256 658 202 34 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Success $bodyFont
         $autoSaveLabel.Name = "AutoSaveStatusLabel"
+        $updateButton = & $newButton $form '版本更新' 466 654 150 40 $colors.Surface $colors.Raised $colors.BlueLight $colors.Border
+        $updateButton.Name = 'UpdateButton'
+        $showUpdatesCommand = Get-Command Show-RelayUpdates
+        $updateSnapshotCommand = Get-Command Get-RelayUpdateSnapshot
+        $updateButton.Add_Click({ & $showUpdatesCommand -Owner $form }.GetNewClosure())
         $cancelButton = & $newButton $form "关闭" 628 654 116 40 $colors.Surface $colors.Border $colors.TextDim $colors.Border
         $cancelButton.Name = "CloseSettingsButton"
         $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
@@ -4963,6 +5269,8 @@ function Show-RelayControlCenter {
         $runtimeTimer.Interval = 750
         $runtimeTimer.Add_Tick({
             try {
+                $updateSnapshot = & $updateSnapshotCommand
+                $updateButton.Text = if ($null -ne $updateSnapshot.Release) { "● 新版 $($updateSnapshot.Release.versionName)" } else { "版本 v$($updateSnapshot.CurrentVersion)" }
                 $snapshot = & $snapshotCommand
                 if ($snapshot.ScreenshotHotkeyAvailable) {
                     $screenshotHotkeyState.Text = "可用"
@@ -5123,6 +5431,9 @@ function Process-WindowsMessages {
     }
 }
 
+. (Join-Path $PSScriptRoot 'updates.ps1')
+$script:updateMenuItem = $null
+
 try {
     $createdNew = $false
     $mutexName = "Local\ClipRelay-$Port"
@@ -5188,10 +5499,25 @@ try {
     $exitMenuItem.Add_Click({ $script:stopRequested = $true })
 
     $null = $trayMenu.Items.Add($configureMenuItem)
+    $screenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('屏幕共享 · 实时视频')
+    $screenShareMenuItem.Add_Click({ Show-ScreenSharing })
+    $null = $trayMenu.Items.Add($screenShareMenuItem)
+    $stopScreenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('停止所有屏幕共享')
+    $stopScreenShareMenuItem.Add_Click({
+        try { Initialize-ScreenSharing; $null = Invoke-ScreenShareCommand -Command @{action='stop-all'} -NoStart } catch {}
+    })
+    $null = $trayMenu.Items.Add($stopScreenShareMenuItem)
+    $previewRemoteMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("手机翻页 · ← / →")
+    $previewRemoteMenuItem.Add_Click({ Show-PhonePreviewRemote })
+    $null = $trayMenu.Items.Add($previewRemoteMenuItem)
     $null = $trayMenu.Items.Add($checkStatusMenuItem)
     $null = $trayMenu.Items.Add($script:notifyMenuItem)
     $null = $trayMenu.Items.Add($script:screenshotHotkeyMenuItem)
     $null = $trayMenu.Items.Add($peerMenuItem)
+    Initialize-RelayUpdater
+    $script:updateMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('版本更新')
+    $script:updateMenuItem.Add_Click({ Show-RelayUpdates })
+    $null = $trayMenu.Items.Add($script:updateMenuItem)
     $null = $trayMenu.Items.Add($exitMenuItem)
     $notifyIcon.ContextMenuStrip = $trayMenu
     $notifyIcon.Add_MouseClick({
@@ -5201,6 +5527,8 @@ try {
         }
     })
     $notifyIcon.Visible = $true
+    $notifyIcon.Add_BalloonTipClicked({ if ($script:relayUpdateBalloon) { Show-RelayUpdates } })
+    $notifyIcon.Add_BalloonTipClosed({ $script:relayUpdateBalloon = $false })
 
     $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Any, $Port)
     $listener.Start()
@@ -5248,6 +5576,7 @@ try {
 
     while (-not $stopRequested) {
         Process-WindowsMessages
+        Update-RelayUpdateState
 
         $copySequence = [uint32]0
         if ([ClipRelay.CopyHotkeyMonitor]::TryTakeCopy([ref]$copySequence)) {
@@ -5278,8 +5607,12 @@ try {
     }
 }
 finally {
+    Stop-RelayUpdater
     if ($mdnsStarted) {
         [ClipRelay.MdnsDiscovery]::Stop()
+    }
+    if (Get-Command Invoke-ScreenShareCommand -ErrorAction SilentlyContinue) {
+        try { $null = Invoke-ScreenShareCommand -Command @{action='stop-all'} -NoStart } catch {}
     }
     if ($copyMonitorStarted) {
         [ClipRelay.CopyHotkeyMonitor]::Stop()

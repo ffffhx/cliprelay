@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'">
+<title>ClipRelay 屏幕共享</title><link rel="stylesheet" href="share.css"></head>
+<body>
+<header><div><span class="brand">CLIP / RELAY</span><h1 id="title">屏幕共享</h1></div><div class="session"><span id="lamp"></span><span id="status" role="status">正在准备</span></div></header>
+<main><video id="video" autoplay playsinline muted></video><div id="empty"><strong id="headline">正在准备屏幕共享</strong><p id="detail">将共享整个主屏幕，对方接受后即可观看。</p><button id="start" disabled>接受并观看</button></div></main>
+<footer><div><span id="peer">等待连接</span><small id="stats">画面将显示在这里</small></div><div class="actions"><button id="fullscreen">全屏观看</button><button id="stop" class="stop">结束共享</button></div></footer>
+<script src="share.js"></script></body></html>
