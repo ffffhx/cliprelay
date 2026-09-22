@@ -51,3 +51,14 @@
         try { return ($reader.ReadToEnd() | ConvertFrom-Json) } finally { $reader.Dispose() }
     } finally { $response.Dispose() }
 }
+
+function script:Get-ScreenSharingStatus {
+    $statusFile = Join-Path $env:APPDATA 'ClipRelay\ScreenShare\status.json'
+    if (-not (Test-Path -LiteralPath $statusFile)) { return $null }
+    try {
+        $state = Get-Content -LiteralPath $statusFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $engineProcess = Get-Process -Id $state.pid -ErrorAction Stop
+        if ($engineProcess.ProcessName -eq 'electron') { return $state }
+    } catch {}
+    return $null
+}

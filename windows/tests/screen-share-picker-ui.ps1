@@ -27,7 +27,10 @@ $script:DeviceName='UCKF';$script:Port=47632;$script:appIcon=$null;$script:failS
 $phone=[pscustomobject]@{name='Phone';address='192.168.0.102';platform='android';enabled=$true}
 $pc=[pscustomobject]@{name='YIFAN';address='192.168.0.103';platform='windows';enabled=$false;port=47632}
 $script:Peers=@($phone,$pc)
-Show-ScreenSharing
+$script:ownerRefreshCount=0
+$owner=New-Object Windows.Forms.Form
+$owner.Tag=[pscustomobject]@{RefreshScreenSharing={ $script:ownerRefreshCount++ }}
+Show-ScreenSharing -Owner $owner
 $form=Get-Picker
 Show-ScreenSharing
 if(@([Windows.Forms.Application]::OpenForms | Where-Object Name -eq 'ScreenSharePicker').Count -ne 1){throw 'Duplicate picker'}
@@ -41,6 +44,8 @@ if(!$form.Visible -or !$form.Controls['StartScreenShareButton'].Enabled -or $for
 $script:failStart=$false
 $form.Controls['StartScreenShareButton'].PerformClick()
 if($script:captured.peer.name -ne 'YIFAN' -or $script:captured.localPort -ne 47632 -or $pc.enabled){throw 'Wrong destination or changed broadcast toggle'}
+if($script:ownerRefreshCount -ne 1){throw 'Owner did not receive immediate status refresh after starting'}
+$owner.Dispose()
 $script:Peers=@($pc)
 foreach($i in 2..5){$script:Peers += [pscustomobject]@{name="PC $i";address="192.168.0.$i";platform='windows';enabled=$true;port=47632}}
 Show-ScreenSharing

@@ -16,6 +16,7 @@ import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
@@ -52,16 +53,16 @@ class MarkdownPreviewTest {
                 )
             }
         }
-        rule.onNodeWithText("上一页").assertIsNotEnabled()
-        rule.onNodeWithText("左右滑动 · 隐藏").performClick()
-        rule.onNodeWithText("下一页").assertIsDisplayed().performClick()
+        rule.onNodeWithContentDescription("上一页").assertIsNotEnabled()
+        rule.onNodeWithContentDescription("隐藏控制").performClick()
+        rule.onNodeWithContentDescription("下一页").assertIsDisplayed().performClick()
         rule.waitForIdle()
         rule.onNodeWithText("2 / 2").assertIsDisplayed()
-        rule.onNodeWithText("下一页").assertIsNotEnabled()
-        rule.onNodeWithText("上一页").performClick()
+        rule.onNodeWithContentDescription("下一页").assertIsNotEnabled()
+        rule.onNodeWithContentDescription("上一页").performClick()
         rule.waitForIdle()
         rule.onNodeWithText("1 / 2").assertIsDisplayed()
-        rule.onNodeWithText("上一页").assertIsNotEnabled()
+        rule.onNodeWithContentDescription("上一页").assertIsNotEnabled()
     }
 
     @Test fun remoteNavigationStopsAtEndsAndDetachesOnDismiss() {
@@ -127,8 +128,8 @@ class MarkdownPreviewTest {
                     )
                 }
             }
-            rule.onNodeWithText("切换浅色").performClick()
-            rule.onNodeWithText("切换深色").assertIsDisplayed()
+            rule.onNodeWithContentDescription("切换浅色").performClick()
+            rule.onNodeWithContentDescription("切换深色").assertIsDisplayed()
             assertEquals(false, com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode)
             awaitCodeContrast(false)
             rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
@@ -137,11 +138,11 @@ class MarkdownPreviewTest {
                     bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
                 }
             }
-            rule.onNodeWithText("查看原文").performClick()
+            rule.onNodeWithContentDescription("查看原文").performClick()
             rule.onNodeWithText(source, useUnmergedTree = true).assertIsDisplayed()
-            rule.onNodeWithText("Markdown 预览").performClick()
-            rule.onNodeWithText("切换深色").performClick()
-            rule.onNodeWithText("切换浅色").assertIsDisplayed()
+            rule.onNodeWithContentDescription("Markdown 预览").performClick()
+            rule.onNodeWithContentDescription("切换深色").performClick()
+            rule.onNodeWithContentDescription("切换浅色").assertIsDisplayed()
             assertEquals(true, com.cliprelay.app.data.AppPreferences.load(context).fullscreenDarkMode)
             awaitCodeContrast(true)
             rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
@@ -168,7 +169,7 @@ class MarkdownPreviewTest {
                 )
             }
         }
-        rule.onNodeWithText("隐藏控制").performClick()
+        rule.onNodeWithContentDescription("隐藏控制").performClick()
         rule.waitUntil(10_000) {
             rule.onAllNodes(hasText("宽松项目二"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
         }
@@ -196,7 +197,7 @@ class MarkdownPreviewTest {
                 )
             }
         }
-        rule.onNodeWithText("隐藏控制").performClick()
+        rule.onNodeWithContentDescription("隐藏控制").performClick()
         for (lineEnding in listOf("\n", "\r\n")) {
             rule.runOnIdle { content.value = source.replace("\n", lineEnding) }
             rule.waitUntil(10_000) {
@@ -232,7 +233,7 @@ class MarkdownPreviewTest {
             rule.onAllNodes(hasText(original.text), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
         }
         val before = rule.onNodeWithText(original.text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        rule.onNodeWithText("隐藏控制").performClick()
+        rule.onNodeWithContentDescription("隐藏控制").performClick()
         assertEquals(before, rule.onNodeWithText(original.text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot)
         rule.runOnIdle {
             history.value = listOf(
@@ -293,9 +294,9 @@ class MarkdownPreviewTest {
         rule.waitUntil(10_000) {
             rule.onAllNodes(androidx.compose.ui.test.hasText("标题验收")).fetchSemanticsNodes().isNotEmpty()
         }
-        rule.onNodeWithText("查看原文").performClick()
+        rule.onNodeWithContentDescription("查看原文").performClick()
         rule.onNodeWithText(source).assertIsDisplayed()
-        rule.onNodeWithText("Markdown 预览").performClick()
+        rule.onNodeWithContentDescription("Markdown 预览").performClick()
         rule.onNodeWithText("A+").performClick()
         rule.onNodeWithText("19 sp").assertIsDisplayed()
         rule.onNodeWithText("横屏").assertIsDisplayed()
@@ -364,7 +365,7 @@ class MarkdownPreviewTest {
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
             }
         }
-        rule.onNodeWithText("01 / 02").assertExists()
+        rule.onNodeWithText("1 / 2").assertExists()
         rule.onNode(hasTestTag("markdown-reader") and hasAnyDescendant(hasText("Markdown 预览验收")), useUnmergedTree = true).performTouchInput { swipeUp() }
         rule.onNodeWithText("保留缩进", substring = true, useUnmergedTree = true).assertIsDisplayed()
         rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->
@@ -376,7 +377,7 @@ class MarkdownPreviewTest {
         rule.waitUntil(5_000) {
             rule.activity.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         }
-        rule.onNodeWithText("左右滑动 · 隐藏").performClick()
+        rule.onNodeWithContentDescription("隐藏控制").performClick()
         rule.onNode(hasTestTag("markdown-reader") and hasAnyDescendant(hasText("Markdown 预览验收")), useUnmergedTree = true).performTouchInput { swipeUp() }
         rule.onNodeWithText("保留缩进", substring = true, useUnmergedTree = true).assertIsDisplayed()
         rule.onRoot().captureToImage().asAndroidBitmap().let { bitmap ->

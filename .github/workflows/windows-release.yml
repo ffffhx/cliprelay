@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check Windows client and update flow
         run: |
-          foreach ($test in @('updates','settings-ui','settings-save-scope','screen-share-picker-ui')) {
+          foreach ($test in @('updates','settings-ui','settings-save-scope','screen-share-picker-ui','screen-share-tray')) {
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1"
             if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
           }

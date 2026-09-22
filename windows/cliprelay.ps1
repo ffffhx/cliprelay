@@ -3045,6 +3045,93 @@ function Initialize-ScreenSharing {
     . (Join-Path $PSScriptRoot 'screen-share/bridge.ps1')
 }
 
+function Get-ScreenSharingView {
+    $state = Get-ScreenSharingStatus
+    $previousVariable = Get-Variable -Name screenSharingView -Scope Script -ErrorAction SilentlyContinue
+    $previous = if ($null -ne $previousVariable) { $previousVariable.Value } else { $null }
+    $view = [pscustomobject]@{ Stage='idle'; Active=$false; Title=''; Detail=''; Action='屏幕共享' }
+    $senders = @()
+    if ($null -ne $state) { $senders = @($state.senders) }
+    if ($senders.Count -gt 0) {
+        $view.Active = $true
+        $view.Stage = [string]$senders[0].state
+        $label = switch ($view.Stage) {
+            'inviting' { '发送邀请中' }
+            'waiting' { '待接收' }
+            'connecting' { '正在连接' }
+            'connected' { '正在共享' }
+            'reconnecting' { '正在重连' }
+            default { '正在准备共享' }
+        }
+        $view.Title = "$label · $($senders[0].peer)"
+        $view.Detail = switch ($view.Stage) {
+            'inviting' { '正在向对方发送观看邀请…' }
+            'waiting' { '邀请已送达，等待对方点击「接受并观看」' }
+            'connecting' { '对方已接受，正在建立实时画面连接…' }
+            'connected' { '正在实时共享整个主屏幕' }
+            'reconnecting' { '连接暂时中断，正在尝试恢复…' }
+            default { '正在准备主屏幕画面，请稍候…' }
+        }
+        $view.Action = if (@($senders | Where-Object { $_.state -in @('connected','reconnecting') }).Count -gt 0) { '结束共享' } else { '取消邀请' }
+        if ($senders.Count -gt 1) {
+            $view.Title = "屏幕共享 · $($senders.Count) 台电脑"
+            $view.Detail = (@($senders | ForEach-Object { $_.peer }) -join '、') + ' · 可在托盘查看各设备状态'
+        }
+    } elseif ($null -ne $state -and $null -ne $state.lastEvent) {
+        $view.Stage = if ((Get-PropertyValue -Object $state.lastEvent -Name 'kind') -eq 'error') { 'error' } else { 'ended' }
+        $label = if ($view.Stage -eq 'error') { '共享未连接' } else { '共享已结束' }
+        $view.Title = "$label · $($state.lastEvent.peer)"
+        $view.Detail = [string]$state.lastEvent.reason
+        $view.Action = '重新共享'
+    } elseif ($null -ne $previous -and $previous.Active) {
+        $view.Stage = 'error'; $view.Title = '屏幕共享已中断'
+        $view.Detail = '视频组件已退出，请重新发起共享。'; $view.Action = '重新共享'
+    } elseif ($null -ne $previous -and $previous.Stage -in @('ended','error')) {
+        return $previous
+    }
+    $script:screenSharingView = $view
+    return $view
+}
+
+function Update-ScreenSharingTrayState {
+    if ([DateTime]::UtcNow -lt $script:screenShareNextUpdate) { return }
+    $script:screenShareNextUpdate = [DateTime]::UtcNow.AddSeconds(1)
+    $state = Get-ScreenSharingStatus
+    $senders = @(); $receivers = 0
+    if ($null -ne $state) { $senders = @($state.senders); $receivers = [int]$state.receivers }
+    $text = $script:screenShareLastText
+    if ($senders.Count -gt 0) {
+        $descriptions = @(foreach ($sender in $senders) {
+            $label = switch ($sender.state) {
+                'connected' { '正在共享给' }
+                'reconnecting' { '正在重连' }
+                'waiting' { '待接收' }
+                'inviting' { '发送邀请给' }
+                'connecting' { '正在连接' }
+                default { '正在准备共享给' }
+            }
+            "$label $($sender.peer)"
+        })
+        $text = $descriptions -join '；'
+    } elseif ($receivers -gt 0) {
+        $text = "屏幕观看 · $receivers 个窗口"
+    } elseif ($null -ne $state -and $null -ne $state.lastEvent) {
+        $text = "共享已结束 · $($state.lastEvent.reason)"
+    } elseif ($script:screenShareWasActive) {
+        $text = '屏幕共享已中断 · 请重新发起'
+    }
+    $script:screenShareWasActive = ($senders.Count + $receivers) -gt 0
+    $script:screenShareLastText = $text
+    $script:screenShareStatusMenuItem.Text = $text.Substring(0, [Math]::Min(100, $text.Length))
+    $script:stopScreenShareMenuItem.Enabled = $script:screenShareWasActive
+    $tooltip = if ($senders.Count -gt 0) { "ClipRelay · $text" } else { 'ClipRelay 局域网剪贴板同步' }
+    $notifyIcon.Text = $tooltip.Substring(0, [Math]::Min(63, $tooltip.Length))
+    if ($null -ne $state -and $null -ne $state.lastEvent -and $state.lastEvent.id -ne $script:screenShareLastEvent) {
+        $script:screenShareLastEvent = $state.lastEvent.id
+        if ($script:Notifications) { Show-ClipRelayNotification -Title 'ClipRelay 屏幕共享已结束' -Message "$($state.lastEvent.peer)：$($state.lastEvent.reason)" }
+    }
+}
+
 function Show-ScreenSharing {
     param([System.Windows.Forms.Form]$Owner)
     try {
@@ -3170,7 +3257,7 @@ function Show-ScreenSharing {
             $null = & $newLabel $list '还没有可共享的电脑' 14 6 470 30 11 $colors.Text $true
             $null = & $newLabel $list '先回到控制中心，添加另一台 Windows 电脑。' 14 39 470 25 9 $colors.Muted
         }
-        $hint = & $newLabel $form "将共享整个主屏幕，无需再选择画面。`n对方接受邀请后，即可实时观看。" 26 (157 + $listHeight) 508 46 9 $colors.Muted
+        $hint = & $newLabel $form "对方接受后实时观看整个主屏幕，本机在后台共享。`n右键 ClipRelay 托盘图标可查看状态、结束共享。" 26 (157 + $listHeight) 508 46 9 $colors.Muted
         $hint.Name = 'ScreenShareHint'
         $line = New-Object Windows.Forms.Panel
         $line.SetBounds(24, (216 + $listHeight), 512, 1)
@@ -3187,16 +3274,20 @@ function Show-ScreenSharing {
         $localName = $script:DeviceName
         $localPort = $script:Port
         $shareCommand = Get-Command Invoke-ScreenShareCommand
+        $refreshOwner = if ($null -ne $Owner -and $null -ne $Owner.Tag) { Get-PropertyValue -Object $Owner.Tag -Name 'RefreshScreenSharing' } else { $null }
         $start.Add_Click({
             if ($state.SelectedIndex -lt 0) { return }
             $start.Enabled = $false
+            $start.Text = '正在启动…'
             try {
                 $null = & $shareCommand -Command @{ action='start'; peer=$peers[$state.SelectedIndex]; localName=$localName; localPort=[int]$localPort }
+                if ($null -ne $refreshOwner) { & $refreshOwner }
                 $form.Close()
             } catch {
                 $hint.Text = $_.Exception.Message
                 $hint.ForeColor = $colors.Danger
                 $start.Enabled = $true
+                $start.Text = '开始共享 →'
             }
         }.GetNewClosure())
         $form.EnableDpiLayout()
@@ -4678,6 +4769,57 @@ function Show-RelayControlCenter {
         $showScreenSharingCommand = Get-Command Show-ScreenSharing
         $screenShareButton.Add_Click({ & $showScreenSharingCommand -Owner $form }.GetNewClosure())
 
+        # Sharing takes priority in the banner; device health remains in the sidebar.
+        $sharingPanel = & $newCard $form 256 86 488 64 $colors.Surface $colors.Warning 10
+        $sharingPanel.Name = 'ScreenSharingStatusPanel'
+        $sharingPanel.Visible = $false
+        $sharingDot = & $newLabel $sharingPanel '●' 14 10 16 20 9.0 ([Drawing.FontStyle]::Bold) $colors.Warning $bodyFont
+        $sharingTitle = & $newLabel $sharingPanel '' 32 8 278 22 9.5 ([Drawing.FontStyle]::Bold) $colors.Text $bodyFont
+        $sharingTitle.Name = 'ScreenSharingStatusTitle'
+        $sharingDetail = & $newLabel $sharingPanel '' 32 32 278 20 8.0 ([Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $sharingDetail.Name = 'ScreenSharingStatusDetail'
+        $sharingAction = & $newButton $sharingPanel '取消邀请' 328 15 146 34 $colors.Raised $colors.Border $colors.Warning $colors.Warning
+        $sharingAction.Name = 'ScreenSharingActionButton'
+        $sharingToolTip = New-Object Windows.Forms.ToolTip
+        $sharingViewCommand = Get-Command Get-ScreenSharingView
+        $sharingControlCommand = Get-Command Invoke-ScreenShareCommand
+        $sharingUiState = @{ View=$null }
+        $refreshSharing = {
+            if ($form.IsDisposed) { return }
+            $view = & $sharingViewCommand
+            $sharingUiState.View = $view
+            $sharingPanel.Visible = $view.Stage -ne 'idle'
+            $connectionPanel.Visible = $view.Stage -eq 'idle'
+            if (-not $sharingPanel.Visible) { return }
+            $sharingPanel.BringToFront()
+            $accent = switch ($view.Stage) {
+                'connected' { $colors.Success }
+                'error' { $colors.Danger }
+                'ended' { $colors.Muted }
+                default { $colors.Warning }
+            }
+            $sharingPanel.BorderColor = $accent; $sharingDot.ForeColor = $accent
+            $sharingTitle.Text = $view.Title; $sharingDetail.Text = $view.Detail
+            $sharingDetail.ForeColor = $colors.Muted
+            $sharingAction.Text = $view.Action; $sharingAction.AccessibleName = $view.Action
+            $sharingAction.TextColor = if ($view.Active) { $accent } else { $colors.BlueLight }
+            $sharingAction.BorderColor = if ($view.Active) { $accent } else { $colors.Border }
+            $sharingToolTip.SetToolTip($sharingTitle, $view.Title)
+            $sharingToolTip.SetToolTip($sharingDetail, $view.Detail)
+            $sharingPanel.Invalidate(); $sharingAction.Invalidate()
+        }.GetNewClosure()
+        $sharingAction.Add_Click({
+            & $refreshSharing
+            if ($sharingUiState.View.Active) {
+                $sharingAction.Enabled = $false
+                try {
+                    $null = & $sharingControlCommand -Command @{action='stop-sending'} -NoStart
+                    & $refreshSharing
+                } catch { $sharingDetail.Text = $_.Exception.Message; $sharingDetail.ForeColor = $colors.Danger }
+                finally { $sharingAction.Enabled = $true }
+            } else { & $showScreenSharingCommand -Owner $form }
+        }.GetNewClosure())
+
         # Section 2: Shortcuts
         $shortcutCard = & $newCard $form 256 160 488 96 $colors.Surface $colors.Border 10
         $null = & $newLabel $shortcutCard "SHORTCUTS · 快捷同步指令" 14 8 260 18 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $monoFont
@@ -5269,6 +5411,7 @@ function Show-RelayControlCenter {
         $runtimeTimer.Interval = 750
         $runtimeTimer.Add_Tick({
             try {
+                & $refreshSharing
                 $updateSnapshot = & $updateSnapshotCommand
                 $updateButton.Text = if ($null -ne $updateSnapshot.Release) { "● 新版 $($updateSnapshot.Release.versionName)" } else { "版本 v$($updateSnapshot.CurrentVersion)" }
                 $snapshot = & $snapshotCommand
@@ -5363,6 +5506,8 @@ function Show-RelayControlCenter {
             RuntimeTimer      = $runtimeTimer
             ConnectivityTimer = $connectivityTimer
             CopyResetTimer    = $copyResetTimer
+            RefreshScreenSharing = $refreshSharing
+            SharingToolTip = $sharingToolTip
         }
 
         $form.CancelButton = $cancelButton
@@ -5370,6 +5515,7 @@ function Show-RelayControlCenter {
         $form.Add_Shown({
             $null = [ClipRelay.NativeMethods]::ShowWindow($form.Handle, [ClipRelay.NativeMethods]::SW_SHOW)
             $null = $form.Activate()
+            & $refreshSharing
             $runtimeTimer.Start()
             $connectivityTimer.Start()
             & $runCheck
@@ -5396,6 +5542,7 @@ function Show-RelayControlCenter {
                             $timer.Dispose()
                         }
                     }
+                    $timerState.SharingToolTip.Dispose()
                     $sender.Tag = $null
                 }
                 if ($null -ne $sender) {
@@ -5433,6 +5580,11 @@ function Process-WindowsMessages {
 
 . (Join-Path $PSScriptRoot 'updates.ps1')
 $script:updateMenuItem = $null
+$script:screenShareNextUpdate = [DateTime]::MinValue
+$script:screenShareLastEvent = ''
+$script:screenShareWasActive = $false
+$script:screenShareLastText = '屏幕共享 · 未开始'
+Initialize-ScreenSharing
 
 try {
     $createdNew = $false
@@ -5502,11 +5654,19 @@ try {
     $screenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('屏幕共享 · 实时视频')
     $screenShareMenuItem.Add_Click({ Show-ScreenSharing })
     $null = $trayMenu.Items.Add($screenShareMenuItem)
-    $stopScreenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('停止所有屏幕共享')
-    $stopScreenShareMenuItem.Add_Click({
-        try { Initialize-ScreenSharing; $null = Invoke-ScreenShareCommand -Command @{action='stop-all'} -NoStart } catch {}
+    $script:screenShareStatusMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('屏幕共享 · 未开始')
+    $script:screenShareStatusMenuItem.Enabled = $false
+    $null = $trayMenu.Items.Add($script:screenShareStatusMenuItem)
+    $script:stopScreenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('停止所有屏幕共享')
+    $script:stopScreenShareMenuItem.Enabled = $false
+    $script:stopScreenShareMenuItem.Add_Click({
+        try {
+            $null = Invoke-ScreenShareCommand -Command @{action='stop-all'} -NoStart
+            $script:screenShareNextUpdate = [DateTime]::MinValue
+            Update-ScreenSharingTrayState
+        } catch { Show-ClipRelayNotification -Title 'ClipRelay 无法结束共享' -Message $_.Exception.Message -Icon Warning }
     })
-    $null = $trayMenu.Items.Add($stopScreenShareMenuItem)
+    $null = $trayMenu.Items.Add($script:stopScreenShareMenuItem)
     $previewRemoteMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("手机翻页 · ← / →")
     $previewRemoteMenuItem.Add_Click({ Show-PhonePreviewRemote })
     $null = $trayMenu.Items.Add($previewRemoteMenuItem)
@@ -5577,6 +5737,7 @@ try {
     while (-not $stopRequested) {
         Process-WindowsMessages
         Update-RelayUpdateState
+        Update-ScreenSharingTrayState
 
         $copySequence = [uint32]0
         if ([ClipRelay.CopyHotkeyMonitor]::TryTakeCopy([ref]$copySequence)) {

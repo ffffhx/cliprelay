@@ -16,6 +16,7 @@ function finish(reason, notify = true) {
   $('start').hidden = true; $('stop').textContent = '关闭窗口';
   $('stats').textContent = ''; status('已结束');
   if (notify) bridge({type:'stop', reason});
+  bridge({type:'finished'});
 }
 function waitForIce(peer) {
   if (peer.iceGatheringState === 'complete') return Promise.resolve();
@@ -32,9 +33,11 @@ function createPeer() {
     if (ended) return;
     if (peer.connectionState === 'connected') {
       clearTimeout(connectTimer); clearTimeout(disconnectTimer); status('实时连接');
+      bridge({type:'state',value:'connected'});
     } else if (peer.connectionState === 'failed' || peer.connectionState === 'closed') finish('连接已断开，请重新发起共享。');
     else if (peer.connectionState === 'disconnected') {
       status('连接中断，正在恢复');
+      bridge({type:'state',value:'reconnecting'});
       clearTimeout(disconnectTimer);
       disconnectTimer = setTimeout(() => finish('网络连接中断。'), 10000);
     }
@@ -77,7 +80,7 @@ async function start() {
       await sender.setParameters(parameters);
       // A local video preview would capture itself recursively during whole-screen sharing.
       $('headline').textContent = '正在共享整个主屏幕';
-      $('detail').textContent = '对方接受后即可观看。你可以切回要演示的内容，结束时点击下方按钮。';
+      $('detail').textContent = '对方接受后即可观看。右键 ClipRelay 托盘图标可结束共享。';
       $('start').hidden = true; $('fullscreen').hidden = true;
       document.body.className = 'sharing';
       status('正在邀请对方观看');

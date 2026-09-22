@@ -15,6 +15,8 @@ app.setName('ClipRelay Screen Share');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay','ScreenShare'));
 // App-local authenticated IPC only. Remote signaling still uses the tray's normal LAN port.
 const endpointFile = path.join(app.getPath('userData'),'control.json');
+const statusFile = path.join(app.getPath('userData'),'status.json');
+let lastEvent=null;
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('window-all-closed', () => {});
@@ -26,35 +28,68 @@ function equal(a,b) {
   return aa.length===bb.length && crypto.timingSafeEqual(aa,bb);
 }
 function transmit(s,message) { if (!s.window.isDestroyed()) s.window.webContents.send('share-message',message); }
+function sharingStatus() {
+  const active=[...sessions.values()].filter(s=>!s.ended);
+  return {pid:process.pid,senders:active.filter(s=>s.role==='sender').map(s=>({peer:s.peerName,state:s.state})),receivers:active.filter(s=>s.role==='receiver').length,lastEvent};
+}
+function publishStatus() {
+  // The tray reads a small, atomic local snapshot; no network polling on its UI thread.
+  try {
+    fs.mkdirSync(path.dirname(statusFile),{recursive:true});
+    fs.writeFileSync(statusFile+'.tmp',JSON.stringify(sharingStatus()));
+    fs.renameSync(statusFile+'.tmp',statusFile);
+  } catch(error) { console.error('Cannot write sharing status:',error.message); }
+}
+function closeSender(s) {
+  clearTimeout(s.cleanupTimer);
+  if(s.role==='sender' && !s.window.isDestroyed())s.window.destroy();
+}
 function post(s,route,body,invite=false) {
   return new Promise((resolve,reject) => {
     const data=Buffer.from(JSON.stringify(body));
     const headers={'Content-Type':'application/json','Content-Length':data.length};
     if(invite && s.accessToken) headers['X-ClipRelay-Token']=s.accessToken;
+    let deadline;
     const request=http.request({hostname:s.address,port:s.port,path:route,method:'POST',headers,timeout:8000},response=>{
+      clearTimeout(deadline);
       response.resume();
       if(response.statusCode>=200 && response.statusCode<300) resolve();
       else reject(new Error(response.statusCode===404 ? '对方尚未支持视频共享，请先更新 ClipRelay。' : `对方返回 HTTP ${response.statusCode}，请检查设备设置和访问令牌。`));
     });
-    request.on('timeout',()=>request.destroy(new Error('连接超时，请确认对方在线且网络互通。')));
-    request.on('error',reject);request.end(data);
+    const timeout=()=>request.destroy(new Error('连接超时，请确认对方在线且网络互通。'));
+    deadline=setTimeout(timeout,8000);
+    request.on('timeout',timeout);
+    request.on('error',error=>{clearTimeout(deadline);reject(error);});request.end(data);
   });
 }
-async function end(s,notify=true) {
+async function sendInvitation(s,sdp) {
+  s.state='inviting';publishStatus();
+  await post(s,'/screen/invite',{id:s.id,secret:s.secret,name:s.localName,port:s.localPort,sdp},true);
+  // An answer can arrive before the invitation's HTTP response completes.
+  if(!s.ended && s.state==='inviting'){s.state='waiting';publishStatus();}
+}
+async function end(s,notify=true,reason='已结束本次共享。',kind='ended') {
   if(s.ended) return;
   s.ended=true;s.captureAllowed=false;clearTimeout(s.expiry);
-  if(notify) await post(s,'/screen/message',{id:s.id,secret:s.secret,type:'stop'}).catch(()=>{});
+  s.endReason=reason;
+  if(s.role==='sender')lastEvent={id:crypto.randomUUID(),peer:s.peerName,reason,kind};
+  transmit(s,{type:'stop',reason});publishStatus();
+  // Give the renderer time to release its tracks, then destroy even if it is unresponsive.
+  if(s.role==='sender' && !s.window.isDestroyed())s.cleanupTimer=setTimeout(()=>closeSender(s),2000);
+  if(notify) await post(s,'/screen/message',{id:s.id,secret:s.secret,type:'stop',reason}).catch(()=>{});
 }
 function open(s) {
   if(sessions.size>=4) throw new Error('请先关闭已有的共享窗口。');
-  s.window=new BrowserWindow({width:1100,height:760,minWidth:620,minHeight:440,title:'ClipRelay 屏幕共享',backgroundColor:'#111318',titleBarStyle:'hidden',titleBarOverlay:{color:'#111318',symbolColor:'#94a3b8',height:36},autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.js'),nodeIntegration:false,contextIsolation:true,sandbox:true,backgroundThrottling:false}});
+  s.state='preparing';
+  s.window=new BrowserWindow({show:s.role==='receiver',skipTaskbar:s.role==='sender',width:1100,height:760,minWidth:620,minHeight:440,title:'ClipRelay 屏幕共享',backgroundColor:'#111318',titleBarStyle:'hidden',titleBarOverlay:{color:'#111318',symbolColor:'#94a3b8',height:36},autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.js'),nodeIntegration:false,contextIsolation:true,sandbox:true,backgroundThrottling:false}});
   s.window.setMenu(null);sessions.set(s.id,s);
+  publishStatus();
   s.window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   s.window.webContents.on('will-navigate',(event,url)=>{if(url!==pageURL)event.preventDefault();});
-  s.window.webContents.on('render-process-gone',()=>end(s));
-  s.window.on('closed',()=>{end(s);sessions.delete(s.id);});
-  if(s.role==='receiver') s.expiry=setTimeout(()=>{transmit(s,{type:'stop',reason:'观看邀请已过期。'});end(s);},90000);
-  s.window.loadFile(path.join(__dirname,'share.html'));
+  s.window.webContents.on('render-process-gone',()=>{end(s,true,'视频组件意外退出，请重新发起共享。');closeSender(s);});
+  s.window.on('closed',()=>{end(s);clearTimeout(s.cleanupTimer);sessions.delete(s.id);publishStatus();});
+  s.expiry=setTimeout(()=>end(s,true,s.role==='receiver'?'观看邀请已过期。':'对方未在 90 秒内完成连接，请确认对方已接受邀请后重试。','error'),90000);
+  s.window.loadFile(path.join(__dirname,'share.html')).catch(error=>end(s,true,error.message,'error'));
   return s;
 }
 function owner(event) {
@@ -88,12 +123,14 @@ async function initialize() {
     const s=owner(event);if(!s || !message || typeof message.type!=='string')return;
     try {
       if(message.type==='ready') {transmit(s,{type:'init',role:s.role,peer:s.peerName,sdp:s.offer});if(s.ended)transmit(s,{type:'stop',reason:'共享已结束。'});}
-      else if(message.type==='offer' && s.role==='sender' && !s.ended) await post(s,'/screen/invite',{id:s.id,secret:s.secret,name:s.localName,port:s.localPort,sdp:message.sdp},true);
+      else if(message.type==='offer' && s.role==='sender' && !s.ended) await sendInvitation(s,message.sdp);
       else if(message.type==='answer' && s.role==='receiver' && !s.ended) {clearTimeout(s.expiry);await post(s,'/screen/message',{id:s.id,secret:s.secret,type:'answer',sdp:message.sdp});}
-      else if(message.type==='stop') await end(s);
+      else if(message.type==='stop') await end(s,true,typeof message.reason==='string'?message.reason.slice(0,300):undefined);
+      else if(message.type==='finished' && s.ended) closeSender(s);
+      else if(message.type==='state' && !s.ended && ['connected','reconnecting'].includes(message.value)) {s.state=message.value;if(s.state==='connected')clearTimeout(s.expiry);publishStatus();}
       else if(message.type==='close') s.window.close();
       else if(message.type==='stats') s.stats=message.value;
-    } catch(error) {transmit(s,{type:'error',reason:error.message});await end(s);}
+    } catch(error) {await end(s,true,error.message,'error');}
   });
   server=http.createServer(async(request,response)=>{
     const reply=(status,body)=>{response.writeHead(status,{'Content-Type':'application/json'});response.end(JSON.stringify(body));};
@@ -119,10 +156,14 @@ async function initialize() {
 }
 function handleCommand(command) {
   if(command.action==='ping')return {status:200};
+  if(command.action==='status')return {status:200,...sharingStatus()};
   if(command.action==='stop-all') {for(const s of sessions.values()){end(s);s.window.close();}return {status:200};}
+  if(command.action==='stop-sending') {for(const s of sessions.values()){if(s.role==='sender'){end(s,true,s.state==='connected'?'已结束本次共享。':'已取消共享邀请。');s.window.close();}}return {status:200};}
   if(command.action==='start') {
     const peer=command.peer;
     if(!peer || typeof peer.address!=='string' || !peer.address || peer.address.length>253 || typeof peer.name!=='string' || !Number.isInteger(peer.port) || peer.port<1 || peer.port>65535 || !Number.isInteger(command.localPort) || command.localPort<1 || command.localPort>65535 || typeof command.localName!=='string')return {status:400};
+    const existing=[...sessions.values()].find(s=>!s.ended && s.role==='sender' && s.address.toLowerCase()===peer.address.toLowerCase() && s.port===peer.port);
+    if(existing)return {status:200,id:existing.id,existing:true,state:existing.state};
     const s=open({id:crypto.randomUUID().replaceAll('-',''),secret:crypto.randomBytes(32).toString('hex'),role:'sender',captureAllowed:true,peerName:peer.name,address:peer.address,port:peer.port,accessToken:peer.accessToken,localName:command.localName,localPort:command.localPort});
     return {status:200,id:s.id};
   }
@@ -139,11 +180,11 @@ function handleCommand(command) {
     const s=sessions.get(data.id);
     if(!s || !equal(s.secret,data.secret))return {status:401};
     if(s.ended)return {status:410};
-    if(data.type==='stop'){end(s,false);transmit(s,{type:'stop',reason:'对方已结束共享。'});return {status:200};}
-    if(data.type==='answer' && s.role==='sender' && typeof data.sdp==='string' && data.sdp.startsWith('v=0') && data.sdp.length<=240000){transmit(s,{type:'answer',sdp:data.sdp});return {status:200};}
+    if(data.type==='stop'){end(s,false,typeof data.reason==='string'?data.reason.slice(0,300):'对方已结束共享。');return {status:200};}
+    if(data.type==='answer' && s.role==='sender' && typeof data.sdp==='string' && data.sdp.startsWith('v=0') && data.sdp.length<=240000){if(!['connected','reconnecting'].includes(s.state)){s.state='connecting';publishStatus();}transmit(s,{type:'answer',sdp:data.sdp});return {status:200};}
     return {status:400};
   }
   return {status:400};
 }
 app.on('before-quit',()=>{for(const s of sessions.values())end(s);try{const record=JSON.parse(fs.readFileSync(endpointFile));if(record.pid===process.pid)fs.unlinkSync(endpointFile);}catch{}});
-module.exports={handleCommand,equal,sessions,primaryScreenSource};
+module.exports={handleCommand,equal,sessions,primaryScreenSource,sendInvitation};

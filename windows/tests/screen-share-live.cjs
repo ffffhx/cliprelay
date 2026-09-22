@@ -35,14 +35,21 @@ app.whenReady().then(async()=>{
     motion.show();motion.setFullScreen(true);motion.setTitle('ClipRelay Motion Test');await sleep(1500);
     host.handleCommand({action:'start',peer:{name:'QA receiver',address:'127.0.0.1',port:peerPort},localPort:port,localName:'QA sender'});
   }
-  let clicked=false,verifiedDisplay=false,captured=false,measured=false,liveAt=0,lastBytes=0,stopRequested=false;
+  let clicked=false,verifiedDisplay=false,captured=false,measured=false,liveAt=0,lastBytes=0,stopRequested=false,activeSession,invitedAt=0,lastPhase;
   const deadline=Date.now()+90000;
   while(Date.now()<deadline) {
     const s=[...host.sessions.values()][0];
+    if(s)activeSession=s;
+    if(role==='sender' && s?.state!==lastPhase) {lastPhase=s?.state;if(lastPhase)record({phase:lastPhase});}
+    if(role==='sender' && activeSession?.ended && activeSession.window.isDestroyed()) {
+      record({ended:activeSession.endReason,cleanup:{rendererDestroyed:true,captureDisabled:!activeSession.captureAllowed,sessionsRemoved:host.sessions.size===0}});break;
+    }
     if(s && !s.window.isDestroyed() && !s.window.webContents.isLoading()) {
+      if(s.window.isVisible()!==(role==='receiver'))throw new Error('Wrong sender/receiver window visibility');
       const state=await s.window.webContents.executeJavaScript('({ready:!!document.getElementById("start")&&!document.getElementById("start").disabled,status:document.getElementById("status")?.textContent,detail:document.getElementById("detail")?.textContent,ended:document.body.classList.contains("ended"),sources:document.querySelectorAll("#sourceList button").length})');
       fs.writeFileSync(path.join(output,role+'-state.json'),JSON.stringify(state));
-      if(role==='receiver' && state.ready && !clicked) {await s.window.webContents.executeJavaScript(mode==='decline'?'document.getElementById("stop").click()':'document.getElementById("start").click()',true);clicked=true;}
+      if(role==='receiver' && state.ready && !invitedAt)invitedAt=Date.now();
+      if(role==='receiver' && state.ready && !clicked && Date.now()-invitedAt>=2000) {await s.window.webContents.executeJavaScript(mode==='decline'?'document.getElementById("stop").click()':'document.getElementById("start").click()',true);clicked=true;}
       if(role==='sender' && s.stats?.frames>0 && !verifiedDisplay) {
         const settings=await s.window.webContents.executeJavaScript('stream.getVideoTracks()[0].getSettings()');
         record({automaticCapture:true,displayId:s.captureDisplayId,settings});
@@ -80,17 +87,23 @@ app.whenReady().then(async()=>{
       }
       const shouldStop=(role==='sender' && mode==='normal' && liveAt && Date.now()-liveAt>25000) ||
         (role==='receiver' && mode==='receiver-stop' && liveAt && Date.now()-liveAt>13000);
-      if(shouldStop && !stopRequested) {await s.window.webContents.executeJavaScript('document.getElementById("stop").click()',true);record({stopped:true});stopRequested=true;}
-      if(state.ended) {record({ended:state.detail,cleanup:await s.window.webContents.executeJavaScript('({videoCleared:document.getElementById("video").srcObject===null,peerClosed:!pc||pc.connectionState==="closed",tracksStopped:!stream||stream.getTracks().every(t=>t.readyState==="ended")})')});break;}
+      if(shouldStop && !stopRequested) {
+        if(role==='sender')host.handleCommand({action:'stop-all'});
+        else await s.window.webContents.executeJavaScript('document.getElementById("stop").click()',true);
+        record({stopped:true});stopRequested=true;
+      }
+      if(role==='receiver' && state.ended) {record({ended:state.detail,cleanup:await s.window.webContents.executeJavaScript('({videoCleared:document.getElementById("video").srcObject===null,peerClosed:!pc||pc.connectionState==="closed",tracksStopped:!stream||stream.getTracks().every(t=>t.readyState==="ended")})')});break;}
     }
     await sleep(500);
   }
   const frames=results.filter(x=>x.stats?.frames>0);
   const median=frames.map(x=>x.stats.fps||0).sort((a,b)=>a-b)[Math.floor(frames.length/2)] || 0;
   const stopped=results.find(x=>x.ended);
-  const clean=stopped?.cleanup?.videoCleared && stopped?.cleanup?.peerClosed && stopped?.cleanup?.tracksStopped;
+  const clean=role==='sender' ? stopped?.cleanup?.rendererDestroyed && stopped?.cleanup?.captureDisabled && stopped?.cleanup?.sessionsRemoved : stopped?.cleanup?.videoCleared && stopped?.cleanup?.peerClosed && stopped?.cleanup?.tracksStopped;
   const lostPeerDetected=mode!=='disconnect' || (!results.some(x=>x.type==='stop') && /连接.*中断|连接已断开/.test(stopped?.ended || ''));
-  const pass=Boolean(clean && lostPeerDetected && (mode==='decline'?frames.length===0:frames.length>=10 && median>=20));
+  const phases=results.filter(x=>x.phase).map(x=>x.phase);
+  const phaseFeedback=role!=='sender' || (phases.includes('waiting') && (mode==='decline' || phases.includes('connected')));
+  const pass=Boolean(clean && lostPeerDetected && phaseFeedback && (mode==='decline'?frames.length===0:frames.length>=10 && median>=20));
   record({summary:{mode,frames:frames.length,medianFps:median,decoded:frames.at(-1)?.stats.frames,pass}});
   server.close();app.exit(pass?0:1);
 }).catch(error=>{record({fatal:error.stack});app.exit(1);});

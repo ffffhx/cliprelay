@@ -15,12 +15,14 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,7 +41,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -49,6 +50,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -56,6 +58,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -77,10 +80,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -89,6 +90,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import com.cliprelay.app.data.AppPreferences
@@ -1017,35 +1019,30 @@ internal fun HistoryFullscreenViewer(
                             markdownPreview = markdownPreview,
                             onToggleMarkdown = { markdownPreview = !markdownPreview },
                             onSetDarkMode = onSetDarkMode,
+                            pagingEnabled = !pagerState.isScrollInProgress,
+                            onPrevious = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                            onNext = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
                         )
-                    }
-                    Surface(
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                        color = palette.surface.copy(alpha = 0.94f),
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                enabled = currentPage > 0 && !pagerState.isScrollInProgress,
-                                onClick = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
-                            ) { Text("上一页") }
-                            Text(
-                                text = "${currentPage + 1} / ${history.size}",
-                                modifier = Modifier.padding(horizontal = 8.dp),
-                                fontSize = 13.sp,
-                                color = palette.secondary,
+                    } else {
+                        Surface(
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+                            color = palette.surface.copy(alpha = 0.94f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            FullscreenPageNavigation(
+                                currentPage = currentPage,
+                                pageCount = history.size,
+                                enabled = !pagerState.isScrollInProgress,
+                                onPrevious = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                                onNext = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
                             )
-                            TextButton(
-                                enabled = currentPage < history.lastIndex && !pagerState.isScrollInProgress,
-                                onClick = { arrivalScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
-                            ) { Text("下一页") }
                         }
                     }
                     if (pendingArrivalIds.isNotEmpty()) {
                         Surface(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .padding(top = if (controlsVisible) 76.dp else 12.dp, end = 12.dp)
+                                .padding(top = if (controlsVisible) FullscreenControlHeight + 8.dp else 12.dp, end = 12.dp)
                                 .widthIn(max = 320.dp),
                             color = palette.surface,
                             shape = RoundedCornerShape(18.dp),
@@ -1076,6 +1073,8 @@ internal fun HistoryFullscreenViewer(
     }
 }
 
+private val FullscreenControlHeight = 44.dp
+
 @Composable
 private fun BoxScope.FullscreenControls(
     currentClip: ReceivedClip,
@@ -1096,130 +1095,149 @@ private fun BoxScope.FullscreenControls(
     markdownPreview: Boolean,
     onToggleMarkdown: () -> Unit,
     onSetDarkMode: (Boolean) -> Unit,
+    pagingEnabled: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
 ) {
     val palette = LocalPreviewColors.current
     val accent = palette.accent
 
-    Row(
-        modifier = Modifier
-            .align(Alignment.TopCenter)
-            .fillMaxWidth()
-            .background(palette.background.copy(alpha = 0.88f))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextButton(
-            onClick = onDismiss,
-            colors = ButtonDefaults.textButtonColors(contentColor = palette.text),
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(FullscreenControlHeight)
+                .background(palette.background.copy(alpha = 0.88f))
+                .padding(horizontal = 4.dp)
+                .testTag("fullscreen-top-bar"),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("关闭")
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = if (currentClip.isImage) "IMAGE ARRIVAL" else "TEXT ARRIVAL",
-                color = accent,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.sp,
-                letterSpacing = 1.3.sp,
-            )
+            FullscreenToolbarButton("关闭", onClick = onDismiss, color = palette.text)
             Text(
                 text = receivedTime,
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
                 color = palette.secondary,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-        }
-        if (!currentClip.isImage) {
-            TextButton(onClick = onToggleMarkdown) {
-                Text(if (markdownPreview) "查看原文" else "Markdown 预览", color = palette.link)
+            if (!currentClip.isImage) {
+                FullscreenToolbarButton(
+                    label = if (markdownPreview) "原文" else "预览",
+                    description = if (markdownPreview) "查看原文" else "Markdown 预览",
+                    onClick = onToggleMarkdown,
+                    color = palette.link,
+                )
             }
+            FullscreenToolbarButton(if (copied) "已复制" else "复制", onClick = onCopy, width = 52.dp)
+            FullscreenToolbarButton("隐藏", description = "隐藏控制", onClick = onHide, color = palette.secondary)
         }
-        TextButton(
-            onClick = onCopy,
-            colors = ButtonDefaults.textButtonColors(contentColor = accent),
-        ) {
-            Text(if (copied) "已复制" else "复制")
-        }
-    }
 
-    Column(
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .background(palette.background.copy(alpha = 0.88f))
-            .padding(top = 5.dp, bottom = 56.dp),
-    ) {
-        ArrivalPagerRail(
-            page = currentPage,
-            pageCount = pageCount,
-            accent = accent,
-        )
-        if (currentClip.isImage) {
-            TextButton(
-                onClick = onSaveImage,
-                enabled = !saved && savingImageId == null,
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-                colors = ButtonDefaults.textButtonColors(contentColor = accent),
-            ) {
-                Text(when {
-                    saved -> "已保存"
-                    savingImageId == currentClip.id -> "保存中…"
-                    else -> "保存到相册"
-                })
-            }
-        } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 22.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "全屏字号",
-                    color = palette.secondary,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                )
-                TextButton(onClick = { onSetDarkMode(!palette.dark) }) {
-                    Text(if (palette.dark) "切换浅色" else "切换深色", color = accent, fontSize = 12.sp)
-                }
-                Spacer(Modifier.weight(1f))
-                FontSizeStepper(
-                    value = fullscreenTextSizeSp,
-                    onValueChange = onSetFullscreenTextSize,
-                    accent = accent,
-                    background = palette.surface,
-                    contentColor = palette.text,
-                )
-            }
-        }
         Row(
             modifier = Modifier
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 22.dp),
+                .height(FullscreenControlHeight)
+                .background(palette.background.copy(alpha = 0.88f))
+                .padding(horizontal = 4.dp)
+                .testTag("fullscreen-bottom-bar"),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "%02d / %02d".format(currentPage + 1, pageCount),
-                color = palette.text,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                letterSpacing = 1.4.sp,
-            )
-            Spacer(Modifier.weight(1f))
-            TextButton(
-                onClick = onHide,
-                colors = ButtonDefaults.textButtonColors(contentColor = palette.secondary),
+            // Keep paging fixed at the edge; narrow windows can scroll the tools
+            // horizontally without growing another row over the content.
+            Row(
+                modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(if (pageCount > 1) "左右滑动 · 隐藏" else "隐藏控制")
+                if (currentClip.isImage) {
+                    FullscreenToolbarButton(
+                        label = when {
+                            saved -> "已保存"
+                            savingImageId == currentClip.id -> "保存中…"
+                            else -> "保存到相册"
+                        },
+                        onClick = onSaveImage,
+                        enabled = !saved && savingImageId == null,
+                        width = 84.dp,
+                    )
+                } else {
+                    FontSizeStepper(
+                        value = fullscreenTextSizeSp,
+                        onValueChange = onSetFullscreenTextSize,
+                        accent = accent,
+                        background = palette.surface,
+                        contentColor = palette.text,
+                        compact = true,
+                    )
+                    FullscreenToolbarButton(
+                        label = if (palette.dark) "浅色" else "深色",
+                        description = if (palette.dark) "切换浅色" else "切换深色",
+                        onClick = { onSetDarkMode(!palette.dark) },
+                    )
+                }
+                FullscreenToolbarButton(
+                    label = if (isLandscape) "竖屏" else "横屏",
+                    description = if (isLandscape) "切换为竖屏" else "切换为横屏",
+                    onClick = { onSetLandscape(!isLandscape) },
+                )
             }
-            Spacer(Modifier.width(6.dp))
-            OrientationSelector(
-                isLandscape = isLandscape,
-                accent = accent,
-                onSetLandscape = onSetLandscape,
+            FullscreenPageNavigation(currentPage, pageCount, pagingEnabled, onPrevious, onNext)
+        }
+    }
+}
+
+@Composable
+private fun FullscreenToolbarButton(
+    label: String,
+    onClick: () -> Unit,
+    description: String = label,
+    enabled: Boolean = true,
+    width: Dp = 44.dp,
+    color: Color = LocalPreviewColors.current.accent,
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.width(width).height(FullscreenControlHeight)
+            .semantics { contentDescription = description },
+        contentPadding = PaddingValues(horizontal = 2.dp),
+        colors = ButtonDefaults.textButtonColors(
+            contentColor = color,
+            disabledContentColor = LocalPreviewColors.current.secondary.copy(alpha = 0.38f),
+        ),
+    ) {
+        Text(label, fontSize = 12.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun FullscreenPageNavigation(
+    currentPage: Int,
+    pageCount: Int,
+    enabled: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FullscreenToolbarButton(
+                "‹", description = "上一页", width = 36.dp,
+                enabled = currentPage > 0 && enabled, onClick = onPrevious,
+            )
+            Text(
+                text = "${currentPage + 1} / $pageCount",
+                modifier = Modifier.widthIn(min = 40.dp),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = LocalPreviewColors.current.secondary,
+                maxLines = 1,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            FullscreenToolbarButton(
+                "›", description = "下一页", width = 36.dp,
+                enabled = currentPage < pageCount - 1 && enabled, onClick = onNext,
             )
         }
     }
@@ -1232,17 +1250,20 @@ private fun FontSizeStepper(
     accent: Color,
     background: Color,
     contentColor: Color,
+    compact: Boolean = false,
 ) {
     val normalized = FullscreenTextSize.normalize(value)
     Surface(
         color = background,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(if (compact) 8.dp else 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(
                 onClick = { onValueChange(FullscreenTextSize.decrease(normalized)) },
                 enabled = normalized > FullscreenTextSize.MIN_SP,
-                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                modifier = if (compact) Modifier.width(36.dp).height(FullscreenControlHeight)
+                    else Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                contentPadding = if (compact) PaddingValues(0.dp) else ButtonDefaults.TextButtonContentPadding,
                 colors = ButtonDefaults.textButtonColors(
                     contentColor = accent,
                     disabledContentColor = contentColor.copy(alpha = 0.32f),
@@ -1252,17 +1273,20 @@ private fun FontSizeStepper(
             }
             Text(
                 text = "$normalized sp",
-                modifier = Modifier.widthIn(min = 44.dp),
+                modifier = Modifier.widthIn(min = if (compact) 40.dp else 44.dp),
                 color = contentColor,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
                 fontSize = 12.sp,
+                maxLines = 1,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
             TextButton(
                 onClick = { onValueChange(FullscreenTextSize.increase(normalized)) },
                 enabled = normalized < FullscreenTextSize.MAX_SP,
-                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                modifier = if (compact) Modifier.width(36.dp).height(FullscreenControlHeight)
+                    else Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                contentPadding = if (compact) PaddingValues(0.dp) else ButtonDefaults.TextButtonContentPadding,
                 colors = ButtonDefaults.textButtonColors(
                     contentColor = accent,
                     disabledContentColor = contentColor.copy(alpha = 0.32f),
@@ -1271,100 +1295,6 @@ private fun FontSizeStepper(
                 Text("A+", fontWeight = FontWeight.Bold)
             }
         }
-    }
-}
-
-@Composable
-private fun OrientationSelector(
-    isLandscape: Boolean,
-    accent: Color,
-    onSetLandscape: (Boolean) -> Unit,
-) {
-    Surface(
-        color = LocalPreviewColors.current.surface,
-        shape = RoundedCornerShape(12.dp),
-    ) {
-        Row(modifier = Modifier.padding(3.dp)) {
-            OrientationChoice(
-                label = "竖屏",
-                selected = !isLandscape,
-                accent = accent,
-                onClick = { onSetLandscape(false) },
-            )
-            OrientationChoice(
-                label = "横屏",
-                selected = isLandscape,
-                accent = accent,
-                onClick = { onSetLandscape(true) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun OrientationChoice(
-    label: String,
-    selected: Boolean,
-    accent: Color,
-    onClick: () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .width(58.dp)
-            .height(38.dp)
-            .clip(RoundedCornerShape(9.dp))
-            .background(if (selected) accent else Color.Transparent)
-            .selectable(
-                selected = selected,
-                role = Role.RadioButton,
-                onClick = onClick,
-            )
-            .semantics {
-                contentDescription = "切换为$label"
-                stateDescription = if (selected) "已选择" else "未选择"
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = label,
-            color = if (selected) LocalPreviewColors.current.background else LocalPreviewColors.current.secondary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-        )
-    }
-}
-
-@Composable
-private fun ArrivalPagerRail(page: Int, pageCount: Int, accent: Color) {
-    Canvas(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(16.dp)
-            .padding(horizontal = 22.dp),
-    ) {
-        val start = 4.dp.toPx()
-        val end = size.width - start
-        val fraction = if (pageCount <= 1) 0f else page.toFloat() / (pageCount - 1)
-        val x = start + (end - start) * fraction
-        drawLine(
-            color = Color(0xFF38536A),
-            start = Offset(start, size.height / 2),
-            end = Offset(end, size.height / 2),
-            strokeWidth = 2.dp.toPx(),
-            cap = StrokeCap.Round,
-        )
-        drawLine(
-            color = accent,
-            start = Offset(start, size.height / 2),
-            end = Offset(x, size.height / 2),
-            strokeWidth = 3.dp.toPx(),
-            cap = StrokeCap.Round,
-        )
-        drawCircle(
-            color = accent,
-            radius = 5.dp.toPx(),
-            center = Offset(x, size.height / 2),
-        )
     }
 }
 

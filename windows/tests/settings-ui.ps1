@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [string]$ScreenshotPath = "",
-    [string]$ExpandedScreenshotPath = ""
+    [string]$ExpandedScreenshotPath = "",
+    [string]$SharingScreenshotPath = ""
 )
 
 Set-StrictMode -Version 2.0
@@ -72,7 +73,7 @@ if ($closureScriptWrites.Count -gt 0) {
 foreach ($functionName in @(
     "Get-PropertyValue", "Get-NormalizedPeerAddress", "Get-LocalRelayAddresses",
     "Test-IsLocalRelayPeer", "Copy-RelayPeers", "Remove-LocalRelayPeers",
-    "Merge-DiscoveredRelayDevices", "Show-RelayControlCenter"
+    "Merge-DiscoveredRelayDevices", "Get-ScreenSharingView", "Show-RelayControlCenter"
 )) {
     $functionAst = $ast.Find({
         param($node)
@@ -139,6 +140,14 @@ function Get-LocalShareableAddresses {
 function Test-StartupRegistration { return $true }
 function Show-RelayUpdates { param([System.Windows.Forms.Form]$Owner) $script:updatesOwner = $Owner }
 function Get-RelayUpdateSnapshot { return [PSCustomObject]@{ CurrentVersion='0.1.0'; Release=$null } }
+$script:sharingSnapshot = $null
+$script:sharingCommand = $null
+function Get-ScreenSharingStatus { return $script:sharingSnapshot }
+function Invoke-ScreenShareCommand {
+    param($Command, [switch]$NoStart)
+    $script:sharingCommand = $Command
+    $script:sharingSnapshot = [pscustomobject]@{senders=@();receivers=0;lastEvent=[pscustomobject]@{peer='YIFAN';reason='已取消共享邀请。'}}
+}
 function Show-ScreenSharing {
     param([System.Windows.Forms.Form]$Owner)
     $script:screenShareOwner = $Owner
@@ -258,6 +267,35 @@ $screenShareButton.PerformClick()
 if ($script:screenShareOwner -ne $form) {
     throw "The screen-sharing entry did not open from the control center."
 }
+$sharingPanel = $form.Controls['ScreenSharingStatusPanel']
+$sharingTitle = $sharingPanel.Controls['ScreenSharingStatusTitle']
+$sharingAction = $sharingPanel.Controls['ScreenSharingActionButton']
+foreach ($phase in @('preparing','inviting','waiting','connecting','connected','reconnecting')) {
+    $script:sharingSnapshot = [pscustomobject]@{senders=@([pscustomobject]@{peer='YIFAN';state=$phase});receivers=0;lastEvent=$null}
+    & $form.Tag.RefreshScreenSharing
+    if (!$sharingPanel.Visible -or $sharingTitle.Text -notlike '*YIFAN*' -or !$sharingAction.Enabled) { throw "Sharing feedback missing: $phase" }
+    if ($phase -eq 'waiting') {
+        if ($sharingTitle.Text -notlike '待接收*' -or $sharingAction.Text -ne '取消邀请') { throw 'Waiting/cancel feedback missing' }
+        if ($SharingScreenshotPath) {
+            $bitmap = New-Object Drawing.Bitmap($form.Width,$form.Height)
+            try { $form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$form.Width,$form.Height)); $bitmap.Save($SharingScreenshotPath) } finally { $bitmap.Dispose() }
+        }
+    }
+    if ($phase -eq 'connected' -and $sharingAction.Text -ne '结束共享') { throw 'Live stop action missing' }
+}
+$sharingAction.PerformClick()
+if ($script:sharingCommand.action -ne 'stop-sending' -or $sharingTitle.Text -notlike '共享已结束*' -or $sharingAction.Text -ne '重新共享') { throw 'Main window cannot stop sending' }
+$script:sharingSnapshot.lastEvent | Add-Member NoteProperty kind 'error'
+$script:sharingSnapshot.lastEvent.reason = '连接超时，请确认对方在线。'
+& $form.Tag.RefreshScreenSharing
+if ($sharingTitle.Text -notlike '共享未连接*' -or $sharingPanel.Controls['ScreenSharingStatusDetail'].Text -notlike '*超时*') { throw 'Failure reason missing' }
+$script:screenShareOwner = $null
+$sharingAction.PerformClick()
+if ($script:screenShareOwner -ne $form) { throw 'Sharing retry action failed' }
+$script:sharingSnapshot = $null
+$script:screenSharingView = $null
+& $form.Tag.RefreshScreenSharing
+if ($sharingPanel.Visible) { throw 'Idle sharing overlay hides device health' }
 $updateButton = @($form.Controls.Find('UpdateButton', $true)) | Select-Object -First 1
 if ($null -eq $updateButton) { throw 'Update entry missing from control center' }
 $updateButton.PerformClick()
