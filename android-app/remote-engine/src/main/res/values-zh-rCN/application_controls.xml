@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_auto_app">自动识别电脑当前应用</string>
+    <string name="desktop_auto_prefix">自动 · </string>
+    <string name="desktop_profile_general">通用桌面</string>
+    <string name="desktop_profile_chatgpt">ChatGPT</string>
+    <string name="desktop_profile_orca">Orca</string>
+    <string name="desktop_profile_title">选择应用操作模式</string>
+    <string name="desktop_keyboard">键盘</string>
+    <string name="desktop_newline">换行 ⇧Enter</string>
+    <string name="desktop_paste">粘贴</string>
+    <string name="desktop_copy">复制</string>
+    <string name="desktop_select_all">全选</string>
+    <string name="desktop_undo">撤销</string>
+    <string name="desktop_redo">重做</string>
+    <string name="desktop_scroll_up">上滚 ↑</string>
+    <string name="desktop_scroll_down">下滚 ↓</string>
+    <string name="desktop_right_click">右键</string>
+    <string name="desktop_disconnect">断开</string>
+    <string name="game_choose_profile">选择游戏</string>
+    <string name="game_profile_stardew">星露谷物语</string>
+    <string name="stardew_tool">使用工具</string>
+    <string name="stardew_action">互动</string>
+    <string name="stardew_inventory">背包</string>
+    <string name="stardew_toolbar">切换工具栏</string>
+    <string name="stardew_journal">任务日志</string>
+    <string name="stardew_map">地图</string>
+    <string name="stardew_reset">星露谷默认键位</string>
+    <string name="stardew_slot">物品</string>
+    <string name="stardew_slot_number">物品栏第 %1$d 格</string>
+    <string name="game_pointer_mode">菜单触控</string>
+    <string name="game_pointer_back">返回按键</string>
+</resources>

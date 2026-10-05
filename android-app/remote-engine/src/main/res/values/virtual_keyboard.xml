@@ -1,0 +1,12 @@
+<resources>
+    <string name="virtual_keyboard">Virtual keyboard</string>
+    <string name="virtual_keyboard_phone">Phone keyboard</string>
+    <string name="virtual_keyboard_functions">Fn / symbols</string>
+    <string name="virtual_keyboard_letters">ABC / 123</string>
+    <string name="virtual_keyboard_hint">Tap Ctrl / Alt / Shift / Win, then a key. Modifiers clear after each shortcut.</string>
+    <item name="virtualKeyboardPanel" type="id" />
+    <item name="virtualKeyboardButton" type="id" />
+    <item name="virtualKeyboardPage" type="id" />
+    <item name="virtualKeyboardClose" type="id" />
+    <item name="gameVirtualKeyboardButton" type="id" />
+</resources>

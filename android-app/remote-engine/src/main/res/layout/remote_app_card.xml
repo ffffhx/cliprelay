@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="18dp" android:background="@drawable/remote_card" android:foreground="?android:attr/selectableItemBackground" android:descendantFocusability="blocksDescendants">
+<FrameLayout android:layout_width="match_parent" android:layout_height="118dp" android:background="@drawable/remote_hint_card">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_margin="15dp" android:text="@string/remote_desktop_controls" android:textSize="10sp" android:letterSpacing="0.1" android:fontFamily="sans-serif-medium" android:textColor="#8DDDD8" />
+<ImageView android:id="@+id/grid_image" android:layout_width="60dp" android:layout_height="60dp" android:layout_gravity="center" android:layout_marginTop="8dp" android:tint="#FFFFFF" android:importantForAccessibility="no" />
+<ImageView android:id="@+id/grid_overlay" android:layout_width="22dp" android:layout_height="22dp" android:layout_gravity="top|end" android:layout_margin="15dp" android:tint="#8DDDD8" android:visibility="gone" android:importantForAccessibility="no" />
+</FrameLayout>
+<TextView android:id="@+id/grid_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:textSize="22sp" android:fontFamily="sans-serif-medium" android:textColor="@color/remote_ink" />
+<TextView android:id="@+id/remoteAppDescription" style="@style/RemoteBody" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
+<TextView android:id="@+id/remoteAppAction" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="20dp" android:gravity="center" android:background="@drawable/remote_primary_button" android:textColor="#FFFFFF" android:textSize="15sp" android:fontFamily="sans-serif-medium" />
+</LinearLayout>

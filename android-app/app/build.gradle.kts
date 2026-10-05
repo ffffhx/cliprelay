@@ -44,7 +44,11 @@ android {
             .get()
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$updateManifestUrl\"")
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = if (providers.gradleProperty("cliprelayTestBuildType").orNull == "release") {
+            "com.cliprelay.app.RemoteDesktopSmokeInstrumentation"
+        } else {
+            "androidx.test.runner.AndroidJUnitRunner"
+        }
         vectorDrawables.useSupportLibrary = true
     }
 
@@ -68,6 +72,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            testProguardFiles("test-proguard-rules.pro")
         }
         create("qa") {
             initWith(getByName("release"))
@@ -82,6 +87,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
 
     buildFeatures {
@@ -93,6 +99,7 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        resources.excludes += "/META-INF/*.md"
     }
 }
 
@@ -103,6 +110,9 @@ kotlin {
 }
 
 dependencies {
+    implementation(files(rootProject.file("network-libs/cliprelay-network.aar")))
+    implementation(project(":remote-engine"))
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
 
     implementation(composeBom)

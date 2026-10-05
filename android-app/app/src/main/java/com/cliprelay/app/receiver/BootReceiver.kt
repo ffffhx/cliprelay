@@ -12,6 +12,7 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
         val settings = AppPreferences.load(context)
+        if (settings.startOnBoot) com.cliprelay.app.network.NetworkConnectionService.restore(context)
         if (settings.startOnBoot && AppPreferences.isReceiverEnabled(context)) {
             ServiceController.start(context)
         }

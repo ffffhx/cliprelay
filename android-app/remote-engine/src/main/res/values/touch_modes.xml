@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="touch_mode_title">Touch mode</string>
+    <string name="touch_mode_phone">Phone touch</string>
+    <string name="touch_mode_direct">Direct click</string>
+    <string name="touch_mode_trackpad">Trackpad</string>
+    <string name="touch_mode_button">Touch: %1$s</string>
+    <string name="touch_mode_help">How to use</string>
+    <string name="touch_mode_help_body">Phone touch: tap buttons, swipe to scroll and pinch to zoom in apps that support touchscreen gestures. Long press opens a menu. Orca uses wheel compatibility: swipe up to move content up, or down to see earlier content. Recognized input fields open the phone keyboard automatically; manual keyboard control remains available.\n\nDirect click: tap to click, move one finger to drag, use two fingers to scroll, and long press for right click. Useful for dragging windows and selecting text.\n\nTrackpad: slide to move the pointer, tap to click, tap with two fingers for right click, or slide with two fingers to scroll.\n\nComputer apps keep their own interface. Touch menus, zoom and text selection depend on the app.</string>
+    <string name="touch_mode_unsupported">This computer does not support phone touch. Switched to Direct click.</string>
+    <string name="touch_mode_phone_hint">Swipe to scroll · Orca wheel compatibility · Recognized fields open the keyboard</string>
+    <string-array name="touch_mode_entries">
+        <item>@string/touch_mode_phone</item><item>@string/touch_mode_direct</item><item>@string/touch_mode_trackpad</item>
+    </string-array>
+    <string-array name="touch_mode_values"><item>phone</item><item>direct</item><item>trackpad</item></string-array>
+    <item name="touchModeButton" type="id" />
+</resources>

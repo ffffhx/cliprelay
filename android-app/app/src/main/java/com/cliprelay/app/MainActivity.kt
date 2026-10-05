@@ -51,6 +51,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    private var liveStreamAvailable by mutableStateOf(false)
+    private val liveStreamListener = Runnable {
+        runOnUiThread { liveStreamAvailable = com.limelight.ui.LiveStreamSession.isActive() }
+    }
     private var startReceiverAfterPermission = false
     private var waitingForInstallPermission = false
     private var immersiveFullscreen = false
@@ -91,6 +95,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.cliprelay.app.network.NetworkConnectionService.restore(this)
         pendingImagePath = savedInstanceState?.getString("pendingGalleryImage")
         pendingImageId = savedInstanceState?.takeIf { it.containsKey("pendingGalleryImageId") }
             ?.getLong("pendingGalleryImageId")
@@ -128,6 +133,12 @@ class MainActivity : ComponentActivity() {
                         ServiceController.restart(this)
                     },
                     onCopyClip = ::copyClipToClipboard,
+                    onOpenRemoteDesktop = {
+                        if (!com.limelight.ui.LiveStreamSession.resume(this)) {
+                            startActivity(Intent(this, com.limelight.PcView::class.java))
+                        }
+                    },
+                    remoteStreamAvailable = liveStreamAvailable,
                     onSaveImage = ::requestSaveImage,
                     savingImageId = clipActions.savingImageId,
                     copiedClipIds = clipActions.copiedClipIds,
@@ -215,6 +226,16 @@ class MainActivity : ComponentActivity() {
             waitingForInstallPermission = false
             launchReadyUpdate()
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        com.limelight.ui.LiveStreamSession.addListener(liveStreamListener)
+    }
+
+    override fun onStop() {
+        com.limelight.ui.LiveStreamSession.removeListener(liveStreamListener)
+        super.onStop()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

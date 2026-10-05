@@ -1,0 +1,24 @@
+<resources>
+    <string name="desktop_image">Send image</string>
+    <string name="image_transfer_hint">Choose an image to upload, resume the stream, and paste into the current input on your computer. Messages are not submitted automatically.</string>
+    <string name="image_choose_hint">No image selected. The stream resumes when you return.</string>
+    <string name="image_choose">Choose image</string>
+    <string name="image_send">Retry upload</string>
+    <string name="image_back">Return to stream</string>
+    <string name="image_picker_missing">No image picker is available.</string>
+    <string name="image_preparing">Preparing image…</string>
+    <string name="image_invalid">Could not read this image. Choose an image under 20 MB.</string>
+    <string name="image_ready">%1$d × %2$d · %3$d KB · Ready to copy</string>
+    <string name="image_sending">Uploading to your computer, then pasting automatically…</string>
+    <string name="image_sent">Image uploaded. Resuming the stream…</string>
+    <string name="image_pasted">Image paste requested</string>
+    <string name="image_transfer_interrupted">Transfer interrupted. Please choose the image again.</string>
+    <string name="image_send_failed">Upload failed. Check the computer connection and retry.</string>
+    <string name="image_update_host">Update ClipRelay on the computer to enable image uploads.</string>
+    <item name="desktopImageButton" type="id" />
+    <item name="remoteImagePreview" type="id" />
+    <item name="remoteImageStatus" type="id" />
+    <item name="remoteImageChoose" type="id" />
+    <item name="remoteImageSend" type="id" />
+    <item name="remoteImageBack" type="id" />
+</resources>

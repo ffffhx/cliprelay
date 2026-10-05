@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:focusableInTouchMode="true" android:background="@color/remote_background"><LinearLayout android:layout_width="match_parent" android:layout_height="56dp" android:gravity="center_vertical" android:paddingStart="8dp" android:paddingEnd="8dp">
+<ImageButton android:id="@+id/remoteBack" style="@style/RemoteIconButton" android:src="@drawable/remote_ic_back" android:contentDescription="@string/remote_back" />
+<TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="8dp" android:text="CLIP / RELAY" android:letterSpacing="0.13" android:textSize="11sp" android:fontFamily="sans-serif-medium" android:textColor="@color/remote_muted" />
+
+
+</LinearLayout>
+<ScrollView android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:clipToPadding="false">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingBottom="24dp">
+<LinearLayout android:id="@+id/remotePageIntro" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingStart="24dp" android:paddingEnd="24dp" android:paddingTop="16dp" android:paddingBottom="26dp">
+<TextView android:id="@+id/manuallyAddPcText" style="@style/RemoteTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/remote_add" />
+<TextView  style="@style/RemoteBody" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="@string/remote_add_subtitle" />
+</LinearLayout>
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:orientation="vertical" android:padding="20dp" android:background="@drawable/remote_card">
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:labelFor="@+id/hostTextView" android:text="@string/remote_address_label" android:textColor="@color/remote_ink" android:textSize="14sp" android:fontFamily="sans-serif-medium" />
+<EditText android:id="@+id/hostTextView" android:layout_width="match_parent" android:layout_height="56dp" android:layout_marginTop="12dp" android:background="@drawable/remote_tint" android:paddingStart="16dp" android:paddingEnd="16dp" android:singleLine="true" android:textColor="@color/remote_ink" android:textColorHint="@color/remote_muted" android:textSize="14sp" android:inputType="textUri|textNoSuggestions" android:imeOptions="actionDone" android:hint="@string/remote_address_hint" android:autofillHints="none" />
+<TextView style="@style/RemoteBody" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textSize="12sp" android:text="@string/remote_address_example" />
+<TextView android:id="@+id/remoteAddressMessage" style="@style/RemoteBody" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textSize="12sp" android:visibility="gone" android:accessibilityLiveRegion="polite" />
+<LinearLayout android:id="@+id/remoteConnectProgress" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp" android:gravity="center_vertical" android:visibility="gone">
+<ProgressBar style="?android:attr/progressBarStyleSmall" android:layout_width="20dp" android:layout_height="20dp" android:indeterminateTint="@color/remote_blue" />
+<TextView style="@style/RemoteBody" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="12dp" android:text="@string/remote_connect_busy" />
+<Button android:id="@+id/remoteCancelConnect" android:layout_width="wrap_content" android:layout_height="48dp" android:minWidth="64dp" android:background="@drawable/remote_icon_button" android:text="@android:string/cancel" android:textColor="@color/remote_blue" android:textAllCaps="false" />
+</LinearLayout>
+<Button android:id="@+id/addPcButton" style="@style/RemotePrimaryButton" android:layout_width="match_parent" android:layout_marginTop="24dp" android:text="@string/remote_add" />
+</LinearLayout>
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="24dp" android:layout_marginTop="8dp">
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/remote_find_address" android:textSize="15sp" android:fontFamily="sans-serif-medium" android:textColor="@color/remote_ink" />
+<TextView style="@style/RemoteBody" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/remote_find_address_body" />
+<View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="24dp" android:layout_marginBottom="24dp" android:background="@color/remote_line" />
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/remote_away_title" android:textSize="15sp" android:fontFamily="sans-serif-medium" android:textColor="@color/remote_ink" />
+<TextView style="@style/RemoteBody" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/remote_away_body" />
+</LinearLayout>
+</LinearLayout>
+</ScrollView>
+</LinearLayout>

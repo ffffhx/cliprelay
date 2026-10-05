@@ -138,6 +138,8 @@ fun ClipRelayScreen(
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
     onInstallUpdate: () -> Unit,
+    onOpenRemoteDesktop: () -> Unit = {},
+    remoteStreamAvailable: Boolean = false,
 ) {
     val primaryAddress = status.addresses.firstOrNull()
     val endpoint = primaryAddress?.let { "$it:${status.port}" }
@@ -198,6 +200,19 @@ fun ClipRelayScreen(
                 onCopyEndpoint = onCopyEndpoint,
                 onShareEndpoint = onShareEndpoint,
             )
+        }
+        item {
+            SectionSurface {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("远程电脑", style = MaterialTheme.typography.headlineSmall)
+                        Text(if (remoteStreamAvailable) "串流保持中，点击即可回到电脑画面" else "查看电脑桌面，使用触控和键盘操作", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Button(onClick = onOpenRemoteDesktop, modifier = Modifier.testTag("open-remote-desktop")) {
+                        Text(if (remoteStreamAvailable) "继续控制" else "连接电脑")
+                    }
+                }
+            }
         }
         item {
             SettingsPanel(

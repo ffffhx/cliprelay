@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
+    <exclude domain="file" path="embedded-network/" />
+    <exclude domain="sharedpref" path="cliprelay_network.xml" />
+    <exclude domain="file" path="client.key" />
+    <exclude domain="file" path="client.crt" />
+    <exclude domain="database" path="." />
     <exclude domain="sharedpref" path="cliprelay_history.xml" />
     <exclude domain="sharedpref" path="cliprelay_settings.xml" />
     <exclude domain="file" path="received_images/" />

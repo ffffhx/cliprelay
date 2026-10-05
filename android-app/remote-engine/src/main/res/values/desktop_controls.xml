@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="embedded_stream_retry">The streaming channel could not connect. Return to the computer list and try again after a few seconds. ClipRelay automatically restores the channel; keep the computer online.</string>
+    <string name="desktop_controls_open">Open desktop controls; drag up or down to move</string>
+    <string name="desktop_controls_collapse">Collapse</string>
+    <string name="desktop_home">Back to ClipRelay</string>
+    <string name="desktop_home_pip_unavailable">Allow picture-in-picture for ClipRelay in system settings to return home while keeping the stream.</string>
+    <item name="desktopHomeButton" type="id" />
+    <string name="desktop_rail_home">ClipRelay</string>
+    <string name="desktop_rail_profile">App ▾</string>
+    <string name="desktop_rail_newline">New line</string>
+    <item name="desktopLeftRail" type="id" />
+    <item name="desktopRightRail" type="id" />
+    <item name="gameHomeButton" type="id" />
+    <item name="desktopToolbar" type="id" />
+    <item name="desktopControlsHandle" type="id" />
+    <item name="desktopCollapseButton" type="id" />
+</resources>

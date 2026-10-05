@@ -1,0 +1,25 @@
+<resources>
+    <string name="game_mode">游戏模式</string>
+    <string name="game_menu">游戏菜单</string>
+    <string name="game_menu_close">收起游戏菜单</string>
+    <string name="game_profile">速速上菜</string>
+    <string name="game_back_desktop">桌面模式</string>
+    <string name="game_settings">按键设置</string>
+    <string name="game_move">移动</string>
+    <string name="game_grab">拿放</string>
+    <string name="game_act">操作</string>
+    <string name="game_ready">准备</string>
+    <string name="game_confirm">确认</string>
+    <string name="game_pause">暂停</string>
+    <string name="game_up">向上移动</string>
+    <string name="game_down">向下移动</string>
+    <string name="game_left">向左移动</string>
+    <string name="game_right">向右移动</string>
+    <string name="game_hint">按住移动或操作，支持双手同时控制。</string>
+    <string name="game_settings_hint">按键需要与游戏里的键盘设置一致，修改后会保存在这台手机上。</string>
+    <string name="game_size">按钮大小</string>
+    <string name="game_opacity">按钮不透明度</string>
+    <string name="game_left_handed">方向控制放在右侧</string>
+    <string name="game_reset">恢复速速上菜预设</string>
+    <string name="game_save">保存</string>
+</resources>

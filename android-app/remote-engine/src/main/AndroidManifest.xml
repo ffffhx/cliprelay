@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Internal ClipRelay client module, derived from Moonlight Android (GPLv3). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <application>
+        <activity android:name="com.limelight.PcView" android:exported="false"
+            android:label="远程电脑" android:theme="@style/RemoteTheme"
+            android:resizeableActivity="true" android:enableOnBackInvokedCallback="true"
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|orientation|screenSize|smallestScreenSize|layoutDirection" />
+        <activity android:name="com.limelight.AppView" android:exported="false"
+            android:theme="@style/RemoteTheme" android:resizeableActivity="true"
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|orientation|screenSize|smallestScreenSize|layoutDirection" />
+        <activity android:name="com.limelight.preferences.StreamSettings" android:exported="false"
+            android:label="远控设置" android:theme="@style/RemoteTheme" android:resizeableActivity="true"
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|orientation|screenSize|smallestScreenSize|layoutDirection" />
+        <activity android:name="com.limelight.preferences.AddComputerManually" android:exported="false"
+            android:label="添加电脑" android:theme="@style/RemoteTheme"
+            android:windowSoftInputMode="stateHidden|adjustResize" android:resizeableActivity="true"
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|orientation|screenSize|smallestScreenSize|layoutDirection" />
+        <activity android:name="com.limelight.Game" android:exported="false"
+            android:windowSoftInputMode="stateHidden|adjustNothing"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true" android:enableOnBackInvokedCallback="false"
+            android:launchMode="singleTask" android:theme="@style/StreamTheme"
+            android:taskAffinity="${applicationId}.stream"
+            android:preferMinimalPostProcessing="true">
+            <meta-data android:name="com.nvidia.immediateInput" android:value="true" />
+            <meta-data android:name="com.nvidia.rawCursorInput" android:value="true" />
+        </activity>
+        <activity android:name="com.limelight.ShortcutTrampoline" android:exported="false"
+            android:noHistory="true" android:theme="@style/RemoteTheme" />
+        <activity android:name="com.limelight.ImageTransferActivity" android:exported="false"
+            android:theme="@style/RemoteTheme" android:enableOnBackInvokedCallback="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity android:name="com.limelight.HelpActivity" android:exported="false"
+            android:theme="@style/RemoteTheme" />
+        <service android:name="com.limelight.discovery.DiscoveryService" android:exported="false" />
+        <service android:name="com.limelight.computers.ComputerManagerService" android:exported="false" />
+        <service android:name="com.limelight.binding.input.driver.UsbDriverService" android:exported="false" />
+    </application>
+</manifest>

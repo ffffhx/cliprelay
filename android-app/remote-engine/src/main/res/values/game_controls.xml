@@ -1,0 +1,37 @@
+<resources>
+    <string name="game_mode">Game mode</string>
+    <string name="game_menu">Game menu</string>
+    <string name="game_menu_close">Close game menu</string>
+    <string name="game_profile">PlateUp!</string>
+    <string name="game_back_desktop">Desktop</string>
+    <string name="game_settings">Controls</string>
+    <string name="game_move">Move</string>
+    <string name="game_grab">Grab / place</string>
+    <string name="game_act">Interact</string>
+    <string name="game_ready">Ready</string>
+    <string name="game_confirm">Confirm</string>
+    <string name="game_pause">Pause</string>
+    <string name="game_up">Move up</string>
+    <string name="game_down">Move down</string>
+    <string name="game_left">Move left</string>
+    <string name="game_right">Move right</string>
+    <string name="game_hint">Hold to move or interact. Use both hands at once.</string>
+    <string name="game_settings_hint">Match these keys to the keyboard bindings in your game. Changes are saved on this phone.</string>
+    <string name="game_size">Control size</string>
+    <string name="game_opacity">Opacity</string>
+    <string name="game_left_handed">Movement on the right</string>
+    <string name="game_reset">PlateUp! defaults</string>
+    <string name="game_save">Save</string>
+    <item name="gameControlsOverlay" type="id" />
+    <item name="gameJoystick" type="id" />
+    <item name="gameGrab" type="id" />
+    <item name="gameAct" type="id" />
+    <item name="gameReady" type="id" />
+    <item name="gameConfirm" type="id" />
+    <item name="gamePause" type="id" />
+    <item name="gameSettings" type="id" />
+    <item name="gameDesktop" type="id" />
+    <item name="gameModeButton" type="id" />
+    <item name="gameMenuButton" type="id" />
+    <item name="gameMenuPanel" type="id" />
+</resources>

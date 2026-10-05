@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_auto_app">Auto-detect foreground app</string>
+    <string name="desktop_auto_prefix">Auto · </string>
+    <string name="desktop_profile_general">Desktop</string>
+    <string name="desktop_profile_chatgpt">ChatGPT</string>
+    <string name="desktop_profile_orca">Orca</string>
+    <string name="desktop_profile_title">Controls for this app</string>
+    <string name="desktop_keyboard">Keyboard</string>
+    <string name="desktop_newline">New line ⇧Enter</string>
+    <string name="desktop_paste">Paste</string>
+    <string name="desktop_copy">Copy</string>
+    <string name="desktop_select_all">Select all</string>
+    <string name="desktop_undo">Undo</string>
+    <string name="desktop_redo">Redo</string>
+    <string name="desktop_scroll_up">Scroll ↑</string>
+    <string name="desktop_scroll_down">Scroll ↓</string>
+    <string name="desktop_right_click">Right click</string>
+    <string name="desktop_disconnect">Disconnect</string>
+    <string name="game_choose_profile">Choose game</string>
+    <string name="game_profile_stardew">Stardew Valley</string>
+    <string name="stardew_tool">Use tool</string>
+    <string name="stardew_action">Interact</string>
+    <string name="stardew_inventory">Inventory</string>
+    <string name="stardew_toolbar">Toolbar row</string>
+    <string name="stardew_journal">Journal</string>
+    <string name="stardew_map">Map</string>
+    <string name="stardew_reset">Stardew defaults</string>
+    <string name="stardew_slot">Item</string>
+    <string name="stardew_slot_number">Item slot %1$d</string>
+    <string name="game_pointer_mode">Menu touch</string>
+    <string name="game_pointer_back">Back to keys</string>
+    <item name="desktopProfileButton" type="id" />
+    <item name="gameProfileButton" type="id" />
+    <item name="gameJournal" type="id" />
+    <item name="gameMap" type="id" />
+    <item name="gamePointerButton" type="id" />
+    <item name="gameHotbar" type="id" />
+</resources>

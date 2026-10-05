@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="horizontal" android:gravity="center_vertical" android:padding="8dp"
+    android:background="@drawable/remote_card" android:foreground="?android:attr/selectableItemBackground"
+    android:descendantFocusability="blocksDescendants">
+    <FrameLayout android:id="@+id/grid_image_layout" android:layout_width="44dp"
+        android:layout_height="44dp" android:background="@drawable/remote_tint">
+        <ImageView android:id="@+id/grid_image" android:layout_width="match_parent"
+            android:layout_height="match_parent" android:padding="10dp"
+            android:tint="@color/remote_blue" android:importantForAccessibility="no" />
+        <ImageView android:id="@+id/grid_overlay" android:layout_width="16dp"
+            android:layout_height="16dp" android:visibility="gone" android:importantForAccessibility="no" />
+        <ProgressBar android:id="@+id/grid_spinner" style="?android:attr/progressBarStyleSmall"
+            android:layout_width="16dp" android:layout_height="16dp" android:layout_gravity="top|end"
+            android:indeterminateTint="@color/remote_blue" />
+    </FrameLayout>
+    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
+        android:layout_weight="1" android:layout_marginStart="10dp" android:orientation="vertical">
+        <TextView android:id="@+id/grid_text" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:textSize="16sp" android:fontFamily="sans-serif-medium"
+            android:textColor="@color/remote_ink" android:maxLines="1" android:ellipsize="end" />
+        <TextView android:id="@+id/remotePcStatus" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:layout_marginTop="3dp" android:textSize="10sp"
+            android:background="@drawable/remote_success_badge" android:textColor="@color/remote_success" />
+        <TextView android:id="@+id/remotePcAddress" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="4dp" android:fontFamily="monospace"
+            android:textSize="10sp" android:textColor="@color/remote_muted" android:maxLines="1" android:ellipsize="middle" />
+        <TextView android:id="@+id/remotePcAction" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="5dp" android:textSize="13sp"
+            android:fontFamily="sans-serif-medium" android:textColor="@color/remote_blue" />
+    </LinearLayout>
+    <ImageButton android:id="@+id/remotePcMore" style="@style/RemoteIconButton"
+        android:layout_width="48dp" android:layout_height="48dp" android:padding="12dp"
+        android:src="@drawable/remote_ic_more" android:focusable="false" />
+</LinearLayout>

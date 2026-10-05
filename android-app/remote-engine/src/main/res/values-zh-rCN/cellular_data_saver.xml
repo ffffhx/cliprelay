@@ -1,0 +1,6 @@
+<resources>
+    <string name="cellular_data_saver_title">移动网络自动省流</string>
+    <string name="cellular_data_saver_summary">使用移动数据或计费网络时，码率上限限制为 6 Mbps；连回普通 Wi-Fi 后恢复原来的上限。你设置的更低上限仍有效。分辨率和帧率不变，切换时会短暂重连串流。</string>
+    <string name="cellular_data_saver_active">省流模式 · 码率上限 %1$.1f Mbps</string>
+    <string name="cellular_data_saver_restored">Wi-Fi / 非计费网络 · 已恢复码率上限 %1$.1f Mbps</string>
+</resources>

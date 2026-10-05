@@ -1,0 +1,38 @@
+<resources>
+    <string name="remote_address_required">Enter the computer address.</string>
+    <string name="remote_address_invalid">Check the address and port. Ports must be between 1 and 65535.</string>
+    <string name="remote_connect_busy">Connecting…</string>
+    <string name="remote_connect_failed">Could not connect. Check the address, network, and Remote Desktop setting on your computer.</string>
+    <string name="remote_connect_cancelled">Connection cancelled. You can edit the address and try again.</string>
+    <string name="remote_back">Back</string><string name="remote_connect_title">Connect to your computer</string>
+    <string name="remote_connect_subtitle">Find nearby computers automatically. Approve once, then tap to connect.</string>
+    <string name="remote_pair_device">Scan again</string>
+    <string name="remote_add_address">Other ways to add</string>
+    <string name="remote_auto_connect">Automatic · Finding a route</string>
+    <string name="remote_route_embedded">Automatic · Built-in secure connection</string>
+    <string name="remote_route_direct">Automatic · Direct %1$s</string>
+    <string name="remote_your_computers">Your computers</string><string name="remote_discovery">Auto discovery</string>
+    <string name="remote_add">Add computer</string><string name="remote_settings">Stream settings</string>
+    <string name="remote_help">Connection help</string><string name="remote_more">More options for %1$s</string>
+    <string name="remote_first_title">Connecting for the first time?</string>
+    <string name="remote_first_body">Enable Remote Desktop on your computer, then select it here. Compare the verification codes and approve once. Address changes are found automatically.</string>
+    <string name="remote_search_title">Looking for your computer</string>
+    <string name="remote_search_body">Computers on the same network appear here. You can also add one by its address.</string>
+    <string name="remote_online_paired">Online · Paired</string><string name="remote_online_unpaired">Ready to pair</string>
+    <string name="remote_offline">Offline</string><string name="remote_checking">Checking connection</string>
+    <string name="remote_open_computer">Connect to computer</string><string name="remote_pair_computer">Pair this computer</string>
+    <string name="remote_connection_options">Connection options</string><string name="remote_check_connection">Check connection</string>
+    <string name="remote_address_pending">Checking address…</string><string name="remote_address_label">COMPUTER ADDRESS</string>
+    <string name="remote_add_subtitle">Enter the address shown in ClipRelay on your computer.</string>
+    <string name="remote_address_hint">192.168.1.100 or Tailscale address</string>
+    <string name="remote_address_example">An IP address or a host name works. You can include a port.</string>
+    <string name="remote_find_address">Where is the address?</string>
+    <string name="remote_find_address_body">On your computer, open ClipRelay → Remote Desktop and copy an address from the list.</string>
+    <string name="remote_away_title">Connecting away from home</string>
+    <string name="remote_away_body">Choose Pair computer from the computer list and authorize this phone once. ClipRelay then chooses the connection automatically.</string>
+    <string name="remote_desktop_title">Remote desktop</string><string name="remote_desktop_name">Computer desktop</string>
+    <string name="remote_desktop_body">View the screen, move the pointer and type from your phone.</string>
+    <string name="remote_desktop_open">Open desktop</string><string name="remote_desktop_controls">Touch &amp; keyboard</string>
+    <string name="remote_desktop_hint">In landscape, controls stay in the side borders. Swipe up or down for more. If space is limited, tap the edge button to open the toolbar.</string>
+    <string name="remote_app_body">Open this app on your computer.</string><string name="remote_app_open">Open app</string>
+</resources>

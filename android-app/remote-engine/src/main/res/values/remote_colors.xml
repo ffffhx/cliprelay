@@ -1,0 +1,9 @@
+<resources>
+    <color name="remote_error">#B42318</color>
+    <color name="remote_background">#F4F8FC</color><color name="remote_surface">#FFFFFF</color>
+    <color name="remote_ink">#102033</color><color name="remote_muted">#526579</color>
+    <color name="remote_line">#E1EAF3</color><color name="remote_blue">#2F80ED</color>
+    <color name="remote_tint">#EAF3FF</color><color name="remote_success">#16836C</color>
+    <color name="remote_success_background">#E9F7F1</color><color name="remote_ripple">#182F80ED</color>
+    <bool name="remote_light_system_bars">true</bool>
+</resources>

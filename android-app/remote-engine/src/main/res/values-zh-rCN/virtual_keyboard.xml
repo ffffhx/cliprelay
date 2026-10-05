@@ -1,0 +1,7 @@
+<resources>
+    <string name="virtual_keyboard">虚拟键盘</string>
+    <string name="virtual_keyboard_phone">手机键盘</string>
+    <string name="virtual_keyboard_functions">功能 / 符号</string>
+    <string name="virtual_keyboard_letters">字母 / 数字</string>
+    <string name="virtual_keyboard_hint">先点亮 Ctrl / Alt / Shift / Win，再点其他键；组合键用完自动松开</string>
+</resources>
