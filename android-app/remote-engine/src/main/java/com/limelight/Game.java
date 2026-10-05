@@ -883,7 +883,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void returnToComputers() {
         if (returningToComputers || !isStreamConnected() || bitrateRestarting || imageTransfer) return;
         returningToComputers = true;
-        // Disable automatic PiP before launching the other task, including on
+        // Disable automatic PiP before returning to the list, including on
         // Android versions that enter PiP from onUserLeaveHint().
         updatePipAutoEnter();
         keyboardDismissed();
@@ -2669,7 +2669,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void completeBitrateRestart() {
         if (isFinishing() || isDestroyed()) return;
-        // Recreate inside the existing PiP task too; never open a background task.
+        // Recreate inside the existing task, including PiP; keep the same card.
         if (activityResumed || isInPictureInPictureMode()) recreate();
         else bitrateRestartReady = true;
     }

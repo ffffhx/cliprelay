@@ -28,7 +28,6 @@
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true" android:enableOnBackInvokedCallback="false"
             android:launchMode="singleTask" android:theme="@style/StreamTheme"
-            android:taskAffinity="${applicationId}.stream"
             android:preferMinimalPostProcessing="true">
             <meta-data android:name="com.nvidia.immediateInput" android:value="true" />
             <meta-data android:name="com.nvidia.rawCursorInput" android:value="true" />

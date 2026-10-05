@@ -1,5 +1,7 @@
 package com.cliprelay.app
 
+import android.app.Activity
+import android.app.ActivityManager
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -33,6 +35,14 @@ class StreamHomeLiveTest {
     private val instrument = InstrumentationRegistry.getInstrumentation()
     private fun ui(action: () -> Unit) = instrument.runOnMainSync(action)
     private fun field(target: Any, name: String): Any? = target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
+    private fun assertSingleAppTask(activity: Activity, mainTaskId: Int) {
+        assertEquals("Stream and computer list must stay in the home task", mainTaskId, activity.taskId)
+        val tasks = activity.getSystemService(ActivityManager::class.java).appTasks
+            .mapNotNull { it.taskInfo }
+            .filter { it.baseIntent.component?.packageName == activity.packageName &&
+                it.baseIntent.flags and Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS == 0 }
+        assertEquals("ClipRelay must have one recent-app card", listOf(mainTaskId), tasks.map { it.taskId })
+    }
     private fun await(label: String, timeout: Long = 10000, condition: () -> Boolean) {
         val deadline = SystemClock.uptimeMillis() + timeout
         do {
@@ -48,7 +58,8 @@ class StreamHomeLiveTest {
         assumeTrue(InstrumentationRegistry.getArguments().getString("liveStreamHome") == "true")
         val context = instrument.targetContext
         val cellular = InstrumentationRegistry.getArguments().getString("streamRoute") == "cellular"
-        instrument.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val home = instrument.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val mainTaskId = home.taskId
         if (cellular) {
             val connectivity = context.getSystemService(ConnectivityManager::class.java)
             assertTrue("Cellular network required; this test never enables Wi-Fi",
@@ -97,6 +108,7 @@ class StreamHomeLiveTest {
                 throw error
             }
             instrument.sendStatus(0, Bundle().apply { putString("streamRoute", if (cellular) "cellular -> embedded channel; fresh decoded video" else address.toString()) })
+            ui { assertSingleAppTask(game, mainTaskId) }
             repeat(3) { round ->
                 val previousGame = game
                 val toolbar = field(game, "desktopToolbar") as DesktopToolbar.Controller
@@ -123,6 +135,7 @@ class StreamHomeLiveTest {
                     assertFalse("Return unexpectedly opened PiP", previousGame.isInPictureInPictureMode)
                     assertEquals(false, field(previousGame, "grabbedInput"))
                     assertFalse(LiveStreamSession.isActive())
+                    assertSingleAppTask(requireNotNull(computers), mainTaskId)
                 }
                 assertEquals("Return quit the host session", desktop.appId, http.getCurrentGame(http.getServerInfo(true)))
 
@@ -154,7 +167,10 @@ class StreamHomeLiveTest {
                 val renderer = field(game, "decoderRenderer") as MediaCodecDecoderRenderer
                 val resumedSample = renderer.networkSample.atMs
                 await("Resumed video stopped updating") { renderer.networkSample.atMs > resumedSample }
-                ui { (field(game, "desktopToolbar") as DesktopToolbar.Controller).setGameMode(false) }
+                ui {
+                    assertSingleAppTask(game, mainTaskId)
+                    (field(game, "desktopToolbar") as DesktopToolbar.Controller).setGameMode(false)
+                }
                 instrument.sendStatus(0, Bundle().apply {
                     putString("homeRound", "$round: computer list visible, no PiP, input released; host session preserved and resumed from computer card")
                 })

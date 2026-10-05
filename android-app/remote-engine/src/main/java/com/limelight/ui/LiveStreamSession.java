@@ -26,8 +26,8 @@ public final class LiveStreamSession {
     public static boolean resume(Context context) {
         Game game = current.get();
         if (game == null || !game.isStreamConnected()) return false;
-        // Game owns a separate singleTask stack, so launching its component
-        // expands that exact PiP activity instead of rearranging the home stack.
+        // Game shares the app task. Its singleTask launch mode reuses the live
+        // activity (including PiP) without creating another stream or card.
         game.resumeFromClipRelay(context);
         return true;
     }
