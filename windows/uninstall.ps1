@@ -10,11 +10,20 @@ $startupDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::St
 $shortcutPath = Join-Path $startupDirectory "ClipRelay.lnk"
 $firewallRuleName = "ClipRelay-TCP-In"
 $windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$remoteRemove = Join-Path $installDirectory 'remote-desktop\remove.ps1'
+if (Test-Path -LiteralPath $remoteRemove) {
+    $isAdmin = ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) { & $remoteRemove }
+    else {
+        $removal = Start-Process -FilePath $windowsPowerShell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$remoteRemove`""
+        if ($removal.ExitCode -ne 0) { throw 'Remote desktop service removal did not complete.' }
+    }
+}
 $clientPattern = [Regex]::Escape($clientPath)
 $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
         ($_.Name -ieq "powershell.exe" -or $_.Name -ieq "pwsh.exe") -and
-        $null -ne $_.CommandLine -and $_.CommandLine -match $clientPattern
+        $null -ne $_.CommandLine -and $_.CommandLine -notmatch '-NonInteractive' -and $_.CommandLine -match $clientPattern
     }
 
 foreach ($process in $processes) {
@@ -47,7 +56,10 @@ if ($null -ne (Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction S
 }
 
 if (Test-Path -LiteralPath $installDirectory) {
-    Remove-Item -LiteralPath $installDirectory -Recurse -Force
+    $resolvedInstall = (Resolve-Path -LiteralPath $installDirectory).Path
+    $expectedInstall = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ClipRelay'))
+    if ($resolvedInstall -ine $expectedInstall) { throw 'Unexpected ClipRelay installation location.' }
+    Remove-Item -LiteralPath $resolvedInstall -Recurse -Force
 }
 
 Write-Host "ClipRelay for Windows has been uninstalled."

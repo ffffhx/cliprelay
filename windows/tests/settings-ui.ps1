@@ -139,6 +139,8 @@ function Get-LocalShareableAddresses {
 
 function Test-StartupRegistration { return $true }
 function Show-RelayUpdates { param([System.Windows.Forms.Form]$Owner) $script:updatesOwner = $Owner }
+function Show-PhonePreviewRemote {}
+function Show-RemoteDesktopSettings { param([System.Windows.Forms.Form]$Owner) $script:remoteDesktopOwner = $Owner }
 function Get-RelayUpdateSnapshot { return [PSCustomObject]@{ CurrentVersion='0.1.0'; Release=$null } }
 $script:sharingSnapshot = $null
 $script:sharingCommand = $null

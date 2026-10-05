@@ -743,12 +743,13 @@ namespace ClipRelay
                 string label = SanitizeInstanceLabel(deviceName);
                 string instanceName = label + "." + ServiceType;
                 string hostName = Dns.GetHostName();
-                string[] keys = new string[] { "id", "version", "platform", "auth" };
+                string[] keys = new string[] { "id", "version", "platform", "auth", "remote_port" };
                 string[] values = new string[] {
                     deviceId.Trim(),
                     "1",
                     "windows",
-                    requiresAuth ? "required" : "none"
+                    requiresAuth ? "required" : "none",
+                    "48789"
                 };
 
                 IntPtr keyArray = IntPtr.Zero;
@@ -2836,6 +2837,7 @@ $notifyMenuItem = $null
 $screenshotHotkeyMenuItem = $null
 $copyMonitorStarted = $false
 $mdnsStarted = $false
+$remotePairingTimer = $null
 $discoveryStartupError = ""
 $stopRequested = $false
 $restartRequested = $false
@@ -2988,9 +2990,9 @@ function Set-ClipboardImageWithRetry {
 }
 
 function New-RelayBroadcastTargets {
-    param([object[]]$Peers = $script:Peers)
+    param([object[]]$Peers = $script:Peers, [switch]$IncludeDisabled)
 
-    $enabledPeers = @(Get-EnabledRelayPeers -Peers $Peers)
+    $enabledPeers = @(if ($IncludeDisabled) { $Peers } else { Get-EnabledRelayPeers -Peers $Peers })
     if ($enabledPeers.Count -lt 1) {
         throw "没有启用的接收设备。请先在设置中启用至少一台设备。"
     }
@@ -4927,6 +4929,18 @@ function Show-RelayControlCenter {
         $closeButton.AccessibleName = "关闭"
         $closeButton.TabStop = $false
 
+        $phonePreviewButton = & $newButton $form "手机翻页" 646 52 98 30 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
+        $phonePreviewButton.Name = "PhonePreviewButton"
+        $phonePreviewButton.AccessibleName = "手机翻页"
+        $showPhonePreviewCommand = Get-Command Show-PhonePreviewRemote
+        $phonePreviewButton.Add_Click({ & $showPhonePreviewCommand }.GetNewClosure())
+
+        $remoteDesktopButton = & $newButton $form "手机远控" 542 52 98 30 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
+        $remoteDesktopButton.Name = 'RemoteDesktopButton'
+        $remoteDesktopButton.AccessibleName = '手机远控'
+        $showRemoteDesktopCommand = Get-Command Show-RemoteDesktopSettings
+        $remoteDesktopButton.Add_Click({ & $showRemoteDesktopCommand -Owner $form }.GetNewClosure())
+
         # Section 1: Connection Health Banner
         $connectionPanel = & $newCard $form 256 86 488 64 $colors.Surface $colors.Border 10
         $connectionDot = & $newLabel $connectionPanel "●" 14 10 16 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
@@ -5749,6 +5763,7 @@ function Process-WindowsMessages {
 }
 
 . (Join-Path $PSScriptRoot 'updates.ps1')
+. (Join-Path $PSScriptRoot 'remote-desktop\ui.ps1')
 $script:updateMenuItem = $null
 $script:screenShareNextUpdate = [DateTime]::MinValue
 $script:screenShareLastEvent = ''
@@ -5821,6 +5836,9 @@ try {
     $exitMenuItem.Add_Click({ $script:stopRequested = $true })
 
     $null = $trayMenu.Items.Add($configureMenuItem)
+    $remoteDesktopMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('手机远控 · 桌面与键鼠')
+    $remoteDesktopMenuItem.Add_Click({ Show-RemoteDesktopSettings })
+    $null = $trayMenu.Items.Add($remoteDesktopMenuItem)
     $screenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('屏幕共享 · 实时视频')
     $screenShareMenuItem.Add_Click({ Show-ScreenSharing })
     $null = $trayMenu.Items.Add($screenShareMenuItem)
@@ -5859,6 +5877,7 @@ try {
     $notifyIcon.Visible = $true
     $notifyIcon.Add_BalloonTipClicked({ if ($script:relayUpdateBalloon) { Show-RelayUpdates } })
     $notifyIcon.Add_BalloonTipClosed({ $script:relayUpdateBalloon = $false })
+    $remotePairingTimer = Start-RemotePairingNotifier -NotifyIcon $notifyIcon
 
     $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Any, $Port)
     $listener.Start()
@@ -5939,6 +5958,7 @@ try {
 }
 finally {
     Stop-RelayUpdater
+    if ($null -ne $remotePairingTimer) { $remotePairingTimer.Stop(); $remotePairingTimer.Dispose() }
     if ($mdnsStarted) {
         [ClipRelay.MdnsDiscovery]::Stop()
     }

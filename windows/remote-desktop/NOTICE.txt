@@ -1,0 +1,17 @@
+ClipRelay remote desktop components
+
+The bundled Sunshine executable is unmodified upstream Sunshine, licensed under
+GPL-3.0. See COPYING. Its exact release, download hash and corresponding source
+location are recorded in engine.json. Upstream build instructions and dependency
+source references are maintained with that source:
+https://github.com/LizardByte/Sunshine
+
+ClipRelay's remote-service.cs uses the Windows session-launching approach from
+Sunshine's tools/sunshinesvc.cpp and is also GPL-3.0-only. Its complete source,
+local control client, installation/build scripts and integration are included in
+ClipRelay's source repository:
+https://github.com/ffffhx/cliprelay
+
+Distributors must retain these notices and provide the complete corresponding
+source for the shipped versions in accordance with GPLv3. Do not substitute a
+moving branch for the exact source revision of a published binary.

@@ -108,6 +108,36 @@ if (Test-Path (Join-Path $bundledEngine 'electron.exe')) {
 }
 & (Join-Path $screenShareDirectory 'setup.ps1') -Destination $screenShareDirectory
 
+$remoteDirectory = Join-Path $installDirectory 'remote-desktop'
+New-Item -ItemType Directory -Path $remoteDirectory -Force | Out-Null
+foreach ($file in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+    Install-ScriptFile -Name "remote-desktop/$file" -Destination (Join-Path $remoteDirectory $file)
+}
+$remoteBin = Join-Path $remoteDirectory 'bin'
+New-Item -ItemType Directory -Path $remoteBin -Force | Out-Null
+$networkSource = Join-Path $PSScriptRoot 'remote-desktop\bin\cliprelay-network.exe'
+if (!(Test-Path -LiteralPath $networkSource)) { throw 'Use the complete ClipRelay Windows package (embedded network component missing).' }
+if ([IO.Path]::GetFullPath($networkSource) -ine [IO.Path]::GetFullPath((Join-Path $remoteBin 'cliprelay-network.exe'))) {
+    Copy-Item -LiteralPath $networkSource -Destination $remoteBin -Force
+}
+$bundledRemote = Join-Path $PSScriptRoot 'remote-desktop\engine'
+if (Test-Path -LiteralPath (Join-Path $bundledRemote 'sunshine.exe')) {
+    if ([IO.Path]::GetFullPath($bundledRemote) -ine [IO.Path]::GetFullPath((Join-Path $remoteDirectory 'engine'))) {
+        Copy-Item -LiteralPath $bundledRemote -Destination $remoteDirectory -Recurse -Force
+    }
+}
+# Prepare the bundled engine before elevation. No separate Sunshine installer is used.
+& (Join-Path $remoteDirectory 'setup.ps1') -Destination $remoteDirectory
+$remoteSetup = Join-Path $remoteDirectory 'setup.ps1'
+$operatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$isAdmin = ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) {
+    & $remoteSetup -Install -OperatorSid $operatorSid
+} else {
+    $remoteInstall = Start-Process -FilePath $windowsPowerShell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$remoteSetup`" -Install -OperatorSid $operatorSid"
+    if ($remoteInstall.ExitCode -ne 0) { throw 'ClipRelay remote desktop service installation did not complete.' }
+}
+
 $notifications = $true
 $accessToken = ""
 $deviceId = [Guid]::NewGuid().ToString("N")
@@ -232,18 +262,20 @@ else {
 
 Write-Host "==> Starting ClipRelay"
 Stop-InstalledClient
-$arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clientPath`""
-$startInfo = New-Object Diagnostics.ProcessStartInfo
-$startInfo.FileName = $windowsPowerShell
-$startInfo.Arguments = $arguments
-$startInfo.WorkingDirectory = $installDirectory
-$startInfo.UseShellExecute = $false
-$startInfo.CreateNoWindow = $true
-$clientProcess = [Diagnostics.Process]::Start($startInfo)
-Start-Sleep -Milliseconds 800
-if ($clientProcess.HasExited) {
-    throw "ClipRelay failed to start. Run this command in PowerShell to see the error:`n$windowsPowerShell -NoProfile -STA -ExecutionPolicy Bypass -File `"$clientPath`""
-}
+$inner = @'
+$psi = New-Object Diagnostics.ProcessStartInfo
+$psi.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$psi.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$env:LOCALAPPDATA\ClipRelay\cliprelay.ps1`""
+$psi.WorkingDirectory = "$env:LOCALAPPDATA\ClipRelay"
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+[void][Diagnostics.Process]::Start($psi)
+'@
+$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+$startup = ([wmiclass]'Win32_ProcessStartup').CreateInstance()
+$startup.ShowWindow = 0
+$started = ([wmiclass]'Win32_Process').Create("$windowsPowerShell -NoProfile -WindowStyle Hidden -EncodedCommand $encoded", $installDirectory, $startup)
+if ($started.ReturnValue -ne 0) { throw "ClipRelay launch failed: $($started.ReturnValue)" }
 
 Write-Host ""
 Write-Host "ClipRelay for Windows is installed."

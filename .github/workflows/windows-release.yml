@@ -15,15 +15,26 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         shell: powershell
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Check embedded network and pairing isolation
+        working-directory: network
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { throw 'Network unit tests failed' }
+          go test -tags=integration ./mobile -run TestEncryptedOverlayBridge -timeout=90s
+          if ($LASTEXITCODE -ne 0) { throw 'Encrypted overlay test failed' }
       - name: Check Windows client and update flow
         run: |
-          foreach ($test in @('updates','settings-ui','settings-save-scope','screen-share-picker-ui','screen-share-tray')) {
+          foreach ($test in @('updates','settings-ui','settings-save-scope','preview-remote-ui','screen-share-picker-ui','screen-share-tray')) {
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1"
             if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
           }

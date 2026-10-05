@@ -8,7 +8,10 @@ $notes = (Get-Content (Join-Path $source 'release-notes.txt') -Raw -Encoding UTF
 if ($version.versionName -cnotmatch '^\d+\.\d+\.\d+$' -or $version.versionCode -isnot [int] -or $version.versionCode -le 0 -or !$notes -or $notes.Length -gt 20000) {
     throw 'Set a valid version and release notes before packaging.'
 }
+& python (Join-Path $PSScriptRoot 'build_network.py') windows
+if ($LASTEXITCODE -ne 0) { throw 'Embedded network build failed.' }
 & (Join-Path $source 'screen-share\setup.ps1') -Destination (Join-Path $source 'screen-share')
+& (Join-Path $source 'remote-desktop\setup.ps1') -Destination (Join-Path $source 'remote-desktop')
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 [IO.Directory]::CreateDirectory($output) | Out-Null
 $staging = Join-Path ([IO.Path]::GetTempPath()) ('cliprelay-package-' + [Guid]::NewGuid().ToString('N'))
@@ -25,6 +28,13 @@ try {
         Copy-Item -LiteralPath (Join-Path $source "screen-share\$name") -Destination (Join-Path $video $name)
     }
     Copy-Item -LiteralPath (Join-Path $source 'screen-share\engine') -Destination $video -Recurse
+    $remote = Join-Path $package 'remote-desktop'
+    [IO.Directory]::CreateDirectory($remote) | Out-Null
+    foreach ($name in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+        Copy-Item -LiteralPath (Join-Path $source "remote-desktop\$name") -Destination $remote
+    }
+    Copy-Item -LiteralPath (Join-Path $source 'remote-desktop\engine') -Destination $remote -Recurse
+    Copy-Item -LiteralPath (Join-Path $source 'remote-desktop\bin') -Destination $remote -Recurse
     $launcher = "@echo off`r`ncd /d `"%~dp0`"`r`n`"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -STA -ExecutionPolicy Bypass -File `"%~dp0install.ps1`"`r`npause`r`n"
     [IO.File]::WriteAllText((Join-Path $package 'Install.cmd'), $launcher, [Text.Encoding]::ASCII)
     [IO.File]::WriteAllText((Join-Path $package 'Readme.txt'), "先解压整个文件夹，再双击 Install.cmd。`r`n更新会保留设备列表、访问密钥、本机端口及开机启动设置。`r`n首次安装后，从托盘打开控制中心，添加或扫描另一台设备。`r`n版本更新：控制中心右下角或托盘菜单。`r`n", [Text.UTF8Encoding]::new($true))
