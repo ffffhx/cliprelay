@@ -14,8 +14,6 @@
     <string name="remote_your_computers">Your computers</string><string name="remote_discovery">Auto discovery</string>
     <string name="remote_add">Add computer</string><string name="remote_settings">Stream settings</string>
     <string name="remote_help">Connection help</string><string name="remote_more">More options for %1$s</string>
-    <string name="remote_first_title">Connecting for the first time?</string>
-    <string name="remote_first_body">Enable Remote Desktop on your computer, then select it here. Compare the verification codes and approve once. Address changes are found automatically.</string>
     <string name="remote_search_title">Looking for your computer</string>
     <string name="remote_search_body">Computers on the same network appear here. You can also add one by its address.</string>
     <string name="remote_online_paired">Online · Paired</string><string name="remote_online_unpaired">Ready to pair</string>

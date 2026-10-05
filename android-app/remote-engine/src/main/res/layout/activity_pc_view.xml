@@ -22,14 +22,7 @@
 </LinearLayout>
 </RelativeLayout>
 </FrameLayout>
-<LinearLayout android:id="@+id/remoteHintCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:layout_marginTop="12dp" android:layout_marginBottom="16dp" android:padding="20dp" android:orientation="horizontal" android:background="@drawable/remote_hint_card">
-<ImageView android:layout_width="28dp" android:layout_height="28dp" android:layout_marginEnd="14dp" android:src="@drawable/remote_ic_monitor" android:tint="#8DDDD8" android:importantForAccessibility="no" />
-<LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
-<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/remote_first_title" android:textSize="15sp" android:fontFamily="sans-serif-medium" android:textColor="#FFFFFF" />
-<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/remote_first_body" android:textSize="12sp" android:lineSpacingExtra="4dp" android:textColor="#BBD1E2" />
-</LinearLayout>
-</LinearLayout>
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:layout_marginBottom="20dp" android:orientation="horizontal">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:layout_marginTop="12dp" android:layout_marginBottom="20dp" android:orientation="horizontal">
 <Button android:id="@+id/networkPairPc" style="@style/RemotePrimaryButton" android:layout_width="0dp" android:layout_weight="1" android:layout_marginEnd="10dp" android:text="@string/remote_pair_device" />
 <Button android:id="@+id/manuallyAddPc" style="@style/RemotePrimaryButton" android:layout_width="0dp" android:layout_weight="1" android:text="@string/remote_add_address" />
 </LinearLayout>

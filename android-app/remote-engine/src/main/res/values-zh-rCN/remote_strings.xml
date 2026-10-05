@@ -14,8 +14,6 @@
     <string name="remote_your_computers">你的电脑</string><string name="remote_discovery">自动发现</string>
     <string name="remote_add">添加电脑</string><string name="remote_settings">画质与操控</string>
     <string name="remote_help">连接帮助</string><string name="remote_more">%1$s 的更多操作</string>
-    <string name="remote_first_title">第一次连接？</string>
-    <string name="remote_first_body">电脑开启「手机远控」，在此点选电脑。核对两边的确认标识，电脑允许一次即可；IP 变化也会自动查找。</string>
     <string name="remote_search_title">正在寻找你的电脑</string>
     <string name="remote_search_body">请让手机和电脑连接同一局域网，并在电脑开启「手机远控」。发现后会自动显示电脑名称，无需输入 IP。</string>
     <string name="remote_online_paired">在线 · 已配对</string><string name="remote_online_unpaired">在线 · 待配对</string>
