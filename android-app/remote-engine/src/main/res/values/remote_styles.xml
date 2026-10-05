@@ -1,6 +1,6 @@
 <resources>
     <style name="RemoteThemeBase" parent="android:Theme.Material.Light.NoActionBar" />
-    <style name="RemoteTheme" parent="RemoteThemeBase">
+    <style name="RemoteThemeCommon" parent="RemoteThemeBase">
         <item name="android:fontFamily">sans</item><item name="android:colorAccent">@color/remote_blue</item>
         <item name="android:windowBackground">@color/remote_background</item>
         <item name="android:colorBackground">@color/remote_background</item>
@@ -9,9 +9,9 @@
         <item name="android:textColorPrimary">@color/remote_ink</item>
         <item name="android:textColorSecondary">@color/remote_muted</item>
         <item name="android:windowLightStatusBar">@bool/remote_light_system_bars</item>
-        <item name="android:windowLightNavigationBar">@bool/remote_light_system_bars</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+    <style name="RemoteTheme" parent="RemoteThemeCommon" />
     <style name="RemoteIconButton">
         <item name="android:layout_width">48dp</item><item name="android:layout_height">48dp</item>
         <item name="android:padding">13dp</item><item name="android:scaleType">fitCenter</item>

@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.CAPTURE_KEYBOARD" />
     <application>
         <activity android:name="com.limelight.PcView" android:exported="false"
             android:label="远程电脑" android:theme="@style/RemoteTheme"

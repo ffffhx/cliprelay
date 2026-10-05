@@ -1,0 +1,5 @@
+<resources>
+    <style name="RemoteTheme" parent="RemoteThemeCommon">
+        <item name="android:windowLightNavigationBar">@bool/remote_light_system_bars</item>
+    </style>
+</resources>
