@@ -1,0 +1,17 @@
+# Import only inside the existing HTTPS site. Headscale's administrative API
+# intentionally has no route. The private endpoints listen on loopback only.
+@cliprelayControl path /key /ts2021 /machine/* /derp /derp/* /bootstrap-dns
+handle @cliprelayControl {
+    reverse_proxy 127.0.0.1:18080 {
+        flush_interval -1
+    }
+}
+handle_path /cliprelay-network/* {
+    request_body {
+        max_size 8KB
+    }
+    reverse_proxy 127.0.0.1:18081 {
+        header_up X-ClipRelay-Client-IP {remote_host}
+    }
+    header Cache-Control "no-store"
+}

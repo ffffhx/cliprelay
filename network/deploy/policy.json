@@ -1,0 +1,16 @@
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "proto": "tcp",
+      "dst": ["autogroup:self:48784", "autogroup:self:48789", "autogroup:self:48791", "autogroup:self:48810"]
+    },
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "proto": "udp",
+      "dst": ["autogroup:self:48798-48800"]
+    }
+  ]
+}

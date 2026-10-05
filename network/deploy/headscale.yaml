@@ -1,0 +1,58 @@
+server_url: https://124-221-36-36.anyip.dev:8443
+listen_addr: 127.0.0.1:18080
+metrics_listen_addr: 127.0.0.1:19090
+grpc_listen_addr: 127.0.0.1:15043
+grpc_allow_insecure: false
+trusted_proxies: [127.0.0.1/32]
+unix_socket: /run/cliprelay-network/headscale.sock
+unix_socket_permission: "0770"
+noise:
+  private_key_path: /var/lib/cliprelay-network/noise.key
+prefixes:
+  v4: 100.120.0.0/16
+  v6: fd7a:115c:a1e0:120::/64
+  allocation: sequential
+derp:
+  server:
+    enabled: true
+    region_id: 901
+    region_code: cliprelay
+    region_name: ClipRelay Tencent
+    verify_clients: true
+    stun_listen_addr: 0.0.0.0:3478
+    private_key_path: /var/lib/cliprelay-network/derp.key
+    automatically_add_embedded_derp_region: true
+    ipv4: 124.221.36.36
+  urls: []
+  paths: []
+  auto_update_enabled: false
+disable_check_updates: true
+node:
+  expiry: 180d
+  ephemeral:
+    inactivity_timeout: 30m
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/cliprelay-network/headscale.sqlite
+    write_ahead_log: true
+    wal_autocheckpoint: 1000
+log:
+  level: warn
+  format: json
+policy:
+  mode: file
+  path: /etc/cliprelay-network/policy.json
+dns:
+  magic_dns: false
+  base_domain: cliprelay.internal
+  override_local_dns: false
+  nameservers:
+    global: []
+    split: {}
+logtail:
+  enabled: false
+taildrop:
+  enabled: false
+auto_update:
+  enabled: false

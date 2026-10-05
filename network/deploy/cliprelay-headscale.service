@@ -1,0 +1,27 @@
+[Unit]
+Description=ClipRelay device coordination and encrypted relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cliprelay-network
+Group=cliprelay-network
+ExecStart=/usr/local/lib/cliprelay-network/headscale serve --config /etc/cliprelay-network/headscale.yaml
+Restart=on-failure
+RestartSec=5
+StateDirectory=cliprelay-network
+StateDirectoryMode=0700
+RuntimeDirectory=cliprelay-network
+RuntimeDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cliprelay-network /run/cliprelay-network
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=384M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

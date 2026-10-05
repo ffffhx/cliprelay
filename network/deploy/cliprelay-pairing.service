@@ -1,0 +1,23 @@
+[Unit]
+Description=ClipRelay accountless pairing
+After=cliprelay-headscale.service
+Requires=cliprelay-headscale.service
+
+[Service]
+User=cliprelay-network
+Group=cliprelay-network
+ExecStart=/usr/local/lib/cliprelay-network/cliprelay-pairing
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cliprelay-network
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=128M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

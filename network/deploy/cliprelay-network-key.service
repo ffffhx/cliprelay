@@ -1,0 +1,9 @@
+[Unit]
+Description=Rotate ClipRelay coordination API credential
+After=cliprelay-headscale.service
+Requires=cliprelay-headscale.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/cliprelay-network/rotate-key.py
+UMask=0077
