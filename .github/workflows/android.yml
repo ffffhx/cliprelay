@@ -4,10 +4,16 @@ on:
   push:
     paths:
       - "android-app/**"
+      - "network/**"
+      - "scripts/build_network.py"
+      - "scripts/network_notices.py"
       - ".github/workflows/android.yml"
   pull_request:
     paths:
       - "android-app/**"
+      - "network/**"
+      - "scripts/build_network.py"
+      - "scripts/network_notices.py"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
@@ -17,7 +23,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +41,19 @@ jobs:
 
       - name: Install Android SDK
         shell: bash
-        run: sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
+        run: sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0" "ndk;29.0.14206865"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+
+      - name: Check embedded network
+        working-directory: network
+        run: go test ./...
+
+      - name: Build embedded network for all Android ABIs
+        run: python3 scripts/build_network.py android
 
       - name: Verify and build APK
         working-directory: android-app

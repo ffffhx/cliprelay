@@ -138,6 +138,11 @@ jobs:
           go-version: '1.26.7'
           cache-dependency-path: network/go.sum
 
+      - name: Check embedded network
+        if: steps.version.outputs.should_release == 'true'
+        working-directory: network
+        run: go test ./...
+
       - name: Build embedded network for all Android ABIs
         if: steps.version.outputs.should_release == 'true'
         run: python3 scripts/build_network.py android
