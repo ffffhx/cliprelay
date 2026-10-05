@@ -1,5 +1,6 @@
 package com.cliprelay.app.server
 
+import com.cliprelay.app.runtime.PreviewRemoteState
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -21,6 +22,7 @@ class ClipRelayHttpServer(
         fun onTextReceived(text: String)
         fun onImageReceived(bytes: ByteArray, mediaType: String)
         fun onPreviewNavigate(delta: Int): Boolean = false
+        fun onPreviewState(): PreviewRemoteState = PreviewRemoteState()
         fun onFailure(message: String)
     }
 
@@ -79,9 +81,10 @@ class ClipRelayHttpServer(
                 val requestPath = request.path.substringBefore('?')
                 when {
                     request.method != "POST" -> respond(output, 405, "Method Not Allowed")
-                    requestPath !in setOf("/push", "/push-image", "/preview/navigate") ->
+                    requestPath !in setOf("/push", "/push-image", "/preview/navigate", "/preview/state") ->
                         respond(output, 404, "Not Found")
                     !isAuthorized(request) -> respond(output, 401, "Unauthorized")
+                    requestPath == "/preview/state" -> handlePreviewState(request, output)
                     requestPath == "/preview/navigate" -> handlePreviewNavigate(request, output)
                     requestPath == "/push-image" -> handleImagePush(request, output)
                     else -> handleTextPush(request, output)
@@ -103,6 +106,22 @@ class ClipRelayHttpServer(
             ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
             ?.substringAfter(' ')
         return headerToken == expected || bearerToken == expected
+    }
+
+    private fun handlePreviewState(request: HttpRequest, output: BufferedOutputStream) {
+        if (request.body.size > 1024) {
+            respond(output, 413, "Payload Too Large")
+            return
+        }
+        val state = listener.onPreviewState()
+        val body = JSONObject().apply {
+            put("active", state.active)
+            put("page", state.page)
+            put("pageCount", state.pageCount)
+            put("contentType", state.contentType ?: JSONObject.NULL)
+            put("moving", state.moving)
+        }
+        respond(output, 200, body.toString(), reason = "OK", contentType = "application/json")
     }
 
     private fun handlePreviewNavigate(request: HttpRequest, output: BufferedOutputStream) {
@@ -172,11 +191,13 @@ class ClipRelayHttpServer(
         statusCode: Int,
         body: String,
         reason: String = defaultReason(statusCode),
+        contentType: String = "text/plain",
     ) {
         val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
         val header = buildString {
             append("HTTP/1.1 $statusCode $reason\r\n")
-            append("Content-Type: text/plain; charset=utf-8\r\n")
+            append("Content-Type: $contentType; charset=utf-8\r\n")
+            append("Cache-Control: no-store\r\n")
             append("Content-Length: ${bodyBytes.size}\r\n")
             append("Connection: close\r\n\r\n")
         }.toByteArray(StandardCharsets.ISO_8859_1)

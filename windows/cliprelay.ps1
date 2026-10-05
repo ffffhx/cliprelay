@@ -455,10 +455,19 @@ namespace ClipRelay
         public string ErrorKind { get; set; }
         public string ErrorMessage { get; set; }
         public long ElapsedMilliseconds { get; set; }
+        public string ResponseBody { get; set; }
     }
 
     public static class RelayBroadcaster
     {
+        public static Task<RelayDeliveryResult> GetPreviewStateAsync(RelayTarget target, int timeoutMilliseconds)
+        {
+            return Task.Factory.StartNew(
+                () => Deliver(target, "/preview/state", "application/json; charset=utf-8",
+                    System.Text.Encoding.UTF8.GetBytes("{}"), timeoutMilliseconds, 0, 0),
+                CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+        }
+
         public static Task<RelayDeliveryResult[]> NavigatePreviewAsync(
             RelayTarget[] targets, string direction, int timeoutMilliseconds)
         {
@@ -594,6 +603,16 @@ namespace ClipRelay
                 response = (HttpWebResponse)request.GetResponse();
                 result.StatusCode = (int)response.StatusCode;
                 result.Success = result.StatusCode == 200;
+                if (result.Success && path == "/preview/state")
+                {
+                    using (StreamReader reader = new StreamReader(response.GetResponseStream(), System.Text.Encoding.UTF8))
+                    {
+                        char[] buffer = new char[4097];
+                        int count = reader.ReadBlock(buffer, 0, buffer.Length);
+                        if (count > 4096) throw new InvalidDataException("Preview state response is too large.");
+                        result.ResponseBody = new string(buffer, 0, count);
+                    }
+                }
                 if (!result.Success)
                 {
                     result.ErrorKind = "ProtocolError";
@@ -602,6 +621,7 @@ namespace ClipRelay
             }
             catch (WebException exception)
             {
+                result.Success = false;
                 result.ErrorKind = exception.Status.ToString();
                 result.ErrorMessage = exception.Message;
                 HttpWebResponse errorResponse = exception.Response as HttpWebResponse;
@@ -613,6 +633,7 @@ namespace ClipRelay
             }
             catch (Exception exception)
             {
+                result.Success = false;
                 result.ErrorKind = exception.GetType().Name;
                 result.ErrorMessage = exception.Message;
             }
@@ -3297,93 +3318,242 @@ function Show-ScreenSharing {
 
 function Show-PhonePreviewRemote {
     if ($null -ne $script:previewRemoteForm -and -not $script:previewRemoteForm.IsDisposed) {
+        $script:previewRemoteForm.WindowState = [Windows.Forms.FormWindowState]::Normal
         $script:previewRemoteForm.Activate()
         return
     }
-    $devices = @(Get-EnabledRelayPeers -Peers $script:Peers)
-    if ($devices.Count -eq 0) {
-        [void][System.Windows.Forms.MessageBox]::Show("请先在设置中添加并启用手机。", "手机翻页")
-        return
+    # Remote navigation is independent of the clipboard broadcast toggles.
+    $devices = @($script:Peers | Where-Object {
+        $platform = $_.PSObject.Properties['platform']
+        $null -eq $platform -or $platform.Value -notin @('windows', 'mac', 'macos')
+    })
+    $colors = @{
+        Background=[Drawing.Color]::FromArgb(17,19,24); Surface=[Drawing.Color]::FromArgb(23,26,36)
+        Raised=[Drawing.Color]::FromArgb(32,37,52); Border=[Drawing.Color]::FromArgb(38,44,60)
+        Text=[Drawing.Color]::FromArgb(241,245,249); Muted=[Drawing.Color]::FromArgb(148,163,184)
+        Blue=[Drawing.Color]::FromArgb(59,130,246); BlueLight=[Drawing.Color]::FromArgb(96,165,250)
+        Cyan=[Drawing.Color]::FromArgb(56,189,248); Danger=[Drawing.Color]::FromArgb(244,63,94)
     }
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "手机全屏预览 · 遥控翻页"
-    $form.ClientSize = New-Object System.Drawing.Size(440, 190)
-    $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
-    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-    $form.MaximizeBox = $false
-    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $newLabel = {
+        param($Parent, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height,
+            [single]$Size, $Color, [string]$FontName='Microsoft YaHei UI')
+        $label = New-Object Windows.Forms.Label
+        $label.Text = $Text
+        $label.SetBounds($X,$Y,$Width,$Height)
+        $label.Font = New-Object Drawing.Font($FontName,$Size)
+        $label.ForeColor = $Color
+        $label.BackColor = [Drawing.Color]::Transparent
+        $label.TextAlign = [Drawing.ContentAlignment]::MiddleLeft
+        $Parent.Controls.Add($label)
+        return $label
+    }.GetNewClosure()
+    $newButton = {
+        param([string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height, $Fill, $TextColor)
+        $button = New-Object ClipRelay.RelayButton
+        $button.Text = $Text
+        $button.SetBounds($X,$Y,$Width,$Height)
+        $button.Font = New-Object Drawing.Font('Microsoft YaHei UI',10,[Drawing.FontStyle]::Bold)
+        $button.FillColor = $Fill
+        $button.HoverColor = [Windows.Forms.ControlPaint]::Light($Fill)
+        $button.PressedColor = [Windows.Forms.ControlPaint]::Dark($Fill)
+        $button.TextColor = $TextColor
+        $button.BorderColor = $colors.Border
+        return $button
+    }.GetNewClosure()
+    $form = New-Object ClipRelay.RelayForm
+    $form.Name = 'PhonePreviewRemote'
+    $form.Text = 'ClipRelay 手机翻页'
+    $form.ClientSize = New-Object Drawing.Size(480,400)
+    $form.BackColor = $colors.Background
+    $form.Font = New-Object Drawing.Font('Microsoft YaHei UI',9)
+    $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
     $form.KeyPreview = $true
-    $picker = New-Object System.Windows.Forms.ComboBox
-    $picker.SetBounds(16, 16, 408, 28)
-    $picker.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    if ($null -ne $script:appIcon) { $form.Icon = $script:appIcon }
+    $brand = & $newLabel $form 'CLIP / RELAY' 24 14 360 20 8.5 $colors.Cyan 'Cascadia Mono'
+    $heading = & $newLabel $form '手机翻页' 22 38 360 34 20 $colors.Text 'Segoe UI Variable Display'
+    $description = & $newLabel $form '电脑遥控，页码与手机同步' 24 77 410 22 9 $colors.Muted
+    foreach ($label in @($brand,$heading,$description)) { [ClipRelay.NativeMethods]::AttachDrag($label,$form) }
+    $close = & $newButton '×' 424 16 32 32 $colors.Background $colors.Muted
+    $close.Name = 'ClosePhonePreviewButton'
+    $close.AccessibleName = '关闭手机翻页'
+    $close.Add_Click({ $form.Close() }.GetNewClosure())
+    $form.Controls.Add($close)
+    $form.CancelButton = $close
+
+    $picker = New-Object Windows.Forms.ComboBox
+    $picker.Name = 'PhonePreviewDevicePicker'
+    $picker.AccessibleName = '选择手机'
+    $picker.SetBounds(24,112,432,30)
+    $picker.Font = New-Object Drawing.Font('Microsoft YaHei UI',10)
+    $picker.DropDownStyle = [Windows.Forms.ComboBoxStyle]::DropDownList
+    $picker.FlatStyle = [Windows.Forms.FlatStyle]::Flat
+    $picker.BackColor = $colors.Raised
+    $picker.ForeColor = $colors.Text
     foreach ($device in $devices) { [void]$picker.Items.Add("$($device.name) · $($device.address)") }
-    $picker.SelectedIndex = 0
-    $previous = New-Object System.Windows.Forms.Button
-    $previous.Text = "← 上一页"
-    $previous.SetBounds(16, 60, 196, 44)
-    $next = New-Object System.Windows.Forms.Button
-    $next.Text = "下一页 →"
-    $next.SetBounds(228, 60, 196, 44)
-    $status = New-Object System.Windows.Forms.Label
-    $status.SetBounds(16, 118, 408, 60)
-    $status.Text = "手机打开全屏预览后，点击按钮或在本窗口按 ← / → 翻页。"
-    $form.Controls.AddRange(@($picker, $previous, $next, $status))
-    $state = @{ Task = $null }
+    if ($devices.Count -gt 0) { $picker.SelectedIndex = 0 }
+    else { [void]$picker.Items.Add('尚未添加手机'); $picker.SelectedIndex=0; $picker.Enabled=$false }
+    $form.Controls.Add($picker)
+
+    $pageCard = New-Object ClipRelay.RelayPanel
+    $pageCard.Name = 'PhonePreviewPageCard'
+    $pageCard.SetBounds(24,154,432,96)
+    $pageCard.BackColor = $colors.Surface
+    $pageCard.BorderColor = $colors.Border
+    $pageCard.CornerRadius = 10
+    $form.Controls.Add($pageCard)
+    $phase = & $newLabel $pageCard '正在连接手机' 14 6 404 24 9 $colors.Muted
+    $phase.Name = 'PhonePreviewPhase'
+    $phase.TextAlign = [Drawing.ContentAlignment]::MiddleCenter
+    $pageLabel = & $newLabel $pageCard '— / —' 14 29 404 57 28 $colors.Text 'Cascadia Mono'
+    $pageLabel.Name = 'PhonePreviewPageLabel'
+    $pageLabel.TextAlign = [Drawing.ContentAlignment]::MiddleCenter
+    $previous = & $newButton '← 上一页' 24 264 210 44 $colors.Raised $colors.Text
+    $previous.Name = 'PreviousPreviewButton'
+    $next = & $newButton '下一页 →' 246 264 210 44 $colors.Blue $colors.Text
+    $next.Name = 'NextPreviewButton'
+    $previous.Enabled=$false; $next.Enabled=$false
+    $form.Controls.AddRange(@($previous,$next))
+    $status = & $newLabel $form '正在读取手机当前页码…' 24 319 432 38 9 $colors.Muted
+    $status.Name = 'PhonePreviewStatus'
+    $null = & $newLabel $form '← 上一页看更早内容 · 下一页看更新内容 →' 24 367 432 20 8 $colors.Muted
+
+    $targetCommand = Get-Command New-RelayBroadcastTargets
+    $state = @{
+        Poll=$null; Command=$null; Generation=0; PollGeneration=0
+        NextPoll=[DateTime]::MinValue; Snapshot=$null; Legacy=$false; Awaiting=$false
+    }
+    $refreshButtons = {
+        $ready = $null -eq $state.Command -and -not $state.Awaiting
+        $active = $null -ne $state.Snapshot -and $state.Snapshot.active -and -not $state.Snapshot.moving
+        $previous.Enabled = $ready -and ($state.Legacy -or ($active -and $state.Snapshot.page -lt $state.Snapshot.pageCount))
+        $next.Enabled = $ready -and ($state.Legacy -or ($active -and $state.Snapshot.page -gt 1))
+    }.GetNewClosure()
+    $clearPage = {
+        param([string]$Title,[string]$Detail,[bool]$ErrorState=$false)
+        $state.Snapshot=$null; $state.Legacy=$false; $state.Awaiting=$false
+        $phase.Text=$Title; $phase.ForeColor=if ($ErrorState) { $colors.Danger } else { $colors.Muted }
+        $pageLabel.Text='— / —'; $pageLabel.AccessibleName='当前页码不可用'
+        $status.Text=$Detail
+        & $refreshButtons
+    }.GetNewClosure()
     $send = {
         param([string]$Direction)
-        if ($null -ne $state.Task) { return }
+        if (($Direction -eq 'previous' -and -not $previous.Enabled) -or ($Direction -eq 'next' -and -not $next.Enabled)) { return }
         try {
-            $targets = New-RelayBroadcastTargets -Peers @($devices[$picker.SelectedIndex])
-            $state.Task = [ClipRelay.RelayBroadcaster]::NavigatePreviewAsync($targets, $Direction, 3000)
-            $picker.Enabled = $false
-            $previous.Enabled = $false
-            $next.Enabled = $false
-            $status.Text = "正在发送翻页指令…"
-        } catch { $status.Text = "发送失败：$($_.Exception.Message)" }
+            $targets = @(& $targetCommand -Peers @($devices[$picker.SelectedIndex]) -IncludeDisabled)
+            $state.Generation++  # Discard any poll started before this command.
+            $state.Awaiting=$true
+            # Desktop labels follow time: next means newer. The phone protocol
+            # follows page indices (newest is page 1), so invert at this boundary.
+            $phoneDirection=if ($Direction -eq 'next') { 'previous' } else { 'next' }
+            $state.Command=[ClipRelay.RelayBroadcaster]::NavigatePreviewAsync($targets,$phoneDirection,1500)
+            $picker.Enabled=$false
+            $phase.Text='正在翻页'; $phase.ForeColor=$colors.Cyan
+            $status.Text='等待手机确认当前页码…'
+            & $refreshButtons
+        } catch { & $clearPage '发送失败' '无法发送指令，请检查手机连接。' $true }
     }.GetNewClosure()
-    $previous.Add_Click({ & $send "previous" }.GetNewClosure())
-    $next.Add_Click({ & $send "next" }.GetNewClosure())
+    $previous.Add_Click({ & $send 'previous' }.GetNewClosure())
+    $next.Add_Click({ & $send 'next' }.GetNewClosure())
+    $picker.Add_SelectedIndexChanged({
+        $state.Generation++
+        $state.NextPoll=[DateTime]::MinValue
+        & $clearPage '正在连接手机' '正在读取手机当前页码…'
+    }.GetNewClosure())
     $form.Add_KeyDown({
-        param($sender, $event)
-        if ($event.KeyCode -eq [System.Windows.Forms.Keys]::Left -or
-            $event.KeyCode -eq [System.Windows.Forms.Keys]::Right) {
-            $event.SuppressKeyPress = $true
-            $direction = if ($event.KeyCode -eq [System.Windows.Forms.Keys]::Left) { "previous" } else { "next" }
-            & $send $direction
+        param($sender,$event)
+        if ($event.KeyCode -in @([Windows.Forms.Keys]::Left,[Windows.Forms.Keys]::Right)) {
+            $event.SuppressKeyPress=$true
+            if ($event.KeyCode -eq [Windows.Forms.Keys]::Left) { & $send 'previous' } else { & $send 'next' }
         }
     }.GetNewClosure())
-    # Buttons normally consume arrows as focus navigation; route them through KeyDown.
-    foreach ($control in @($picker, $previous, $next)) {
+    foreach ($control in @($picker,$previous,$next)) {
         $control.Add_PreviewKeyDown({
-            param($sender, $event)
-            if ($event.KeyCode -in @([System.Windows.Forms.Keys]::Left, [System.Windows.Forms.Keys]::Right)) {
-                $event.IsInputKey = $true
-            }
+            param($sender,$event)
+            if ($event.KeyCode -in @([Windows.Forms.Keys]::Left,[Windows.Forms.Keys]::Right)) { $event.IsInputKey=$true }
         })
     }
-    $timer = New-Object System.Windows.Forms.Timer
-    $timer.Interval = 50
+
+    $timer=New-Object Windows.Forms.Timer
+    $timer.Interval=100
     $timer.Add_Tick({
-        if ($null -eq $state.Task -or -not $state.Task.IsCompleted) { return }
-        try {
-            $result = $state.Task.GetAwaiter().GetResult()[0]
-            $status.Text = if ($result.Success) { "翻页指令已接收（到达首尾页时停留）。← / → 继续翻页。" }
-                elseif ($result.StatusCode -eq 409) { "请让手机停留在前台全屏预览，稍后重试。" }
-                elseif ($result.StatusCode -eq 404) { "手机尚不支持遥控翻页，请更新手机端。" }
-                elseif ($result.StatusCode -eq 401) { "访问令牌不匹配，请检查设备设置。" }
-                else { "发送失败，请检查手机连接。$($result.ErrorMessage)" }
-        } catch { $status.Text = "发送失败：$($_.Exception.Message)" }
-        finally {
-            $state.Task = $null
-            $picker.Enabled = $true
-            $previous.Enabled = $true
-            $next.Enabled = $true
+        if ($form.IsDisposed -or $devices.Count -eq 0) { return }
+        if ($null -ne $state.Command -and $state.Command.IsCompleted) {
+            try {
+                $result=$state.Command.GetAwaiter().GetResult()[0]
+                if (-not $result.Success) {
+                    $detail = switch ($result.StatusCode) {
+                        401 { '访问密钥不匹配，请检查设备设置。' }
+                        404 { '请更新手机端 ClipRelay 后重试。' }
+                        409 { '请让手机停留在前台全屏预览，稍后重试。' }
+                        default { '手机暂时无法连接，正在尝试恢复…' }
+                    }
+                    & $clearPage '未能翻页' $detail $true
+                }
+            } catch { & $clearPage '未能翻页' '手机暂时无法连接，正在尝试恢复…' $true }
+            finally {
+                $state.Command=$null; $picker.Enabled=$true
+                $state.Generation++; $state.NextPoll=[DateTime]::MinValue
+                & $refreshButtons
+            }
+        }
+        if ($null -ne $state.Poll -and $state.Poll.IsCompleted) {
+            try {
+                $result=$state.Poll.GetAwaiter().GetResult()
+                if ($state.PollGeneration -eq $state.Generation) {
+                    if ($result.Success) {
+                        $snapshot=$result.ResponseBody | ConvertFrom-Json
+                        if ($snapshot.active -isnot [bool] -or $snapshot.moving -isnot [bool]) { throw 'Invalid preview state' }
+                        if ($snapshot.active) {
+                            if ($snapshot.page -isnot [int] -or $snapshot.pageCount -isnot [int] -or
+                                $snapshot.page -lt 1 -or $snapshot.page -gt $snapshot.pageCount -or
+                                $snapshot.contentType -notin @('text','image')) { throw 'Invalid preview page' }
+                            $state.Snapshot=$snapshot; $state.Legacy=$false; $state.Awaiting=$false
+                            $pageLabel.Text='{0} / {1}' -f $snapshot.page,$snapshot.pageCount
+                            $pageLabel.AccessibleName="第 $($snapshot.page) 页，共 $($snapshot.pageCount) 页"
+                            $kind=if ($snapshot.contentType -eq 'image') { '图片' } else { '文本' }
+                            $phase.Text=if ($snapshot.moving) { '正在翻页' } else { "手机正在阅读 · $kind" }
+                            $phase.ForeColor=$colors.Cyan
+                            $status.Text=if ($snapshot.moving) { '正在同步手机翻页位置…' }
+                                elseif ($snapshot.pageCount -eq 1) { '只有这一页，收到新内容后会自动更新。' }
+                                elseif ($snapshot.page -eq 1) { '已是最新内容 · 页码与手机实时同步' }
+                                elseif ($snapshot.page -eq $snapshot.pageCount) { '已是最早内容 · 页码与手机实时同步' }
+                                else { '页码与手机实时同步' }
+                        } else { & $clearPage '等待手机打开预览' '请在手机上点开一条文本或图片，并保持全屏预览。' }
+                    } elseif ($result.StatusCode -eq 404) {
+                        & $clearPage '手机端需要更新' '当前手机可继续翻页；更新手机端后可显示实时页码。'
+                        $state.Legacy=$true
+                    } elseif ($result.StatusCode -eq 401) {
+                        & $clearPage '访问密钥不匹配' '请检查这台手机在设备设置中的访问密钥。' $true
+                    } else { & $clearPage '手机未连接' '请确认手机已开始接收，且两端处于同一局域网。' $true }
+                    & $refreshButtons
+                    $state.NextPoll=[DateTime]::UtcNow.AddMilliseconds(600)
+                }
+            } catch {
+                if ($state.PollGeneration -eq $state.Generation) {
+                    & $clearPage '无法读取页码' '手机返回的状态无法识别，请更新手机端后重试。' $true
+                    $state.NextPoll=[DateTime]::UtcNow.AddSeconds(2)
+                }
+            } finally { $state.Poll=$null }
+        }
+        if ($null -eq $state.Poll -and $null -eq $state.Command -and
+            $form.WindowState -ne [Windows.Forms.FormWindowState]::Minimized -and [DateTime]::UtcNow -ge $state.NextPoll) {
+            try {
+                $targets=@(& $targetCommand -Peers @($devices[$picker.SelectedIndex]) -IncludeDisabled)
+                $state.PollGeneration=$state.Generation
+                $state.Poll=[ClipRelay.RelayBroadcaster]::GetPreviewStateAsync($targets[0],1500)
+            } catch {
+                & $clearPage '无法连接手机' '请检查设备地址和端口。' $true
+                $state.NextPoll=[DateTime]::UtcNow.AddSeconds(2)
+            }
         }
     }.GetNewClosure())
     $form.Add_FormClosed({ $timer.Stop(); $timer.Dispose(); $form.Dispose() }.GetNewClosure())
-    $script:previewRemoteForm = $form
-    $timer.Start()
+    if ($devices.Count -eq 0) { & $clearPage '尚未添加手机' '先在主窗口添加手机，即可查看页码和遥控翻页。' }
+    $script:previewRemoteForm=$form
+    $form.EnableDpiLayout()
     $form.Show()
+    $timer.Start()
 }
 
 function Invoke-RelayTextBroadcast {

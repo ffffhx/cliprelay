@@ -84,10 +84,14 @@ class MarkdownPreviewTest {
             rule.runOnIdle { org.junit.Assert.assertTrue(com.cliprelay.app.runtime.PreviewRemote.navigate(delta)) }
             rule.waitForIdle()
         }
+        rule.waitUntil(5_000) { com.cliprelay.app.runtime.PreviewRemote.snapshot().active }
+        assertEquals(1, com.cliprelay.app.runtime.PreviewRemote.snapshot().page)
+        assertEquals(2, com.cliprelay.app.runtime.PreviewRemote.snapshot().pageCount)
         navigate(-1)
         rule.onNodeWithText("1 / 2").assertIsDisplayed()
         navigate(1)
         rule.onNodeWithText("2 / 2").assertIsDisplayed()
+        assertEquals(2, com.cliprelay.app.runtime.PreviewRemote.snapshot().page)
         navigate(1)
         rule.onNodeWithText("2 / 2").assertIsDisplayed()
         navigate(-1)
@@ -95,6 +99,7 @@ class MarkdownPreviewTest {
         rule.runOnIdle { visible.value = false }
         rule.waitForIdle()
         rule.runOnIdle { org.junit.Assert.assertFalse(com.cliprelay.app.runtime.PreviewRemote.navigate(1)) }
+        assertEquals(false, com.cliprelay.app.runtime.PreviewRemote.snapshot().active)
     }
 
     @Test fun switchesPreviewThemeAndPersistsChoice() {

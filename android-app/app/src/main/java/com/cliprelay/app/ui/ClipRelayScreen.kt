@@ -917,18 +917,38 @@ internal fun HistoryFullscreenViewer(
         history.indexOfFirst { it.id == initialClipId }.coerceAtLeast(0)
     }
     val pagerState = rememberPagerState(initialPage = initialPage) { history.size }
+    val latestHistory by androidx.compose.runtime.rememberUpdatedState(history)
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     LaunchedEffect(pagerState, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
             val queue = com.cliprelay.app.runtime.PreviewRemote.attach()
+            val publisher = launch {
+                androidx.compose.runtime.snapshotFlow {
+                    // Resolve the visible stable key against the latest history: a new
+                    // arrival can prepend a page before the pager updates its index.
+                    val visibleId = pagerState.layoutInfo.visiblePagesInfo
+                        .firstOrNull { it.index == pagerState.currentPage }?.key as? Long
+                    val index = latestHistory.indexOfFirst { it.id == visibleId }
+                    if (index < 0) null else com.cliprelay.app.runtime.PreviewRemoteState(
+                        active = true,
+                        page = index + 1,
+                        pageCount = latestHistory.size,
+                        contentType = if (latestHistory[index].isImage) "image" else "text",
+                        moving = pagerState.isScrollInProgress,
+                    )
+                }.collect { state ->
+                    if (state != null) com.cliprelay.app.runtime.PreviewRemote.update(queue, state)
+                }
+            }
             try {
-                for (delta in queue) {
+                com.cliprelay.app.runtime.PreviewRemote.consume(queue) { delta ->
                     val lastPage = pagerState.pageCount - 1
                     if (lastPage >= 0) {
                         pagerState.animateScrollToPage((pagerState.currentPage + delta).coerceIn(0, lastPage))
                     }
                 }
             } finally {
+                publisher.cancel()
                 com.cliprelay.app.runtime.PreviewRemote.detach(queue)
             }
         }

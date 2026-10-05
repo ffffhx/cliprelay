@@ -12,6 +12,45 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 class ClipRelayHttpServerTest {
+    @Test fun previewStateRequiresAuthAndReportsOnlyReadingPosition() {
+        val listening = CountDownLatch(1)
+        val actualPort = AtomicReference<Int>()
+        val state = AtomicReference(com.cliprelay.app.runtime.PreviewRemoteState())
+        val server = ClipRelayHttpServer(0, { "secret" }, object : ClipRelayHttpServer.Listener {
+            override fun onListening(port: Int) { actualPort.set(port); listening.countDown() }
+            override fun onTextReceived(text: String) = error("State must not change the clipboard")
+            override fun onImageReceived(bytes: ByteArray, mediaType: String) = error("State must not create history")
+            override fun onFailure(message: String) = Unit
+            override fun onPreviewState() = state.get()
+        })
+        fun query(token: String? = "secret", body: String = "{}") = postBytes(
+            actualPort.get(), "/preview/state", body.toByteArray(), "application/json", token,
+        )
+        fun parse(response: String) = org.json.JSONObject(response.substringAfter("\r\n\r\n"))
+        try {
+            server.start()
+            assertTrue(listening.await(3, TimeUnit.SECONDS))
+            assertTrue(query(null).startsWith("HTTP/1.1 401"))
+            assertTrue(query("wrong").startsWith("HTTP/1.1 401"))
+            assertTrue(query(body = "x".repeat(1025)).startsWith("HTTP/1.1 413"))
+            assertFalse(parse(query()).getBoolean("active"))
+            state.set(com.cliprelay.app.runtime.PreviewRemoteState(true, 3, 8, "image"))
+            val response = query()
+            assertTrue(response.startsWith("HTTP/1.1 200 OK"))
+            assertTrue(response.contains("Content-Type: application/json"))
+            assertTrue(response.contains("Cache-Control: no-store"))
+            val reading = parse(response)
+            assertEquals(3, reading.getInt("page"))
+            assertEquals(8, reading.getInt("pageCount"))
+            assertEquals("image", reading.getString("contentType"))
+            assertFalse(reading.getBoolean("moving"))
+            assertEquals(setOf("active", "page", "pageCount", "contentType", "moving"), reading.keys().asSequence().toSet())
+            state.set(com.cliprelay.app.runtime.PreviewRemoteState())
+            assertFalse(parse(query()).getBoolean("active"))
+            assertEquals(0, parse(query()).getInt("page"))
+        } finally { server.stop() }
+    }
+
     @Test
     fun previewNavigationRequiresAuthValidDirectionAndActiveViewer() {
         val listening = CountDownLatch(1)

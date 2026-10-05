@@ -131,6 +131,9 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     override fun onPreviewNavigate(delta: Int): Boolean =
         com.cliprelay.app.runtime.PreviewRemote.navigate(delta)
 
+    override fun onPreviewState(): com.cliprelay.app.runtime.PreviewRemoteState =
+        com.cliprelay.app.runtime.PreviewRemote.snapshot()
+
     override fun onTextReceived(text: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("ClipRelay", text))
