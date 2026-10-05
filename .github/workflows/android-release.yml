@@ -8,6 +8,9 @@ on:
       - "android-v*"
     paths:
       - "android-app/**"
+      - "network/**"
+      - "scripts/build_network.py"
+      - "scripts/network_notices.py"
       - ".github/workflows/android-release.yml"
       - "scripts/*android_release_version.py"
   workflow_dispatch:
@@ -22,7 +25,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v7
@@ -46,7 +49,7 @@ jobs:
           # The API listing order is not semantic version order (0.6.10 can follow 0.6.9).
           latest_tag="$(jq -r '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("android-v")))] | sort_by(.tag_name | ltrimstr("android-v") | split(".") | map(tonumber)) | last | .tag_name // empty' "$RUNNER_TEMP/releases.json")"
           if [[ -n "$latest_tag" ]]; then
-            if git diff --quiet "$latest_tag" HEAD -- android-app .github/workflows/android-release.yml scripts; then
+            if git diff --quiet "$latest_tag" HEAD -- android-app network .github/workflows/android-release.yml scripts; then
               echo "Android sources already published as $latest_tag."
               exit 0
             fi
@@ -127,7 +130,17 @@ jobs:
       - name: Install Android SDK
         if: steps.version.outputs.should_release == 'true'
         shell: bash
-        run: sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
+        run: sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0" "ndk;29.0.14206865"
+
+      - uses: actions/setup-go@v5
+        if: steps.version.outputs.should_release == 'true'
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+
+      - name: Build embedded network for all Android ABIs
+        if: steps.version.outputs.should_release == 'true'
+        run: python3 scripts/build_network.py android
 
       - name: Prepare release signing
         if: steps.version.outputs.should_release == 'true'
