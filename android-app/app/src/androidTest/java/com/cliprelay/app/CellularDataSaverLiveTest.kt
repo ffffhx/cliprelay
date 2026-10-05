@@ -1,5 +1,6 @@
 package com.cliprelay.app
 
+import android.app.PictureInPictureParams
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -7,6 +8,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.preference.PreferenceManager
 import android.provider.Settings
+import android.util.Rational
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
@@ -142,14 +144,16 @@ class CellularDataSaverLiveTest {
             awaitStream(6_000)
             setWifi(true)
             awaitStream(20_000)
-            ui { requireNotNull(game).onBackPressed() }
+            // Back now returns to the computer list; exercise PiP explicitly.
+            ui {
+                assertTrue(requireNotNull(game).enterPictureInPictureMode(PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9)).build()))
+            }
             await("PiP entry failed") { game?.isInPictureInPictureMode == true }
             setWifi(false)
             awaitStream(6_000, pip = true)
             ui {
-                val main = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
-                    .filterIsInstance<MainActivity>().single()
-                assertTrue(LiveStreamSession.resume(main))
+                assertTrue(LiveStreamSession.resume(context))
             }
             awaitStream(6_000)
             ui { game?.finish() }

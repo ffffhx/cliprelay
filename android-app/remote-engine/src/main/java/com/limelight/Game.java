@@ -108,8 +108,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private volatile boolean imageTransfer;
     private com.limelight.ui.ImagePasteRequest imagePaste = new com.limelight.ui.ImagePasteRequest();
     private boolean imageResumeReady;
-    private boolean returnHomeAfterPip;
-    private Runnable resumeAfterPipEntry;
+    private boolean returningToComputers;
     private boolean resumeInputAfterPip;
     private static final int IMAGE_TRANSFER = 701;
     private com.limelight.binding.input.ApplicationMonitor applicationMonitor;
@@ -640,7 +639,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public TouchMode touchMode() { return touchMode; }
                     @Override public void selectTouchMode(TouchMode mode) { setTouchMode(mode, true); }
                     @Override public void disconnect() { finish(); }
-                    @Override public void home() { returnToClipRelay(); }
+                    @Override public void home() { returnToComputers(); }
                     @Override public void image() { openImageTransfer(); }
                     @Override public void streamInfo() { showStreamInfo(); }
                     @Override public void scrollCompatibilityChanged(boolean enabled) {
@@ -855,7 +854,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
 
-        boolean autoEnter = connected && suppressPipRefCount == 0;
+        boolean autoEnter = connected && !returningToComputers && !isFinishing() && suppressPipRefCount == 0;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             setPictureInPictureParams(getPictureInPictureParams(autoEnter));
@@ -870,39 +869,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     public void resumeFromClipRelay(Context context) {
-        // A PiP callback can arrive after home is already visible. A quick tap
-        // on Continue must wait for that callback before asking Android to
-        // expand the task, or entry/exit callbacks may arrive out of order.
-        boolean enteringPip = returnHomeAfterPip || resumeAfterPipEntry != null;
-        returnHomeAfterPip = false;
-        Runnable resume = () -> {
+        streamView.post(() -> {
             if (isStreamConnected()) {
                 context.startActivity(new Intent(getIntent()).setClass(context, Game.class)
                         .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             }
-        };
-        if (enteringPip) resumeAfterPipEntry = resume;
-        else streamView.post(resume);
+        });
     }
 
-    private void returnToClipRelay() {
-        if (!isStreamConnected() || bitrateRestarting || imageTransfer) return;
-        resumeAfterPipEntry = null;
+    private void returnToComputers() {
+        if (returningToComputers || !isStreamConnected() || bitrateRestarting || imageTransfer) return;
+        returningToComputers = true;
+        // Disable automatic PiP before launching the other task, including on
+        // Android versions that enter PiP from onUserLeaveHint().
+        updatePipAutoEnter();
         keyboardDismissed();
         ((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE))
                 .hideSoftInputFromWindow(streamView.getWindowToken(), 0);
         if (desktopToolbar != null) desktopToolbar.releaseTouches();
-        resumeInputAfterPip = grabbedInput;
         setInputGrabState(false);
-        try {
-            if (getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
-                returnHomeAfterPip = true;
-                if (enterPictureInPictureMode(getPictureInPictureParams(false))) return;
-            }
-        } catch (RuntimeException error) { LimeLog.warning("Unable to enter picture-in-picture"); }
-        returnHomeAfterPip = false;
-        restoreInputAfterPip();
-        Toast.makeText(this, R.string.desktop_home_pip_unavailable, Toast.LENGTH_LONG).show();
+        displayedFailureDialog = true;
+        // Disconnect this client without quitting the host application. PcView
+        // resumes the host session when the user selects this computer again.
+        stopConnection();
+        startActivity(new Intent(this, PcView.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+        finish();
     }
 
     private void restoreInputAfterPip() {
@@ -919,18 +911,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             keyboardDismissed();
             resumeInputAfterPip |= grabbedInput;
             setInputGrabState(false);
-            if (returnHomeAfterPip) {
-                returnHomeAfterPip = false;
-                // PiP keeps the current stream Activity visible. Never CLEAR_TOP:
-                // that would destroy the stream while returning to the home page.
-                startActivity(new Intent().setClassName(getPackageName(), "com.cliprelay.app.MainActivity")
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
-            }
-            if (resumeAfterPipEntry != null) {
-                Runnable resume = resumeAfterPipEntry;
-                resumeAfterPipEntry = null;
-                streamView.post(resume);
-            }
         } else restoreInputAfterPip();
     }
 
@@ -1401,7 +1381,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             displayedFailureDialog = true;
             stopConnection();
 
-            if (prefConfig.enableLatencyToast && !bitrateRestarting) {
+            if (prefConfig.enableLatencyToast && !bitrateRestarting && !returningToComputers) {
                 int averageEndToEndLat = decoderRenderer.getAverageEndToEndLatency();
                 int averageDecoderLat = decoderRenderer.getAverageDecoderLatency();
                 String message = null;
@@ -1879,7 +1859,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override public void onBackPressed() {
         if (desktopToolbar != null && desktopToolbar.hideVirtualKeyboard()) return;
-        if (connected) returnToClipRelay();
+        if (connected) returnToComputers();
         else super.onBackPressed();
     }
 

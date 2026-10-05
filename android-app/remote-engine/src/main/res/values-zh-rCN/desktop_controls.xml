@@ -3,9 +3,8 @@
     <string name="embedded_stream_retry">串流通道未能连通。请返回电脑列表，稍等几秒后重试。ClipRelay 会自动恢复通道，请保持电脑在线。</string>
     <string name="desktop_controls_open">展开桌面控制，可上下拖动位置</string>
     <string name="desktop_controls_collapse">收起</string>
-    <string name="desktop_home">返回 ClipRelay</string>
-    <string name="desktop_rail_home">返回首页</string>
+    <string name="desktop_home">返回电脑列表</string>
+    <string name="desktop_rail_home">返回电脑列表</string>
     <string name="desktop_rail_profile">应用 ▾</string>
     <string name="desktop_rail_newline">换行</string>
-    <string name="desktop_home_pip_unavailable">请在系统设置中允许 ClipRelay 使用画中画，再返回首页保留串流。</string>
 </resources>

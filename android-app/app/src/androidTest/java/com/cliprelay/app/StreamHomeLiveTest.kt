@@ -1,20 +1,17 @@
 package com.cliprelay.app
 
-import android.app.Activity
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
-import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.assertTextContains
-import androidx.compose.ui.test.performClick
+import android.widget.AbsListView
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import com.limelight.Game
+import com.limelight.PcView
 import com.limelight.R
 import com.limelight.binding.PlatformBinding
 import com.limelight.binding.video.MediaCodecDecoderRenderer
@@ -23,16 +20,16 @@ import com.limelight.computers.IdentityManager
 import com.limelight.computers.EmbeddedNetwork
 import com.cliprelay.app.network.NetworkConnectionService
 import com.limelight.nvstream.http.NvHTTP
+import com.limelight.nvstream.http.ComputerDetails
+import com.limelight.nvstream.http.PairingManager
 import com.limelight.ui.DesktopToolbar
 import com.limelight.ui.LiveStreamSession
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
-import org.junit.Rule
 import org.junit.Test
 
-/** Opt-in: retain the same real stream through home/PiP/fullscreen, without desktop input. */
+/** Opt-in: return without PiP and resume the host session, without desktop input. */
 class StreamHomeLiveTest {
-    @get:Rule val compose = createEmptyComposeRule()
     private val instrument = InstrumentationRegistry.getInstrumentation()
     private fun ui(action: () -> Unit) = instrument.runOnMainSync(action)
     private fun field(target: Any, name: String): Any? = target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
@@ -47,7 +44,7 @@ class StreamHomeLiveTest {
         fail(label)
     }
 
-    @Test fun homeAndContinueKeepTheSameConnection() {
+    @Test fun returnToComputerListWithoutPipAndResumeHostSession() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("liveStreamHome") == "true")
         val context = instrument.targetContext
         val cellular = InstrumentationRegistry.getArguments().getString("streamRoute") == "cellular"
@@ -99,12 +96,10 @@ class StreamHomeLiveTest {
                 }
                 throw error
             }
-            val connection = field(game, "conn")
-            val renderer = field(game, "decoderRenderer") as MediaCodecDecoderRenderer
             instrument.sendStatus(0, Bundle().apply { putString("streamRoute", if (cellular) "cellular -> embedded channel; fresh decoded video" else address.toString()) })
-            val toolbar = field(game, "desktopToolbar") as DesktopToolbar.Controller
             repeat(3) { round ->
-                val sampleAt = renderer.networkSample.atMs
+                val previousGame = game
+                val toolbar = field(game, "desktopToolbar") as DesktopToolbar.Controller
                 ui {
                     if (round == 0) {
                         toolbar.setGameMode(false); toolbar.setExpanded(true)
@@ -116,41 +111,58 @@ class StreamHomeLiveTest {
                         assertTrue(game.findViewById<View>(R.id.gameHomeButton).performClick())
                     }
                 }
-                await("Home/PiP transition failed in round $round") {
-                    game.isInPictureInPictureMode && game.isStreamConnected &&
-                        ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).any { it is MainActivity }
+                var computers: PcView? = null
+                await("Computer list did not appear in round $round") {
+                    computers = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                        .filterIsInstance<PcView>().firstOrNull()
+                    previousGame.isFinishing && !previousGame.isStreamConnected &&
+                        computers?.findViewById<View>(R.id.networkPairPc)?.isShown == true &&
+                        computers?.findViewById<View>(R.id.manuallyAddPc)?.isShown == true
                 }
-                await("Video stopped updating in PiP") { renderer.networkSample.atMs > sampleAt }
                 ui {
-                    assertSame(connection, field(game, "conn"))
-                    assertEquals(false, field(game, "grabbedInput"))
-                    assertTrue(LiveStreamSession.isActive())
-                    instrument.sendStatus(0, Bundle().apply {
-                        putString("homeRound", "$round: same stream in PiP, task=${game.taskId}, input released, video updated")
-                    })
+                    assertFalse("Return unexpectedly opened PiP", previousGame.isInPictureInPictureMode)
+                    assertEquals(false, field(previousGame, "grabbedInput"))
+                    assertFalse(LiveStreamSession.isActive())
                 }
-                compose.onNodeWithTag("open-remote-desktop").assertTextContains("继续控制").performClick()
-                try {
-                    await("Continue did not restore the same stream") {
-                        !game.isInPictureInPictureMode && game.isStreamConnected && game.hasWindowFocus() &&
-                            ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).contains(game)
-                    }
-                } catch (error: AssertionError) {
-                    ui {
-                        instrument.sendStatus(0, Bundle().apply {
-                            putString("resumeFailure", "round=$round, pip=${game.isInPictureInPictureMode}, connected=${game.isStreamConnected}, destroyed=${game.isDestroyed}, finishing=${game.isFinishing}, task=${game.taskId}, resumed=${ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).map { it.javaClass.simpleName }}")
-                        })
-                    }
-                    throw error
+                assertEquals("Return quit the host session", desktop.appId, http.getCurrentGame(http.getServerInfo(true)))
+
+                // Select the actual computer card, exercising direct reconnect
+                // rather than constructing a second stream intent in the test.
+                var position = -1
+                await("Paired computer did not become available", 30000) {
+                    val list = requireNotNull(computers).findViewById<AbsListView>(R.id.fragmentView)
+                    val adapter = list.adapter ?: return@await false
+                    position = (0 until adapter.count).firstOrNull { index ->
+                        val details = (adapter.getItem(index) as PcView.ComputerObject).details
+                        details.uuid == computer.uuid && details.state == ComputerDetails.State.ONLINE &&
+                            details.pairState == PairingManager.PairState.PAIRED && details.activeAddress != null
+                    } ?: -1
+                    position >= 0
                 }
+                ui {
+                    val list = requireNotNull(computers).findViewById<AbsListView>(R.id.fragmentView)
+                    assertTrue(list.performItemClick(list.adapter.getView(position, null, list), position,
+                        list.adapter.getItemId(position)))
+                }
+                await("Computer card did not resume video in round $round", 35000) {
+                    val latest = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                        .filterIsInstance<Game>().firstOrNull() ?: return@await false
+                    game = latest
+                    game !== previousGame && game.isStreamConnected && !game.isInPictureInPictureMode &&
+                        (field(game, "decoderRenderer") as? MediaCodecDecoderRenderer)?.networkSample != null
+                }
+                val renderer = field(game, "decoderRenderer") as MediaCodecDecoderRenderer
                 val resumedSample = renderer.networkSample.atMs
-                await("Fullscreen video stopped after Continue") { renderer.networkSample.atMs > resumedSample }
-                ui { assertSame(connection, field(game, "conn")); toolbar.setGameMode(false) }
+                await("Resumed video stopped updating") { renderer.networkSample.atMs > resumedSample }
+                ui { (field(game, "desktopToolbar") as DesktopToolbar.Controller).setGameMode(false) }
+                instrument.sendStatus(0, Bundle().apply {
+                    putString("homeRound", "$round: computer list visible, no PiP, input released; host session preserved and resumed from computer card")
+                })
             }
             ui { game.finish() }
             await("Disconnected stream still offered Continue") { !LiveStreamSession.isActive() }
             instrument.sendStatus(0, Bundle().apply {
-                putString("streamHome", "PASS: desktop button, Android Back, game menu -> home/PiP -> Continue; same Activity and connection, fresh video, input released, stale session cleared")
+                putString("streamHome", "PASS: desktop button, Android Back, game menu -> computer list without PiP -> computer card; host session preserved, fresh video, input released")
             })
         } finally { ui { if (!game.isFinishing) game.finish() } }
     }
