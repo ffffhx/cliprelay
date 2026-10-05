@@ -1,6 +1,6 @@
 <resources>
     <string name="cellular_data_saver_title">Automatic mobile data saving</string>
-    <string name="cellular_data_saver_summary">Limit bitrate to 6 Mbps on mobile data or metered networks; restore your limit on unmetered Wi-Fi. Lower limits are respected. Resolution and frame rate stay unchanged. Switching briefly reconnects the stream.</string>
-    <string name="cellular_data_saver_active">Data saving · Limit %1$.1f Mbps</string>
-    <string name="cellular_data_saver_restored">Wi-Fi / unmetered network · Limit restored to %1$.1f Mbps</string>
+    <string name="cellular_data_saver_summary">Use a smaller budget on mobile data or metered networks (up to 6 Mbps). Resume the normal quality budget on unmetered Wi-Fi. Lower manual settings are respected. Resolution and frame rate stay unchanged; switching briefly reconnects.</string>
+    <string name="cellular_data_saver_active">Mobile data saving is active</string>
+    <string name="cellular_data_saver_restored">Wi-Fi / unmetered network · Normal quality restored</string>
 </resources>

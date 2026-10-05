@@ -280,18 +280,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         prefConfig = PreferenceConfiguration.readPreferences(this);
         RetainedStreamState retained = (RetainedStreamState) getLastNonConfigurationInstance();
         if (retained != null && retained.imagePaste != null) imagePaste = retained.imagePaste;
-        dataPolicy = new com.limelight.nvstream.CellularDataPolicy(prefConfig.bitrate, prefConfig.cellularDataSaver);
+        dataPolicy = com.limelight.nvstream.CellularDataPolicy.forStream(prefConfig.bitrate,
+                PreferenceConfiguration.getDefaultBitrate(prefConfig.width + "x" + prefConfig.height,
+                        Integer.toString(prefConfig.fps)), prefConfig.adaptiveBitrate, prefConfig.cellularDataSaver);
         streamNetworkMonitor = new com.limelight.nvstream.StreamNetworkMonitor(this, this::onStreamNetworkChanged);
         streamNetworkType = streamNetworkMonitor.snapshot();
         dataPolicy.update(streamNetworkType);
         if (prefConfig.adaptiveBitrate) {
             adaptiveBitrate = retained != null && retained.policy != null &&
                     retained.policy.getCeilingKbps() == dataPolicy.getCeilingKbps() ? retained.policy :
-                    new com.limelight.nvstream.AdaptiveBitrateController(dataPolicy.getCeilingKbps());
+                    new com.limelight.nvstream.AdaptiveBitrateController(
+                            dataPolicy.getInitialBitrateKbps(), dataPolicy.getCeilingKbps());
         }
         rateWasAdjusted = retained != null && retained.adjusting;
         networkBudgetNotice = retained != null && retained.networkBudgetNotice;
-        if (prefConfig.cellularDataSaver) streamNetworkMonitor.start(bitrateHandler);
+        if (prefConfig.cellularDataSaver || prefConfig.adaptiveBitrate) streamNetworkMonitor.start(bitrateHandler);
         if (rateWasAdjusted && spinner != null) {
             spinner.setMessage(getString(R.string.adaptive_bitrate_reconnecting, currentBitrate() / 1000.0));
         }
@@ -2571,8 +2574,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 .hideSoftInputFromWindow(streamView.getWindowToken(), 0);
         streamInfo.show(this, () -> decoderRenderer == null ? null : decoderRenderer.getStreamStatistics(),
                 () -> getString(R.string.stream_info_targets, prefConfig.width, prefConfig.height,
-                        streamTargetFps, streamBitrateKbps / 1000.0, dataPolicy.getCeilingKbps() / 1000.0,
-                        getString(adaptiveBitrate != null ? R.string.stream_info_on : R.string.stream_info_off),
+                        streamTargetFps, getString(adaptiveBitrate != null ?
+                                R.string.stream_info_automatic : R.string.stream_info_manual),
+                        streamBitrateKbps / 1000.0,
                         getString(dataPolicy.isSavingData() ? R.string.stream_info_on : R.string.stream_info_off)));
     }
 
@@ -2581,20 +2585,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void onStreamNetworkChanged(com.limelight.nvstream.CellularDataPolicy.NetworkType type) {
-        if (isFinishing() || isDestroyed() || !prefConfig.cellularDataSaver) return;
+        if (isFinishing() || isDestroyed() || (!prefConfig.cellularDataSaver && !prefConfig.adaptiveBitrate)) return;
         bitrateHandler.removeCallbacks(applyNetworkBudget);
         if (type == com.limelight.nvstream.CellularDataPolicy.NetworkType.UNKNOWN) return;
         int oldCeiling = dataPolicy.getCeilingKbps();
+        boolean changedNetworkType = streamNetworkType != type;
         networkRouteChanged |= streamNetworkType != com.limelight.nvstream.CellularDataPolicy.NetworkType.UNKNOWN &&
-                streamNetworkType != type;
+                changedNetworkType;
         streamNetworkType = type;
         dataPolicy.update(type);
-        if (oldCeiling != dataPolicy.getCeilingKbps()) {
+        if (changedNetworkType || oldCeiling != dataPolicy.getCeilingKbps()) {
             // Congestion observations from the old network are no longer useful.
             if (adaptiveBitrate != null) {
-                adaptiveBitrate = new com.limelight.nvstream.AdaptiveBitrateController(dataPolicy.getCeilingKbps());
+                adaptiveBitrate = new com.limelight.nvstream.AdaptiveBitrateController(
+                        dataPolicy.getInitialBitrateKbps(), dataPolicy.getCeilingKbps());
             }
-            networkBudgetNotice = true;
+            networkBudgetNotice |= oldCeiling != dataPolicy.getCeilingKbps();
         }
         if (networkRouteChanged || currentBitrate() != streamBitrateKbps) {
             LimeLog.info("Stream network: " + type + "; bitrate limit " + dataPolicy.getCeilingKbps() + " Kbps");
@@ -2915,11 +2921,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     bitrateHandler.postDelayed(bitrateMonitor, 1_000);
                 }
                 if (dataPolicy.isSavingData()) {
-                    Toast.makeText(Game.this, getString(R.string.cellular_data_saver_active,
-                            dataPolicy.getCeilingKbps() / 1000.0), Toast.LENGTH_SHORT).show();
+                    Toast.makeText(Game.this, R.string.cellular_data_saver_active, Toast.LENGTH_SHORT).show();
                 } else if (networkBudgetNotice) {
-                    Toast.makeText(Game.this, getString(R.string.cellular_data_saver_restored,
-                            dataPolicy.getCeilingKbps() / 1000.0), Toast.LENGTH_SHORT).show();
+                    Toast.makeText(Game.this, R.string.cellular_data_saver_restored, Toast.LENGTH_SHORT).show();
                 } else if (rateWasAdjusted) {
                     Toast.makeText(Game.this, getString(R.string.adaptive_bitrate_changed,
                             currentBitrate() / 1000.0), Toast.LENGTH_SHORT).show();
@@ -3191,10 +3195,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 performanceOverlayView.setText(text);
                 if (adaptiveBitrate != null) {
                     performanceOverlayView.append("\n" + getString(R.string.adaptive_bitrate_stats,
-                            streamBitrateKbps / 1000.0, dataPolicy.getCeilingKbps() / 1000.0));
+                            streamBitrateKbps / 1000.0));
                 }
                 if (dataPolicy.isSavingData()) performanceOverlayView.append("\n" +
-                        getString(R.string.cellular_data_saver_active, dataPolicy.getCeilingKbps() / 1000.0));
+                        getString(R.string.cellular_data_saver_active));
             }
         });
     }

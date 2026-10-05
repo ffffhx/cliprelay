@@ -9,8 +9,10 @@
     <string name="stream_info_measured">当前画面　%1$d × %2$d · %3$s\n视频码率　%4$.2f Mbps（实测）\n接收帧率　%5$.1f FPS\n显示帧率　%6$.1f FPS\n网络丢帧　%7$.1f%%</string>
     <string name="stream_info_rtt">网络延迟　%1$d ms（往返）</string>
     <string name="stream_info_rtt_unknown">网络延迟　暂不可用</string>
-    <string name="stream_info_targets">设置画质　%1$d × %2$d\n目标帧率　%3$d FPS\n目标码率　%4$.2f Mbps\n码率上限　%5$.2f Mbps\n自动码率　%6$s · 省流模式　%7$s</string>
+    <string name="stream_info_targets">设置分辨率　%1$d × %2$d\n目标帧率　%3$d FPS\n码率模式　%4$s\n当前编码预算　%5$.2f Mbps\n省流模式　%6$s</string>
+    <string name="stream_info_automatic">全自动</string>
+    <string name="stream_info_manual">手动</string>
     <string name="stream_info_on">开启</string>
     <string name="stream_info_off">关闭</string>
-    <string name="stream_info_note">每秒更新。实测码率仅统计收到的视频，不含音频和网络开销；画面静止时可能低于目标码率。</string>
+    <string name="stream_info_note">每秒更新。实测码率仅统计收到的视频，不含音频和网络开销。编码预算不是必须用满的流量；画面静止时，实际传输量可以很低。自动模式会按画面需求和网络反馈调整预算，无需设置上限。</string>
 </resources>

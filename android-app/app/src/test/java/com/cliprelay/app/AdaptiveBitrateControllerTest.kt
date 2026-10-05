@@ -7,10 +7,10 @@ import org.junit.Test
 
 class AdaptiveBitrateControllerTest {
     private var now = 0L
-    private var policy = AdaptiveBitrateController(20_000).also { it.onConnected(now) }
-    private fun tick(loss: Int = 0, rtt: Int = 20): Int {
+    private var policy = AdaptiveBitrateController(20_000, 20_000).also { it.onConnected(now) }
+    private fun tick(loss: Int = 0, rtt: Int = 20, bytes: Long = policy.bitrateKbps * 100L): Int {
         now += 1_000
-        return policy.observe(Sample(now, 1_000, 100, loss, rtt), now)
+        return policy.observe(Sample(now, 1_000, 100, loss, rtt, bytes), now)
     }
     private fun warmup() { repeat(10) { tick() } }
     private fun lower(): Int {
@@ -28,9 +28,75 @@ class AdaptiveBitrateControllerTest {
         return 0
     }
 
-    @Test fun healthyConnectionKeepsUserCeiling() {
+    @Test fun healthyConnectionRespectsSystemQualityBound() {
         repeat(600) { assertEquals(0, tick()) }
         assertEquals(20_000, policy.bitrateKbps)
+    }
+
+    @Test fun staticDesktopNeverTriggersAProbeEvenWhenNetworkIsHealthy() {
+        policy = AdaptiveBitrateController(20_000, 40_000).also { it.onConnected(now) }
+        repeat(3600) { assertEquals(0, tick(bytes = 50_000)) } // 0.4 Mbps for an hour
+        assertEquals(20_000, policy.bitrateKbps)
+    }
+
+    @Test fun sustainedVideoDemandCanGrowBeyondTheInitialBudget() {
+        policy = AdaptiveBitrateController(20_000, 40_000).also { it.onConnected(now) }
+        assertEquals(22_000, recover())
+        policy.onConnected(now)
+        assertEquals(24_000, recover())
+    }
+
+    @Test fun demandSpikesAndIdlePeriodsDoNotAccumulateProbeEvidence() {
+        policy = AdaptiveBitrateController(20_000, 40_000).also { it.onConnected(now) }
+        repeat(10) {
+            repeat(120) { assertEquals(0, tick()) }
+            assertEquals(0, tick(bytes = 50_000))
+        }
+    }
+
+    @Test fun congestionStillLowersBudgetDuringAStaticScene() {
+        warmup()
+        assertEquals(0, tick(loss = 20, bytes = 50_000))
+        assertEquals(12_000, tick(loss = 20, bytes = 50_000))
+    }
+
+    @Test fun lowDemandAfterCongestionDoesNotCausePointlessReconnects() {
+        lower()
+        policy.onConnected(now)
+        repeat(3600) { assertEquals(0, tick(bytes = 50_000)) }
+        assertEquals(15_000, policy.bitrateKbps)
+        assertEquals(16_500, recover())
+    }
+
+    @Test fun stableHighLatencyRouteIsNotMistakenForQueueing() {
+        policy = AdaptiveBitrateController(20_000, 20_000).also { it.onConnected(now) }
+        repeat(600) { assertEquals(0, tick(rtt = 180)) }
+    }
+
+    @Test fun sustainedQueueGrowthUnderLoadLowersBudgetBeforeFrameLoss() {
+        warmup()
+        repeat(4) { assertEquals(0, tick(rtt = 180)) }
+        assertEquals(15_000, tick(rtt = 180))
+    }
+
+    @Test fun isolatedLatencySpikesDoNotReconnect() {
+        warmup()
+        repeat(50) {
+            repeat(4) { assertEquals(0, tick(rtt = 180)) }
+            assertEquals(0, tick())
+        }
+    }
+
+    @Test fun aProbeIsNotConsideredSuccessfulWhileTheScreenIsIdle() {
+        policy = AdaptiveBitrateController(20_000, 40_000).also { it.onConnected(now) }
+        assertEquals(22_000, recover())
+        policy.onConnected(now)
+        repeat(120) { assertEquals(0, tick(bytes = 50_000)) }
+        assertEquals(0, tick(loss = 10))
+        assertEquals(0, tick(loss = 10))
+        assertTrue(tick(loss = 10) in 1_000..20_000)
+        policy.onConnected(now)
+        repeat(599) { assertEquals(0, tick()) }
     }
 
     @Test fun transientAndIntermittentLossDoesNotReconnect() {
@@ -74,15 +140,21 @@ class AdaptiveBitrateControllerTest {
                 policy.onConnected(now)
             }
         }
-        assertEquals(4_000, policy.bitrateKbps)
+        assertEquals(1_000, policy.bitrateKbps)
         assertTrue(changes.zipWithNext().all { (a, b) -> b.first - a.first >= 30_000 })
-        assertTrue(changes.all { it.second >= 4_000 })
+        assertTrue(changes.all { it.second >= 1_000 })
     }
 
-    @Test fun lowManualCeilingIsNeverRaisedToDefaultFloor() {
-        policy = AdaptiveBitrateController(1_500).also { it.onConnected(now) }
+    @Test fun lowSystemCeilingIsNeverRaisedToDefaultFloor() {
+        policy = AdaptiveBitrateController(500, 500).also { it.onConnected(now) }
         repeat(300) { assertEquals(0, tick(if (it < 100) 50 else 0)) }
-        assertEquals(1_500, policy.bitrateKbps)
+        assertEquals(500, policy.bitrateKbps)
+    }
+
+    @Test fun aSmallFormatKeepsItsStartingBudgetEvenWithRoomToProbe() {
+        policy = AdaptiveBitrateController(500, 1_000).also { it.onConnected(now) }
+        assertEquals(500, policy.bitrateKbps)
+        repeat(600) { assertEquals(0, tick(bytes = 10_000)) }
     }
 
     @Test fun recoveryIsSlowAndSmall() {
@@ -93,9 +165,11 @@ class AdaptiveBitrateControllerTest {
         assertEquals(20_000, policy.ceilingKbps)
     }
 
-    @Test fun recoveryNeverExceedsUserCeiling() {
-        policy = AdaptiveBitrateController(5_000).also { it.onConnected(now) }
-        assertEquals(4_000, lower())
+    @Test fun recoveryNeverExceedsSystemQualityBound() {
+        policy = AdaptiveBitrateController(5_000, 5_000).also { it.onConnected(now) }
+        assertEquals(3_500, lower())
+        policy.onConnected(now)
+        assertEquals(4_000, recover())
         policy.onConnected(now)
         assertEquals(4_500, recover())
         policy.onConnected(now)
@@ -119,7 +193,7 @@ class AdaptiveBitrateControllerTest {
 
     @Test fun duplicateAndStaleSamplesCannotAccumulateEvidence() {
         warmup()
-        val sample = Sample(now, 1_000, 100, 40, 20)
+        val sample = Sample(now, 1_000, 100, 40, 20, 1_500_000)
         repeat(20) { assertEquals(0, policy.observe(sample, now)) }
         now += 4_000
         assertEquals(0, policy.observe(sample, now))
@@ -137,10 +211,10 @@ class AdaptiveBitrateControllerTest {
         assertEquals(15_000, policy.bitrateKbps)
     }
 
-    @Test fun highRttAloneDoesNotCutRateAndBlocksRecovery() {
+    @Test fun highRttWithoutVideoLoadDoesNotCutRateAndBlocksRecovery() {
         lower()
         policy.onConnected(now)
-        repeat(300) { assertEquals(0, tick(rtt = 200)) }
+        repeat(300) { assertEquals(0, tick(rtt = 200, bytes = 50_000)) }
         assertEquals(15_000, policy.bitrateKbps)
     }
 
@@ -167,9 +241,9 @@ class AdaptiveBitrateControllerTest {
         repeat(20) {
             now += 1_000
             for (sample in listOf(
-                Sample(now, 1_000, 0, 0, 20), Sample(now, 1_000, 10, 20, 20),
-                Sample(now, 1_000, 100, -1, 20), Sample(now, 5_000, 100, 40, 20),
-                Sample(now + 1_000, 1_000, 100, 40, 20)
+                Sample(now, 1_000, 0, 0, 20, 1_500_000), Sample(now, 1_000, 10, 20, 20, 1_500_000),
+                Sample(now, 1_000, 100, -1, 20, 1_500_000), Sample(now, 5_000, 100, 40, 20, 1_500_000),
+                Sample(now + 1_000, 1_000, 100, 40, 20, 1_500_000), Sample(now, 1_000, 100, 40, 20, -1)
             )) assertEquals(0, policy.observe(sample, now))
         }
         assertEquals(20_000, policy.bitrateKbps)

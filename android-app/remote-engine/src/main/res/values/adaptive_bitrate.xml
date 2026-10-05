@@ -1,10 +1,9 @@
 <resources>
     <string name="adaptive_bitrate_title">Automatic bitrate</string>
-    <string name="adaptive_bitrate_summary">Reduce bitrate when the network deteriorates and slowly recover after it stabilizes, up to your bitrate limit. Resolution and frame rate stay unchanged. Each adjustment briefly reconnects the stream; the computer app keeps running.</string>
-    <string name="adaptive_bitrate_limit">Bitrate limit</string>
+    <string name="adaptive_bitrate_summary">Choose a budget automatically for the resolution and frame rate, then adjust it using video demand and network feedback. No manual limit is needed. Static scenes do not trigger increases. Adjustments briefly reconnect; resolution, frame rate and the computer app stay unchanged.</string>
     <string name="adaptive_bitrate_adjusting">Adjusting bitrate</string>
     <string name="adaptive_bitrate_reconnecting">Reconnecting at %1$.1f Mbps. The computer app keeps running.</string>
     <string name="adaptive_bitrate_changed">Automatic bitrate: %1$.1f Mbps</string>
-    <string name="adaptive_bitrate_stats">Bitrate: %1$.1f Mbps · Automatic · Limit %2$.1f Mbps</string>
+    <string name="adaptive_bitrate_stats">Automatic · Encoding budget %1$.1f Mbps</string>
     <string name="adaptive_bitrate_poor">Network unstable · Automatic bitrate is monitoring (%1$.1f Mbps)</string>
 </resources>

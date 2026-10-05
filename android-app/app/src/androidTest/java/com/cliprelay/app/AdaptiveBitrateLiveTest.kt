@@ -40,7 +40,7 @@ class AdaptiveBitrateLiveTest {
     private fun monitor(game: Game, loss: Int) {
         val now = SystemClock.uptimeMillis()
         val decoder = field(game, "decoderRenderer") as MediaCodecDecoderRenderer
-        set(decoder, "networkSample", Sample(now, 1_000, 100, loss, 20))
+        set(decoder, "networkSample", Sample(now, 1_000, 100, loss, 20, policy(game).bitrateKbps * 100L))
         val runnable = field(game, "bitrateMonitor") as Runnable
         (field(game, "bitrateHandler") as Handler).removeCallbacks(runnable)
         runnable.run()
@@ -80,7 +80,7 @@ class AdaptiveBitrateLiveTest {
         val key = PreferenceConfiguration.ADAPTIVE_BITRATE_PREF_STRING
         val previousAuto = if (prefs.contains(key)) prefs.getBoolean(key, false) else null
         val configured = PreferenceConfiguration.readPreferences(context)
-        assumeTrue(configured.bitrate >= 5_000)
+        assumeTrue(PreferenceConfiguration.getDefaultBitrate(context) >= 5_000)
         var game: Game? = null
         val db = ComputerDatabaseManager(context)
         try {
@@ -101,6 +101,7 @@ class AdaptiveBitrateLiveTest {
             instrument.startActivitySync(intent)
             game = waitConnected()
             val initial = game
+            val initialRate = policy(initial).bitrateKbps
             val oldConnection = field(initial, "conn") as NvConnection
             val touchMode = field(initial, "touchMode") as TouchMode
             instrument.runOnMainSync {
@@ -114,7 +115,7 @@ class AdaptiveBitrateLiveTest {
             game = waitConnected(initial)
             val lowered = game
             val lowerRate = policy(lowered).bitrateKbps
-            assertTrue(lowerRate < configured.bitrate)
+            assertTrue(lowerRate < initialRate)
             instrument.runOnMainSync {
                 assertTrue(toolbar(lowered).isGameMode)
                 assertEquals(touchMode, field(lowered, "touchMode"))
@@ -140,7 +141,7 @@ class AdaptiveBitrateLiveTest {
             }
             game = waitConnected(lowered)
             val raised = game
-            assertTrue(policy(raised).bitrateKbps in (lowerRate + 1)..configured.bitrate)
+            assertTrue(policy(raised).bitrateKbps in (lowerRate + 1)..initialRate)
             instrument.runOnMainSync {
                 assertFalse(toolbar(raised).isGameMode)
                 assertTrue(toolbar(raised).isExpanded)

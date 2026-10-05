@@ -1385,7 +1385,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 networkSample = new com.limelight.nvstream.AdaptiveBitrateController.Sample(
                         now, now - activeWindowVideoStats.measurementStartTimestamp,
                         activeWindowVideoStats.totalFrames, activeWindowVideoStats.framesLost,
-                        (int) (MoonBridge.getEstimatedRttInfo() >> 32));
+                        (int) (MoonBridge.getEstimatedRttInfo() >> 32),
+                        activeWindowVideoStats.receivedVideoBytes);
             }
             VideoStats lastTwo = new VideoStats();
             lastTwo.add(lastWindowVideoStats);

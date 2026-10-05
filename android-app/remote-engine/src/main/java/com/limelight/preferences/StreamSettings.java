@@ -278,18 +278,14 @@ public class StreamSettings extends Activity {
             Preference bitratePreference = findPreference(PreferenceConfiguration.BITRATE_PREF_STRING);
             CheckBoxPreference adaptivePreference = (CheckBoxPreference)
                     findPreference(PreferenceConfiguration.ADAPTIVE_BITRATE_PREF_STRING);
-            CheckBoxPreference dataSaverPreference = (CheckBoxPreference)
-                    findPreference(PreferenceConfiguration.CELLULAR_DATA_SAVER_PREF_STRING);
-            bitratePreference.setTitle(adaptivePreference.isChecked() || dataSaverPreference.isChecked() ?
-                    R.string.adaptive_bitrate_limit : R.string.title_seekbar_bitrate);
+            PreferenceCategory basicSettings = (PreferenceCategory) findPreference("category_basic_settings");
+            // The stored manual value remains available when opting out, but
+            // has no influence on automatic mode and shouldn't look mandatory.
+            if (adaptivePreference.isChecked()) basicSettings.removePreference(bitratePreference);
+            bitratePreference.setTitle(R.string.title_seekbar_bitrate);
             adaptivePreference.setOnPreferenceChangeListener((preference, value) -> {
-                bitratePreference.setTitle((Boolean) value || dataSaverPreference.isChecked() ?
-                        R.string.adaptive_bitrate_limit : R.string.title_seekbar_bitrate);
-                return true;
-            });
-            dataSaverPreference.setOnPreferenceChangeListener((preference, value) -> {
-                bitratePreference.setTitle((Boolean) value || adaptivePreference.isChecked() ?
-                        R.string.adaptive_bitrate_limit : R.string.title_seekbar_bitrate);
+                if ((Boolean) value) basicSettings.removePreference(bitratePreference);
+                else basicSettings.addPreference(bitratePreference);
                 return true;
             });
             PreferenceScreen screen = getPreferenceScreen();

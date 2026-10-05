@@ -1,10 +1,9 @@
 <resources>
     <string name="adaptive_bitrate_title">自动调节码率</string>
-    <string name="adaptive_bitrate_summary">网络变差时降低码率，稳定后缓慢回升，不超过设定的上限。分辨率与帧率保持不变。每次调整会短暂重连串流，电脑上的应用会继续运行。</string>
-    <string name="adaptive_bitrate_limit">码率上限</string>
+    <string name="adaptive_bitrate_summary">按分辨率和帧率自动选择预算，再根据画面需求和网络反馈调整，无需设置上限。静止画面不触发提速。调整会短暂重连，分辨率和帧率不变，电脑上的应用继续运行。</string>
     <string name="adaptive_bitrate_adjusting">正在调整码率</string>
     <string name="adaptive_bitrate_reconnecting">正在以 %1$.1f Mbps 恢复串流，电脑上的应用会继续运行。</string>
     <string name="adaptive_bitrate_changed">码率已自动调整为 %1$.1f Mbps</string>
-    <string name="adaptive_bitrate_stats">码率：%1$.1f Mbps · 自动 · 上限 %2$.1f Mbps</string>
+    <string name="adaptive_bitrate_stats">全自动 · 编码预算 %1$.1f Mbps</string>
     <string name="adaptive_bitrate_poor">网络不稳定，正在评估码率（当前 %1$.1f Mbps）</string>
 </resources>

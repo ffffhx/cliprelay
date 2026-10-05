@@ -67,7 +67,7 @@ class CellularDataSaverLiveTest {
                     StreamNetworkMonitor.classify(caps) == if (enabled) CellularDataPolicy.NetworkType.UNMETERED else CellularDataPolicy.NetworkType.CELLULAR
             }
         }
-        fun awaitStream(limit: Int, pip: Boolean = false) {
+        fun awaitStream(limit: Int, pip: Boolean = false, ceiling: Int = limit) {
           try {
             await("Stream did not recover at $limit Kbps (PiP=$pip)") {
                 val monitor = ActivityLifecycleMonitorRegistry.getInstance()
@@ -77,7 +77,7 @@ class CellularDataSaverLiveTest {
                 val current = game ?: return@await false
                 val renderer = field(current, "decoderRenderer") as? MediaCodecDecoderRenderer
                 current.isStreamConnected && current.isInPictureInPictureMode == pip &&
-                    (field(current, "dataPolicy") as CellularDataPolicy).ceilingKbps == limit &&
+                    (field(current, "dataPolicy") as CellularDataPolicy).ceilingKbps == ceiling &&
                     field(current, "streamBitrateKbps") == limit && renderer != null &&
                     (field(renderer, "lastFrameNumber") as Int) > 0
             }
@@ -161,12 +161,16 @@ class CellularDataSaverLiveTest {
 
             // Fresh cellular startup must also be capped when congestion control is enabled.
             preferences.edit().putBoolean(PreferenceConfiguration.ADAPTIVE_BITRATE_PREF_STRING, true).commit()
+            val autoBudget = CellularDataPolicy.forStream(20_000,
+                PreferenceConfiguration.getDefaultBitrate(context), true, true)
+            autoBudget.update(CellularDataPolicy.NetworkType.CELLULAR)
             val embedded = requireNotNull(computer.embeddedAddress)
             game = instrument.startActivitySync(Intent(intent).putExtra(Game.EXTRA_HOST, embedded.address)
                 .putExtra(Game.EXTRA_PORT, embedded.port).putExtra(Game.EXTRA_HTTPS_PORT, 0)) as Game
-            awaitStream(6_000)
+            awaitStream(autoBudget.initialBitrateKbps, ceiling = autoBudget.ceilingKbps)
             setWifi(true)
-            awaitStream(20_000)
+            autoBudget.update(CellularDataPolicy.NetworkType.UNMETERED)
+            awaitStream(autoBudget.initialBitrateKbps, ceiling = autoBudget.ceilingKbps)
         } finally {
             ui {
                 for (stage in listOf(Stage.RESUMED, Stage.PAUSED, Stage.STARTED)) {
