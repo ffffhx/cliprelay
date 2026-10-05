@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     private var server: ClipRelayHttpServer? = null
+    private val debugStayAwake by lazy { DebugStayAwake(this) }
     private val discoveryPublisher by lazy { ClipRelayNsdPublisher(this) }
     private lateinit var historyRepository: HistoryRepository
     private lateinit var connectivityManager: ConnectivityManager
@@ -58,6 +59,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
         createNotificationChannels()
         AppUpdater.startAutomaticChecks(this)
         startAsForeground(buildReceiverNotification("正在启动局域网接收服务"))
+        debugStayAwake.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -79,6 +81,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     }
 
     override fun onDestroy() {
+        debugStayAwake.close()
         discoveryPublisher.stop()
         server?.stop()
         server = null

@@ -15,6 +15,7 @@ data class AppSettings(
     val deviceName: String,
     val discoveryEnabled: Boolean,
     val fullscreenDarkMode: Boolean = true,
+    val debugStayAwake: Boolean = false,
 )
 
 object AppPreferences {
@@ -22,7 +23,8 @@ object AppPreferences {
     const val MIN_PORT = 1024
     const val MAX_PORT = 65535
 
-    private const val FILE_NAME = "cliprelay_settings"
+    internal const val FILE_NAME = "cliprelay_settings"
+    internal const val KEY_DEBUG_STAY_AWAKE = "debug_stay_awake"
     private const val KEY_PORT = "port"
     private const val KEY_RECEIVER_ENABLED = "receiver_enabled"
     private const val KEY_START_ON_BOOT = "start_on_boot"
@@ -49,6 +51,7 @@ object AppPreferences {
             deviceName = loadDeviceName(preferences),
             discoveryEnabled = preferences.getBoolean(KEY_DISCOVERY_ENABLED, true),
             fullscreenDarkMode = preferences.getBoolean(KEY_FULLSCREEN_DARK_MODE, true),
+            debugStayAwake = preferences.getBoolean(KEY_DEBUG_STAY_AWAKE, false),
         )
     }
 
@@ -66,6 +69,7 @@ object AppPreferences {
             putInt(KEY_DEVICE_NAME_VERSION, DEVICE_NAME_VERSION_BRAND_AND_MODEL)
             putBoolean(KEY_DISCOVERY_ENABLED, settings.discoveryEnabled)
             putBoolean(KEY_FULLSCREEN_DARK_MODE, settings.fullscreenDarkMode)
+            putBoolean(KEY_DEBUG_STAY_AWAKE, settings.debugStayAwake)
         }
     }
 

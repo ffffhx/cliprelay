@@ -650,6 +650,13 @@ private fun SettingsPanel(
             checked = draft.fullscreenDarkMode,
             onCheckedChange = { draft = draft.copy(fullscreenDarkMode = it) },
         )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+        SettingSwitch(
+            title = "调试时保持亮屏",
+            description = "USB 或 Wi-Fi 调试任一开启时不自动息屏；都关闭后恢复。需保持接收服务运行，电源键仍可锁屏。",
+            checked = draft.debugStayAwake,
+            onCheckedChange = { draft = draft.copy(debugStayAwake = it) },
+        )
         FullscreenTextSizeSetting(
             value = draft.fullscreenTextSizeSp,
             onValueChange = { draft = draft.copy(fullscreenTextSizeSp = it) },
