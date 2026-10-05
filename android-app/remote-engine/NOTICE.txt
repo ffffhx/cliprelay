@@ -1,0 +1,16 @@
+ClipRelay's remote desktop client includes Moonlight Android and moonlight-common-c.
+Copyright remains with the respective upstream authors. Licensed GPL-3.0-only.
+See COPYING and upstream.json for the license, source origin and pinned revisions.
+
+Changes made for ClipRelay:
+- Converted the application to an internal Android library, with no launcher/exported activities.
+- Integrated entry point and desktop controls in the ClipRelay application.
+- Changed the default host port to 48789 and pairing/help text to ClipRelay.
+- Preserved native decoding, transport, cryptography and input implementation.
+
+The combined Android application must be distributed in accordance with GPLv3,
+including its complete corresponding source and build instructions. The MIT
+license of ClipRelay's original source does not replace these requirements.
+
+Native dependencies include ENet, nanors, Opus and OpenSSL. Their license notices
+and build files remain with their source/prebuilt libraries in src/main/jni.

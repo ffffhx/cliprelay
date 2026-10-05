@@ -1,0 +1,11 @@
+{
+  "project": "Moonlight Android",
+  "url": "https://github.com/moonlight-stream/moonlight-android",
+  "revision": "b48494cb96bff23d8886c4775cc4f39a1075495d",
+  "license": "GPL-3.0-only",
+  "moonlightCommonC": "874ac9548f1bd6f095ef2b435c42cdde460e7821",
+  "enet": "aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+  "nanors": "b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+  "integration": "Android library inside com.cliprelay.app; no separately installed Moonlight application",
+  "defaultHostPort": 48789
+}
