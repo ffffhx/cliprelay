@@ -618,21 +618,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             setTouchMode(TouchMode.DIRECT, false);
             Toast.makeText(this, R.string.touch_mode_unsupported, Toast.LENGTH_LONG).show();
         }, (x, y) -> { if (autoKeyboard != null && canAutoKeyboard()) autoKeyboard.tap(x, y); });
-        phoneTouch.setScrollSink(new com.limelight.binding.input.touch.PhoneScrollState.Sink() {
-            public void position(float x, float y) {
-                conn.sendMousePosition((short)Math.max(0, Math.min(streamView.getWidth(), x)),
-                        (short)Math.max(0, Math.min(streamView.getHeight(), y)),
-                        (short)streamView.getWidth(), (short)streamView.getHeight());
-            }
-            public void scroll(short vertical, short horizontal) {
-                if (vertical != 0) conn.sendMouseHighResScroll(vertical);
-                if (horizontal != 0) conn.sendMouseHighResHScroll(horizontal);
-            }
-            public void click(boolean right) {
-                byte button = right ? MouseButtonPacket.BUTTON_RIGHT : MouseButtonPacket.BUTTON_LEFT;
-                conn.sendMouseButtonDown(button); conn.sendMouseButtonUp(button);
-            }
-        });
 
         // The toolbar captures the connection, so attach only after it and the
         // touch contexts have been initialized.
@@ -645,9 +630,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void home() { returnToComputers(); }
                     @Override public void image() { openImageTransfer(); }
                     @Override public void streamInfo() { showStreamInfo(); }
-                    @Override public void scrollCompatibilityChanged(boolean enabled) {
-                        phoneTouch.setScrollCompatibility(enabled);
-                    }
                     @Override public void applicationChanged() {
                         cancelDesktopTouches();
                         if (autoKeyboard != null) autoKeyboard.foregroundChanged();

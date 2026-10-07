@@ -17,10 +17,7 @@ public final class PhoneTouchContext {
     private float downX, downY;
     private long downTime;
     private boolean tapCandidate;
-    private PhoneScrollState scroll;
-    private boolean scrollCompatibility, mouseGesture, ignoredGesture;
-    private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
-    private final Runnable longPress = () -> { if (mouseGesture && scroll != null) scroll.longPress(); };
+    private boolean ignoredGesture;
     private final int[] sourceLocation = new int[2];
     private final int[] videoLocation = new int[2];
 
@@ -36,20 +33,8 @@ public final class PhoneTouchContext {
         this.touchSlop = ViewConfiguration.get(video.getContext()).getScaledTouchSlop();
     }
 
-    public void setScrollSink(PhoneScrollState.Sink sink) {
-        cancel();
-        scroll = new PhoneScrollState(sink, touchSlop, video.getResources().getDisplayMetrics().density);
-    }
-
-    public void setScrollCompatibility(boolean enabled) {
-        if (scrollCompatibility == enabled) return;
-        cancel(); scrollCompatibility = enabled;
-    }
-
     public void cancel() {
-        tapCandidate = mouseGesture = false; ignoredGesture = true;
-        handler.removeCallbacks(longPress);
-        if (scroll != null) scroll.cancel();
+        tapCandidate = false; ignoredGesture = true;
         state.cancel();
     }
 
@@ -62,7 +47,6 @@ public final class PhoneTouchContext {
         if (action == MotionEvent.ACTION_DOWN) {
             state.begin(); downX = event.getX(); downY = event.getY(); downTime = event.getEventTime(); tapCandidate = true;
             ignoredGesture = false;
-            mouseGesture = scrollCompatibility && scroll != null;
         }
         if (event.getPointerCount() > 1 || Math.abs(event.getX() - downX) > touchSlop ||
                 Math.abs(event.getY() - downY) > touchSlop) tapCandidate = false;
@@ -74,37 +58,6 @@ public final class PhoneTouchContext {
             dy = sourceLocation[1] - videoLocation[1];
         }
         if (ignoredGesture) return true;
-        if (mouseGesture) {
-            float x = event.getX() + dx, y = event.getY() + dy;
-            if (action == MotionEvent.ACTION_DOWN) {
-                if (x < 0 || x > video.getWidth() || y < 0 || y > video.getHeight()) {
-                    cancel(); return true;
-                }
-                scroll.down(x, y);
-                handler.postDelayed(longPress, ViewConfiguration.getLongPressTimeout());
-                return true;
-            }
-            if (event.getPointerCount() > 1) {
-                // Restore native multi-touch before forwarding the second contact.
-                // No mouse button was held during a scroll gesture.
-                handler.removeCallbacks(longPress); scroll.cancel(); mouseGesture = false;
-                int first = event.getActionIndex() == 0 ? 1 : 0;
-                if (state.down(event.getPointerId(first), (event.getX(first) + dx) / video.getWidth(),
-                        (event.getY(first) + dy) / video.getHeight()) == MoonBridge.LI_ERR_UNSUPPORTED) {
-                    cancel(); unsupported.run(); return true;
-                }
-            } else {
-                if (action == MotionEvent.ACTION_MOVE) scroll.move(x, y);
-                else if (action == MotionEvent.ACTION_UP) {
-                    boolean cancelled = Build.VERSION.SDK_INT >= 33 && (event.getFlags() & MotionEvent.FLAG_CANCELED) != 0;
-                    boolean tap = !cancelled && scroll.up(x, y);
-                    cancel();
-                    // The mouse fallback clicks at DOWN, not at the release position.
-                    if (tap) tapped.tapped((downX + dx) / video.getWidth(), (downY + dy) / video.getHeight());
-                }
-                return true;
-            }
-        }
         if (action == MotionEvent.ACTION_MOVE) {
             for (int i = 0; i < event.getPointerCount(); i++) {
                 state.move(event.getPointerId(i), (event.getX(i) + dx) / video.getWidth(),

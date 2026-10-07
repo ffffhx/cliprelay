@@ -34,7 +34,6 @@ public final class DesktopToolbar {
         void disconnect();
         void gameModeChanged(boolean enabled);
         default void gamePointerModeChanged(boolean enabled) {}
-        default void scrollCompatibilityChanged(boolean enabled) {}
         default void applicationChanged() {}
         default void virtualKeyboardChanged(boolean visible) {}
         default void image() {}
@@ -82,7 +81,6 @@ public final class DesktopToolbar {
             profile = value;
             preferences.edit().putString("profile", value.id).apply();
             rebuild.run();
-            updateScrollCompatibility();
         }
         public boolean isAutomaticMode() { return automatic; }
         public void setAutomaticMode(boolean enabled) {
@@ -96,7 +94,6 @@ public final class DesktopToolbar {
             // Cancelling input here can discard the user's first tap/IME request.
             if (detectedApp != null && !app.equals(detectedApp)) actions.applicationChanged();
             detectedApp = app;
-            updateScrollCompatibility();
             if (!automatic || app.equals(appliedApp) || !canSend() || !focused) return;
             if (app.equals("stardew") || app.equals("plateup")) {
                 game.setProfile(GameBindings.Profile.fromId(app), false);
@@ -107,10 +104,6 @@ public final class DesktopToolbar {
                 rebuild.run();
             }
             appliedApp = app;
-            updateScrollCompatibility();
-        }
-        private void updateScrollCompatibility() {
-            actions.scrollCompatibilityChanged("orca".equals(detectedApp) || (!automatic && profile == DesktopProfile.ORCA));
         }
         private boolean canSend() { return connected && !paused && !pip; }
 
@@ -326,7 +319,6 @@ public final class DesktopToolbar {
         };
         controller.rebuild.run();
         controller.update();
-        controller.updateScrollCompatibility();
         return controller;
     }
 

@@ -16,10 +16,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.limelight.R
 import com.limelight.binding.input.touch.PhoneTouchContext
-import com.limelight.binding.input.touch.PhoneScrollState
 import com.limelight.nvstream.jni.MoonBridge
 import com.limelight.preferences.TouchMode
 import com.limelight.ui.DesktopToolbar
+import com.limelight.ui.DesktopProfile
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -39,6 +39,8 @@ class PhoneTouchTest {
         val handlePrefs = instrument.targetContext.getSharedPreferences("cliprelay_desktop_controls", 0)
         val hadHandlePosition = handlePrefs.contains("handle_y")
         val oldHandlePosition = handlePrefs.getFloat("handle_y", .5f)
+        val oldProfile = handlePrefs.getString("profile", null)
+        val oldAutomatic = handlePrefs.all["automatic_app"] as? Boolean
         handlePrefs.edit().remove("handle_y").commit()
         var activity: Activity? = null
         var context: PhoneTouchContext? = null
@@ -131,39 +133,6 @@ class PhoneTouchTest {
             send(MotionEvent.ACTION_DOWN, a)
             send(MotionEvent.ACTION_UP, a)
             assertEquals(1, keyboardChecks)
-            // Orca fallback emits wheel events without a synthetic click or a native drag.
-            var wheel = 0
-            var clicks = 0
-            instrument.runOnMainSync {
-                context!!.setScrollSink(object : PhoneScrollState.Sink {
-                    override fun position(x: Float, y: Float) {
-                        assertEquals(200f, x, .01f); assertEquals(200f, y, .01f)
-                    }
-                    override fun scroll(v: Short, h: Short) { wheel += v }
-                    override fun click(right: Boolean) { assertFalse(right); clicks++ }
-                })
-                context!!.setScrollCompatibility(true)
-            }
-            val nativeBeforeScroll = events.size
-            send(MotionEvent.ACTION_DOWN, a)
-            send(MotionEvent.ACTION_MOVE, a.copy(y = 200f))
-            send(MotionEvent.ACTION_UP, a.copy(y = 200f))
-            assertTrue(wheel < 0); assertEquals(0, clicks)
-            assertEquals(nativeBeforeScroll, events.size)
-            assertEquals(1, keyboardChecks)
-            send(MotionEvent.ACTION_DOWN, a); send(MotionEvent.ACTION_UP, a)
-            assertEquals(1, clicks); assertEquals(2, keyboardChecks)
-            send(MotionEvent.ACTION_DOWN, a); send(MotionEvent.ACTION_CANCEL, a); send(MotionEvent.ACTION_UP, a)
-            assertEquals(1, clicks)
-            // Two fingers still use native multi-touch, not two wheel gestures.
-            val oldWheel = wheel
-            send(MotionEvent.ACTION_DOWN, a)
-            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
-            assertEquals(setOf(7, 19), held)
-            send(MotionEvent.ACTION_MOVE, a.copy(x = 260f), b.copy(x = 740f))
-            send(MotionEvent.ACTION_CANCEL, a, b)
-            assertTrue(held.isEmpty()); assertEquals(oldWheel, wheel); assertEquals(1, clicks)
-            instrument.runOnMainSync { context!!.setScrollCompatibility(false) }
             // Exercise preference migration and the actual toolbar selector without a host connection.
             prefs.edit().remove(TouchMode.PREF).putBoolean("checkbox_touchscreen_trackpad", false).commit()
             assertEquals(TouchMode.DIRECT, TouchMode.read(screen))
@@ -176,6 +145,7 @@ class PhoneTouchTest {
                     override fun keyboard() = Unit
                     override fun disconnect() = Unit
                     override fun gameModeChanged(enabled: Boolean) = Unit
+                    override fun applicationChanged() { context!!.cancel() }
                     override fun touchMode() = selected
                     override fun selectTouchMode(mode: TouchMode) { selected = mode; mode.save(screen) }
                 })
@@ -227,6 +197,46 @@ class PhoneTouchTest {
             onView(withText(screen.getString(R.string.touch_mode_phone))).inRoot(isDialog()).perform(click())
             assertEquals(TouchMode.PHONE, selected)
             assertEquals(TouchMode.PHONE, TouchMode.read(screen))
+            // Automatic and manual Orca selection must retain the same native contacts
+            // as the other desktop profiles, in both directions, without opening the IME.
+            val checksBeforeProfiles = keyboardChecks
+            fun swipeInPhoneMode() {
+                assertEquals(TouchMode.PHONE, selected)
+                for (endY in listOf(200f, 400f)) {
+                    val before = events.size
+                    send(MotionEvent.ACTION_DOWN, a)
+                    send(MotionEvent.ACTION_MOVE, a.copy(y = endY))
+                    send(MotionEvent.ACTION_UP, a.copy(y = endY))
+                    assertEquals(listOf(
+                        Contact(MoonBridge.LI_TOUCH_EVENT_DOWN, 7, .25f, .5f),
+                        Contact(MoonBridge.LI_TOUCH_EVENT_MOVE, 7, .25f, (endY - 100f) / 400f),
+                        Contact(MoonBridge.LI_TOUCH_EVENT_UP, 7, .25f, (endY - 100f) / 400f)
+                    ), events.drop(before))
+                    assertTrue(held.isEmpty())
+                    assertEquals(checksBeforeProfiles, keyboardChecks)
+                }
+            }
+            instrument.runOnMainSync {
+                toolbar.setConnected(true); toolbar.setFocused(true); toolbar.setAutomaticMode(true)
+            }
+            for (profile in listOf(DesktopProfile.GENERAL, DesktopProfile.ORCA, DesktopProfile.CHATGPT)) {
+                instrument.runOnMainSync { toolbar.observeApplication(profile.id) }
+                assertEquals(profile, toolbar.profile)
+                swipeInPhoneMode()
+            }
+            for (profile in DesktopProfile.values()) {
+                instrument.runOnMainSync { toolbar.setProfile(profile) }
+                swipeInPhoneMode()
+            }
+            // A foreground change releases an in-flight contact and ignores the old release.
+            send(MotionEvent.ACTION_DOWN, a)
+            instrument.runOnMainSync { toolbar.observeApplication("orca") }
+            assertEquals(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, events.last().type)
+            val cancelledCount = events.size
+            send(MotionEvent.ACTION_UP, a)
+            assertEquals(cancelledCount, events.size)
+            assertTrue(held.isEmpty())
+            assertEquals(checksBeforeProfiles, keyboardChecks)
             instrument.runOnMainSync { root.findViewById<View>(R.id.touchModeButton).performClick() }
             onView(withText(screen.getString(R.string.touch_mode_direct))).inRoot(isDialog()).perform(click())
             assertEquals(TouchMode.DIRECT, selected)
@@ -239,6 +249,8 @@ class PhoneTouchTest {
             }.commit()
             handlePrefs.edit().apply {
                 if (hadHandlePosition) putFloat("handle_y", oldHandlePosition) else remove("handle_y")
+                if (oldProfile == null) remove("profile") else putString("profile", oldProfile)
+                if (oldAutomatic == null) remove("automatic_app") else putBoolean("automatic_app", oldAutomatic)
             }.commit()
         }
     }
