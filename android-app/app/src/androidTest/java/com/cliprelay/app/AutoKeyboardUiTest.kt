@@ -13,6 +13,7 @@ import android.widget.FrameLayout
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.limelight.ui.StreamView
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -75,6 +76,43 @@ class AutoKeyboardUiTest {
             assertTrue("Unicode commit was lost", committed.contains("中文"))
             assertTrue("Remote Backspace was lost", keys.contains(KeyEvent.KEYCODE_DEL))
             assertTrue("Remote Delete was lost", keys.contains(KeyEvent.KEYCODE_FORWARD_DEL))
+
+            committed.clear()
+            lateinit var speech: android.view.inputmethod.InputConnection
+            instrument.runOnMainSync {
+                speech = if (InstrumentationRegistry.getArguments().getString("legacyIme") == "true")
+                    android.view.inputmethod.BaseInputConnection(stream, false)
+                else stream.onCreateInputConnection(EditorInfo())!!
+                // Speech recognizers can revise both the text and its composing
+                // range repeatedly, including punctuation and shorter revisions.
+                for (revision in listOf("我", "我在", "我在，比如", "我在，比如说谷", "我在，比如说谷歌", "我在谷歌")) {
+                    speech.setComposingText(revision, 1)
+                    speech.setComposingRegion(0, revision.length)
+                }
+            }
+            instrument.waitForIdleSync()
+            assertTrue("Unconfirmed speech revisions leaked to the computer", committed.isEmpty())
+            // Use the SAME connection to finalise the retained composing text.
+            instrument.runOnMainSync {
+                speech.setComposingText("我在谷歌", 1)
+                speech.setComposingRegion(0, 4)
+                speech.commitText("我在谷歌。", 1)
+                speech.finishComposingText()
+                // Real repeated phrases must remain valid; do not deduplicate
+                // committed strings by their content or a timing heuristic.
+                speech.commitText("你好", 1)
+                speech.commitText("你好", 1)
+                speech.setComposingText("语音结束🙂", 1)
+                speech.setComposingRegion(0, "语音结束🙂".length)
+                speech.finishComposingText()
+                speech.finishComposingText()
+                speech.setComposingText("已取消", 1)
+                speech.setComposingText("", 1)
+                speech.finishComposingText()
+            }
+            instrument.waitForIdleSync()
+            assertEquals(listOf("我在谷歌。", "你好", "你好", "语音结束🙂"), committed)
+
             fun visible(): Boolean {
                 var result = false
                 instrument.runOnMainSync { result = stream.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) == true }

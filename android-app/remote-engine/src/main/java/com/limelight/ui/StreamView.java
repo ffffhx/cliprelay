@@ -96,8 +96,32 @@ public class StreamView extends SurfaceView {
         info.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
         info.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN
                 | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
-        // Dummy mode forwards committed Unicode through Game.onKeyMultiple().
-        return new BaseInputConnection(this, false) {
+        // Keep composing spans in a real local editor. BaseInputConnection's
+        // fallback mode also sends and clears text from setComposingRegion(),
+        // turning successive speech revisions into repeated remote prefixes.
+        // Use fallback mode only to translate FINAL text to the existing key /
+        // Game.onKeyMultiple() transport, including single-character key events.
+        BaseInputConnection committedKeys = new BaseInputConnection(this, false);
+        return new BaseInputConnection(this, true) {
+            private void forwardCommittedText() {
+                if (getEditable().length() == 0) return;
+                String text = getEditable().toString();
+                getEditable().clear();
+                committedKeys.commitText(text, 1);
+            }
+
+            @Override public boolean commitText(CharSequence text, int newCursorPosition) {
+                boolean result = super.commitText(text, newCursorPosition);
+                forwardCommittedText();
+                return result;
+            }
+
+            @Override public boolean finishComposingText() {
+                boolean result = super.finishComposingText();
+                forwardCommittedText();
+                return result;
+            }
+
             @Override public boolean deleteSurroundingText(int before, int after) {
                 // Keep composition edits local. Once committed, there is no
                 // local text buffer, so IME deletion must become remote keys.
