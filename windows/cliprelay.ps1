@@ -391,6 +391,12 @@ namespace ClipRelay
 
     public static class ScreenshotCapture
     {
+        public static Task<ScreenshotFrame> CaptureAsync(long quality)
+        {
+            return Task.Factory.StartNew(() => CaptureVirtualDesktopJpeg(quality),
+                CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+        }
+
         public static ScreenshotFrame CaptureVirtualDesktopJpeg(long quality)
         {
             if (quality < 1 || quality > 100)
@@ -519,6 +525,13 @@ namespace ClipRelay
                 throw new ArgumentNullException("jpegBytes");
             return Send(targets, "/push-image", "image/jpeg", jpegBytes,
                 timeoutMilliseconds, width, height);
+        }
+
+        public static Task<RelayDeliveryResult[]> SendImageAsync(
+            RelayTarget[] targets, byte[] jpegBytes, int width, int height, int timeoutMilliseconds)
+        {
+            return Task.Factory.StartNew(() => SendImage(targets, jpegBytes, width, height, timeoutMilliseconds),
+                CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
         }
 
         private static RelayDeliveryResult[] Send(
@@ -2853,6 +2866,12 @@ $lastTransferKind = ""
 $lastTransferDetail = "等待首次发送"
 $lastTransferAt = $null
 $lastTransferResults = @()
+$transferQueue = New-Object System.Collections.Queue
+$activeTransfer = $null
+$requestReaders = New-Object System.Collections.ArrayList
+$requestReaderPool = $null
+$openSettingsEvent = $null
+$pendingCopy = $null
 
 function Get-ClipRelayIcon {
     $candidatePaths = @()
@@ -3013,53 +3032,67 @@ function New-RelayBroadcastTargets {
     return $targets.ToArray()
 }
 
-function Invoke-RelayBroadcastWithRecovery {
-    param([object[]]$Peers, [scriptblock]$Send, [switch]$NoRecovery)
-
-    $enabled = @(Get-EnabledRelayPeers -Peers $Peers)
-    $results = @(& $Send -Peers $enabled)
-    if ($NoRecovery -or -not $script:DiscoveryEnabled) { return $results }
+function Get-RelayFailedIndexes {
+    param([object[]]$Results)
     $failedIndexes = @()
-    for ($index = 0; $index -lt $results.Count; $index++) {
-        $result = $results[$index]
+    for ($index = 0; $index -lt $Results.Count; $index++) {
+        $result = $Results[$index]
         if (-not $result.Success -and $result.StatusCode -eq 0 -and
             $result.ErrorKind -in @("ConnectFailure", "NameResolutionFailure", "Timeout", "SendFailure", "ReceiveFailure", "ConnectionClosed")) {
             $failedIndexes += $index
         }
     }
-    if ($failedIndexes.Count -eq 0) { return $results }
+    return $failedIndexes
+}
 
+function Get-RelayRecoveryPlan {
+    param([object[]]$Peers, [object[]]$Results, [object[]]$Devices)
+    $failedIndexes = @(Get-RelayFailedIndexes -Results $Results)
+    $merge = Merge-DiscoveredRelayDevices -Peers $Peers -DiscoveredDevices $Devices `
+        -DefaultPort $script:Port -LocalDeviceId $script:DeviceId -ExistingOnly
+    $updated = @($merge.Peers)
+    $retryPeers = @()
+    $retryIndexes = @()
+    $savedPeers = @(Copy-RelayPeers -Peers $script:Peers)
+    foreach ($index in $failedIndexes) {
+        $old = $Peers[$index]
+        $fresh = @($updated | Where-Object { $_.id -eq $old.id }) | Select-Object -First 1
+        $saved = @($savedPeers | Where-Object { $_.id -eq $old.id -and $_.enabled }) | Select-Object -First 1
+        if ($null -eq $fresh -or $null -eq $saved) { continue }
+        # Never change targets by display name/IP alone, or retry an unchanged endpoint.
+        if ($fresh.address -ieq $old.address -and [int]$fresh.port -eq [int]$old.port) { continue }
+        if ($saved.address -ine $old.address -or [int]$saved.port -ne [int]$old.port -or
+            $saved.accessToken -cne $old.accessToken) { continue }
+        $saved.address = $fresh.address
+        $saved.port = $fresh.port
+        $retryPeers += $saved
+        $retryIndexes += $index
+    }
+    if ($retryPeers.Count -gt 0) {
+        $null = Save-PeerConfiguration -Peers $savedPeers -Notifications $script:Notifications
+    }
+    return [PSCustomObject]@{ Peers = $retryPeers; Indexes = $retryIndexes }
+}
+
+function Invoke-RelayBroadcastWithRecovery {
+    param([object[]]$Peers, [scriptblock]$Send, [switch]$NoRecovery)
+
+    $enabled = @(Get-EnabledRelayPeers -Peers $Peers)
+    $results = @(& $Send -Peers $enabled)
+    if ($NoRecovery -or -not $script:DiscoveryEnabled -or
+        @(Get-RelayFailedIndexes -Results $results).Count -eq 0) { return $results }
     try {
         $devices = @(Find-ClipRelayDevices -TimeoutMilliseconds 1800)
-        $merge = Merge-DiscoveredRelayDevices -Peers $enabled -DiscoveredDevices $devices `
-            -DefaultPort $script:Port -LocalDeviceId $script:DeviceId -ExistingOnly
-        $updated = @($merge.Peers)
-        $retryPeers = @()
-        $retryIndexes = @()
-        $savedPeers = @(Copy-RelayPeers -Peers $script:Peers)
-        foreach ($index in $failedIndexes) {
-            $old = $enabled[$index]
-            $fresh = @($updated | Where-Object { $_.id -eq $old.id }) | Select-Object -First 1
-            $saved = @($savedPeers | Where-Object { $_.id -eq $old.id -and $_.enabled }) | Select-Object -First 1
-            if ($null -eq $fresh -or $null -eq $saved) { continue }
-            # Never change targets by display name/IP alone, or retry an unchanged endpoint.
-            if ($fresh.address -ieq $old.address -and [int]$fresh.port -eq [int]$old.port) { continue }
-            if ($saved.address -ine $old.address -or [int]$saved.port -ne [int]$old.port) { continue }
-            $saved.address = $fresh.address
-            $saved.port = $fresh.port
-            $retryPeers += $saved
-            $retryIndexes += $index
-        }
-        if ($retryPeers.Count -eq 0) { return $results }
-        $null = Save-PeerConfiguration -Peers $savedPeers -Notifications $script:Notifications
+        $plan = Get-RelayRecoveryPlan -Peers $enabled -Results $results -Devices $devices
+        if ($plan.Peers.Count -eq 0) { return $results }
     }
     catch {
         # Discovery/configuration failure must not discard deliveries that already succeeded.
         return $results
     }
-    $retried = @(& $Send -Peers $retryPeers)
+    $retried = @(& $Send -Peers $plan.Peers)
     for ($index = 0; $index -lt $retried.Count; $index++) {
-        $results[$retryIndexes[$index]] = $retried[$index]
+        $results[$plan.Indexes[$index]] = $retried[$index]
     }
     return $results
 }
@@ -3685,6 +3718,131 @@ function Start-RelayPeersConnectivityTest {
     return [ClipRelay.RelayBroadcaster]::SendTextAsync($targets, $json, $TimeoutMilliseconds)
 }
 
+function Add-RelayTransfer {
+    param([ValidateSet('TEXT', 'IMAGE', 'PROBE')][string]$Kind, [string]$Text = '')
+    if (@(Get-EnabledRelayPeers).Count -eq 0) { return }
+    if ($script:transferQueue.Count -ge 16) {
+        throw '发送队列已满，请等当前传输完成后重试。'
+    }
+    $script:transferQueue.Enqueue([PSCustomObject]@{
+        Kind = $Kind; Text = $Text; AtUtc = [DateTime]::UtcNow
+        CaptureTask = $(if ($Kind -eq 'IMAGE') { [ClipRelay.ScreenshotCapture]::CaptureAsync(88) } else { $null })
+    })
+}
+
+function Start-RelayTransferTask {
+    param($Transfer, [object[]]$Peers)
+    $targets = New-RelayBroadcastTargets -Peers $Peers
+    if ($Transfer.Kind -eq 'IMAGE') {
+        $frame = $Transfer.Frame
+        return [ClipRelay.RelayBroadcaster]::SendImageAsync($targets, $frame.Bytes, $frame.Width, $frame.Height, 10000)
+    }
+    $payload = @{ text = $Transfer.Text }
+    if ($Transfer.Kind -eq 'PROBE') { $payload.probe = $true }
+    return [ClipRelay.RelayBroadcaster]::SendTextAsync($targets, ($payload | ConvertTo-Json -Compress), 5000)
+}
+
+function Complete-RelayTransfer {
+    param($Transfer)
+    $kind = switch ($Transfer.Kind) { 'TEXT' { '文本' } 'IMAGE' { '截图' } 'PROBE' { '检测' } }
+    $summary = Get-RelayDeliverySummary -Results $Transfer.Results -Kind $kind
+    if ($Transfer.Kind -eq 'PROBE') {
+        $icon = if ($summary.State -eq 'success') { 'Info' } else { 'Warning' }
+        Show-ClipRelayNotification -Title 'ClipRelay 连接检测' -Message $summary.Detail -Icon $icon
+        return
+    }
+    $detail = $summary.Detail
+    if ($Transfer.Kind -eq 'IMAGE') { $detail = "$($Transfer.Frame.Width) × $($Transfer.Frame.Height) · $detail" }
+    Set-LastTransferStatus -State $summary.State -Kind $Transfer.Kind -Detail $detail -Results $Transfer.Results
+    if ($Transfer.Kind -eq 'TEXT') {
+        if ($summary.SuccessCount -gt 0) {
+            $script:lastSentClipboardText = $Transfer.Text
+            $script:lastSentClipboardPeer = Get-RelayPeerRouteSignature -Peers $Transfer.Peers
+            $script:lastSentClipboardAtUtc = $Transfer.AtUtc
+        }
+        elseif ($script:Notifications) {
+            Show-ClipRelayNotification -Title 'ClipRelay 发送失败' -Message $detail -Icon Warning
+        }
+    }
+}
+
+function Update-RelayTransfers {
+    # Keep one outgoing transfer in flight so consecutive copies retain their
+    # order. Only inspect completed tasks here; never wait on the UI thread.
+    if ($null -eq $script:activeTransfer -and $script:transferQueue.Count -gt 0) {
+        $queued = $script:transferQueue.Dequeue()
+        $peers = @(Copy-RelayPeers -Peers @(Get-EnabledRelayPeers))
+        if ($peers.Count -eq 0) { return }
+        $elapsed = ($queued.AtUtc - $script:lastSentClipboardAtUtc).TotalMilliseconds
+        if ($queued.Kind -eq 'TEXT' -and $queued.Text -ceq $script:lastSentClipboardText -and
+            (Get-RelayPeerRouteSignature -Peers $peers) -ceq $script:lastSentClipboardPeer -and
+            $elapsed -ge 0 -and $elapsed -lt $script:clipboardDuplicateWindowMilliseconds) { return }
+        $script:activeTransfer = [PSCustomObject]@{
+            Kind = $queued.Kind; Text = $queued.Text; AtUtc = $queued.AtUtc; Peers = $peers
+            Frame = $null; Task = $null; Phase = 'send'; Results = @(); RetryIndexes = @()
+        }
+        try {
+            if ($queued.Kind -eq 'IMAGE') {
+                $script:activeTransfer.Phase = 'capture'
+                $script:activeTransfer.Task = $queued.CaptureTask
+            }
+            else { $script:activeTransfer.Task = Start-RelayTransferTask -Transfer $script:activeTransfer -Peers $peers }
+        }
+        catch {
+            Set-LastTransferStatus -State error -Kind $queued.Kind -Detail $_.Exception.Message
+            $script:activeTransfer = $null
+        }
+    }
+    $transfer = $script:activeTransfer
+    if ($null -eq $transfer -or -not $transfer.Task.IsCompleted) { return }
+    try {
+        if ($transfer.Phase -eq 'capture') {
+            $transfer.Frame = $transfer.Task.GetAwaiter().GetResult()
+            if ($transfer.Frame.Bytes.Length -gt 26214400) { throw '截图超过 25 MiB。' }
+            $transfer.Phase = 'send'
+            $transfer.Task = Start-RelayTransferTask -Transfer $transfer -Peers $transfer.Peers
+            return
+        }
+        if ($transfer.Phase -eq 'discover') {
+            # Discovery failure must not discard deliveries that succeeded.
+            $plan = $null
+            try {
+                $devices = @($transfer.Task.GetAwaiter().GetResult())
+                if ($script:DiscoveryEnabled) {
+                    $plan = Get-RelayRecoveryPlan -Peers $transfer.Peers -Results $transfer.Results -Devices $devices
+                }
+            } catch { }
+            if ($null -ne $plan -and $plan.Peers.Count -gt 0) {
+                $transfer.RetryIndexes = $plan.Indexes
+                for ($i = 0; $i -lt $plan.Peers.Count; $i++) { $transfer.Peers[$plan.Indexes[$i]] = $plan.Peers[$i] }
+                $transfer.Phase = 'retry'
+                $transfer.Task = Start-RelayTransferTask -Transfer $transfer -Peers $plan.Peers
+                return
+            }
+        }
+        else {
+            $results = @($transfer.Task.GetAwaiter().GetResult())
+            if ($transfer.Phase -eq 'retry') {
+                for ($i = 0; $i -lt $results.Count; $i++) { $transfer.Results[$transfer.RetryIndexes[$i]] = $results[$i] }
+            }
+            else {
+                $transfer.Results = $results
+                if ($transfer.Kind -ne 'PROBE' -and $script:DiscoveryEnabled -and
+                    @(Get-RelayFailedIndexes -Results $results).Count -gt 0) {
+                    $transfer.Phase = 'discover'
+                    $transfer.Task = Start-ClipRelayDeviceDiscovery -TimeoutMilliseconds 1800
+                    return
+                }
+            }
+        }
+        Complete-RelayTransfer -Transfer $transfer
+    }
+    catch {
+        Set-LastTransferStatus -State error -Kind $transfer.Kind -Detail $_.Exception.Message
+    }
+    $script:activeTransfer = $null
+}
+
 function Send-TextToPeer {
     param([string]$Text)
 
@@ -3724,13 +3882,13 @@ function Send-ClipboardTextUnlessDuplicate {
 }
 
 function Send-CopiedClipboard {
-    param([uint32]$PreviousSequence)
+    param([uint32]$PreviousSequence, [switch]$Background, [switch]$NoWait)
 
     if (@(Get-EnabledRelayPeers).Count -eq 0) { return }
     try {
         # Give the foreground application time to copy first. If Ctrl+C does
         # not change the clipboard, send its current text after this window.
-        for ($attempt = 0; $attempt -lt 15; $attempt++) {
+        for ($attempt = 0; -not $NoWait -and $attempt -lt 15; $attempt++) {
             if ([ClipRelay.NativeMethods]::GetClipboardSequenceNumber() -ne $PreviousSequence) {
                 break
             }
@@ -3742,7 +3900,8 @@ function Send-CopiedClipboard {
             return
         }
 
-        $null = Send-ClipboardTextUnlessDuplicate -Text $copiedText
+        if ($Background) { Add-RelayTransfer -Kind TEXT -Text $copiedText }
+        else { $null = Send-ClipboardTextUnlessDuplicate -Text $copiedText }
     }
     catch {
         $msg = $_.Exception.Message
@@ -3757,10 +3916,12 @@ function Send-CopiedClipboard {
 }
 
 function Send-VirtualDesktopScreenshot {
+    param([switch]$Background)
     if (@(Get-EnabledRelayPeers).Count -eq 0) { return }
     # Capture and encode without invoking the Snipping Tool, touching the
     # local clipboard, or writing a temporary image file.
     try {
+        if ($Background) { Add-RelayTransfer -Kind IMAGE; return }
         $frame = [ClipRelay.ScreenshotCapture]::CaptureVirtualDesktopJpeg(88)
         $results = @(Invoke-RelayImageBroadcast -Frame $frame)
         $summary = Get-RelayDeliverySummary -Results $results -Kind "截图"
@@ -3865,6 +4026,59 @@ function Read-HttpRequest {
     }
 }
 
+function Initialize-RelayRequestReaders {
+    # Parsing uses sockets only. Clipboard access stays on the main STA thread.
+    $state = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $entry = New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry(
+        'Read-HttpRequest', ${function:Read-HttpRequest}.ToString())
+    $state.Commands.Add($entry)
+    $script:requestReaderPool = [runspacefactory]::CreateRunspacePool(1, 8, $state, $Host)
+    $script:requestReaderPool.Open()
+}
+
+function Start-RelayRequestRead {
+    param([System.Net.Sockets.TcpClient]$Client)
+    if ($script:requestReaders.Count -ge 8) { $Client.Dispose(); return }
+    $pipeline = [powershell]::Create()
+    try {
+        $pipeline.RunspacePool = $script:requestReaderPool
+        $null = $pipeline.AddScript('param($client) $ErrorActionPreference = "Stop"; Read-HttpRequest -Client $client').AddArgument($Client)
+        $handle = $pipeline.BeginInvoke()
+        $null = $script:requestReaders.Add([PSCustomObject]@{ Client = $Client; Pipeline = $pipeline; Handle = $handle })
+    }
+    catch { $pipeline.Dispose(); $Client.Dispose(); throw }
+}
+
+function Update-RelayRequestReads {
+    foreach ($pending in @($script:requestReaders.ToArray())) {
+        if (-not $pending.Handle.IsCompleted) { continue }
+        $script:requestReaders.Remove($pending)
+        try {
+            $requests = @($pending.Pipeline.EndInvoke($pending.Handle))
+            if ($pending.Pipeline.HadErrors -or $requests.Count -ne 1) { throw 'Invalid HTTP request.' }
+            Handle-Client -Client $pending.Client -Request $requests[0]
+        }
+        catch {
+            try { Send-HttpResponse -Stream $pending.Client.GetStream() -StatusCode 400 -Reason 'Bad Request' -Body 'bad request' } catch { }
+        }
+        finally { $pending.Client.Dispose(); $pending.Pipeline.Dispose() }
+    }
+}
+
+function Stop-RelayRequestReaders {
+    # Close sockets before joining workers so shutdown cannot wait for network timeouts.
+    foreach ($pending in @($script:requestReaders.ToArray())) { $pending.Client.Dispose() }
+    foreach ($pending in @($script:requestReaders.ToArray())) {
+        try { $pending.Pipeline.Stop() } catch { }
+        $pending.Pipeline.Dispose()
+    }
+    $script:requestReaders.Clear()
+    if ($null -ne $script:requestReaderPool) {
+        $script:requestReaderPool.Dispose()
+        $script:requestReaderPool = $null
+    }
+}
+
 function Send-HttpResponse {
     param(
         [System.IO.Stream]$Stream,
@@ -3882,11 +4096,10 @@ function Send-HttpResponse {
 }
 
 function Handle-Client {
-    param([System.Net.Sockets.TcpClient]$Client)
+    param([System.Net.Sockets.TcpClient]$Client, $Request = $null)
 
-    $request = $null
     try {
-        $request = Read-HttpRequest -Client $Client
+        if ($null -eq $Request) { $Request = Read-HttpRequest -Client $Client }
     }
     catch {
         try {
@@ -5774,9 +5987,14 @@ Initialize-ScreenSharing
 try {
     $createdNew = $false
     $mutexName = "Local\ClipRelay-$Port"
+    $openSettingsEvent = New-Object System.Threading.EventWaitHandle(
+        $false, [System.Threading.EventResetMode]::AutoReset, "Local\ClipRelay-OpenSettings-$Port")
     $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
     if (-not $createdNew) {
-        throw "ClipRelay is already running on port $Port."
+        # Reopening the shortcut should reveal the existing window, including
+        # while the resident process is still finishing its startup.
+        $null = $openSettingsEvent.Set()
+        return
     }
     $ownsMutex = $true
 
@@ -5793,10 +6011,7 @@ try {
     $checkStatusMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("🔍 检测连接状态")
     $checkStatusMenuItem.Add_Click({
         try {
-            $summary = Test-RelayPeersConnectivity -Peers $script:Peers -TimeoutMilliseconds 5000
-            $title = if ($summary.State -eq "success") { "ClipRelay: 全部设备可用" } elseif ($summary.State -eq "partial") { "ClipRelay: 部分设备可用" } else { "ClipRelay: 设备均不可达" }
-            $icon = if ($summary.State -eq "success") { [System.Windows.Forms.ToolTipIcon]::Info } else { [System.Windows.Forms.ToolTipIcon]::Warning }
-            Show-ClipRelayNotification -Title $title -Message $summary.Detail -Icon $icon
+            Add-RelayTransfer -Kind PROBE -Text 'cliprelay-probe'
         }
         catch {
             Show-ClipRelayNotification -Title "ClipRelay: 无法连接" -Message "$($_.Exception.Message)" -Icon Warning
@@ -5881,6 +6096,7 @@ try {
 
     $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Any, $Port)
     $listener.Start()
+    Initialize-RelayRequestReaders
     $acceptTask = $listener.AcceptTcpClientAsync()
     if ($script:DiscoveryEnabled) {
         try {
@@ -5927,21 +6143,32 @@ try {
         Process-WindowsMessages
         Update-RelayUpdateState
         Update-ScreenSharingTrayState
+        if ($openSettingsEvent.WaitOne(0)) { Show-PeerConfiguration }
+        Update-RelayTransfers
+        Update-RelayRequestReads
 
         $copySequence = [uint32]0
         if ([ClipRelay.CopyHotkeyMonitor]::TryTakeCopy([ref]$copySequence)) {
-            Send-CopiedClipboard -PreviousSequence $copySequence
+            $pendingCopy = [PSCustomObject]@{ Sequence = $copySequence; Deadline = [DateTime]::UtcNow.AddMilliseconds(300) }
+        }
+        if ($null -ne $pendingCopy -and
+            ([ClipRelay.NativeMethods]::GetClipboardSequenceNumber() -ne $pendingCopy.Sequence -or
+                [DateTime]::UtcNow -ge $pendingCopy.Deadline)) {
+            $copy = $pendingCopy
+            $pendingCopy = $null
+            Send-CopiedClipboard -PreviousSequence $copy.Sequence -Background -NoWait
         }
 
         if ([ClipRelay.CopyHotkeyMonitor]::TryTakeScreenshot()) {
-            Send-VirtualDesktopScreenshot
+            Send-VirtualDesktopScreenshot -Background
         }
 
         if ($acceptTask.IsCompleted) {
             $client = $null
             try {
                 $client = $acceptTask.GetAwaiter().GetResult()
-                Handle-Client -Client $client
+                Start-RelayRequestRead -Client $client
+                $client = $null # The reader now owns the socket.
             }
             catch {
             }
@@ -5958,11 +6185,12 @@ try {
 }
 finally {
     Stop-RelayUpdater
+    Stop-RelayRequestReaders
     if ($null -ne $remotePairingTimer) { $remotePairingTimer.Stop(); $remotePairingTimer.Dispose() }
     if ($mdnsStarted) {
         [ClipRelay.MdnsDiscovery]::Stop()
     }
-    if (Get-Command Invoke-ScreenShareCommand -ErrorAction SilentlyContinue) {
+    if ($ownsMutex -and (Get-Command Invoke-ScreenShareCommand -ErrorAction SilentlyContinue)) {
         try { $null = Invoke-ScreenShareCommand -Command @{action='stop-all'} -NoStart } catch {}
     }
     if ($copyMonitorStarted) {
@@ -5987,6 +6215,7 @@ finally {
     if ($null -ne $mutex) {
         $mutex.Dispose()
     }
+    if ($null -ne $openSettingsEvent) { $openSettingsEvent.Dispose() }
 }
 
 if ($restartRequested) {

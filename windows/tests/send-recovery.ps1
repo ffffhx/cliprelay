@@ -6,7 +6,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile(
 if ($errors.Count) { throw $errors[0] }
 foreach ($name in @('Get-PropertyValue','Get-NormalizedPeerAddress','Get-LocalRelayAddresses',
     'Test-IsLocalRelayPeer','Copy-RelayPeers','Remove-LocalRelayPeers','Merge-DiscoveredRelayDevices',
-    'Get-EnabledRelayPeers','Invoke-RelayBroadcastWithRecovery')) {
+    'Get-EnabledRelayPeers','Get-RelayFailedIndexes','Get-RelayRecoveryPlan','Invoke-RelayBroadcastWithRecovery')) {
     $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
     Invoke-Expression $fn.Extent.Text
 }
@@ -64,4 +64,24 @@ foreach ($case in @('success','http','disabled','unknown-id','unchanged','scan-e
     Assert ($script:calls.Count -eq $expectedCalls) "$case unexpected retry count"
     if ($case -in @('success','http','disabled','probe')) { Assert ($script:scans -eq 0) "$case should not scan" }
 }
-Write-Host 'PASS: send recovery, identity, persistence, partial success, bounded retries and failure cases'
+# Settings can now change while the asynchronous request is outstanding.
+# Recovery must not overwrite edits or retry a removed/disabled destination.
+foreach ($edit in @('disable','remove','address','token','name')) {
+    Reset-Scenario
+    $original = @(Copy-RelayPeers $script:Peers)
+    $failed = @(& $send -Peers $original)
+    switch ($edit) {
+        'disable' { $script:Peers[0].enabled = $false }
+        'remove' { $script:Peers = @($script:Peers[1]) }
+        'address' { $script:Peers[0].address = '192.0.2.50' }
+        'token' { $script:Peers[0].accessToken = 'new-key' }
+        'name' { $script:Peers[0].name = 'Renamed during send' }
+    }
+    $plan = Get-RelayRecoveryPlan -Peers $original -Results $failed -Devices $script:devices
+    if ($edit -eq 'name') {
+        Assert ($plan.Peers.Count -eq 1 -and $script:Peers[0].name -eq 'Renamed during send') 'Recovery lost a concurrent name edit'
+    } else {
+        Assert ($plan.Peers.Count -eq 0 -and $script:saves -eq 0) "Recovery clobbered a concurrent $edit edit"
+    }
+}
+Write-Host 'PASS: send recovery, concurrent settings edits, persistence, partial success and bounded retries'
