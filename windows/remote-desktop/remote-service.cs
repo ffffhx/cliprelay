@@ -208,10 +208,25 @@ namespace ClipRelay.Remote {
                 " --input-focus-probe " + Quote(typeof(HostService).Assembly.Location), Root, childSession, out focusChild, out focusJob);
         }
         void StopFocus() {
+            bool hadFocus = focusJob != IntPtr.Zero || focusChild != null;
             if (focusJob != IntPtr.Zero) { Native.CloseHandle(focusJob); focusJob = IntPtr.Zero; }
             if (focusChild != null) {
                 try { if (!focusChild.HasExited) focusChild.Kill(); } catch { }
                 focusChild.Dispose(); focusChild = null;
+            }
+            if (hadFocus) {
+                // The job teardown can interrupt Dispose in an active voice worker.
+                // Recover in a fresh user worker after the old job releases its lease.
+                Process recovery = null; IntPtr recoveryJob = IntPtr.Zero;
+                try {
+                    string self = typeof(HostService).Assembly.Location;
+                    Native.StartInSession(self, Quote(self) + " --voice-recover", Root, childSession, out recovery, out recoveryJob);
+                    recovery.WaitForExit(5000);
+                } catch { /* Persistent journal will also be retried on the next startup. */ }
+                finally {
+                    if (recoveryJob != IntPtr.Zero) Native.CloseHandle(recoveryJob);
+                    if (recovery != null) recovery.Dispose();
+                }
             }
         }
         PipeSecurity PipeAcl() {
@@ -368,6 +383,8 @@ namespace ClipRelay.Remote {
             }
         }
         public static int Main(string[] args) {
+            if (args.Length == 1 && args[0] == "--voice-probe") return VoiceInput.Run();
+            if (args.Length == 1 && args[0] == "--voice-recover") return VoiceInput.Run(true);
             if (args.Length == 1 && args[0] == "--focus-probe") return InputFocus.Run();
             if (args.Length == 2 && args[0] == "--terminate") {
                 uint pid;

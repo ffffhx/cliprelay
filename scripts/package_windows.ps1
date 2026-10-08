@@ -30,7 +30,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $source 'screen-share\engine') -Destination $video -Recurse
     $remote = Join-Path $package 'remote-desktop'
     [IO.Directory]::CreateDirectory($remote) | Out-Null
-    foreach ($name in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+    foreach ($name in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
         Copy-Item -LiteralPath (Join-Path $source "remote-desktop\$name") -Destination $remote
     }
     Copy-Item -LiteralPath (Join-Path $source 'remote-desktop\engine') -Destination $remote -Recurse

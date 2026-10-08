@@ -71,6 +71,7 @@ func paired(path string, certificate []byte) bool {
 type probe struct {
 	mu         sync.Mutex
 	executable string
+	argument   string
 	cmd        *exec.Cmd
 	in         io.WriteCloser
 	out        *bufio.Reader
@@ -79,8 +80,15 @@ type probe struct {
 func (p *probe) stop() {
 	if p.cmd != nil {
 		p.in.Close()
-		p.cmd.Process.Kill()
-		p.cmd.Wait()
+		// Let the voice helper cancel recording and restore the microphone on stdin EOF.
+		done := make(chan struct{})
+		go func() { p.cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3500 * time.Millisecond):
+			p.cmd.Process.Kill()
+			<-done
+		}
 		p.cmd = nil
 	}
 }
@@ -89,7 +97,11 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.cmd == nil {
-		cmd := exec.Command(p.executable, "--focus-probe")
+		argument := p.argument
+		if argument == "" {
+			argument = "--focus-probe"
+		}
+		cmd := exec.Command(p.executable, argument)
 		quietProcess(cmd)
 		in, err := cmd.StdinPipe()
 		if err != nil {
@@ -111,6 +123,9 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	// The service Job owns this entire process tree.
 	result := make(chan []byte, 1)
 	timeout := 1200 * time.Millisecond
+	if strings.HasPrefix(command, "voice-") {
+		timeout = 8 * time.Second
+	}
 	if strings.HasPrefix(command, "image:") {
 		timeout = 8 * time.Second
 	}
@@ -140,11 +155,20 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	}
 }
 
-func handler(clients string, read func(string) (json.RawMessage, error)) http.Handler {
+func handler(clients string, read func(string) (json.RawMessage, error), voiceRead ...func(string) (json.RawMessage, error)) http.Handler {
 	busy := make(chan struct{}, 1)
+	voiceProvider := read
+	if len(voiceRead) != 0 {
+		voiceProvider = voiceRead[0]
+	}
+	voice := &voiceHandler{read: voiceProvider, now: time.Now}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 || !paired(clients, r.TLS.PeerCertificates[0].Raw) {
 			http.Error(w, "unpaired", http.StatusForbidden)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/voice/") {
+			voice.serve(w, r, clients)
 			return
 		}
 		command := "focus"
@@ -268,8 +292,13 @@ func Serve(ctx context.Context, dir, executable string) error {
 	clients := filepath.Join(dir, "clients.json")
 	p := &probe{executable: executable}
 	defer p.stop()
+	voice := &probe{executable: executable, argument: "--voice-probe"}
+	defer voice.stop()
+	// Start the user worker on host startup so an interrupted microphone switch
+	// is recovered before the next phone dictation. This does not start recording.
+	_, _ = voice.read("voice-status")
 	server := &http.Server{
-		Addr: ":48791", Handler: handler(clients, p.read),
+		Addr: ":48791", Handler: handler(clients, p.read, voice.read),
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second,
 		WriteTimeout: 3 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
 		ErrorLog: log.New(io.Discard, "", 0),

@@ -108,6 +108,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private volatile boolean imageTransfer;
     private com.limelight.ui.ImagePasteRequest imagePaste = new com.limelight.ui.ImagePasteRequest();
     private boolean imageResumeReady;
+    private com.limelight.ui.RemoteVoiceInput voiceInput;
     private boolean returningToComputers;
     private boolean resumeInputAfterPip;
     private static final int IMAGE_TRANSFER = 701;
@@ -594,6 +595,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         try {
             NvHTTP controlHttp = new NvHTTP(new ComputerDetails.AddressTuple(host, port), httpsPort, uniqueId,
                     serverCert, PlatformBinding.getCryptoProvider(this));
+            voiceInput = new com.limelight.ui.RemoteVoiceInput(this, controlHttp, () -> {
+                cancelDesktopTouches(); keyboardDismissed();
+                if (desktopToolbar != null) desktopToolbar.hideVirtualKeyboard();
+                ((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE))
+                        .hideSoftInputFromWindow(streamView.getWindowToken(), 0);
+            }, state -> { if (desktopToolbar != null) desktopToolbar.setVoiceState(state); });
             applicationMonitor = new com.limelight.binding.input.ApplicationMonitor(controlHttp, app -> {
                 if (desktopToolbar != null && connected && activityResumed && hasWindowFocus()
                         && !isInPictureInPictureMode()) desktopToolbar.observeApplication(app);
@@ -629,6 +636,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void disconnect() { finish(); }
                     @Override public void home() { returnToComputers(); }
                     @Override public void image() { openImageTransfer(); }
+                    @Override public void voice() {
+                        if (voiceInput != null && connected && activityResumed && !isInPictureInPictureMode()) voiceInput.toggle();
+                        else Toast.makeText(Game.this, R.string.voice_failed, Toast.LENGTH_LONG).show();
+                    }
                     @Override public void streamInfo() { showStreamInfo(); }
                     @Override public void applicationChanged() {
                         cancelDesktopTouches();
@@ -891,6 +902,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override public void onPictureInPictureModeChanged(boolean inPip, Configuration config) {
         super.onPictureInPictureModeChanged(inPip, config);
+        if (inPip && voiceInput != null) voiceInput.pause();
         if (desktopToolbar != null) desktopToolbar.setPictureInPicture(inPip);
         if (inPip) {
             keyboardDismissed();
@@ -968,6 +980,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus && voiceInput != null) voiceInput.end(true);
         updateApplicationMonitor();
         if (!hasFocus) { cancelDesktopTouches(); keyboardDismissed(); }
         if (desktopToolbar != null) desktopToolbar.setFocused(hasFocus);
@@ -1266,6 +1279,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        if (voiceInput != null) voiceInput.close();
         streamInfo.dismiss();
         com.limelight.ui.LiveStreamSession.clear(this);
         if (applicationMonitor != null) applicationMonitor.close();
@@ -1324,6 +1338,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onPause() {
+        if (voiceInput != null) voiceInput.pause();
         streamInfo.dismiss();
         keyboardDismissed();
         activityResumed = false;
@@ -1836,13 +1851,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         inputManager.toggleSoftInput(0, 0);
     }
 
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == com.limelight.ui.RemoteVoiceInput.PERMISSION && voiceInput != null) {
+            boolean granted = results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            streamView.postDelayed(() -> {
+                if (voiceInput != null) voiceInput.permissionResult(granted, connected && activityResumed
+                        && !isFinishing() && !isDestroyed() && !isInPictureInPictureMode());
+            }, 200);
+        }
+    }
+
     private boolean canAutoKeyboard() {
         return connected && activityResumed && hasWindowFocus() && !isFinishing() && !isDestroyed()
+                && (voiceInput == null || !voiceInput.isActive())
                 && !isInPictureInPictureMode() && touchMode == TouchMode.PHONE
                 && desktopToolbar != null && !desktopToolbar.isGameMode() && !desktopToolbar.isVirtualKeyboardOpen();
     }
 
     @Override public void onBackPressed() {
+        if (voiceInput != null && voiceInput.isActive()) { voiceInput.end(false); return; }
         if (desktopToolbar != null && desktopToolbar.hideVirtualKeyboard()) return;
         if (connected) returnToComputers();
         else super.onBackPressed();
@@ -2659,6 +2687,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void stopConnection() { stopConnection(null); }
 
     private void stopConnection(Runnable afterStop) {
+        if (voiceInput != null) voiceInput.pause();
         streamInfo.dismiss();
         resumeInputAfterPip = false;
         com.limelight.ui.LiveStreamSession.clear(this);

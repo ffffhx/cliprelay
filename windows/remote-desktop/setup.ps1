@@ -43,7 +43,7 @@ if ($null -eq $stamp -or $stamp.sha256 -ne $manifest.sha256 -or !(Test-Path -Lit
 }
 $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $wpf = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF'
-& $compiler /nologo /target:exe /platform:x64 /optimize+ "/out:$binPath\ClipRelay.Remote.Service.exe" /r:System.ServiceProcess.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll "/r:$wpf\UIAutomationClient.dll" "/r:$wpf\UIAutomationTypes.dll" "/r:$wpf\WindowsBase.dll" (Join-Path $PSScriptRoot 'remote-service.cs') (Join-Path $PSScriptRoot 'input-focus.cs')
+& $compiler /nologo /target:exe /platform:x64 /optimize+ "/out:$binPath\ClipRelay.Remote.Service.exe" /r:System.ServiceProcess.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll "/r:$wpf\UIAutomationClient.dll" "/r:$wpf\UIAutomationTypes.dll" "/r:$wpf\WindowsBase.dll" (Join-Path $PSScriptRoot 'remote-service.cs') (Join-Path $PSScriptRoot 'input-focus.cs') (Join-Path $PSScriptRoot 'voice-input.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Remote service compilation failed.' }
 & $compiler /nologo /target:library /optimize+ "/out:$binPath\ClipRelay.Remote.Client.dll" (Join-Path $PSScriptRoot 'remote-client.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Remote control compilation failed.' }
@@ -69,6 +69,13 @@ foreach ($directory in @($serviceRoot, $stateRoot)) {
     foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
         $rule = [Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($rule)
+    }
+    if ($directory -eq $serviceRoot) {
+        # The voice worker runs as the desktop user to access Doubao's per-user pipe.
+        # Executables are readable/executable; only administrators/SYSTEM can modify
+        # them. State and pairing credentials retain the stricter ACL below.
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
     }
     Set-Acl -LiteralPath $directory -AclObject $acl
 }

@@ -239,6 +239,46 @@ public class NvHTTP {
         }
     }
 
+    private OkHttpClient voiceClient;
+
+    private synchronized OkHttpClient voiceClient() throws IOException {
+        if (voiceClient == null) voiceClient = performAndroidTlsHack(httpClientShortConnectTimeout).newBuilder()
+                .connectionPool(new ConnectionPool(1, 15, TimeUnit.SECONDS))
+                .callTimeout(10, TimeUnit.SECONDS).connectTimeout(2, TimeUnit.SECONDS)
+                .readTimeout(9, TimeUnit.SECONDS).writeTimeout(2, TimeUnit.SECONDS)
+                .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
+        return voiceClient;
+    }
+
+    /** Phone dictation uses the same pinned host/client TLS identities as remote input. */
+    public void voiceRequest(String action, String session, int sequence, byte[] pcm) throws IOException {
+        if (serverCert == null) throw new IOException("VOICE_UNAVAILABLE");
+        if (!java.util.Arrays.asList("status", "start", "audio", "stop", "cancel").contains(action))
+            throw new IllegalArgumentException("Invalid voice action");
+        HttpUrl url = baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2)
+                .addPathSegment("v1").addPathSegment("voice").addPathSegment(action).build();
+        OkHttpClient client = voiceClient();
+        Request.Builder request = new Request.Builder().url(url);
+        if (!action.equals("status")) {
+            request.header("X-ClipRelay-Voice-Session", session)
+                    .header("X-ClipRelay-Voice-Sequence", Integer.toString(sequence))
+                    .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/octet-stream"),
+                            pcm == null ? new byte[0] : pcm));
+        }
+        try (Response response = client.newCall(request.build()).execute()) {
+            if (response.code() == 404) throw new IOException("UPDATE_HOST");
+            if (response.body() == null) throw new IOException("VOICE_UNAVAILABLE");
+            okio.BufferedSource source = response.body().source();
+            source.request(1025);
+            if (source.buffer().size() > 1024) throw new IOException("VOICE_UNAVAILABLE");
+            try {
+                org.json.JSONObject status = new org.json.JSONObject(source.readUtf8());
+                if (!response.isSuccessful() || !status.optBoolean("ok"))
+                    throw new IOException(status.optString("code", "VOICE_UNAVAILABLE"));
+            } catch (org.json.JSONException e) { throw new IOException("VOICE_UNAVAILABLE", e); }
+        }
+    }
+
     private org.json.JSONObject getControlMetadata(String endpoint) throws IOException {
         return getControlMetadata(endpoint, null, null);
     }

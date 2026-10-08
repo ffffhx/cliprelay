@@ -110,7 +110,7 @@ if (Test-Path (Join-Path $bundledEngine 'electron.exe')) {
 
 $remoteDirectory = Join-Path $installDirectory 'remote-desktop'
 New-Item -ItemType Directory -Path $remoteDirectory -Force | Out-Null
-foreach ($file in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+foreach ($file in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
     Install-ScriptFile -Name "remote-desktop/$file" -Destination (Join-Path $remoteDirectory $file)
 }
 $remoteBin = Join-Path $remoteDirectory 'bin'

@@ -35,7 +35,7 @@ namespace ClipRelay.Remote {
             return element.Current.ControlType == ControlType.Edit && element.Current.IsPassword;
         }
 
-        static bool IsInteractiveDesktop() {
+        public static bool IsInteractiveDesktop() {
             IntPtr desktop = OpenInputDesktop(0, false, 0x0100);
             if (desktop == IntPtr.Zero) return false;
             var name = new StringBuilder(256); int needed;

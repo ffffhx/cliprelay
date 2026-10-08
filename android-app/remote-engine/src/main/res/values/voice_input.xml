@@ -1,0 +1,25 @@
+<resources>
+    <item name="desktopBackspaceButton" type="id" />
+    <string name="desktop_backspace">Backspace</string>
+    <item name="desktopVoiceButton" type="id" />
+    <string name="voice_input">Voice input</string>
+    <string name="voice_button_starting">Doubao\nConnecting</string>
+    <string name="voice_button_listening">Doubao\nTap to stop</string>
+    <string name="voice_button_stopping">Doubao\nFinishing</string>
+    <string name="voice_button_stop_description">Doubao voice input active. Tap again to stop.</string>
+    <string name="voice_connecting">Preparing computer voice input…</string>
+    <string name="voice_listening">Speak into your phone</string>
+    <string name="voice_hint">Doubao on your computer types into the selected text field. Up to 3 minutes per session.</string>
+    <string name="voice_finish">Finish speaking</string>
+    <string name="voice_finishing">Finishing voice input…</string>
+    <string name="voice_permission">Allow microphone access to use voice input. You can enable it in the phone’s app settings.</string>
+    <string name="voice_update_host">Update ClipRelay on your computer to use voice input.</string>
+    <string name="voice_doubao_required">Install and set up Doubao Input Method on your computer first.</string>
+    <string name="voice_virtual_mic_required">Enable Steam Streaming Microphone or install VB-CABLE on your computer to receive phone audio. ClipRelay selects the virtual microphone automatically.</string>
+    <string name="voice_busy">Voice input is already in use. Try again after it ends.</string>
+    <string name="voice_focus_required">Unlock your computer and select the text field before starting voice input.</string>
+    <string name="voice_mic_failed">Could not start the phone microphone. Check microphone access and other recording apps.</string>
+    <string name="voice_backlog">The connection is too slow for voice input. Recording has stopped.</string>
+    <string name="voice_failed">Voice input ended or could not connect. Check the computer and connection, then try again.</string>
+    <string name="voice_version_unsupported">This Doubao version has not been verified. Update ClipRelay to support it. Currently supported: Windows Doubao 0.9.1.22.</string>
+</resources>

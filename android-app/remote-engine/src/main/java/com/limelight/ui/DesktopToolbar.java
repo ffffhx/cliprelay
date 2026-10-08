@@ -3,6 +3,8 @@ package com.limelight.ui;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Color;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Animatable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.StateListDrawable;
@@ -37,6 +39,7 @@ public final class DesktopToolbar {
         default void applicationChanged() {}
         default void virtualKeyboardChanged(boolean visible) {}
         default void image() {}
+        default void voice() {}
         default void home() {}
         default void streamInfo() {}
     }
@@ -47,6 +50,9 @@ public final class DesktopToolbar {
         private EdgeHandle handle;
         private Actions actions;
         private Button touchModeButton;
+        private Button voiceButton;
+        private Drawable voiceIdleBackground;
+        private RemoteVoiceInput.State voiceState = RemoteVoiceInput.State.IDLE;
         private DesktopProfile profile;
         private SharedPreferences preferences;
         private Runnable rebuild;
@@ -57,6 +63,45 @@ public final class DesktopToolbar {
         private DesktopSideRails sideRails;
 
         public boolean isSideRailsActive() { return sideRails != null && sideRails.isAvailable(); }
+
+        public void setVoiceState(RemoteVoiceInput.State state) {
+            voiceState = state;
+            updateVoiceButton();
+        }
+        private void updateVoiceButton() {
+            if (voiceButton == null) return;
+            Drawable previous = voiceButton.getCompoundDrawables()[1];
+            if (previous instanceof Animatable) ((Animatable) previous).stop();
+            boolean active = voiceState != RemoteVoiceInput.State.IDLE;
+            boolean stopping = voiceState == RemoteVoiceInput.State.STOPPING;
+            boolean loading = voiceState == RemoteVoiceInput.State.STARTING || stopping;
+            int label = voiceState == RemoteVoiceInput.State.LISTENING ? R.string.voice_button_listening
+                    : voiceState == RemoteVoiceInput.State.STARTING ? R.string.voice_button_starting
+                    : stopping ? R.string.voice_button_stopping : R.string.voice_input;
+            voiceButton.setText(label);
+            voiceButton.setContentDescription(voiceButton.getContext().getString(
+                    voiceState == RemoteVoiceInput.State.LISTENING ? R.string.voice_button_stop_description : label));
+            voiceButton.setEnabled(!stopping);
+            voiceButton.setSelected(active);
+            voiceButton.setAlpha(1f);
+            voiceButton.setTextColor(loading ? 0xFFFFD166 : active ? 0xFF80F0D4 : Color.WHITE);
+            if (active) {
+                float density = voiceButton.getResources().getDisplayMetrics().density;
+                GradientDrawable background = new GradientDrawable();
+                background.setColor(loading ? 0xFF3D3218 : 0xFF123B3A);
+                background.setCornerRadius(8 * density);
+                background.setStroke(Math.max(1, Math.round(density)), loading ? 0xFFDAAA3D : 0xFF42BDA7);
+                voiceButton.setBackground(background);
+                Drawable wave = loading ? new VoiceLoadingDrawable()
+                        : voiceButton.getContext().getDrawable(R.drawable.remote_ic_voice_wave);
+                wave.setBounds(0, 0, Math.round(20 * density), Math.round(12 * density));
+                voiceButton.setCompoundDrawables(null, wave, null, null);
+                if (loading && voiceButton.isAttachedToWindow()) ((Animatable) wave).start();
+            } else {
+                voiceButton.setBackground(voiceIdleBackground);
+                voiceButton.setCompoundDrawables(null, null, null, null);
+            }
+        }
 
         public boolean isVirtualKeyboardOpen() { return keyboardOpen; }
         public void showVirtualKeyboard() {
@@ -274,6 +319,25 @@ public final class DesktopToolbar {
             image.setId(R.id.desktopImageButton);
             image.setOnClickListener(v -> { if (controller.canSend()) actions.image(); });
             button(activity, primary, activity.getString(R.string.virtual_keyboard_phone)).setOnClickListener(v -> actions.keyboard());
+            Button voice = button(activity, primary, activity.getString(R.string.voice_input));
+            voice.setId(R.id.desktopVoiceButton);
+            voice.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                public void onViewAttachedToWindow(View view) {
+                    Drawable icon = voice.getCompoundDrawables()[1];
+                    if (icon instanceof Animatable) ((Animatable) icon).start();
+                }
+                public void onViewDetachedFromWindow(View view) {
+                    Drawable icon = voice.getCompoundDrawables()[1];
+                    if (icon instanceof Animatable) ((Animatable) icon).stop();
+                }
+            });
+            controller.voiceButton = voice;
+            controller.voiceIdleBackground = voice.getBackground();
+            controller.updateVoiceButton();
+            voice.setOnClickListener(v -> { if (controller.canSend()) { controller.releaseTouches(); actions.voice(); } });
+            Button backspace = button(activity, secondary, activity.getString(R.string.desktop_backspace));
+            backspace.setId(R.id.desktopBackspaceButton);
+            backspace.setOnClickListener(v -> { if (controller.canSend()) keyboard.tap(0x08); });
             if (controller.profile.isChat()) {
                 shortcut(activity, secondary, controller, keyboard, "Enter", 0x0D);
                 shortcut(activity, secondary, controller, keyboard, activity.getString(controller.isSideRailsActive()
@@ -293,12 +357,8 @@ public final class DesktopToolbar {
                 shortcut(activity, secondary, controller, keyboard, "Win", 0x5B);
                 shortcut(activity, secondary, controller, keyboard, "Enter", 0x0D);
             }
-            shortcut(activity, secondary, controller, keyboard, "Tab", 0x09);
             if (controller.profile == DesktopProfile.ORCA) shortcut(activity, secondary, controller, keyboard, "Shift+Tab", 0x10, 0x09);
             shortcut(activity, secondary, controller, keyboard, "Esc", 0x1B);
-            button(activity, secondary, activity.getString(R.string.desktop_right_click)).setOnClickListener(v -> {
-                if (controller.canSend()) sink.rightClick();
-            });
             controller.touchModeButton = button(activity, secondary, "");
             controller.touchModeButton.setId(R.id.touchModeButton);
             controller.updateTouchMode(actions.touchMode());
