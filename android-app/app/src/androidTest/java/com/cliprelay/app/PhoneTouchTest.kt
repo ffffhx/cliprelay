@@ -16,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.limelight.R
 import com.limelight.binding.input.touch.PhoneTouchContext
+import com.limelight.binding.input.touch.PhoneScrollState
 import com.limelight.nvstream.jni.MoonBridge
 import com.limelight.preferences.TouchMode
 import com.limelight.ui.DesktopToolbar
@@ -53,6 +54,12 @@ class PhoneTouchTest {
             lateinit var video: View
             val events = mutableListOf<Contact>()
             val held = mutableSetOf<Int>()
+            val mousePositions = mutableListOf<Pair<Float, Float>>()
+            val wheels = mutableListOf<Pair<Short, Short>>()
+            val clicks = mutableListOf<Boolean>()
+            val feedbackPoints = mutableListOf<Pair<Float, Float>>()
+            var feedbackVisible = false
+            var feedbackReleases = 0
             var desktopTouches = 0
             var keyboardChecks = 0
             instrument.runOnMainSync {
@@ -73,6 +80,16 @@ class PhoneTouchTest {
                     assertEquals(.25f, x, .001f)
                     assertEquals(.5f, y, .001f)
                     keyboardChecks++
+                })
+                context!!.setScrollSink(object : PhoneScrollState.Sink {
+                    override fun position(x: Float, y: Float) { mousePositions += x to y }
+                    override fun scroll(vertical: Short, horizontal: Short) { wheels += vertical to horizontal }
+                    override fun click(right: Boolean) { clicks += right }
+                })
+                context!!.setScrollFeedback(object : PhoneTouchContext.ScrollFeedback {
+                    override fun show(x: Float, y: Float) { feedbackPoints += x to y; feedbackVisible = true }
+                    override fun release() { feedbackReleases++; feedbackVisible = false }
+                    override fun clear() { feedbackVisible = false }
                 })
                 root.setOnTouchListener { v, e -> desktopTouches++; context!!.onTouch(v, e) }
             }
@@ -133,6 +150,75 @@ class PhoneTouchTest {
             send(MotionEvent.ACTION_DOWN, a)
             send(MotionEvent.ACTION_UP, a)
             assertEquals(1, keyboardChecks)
+            assertTrue(feedbackPoints.isEmpty()) // Native touch has its own host feedback.
+            // ChatGPT buffers a first finger: a swipe never clicks or starts a native drag.
+            instrument.runOnMainSync { context!!.setScrollCompatibility(true) }
+            val beforeCompatibility = events.size
+            send(MotionEvent.ACTION_DOWN, a)
+            assertTrue(feedbackVisible)
+            assertEquals(200f to 200f, feedbackPoints.last())
+            send(MotionEvent.ACTION_MOVE, a.copy(y = 200f))
+            assertEquals(200f to 100f, feedbackPoints.last()) // Follows finger, not fixed scroll target.
+            send(MotionEvent.ACTION_UP, a.copy(y = 200f))
+            assertEquals(1, feedbackReleases)
+            assertFalse(feedbackVisible)
+            assertEquals(beforeCompatibility, events.size)
+            assertEquals(listOf(200f to 200f), mousePositions)
+            assertTrue(wheels.single().first < 0)
+            assertTrue(clicks.isEmpty())
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_UP, a)
+            assertEquals(listOf(false), clicks)
+            assertEquals(2, keyboardChecks)
+            // Black bars, Android cancellation and focus/mode cancellation cannot click.
+            val mouseCount = mousePositions.size
+            send(MotionEvent.ACTION_DOWN, Finger(3, 20f, 300f))
+            assertFalse(feedbackVisible)
+            send(MotionEvent.ACTION_MOVE, a)
+            send(MotionEvent.ACTION_UP, a)
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_CANCEL, a)
+            assertFalse(feedbackVisible)
+            send(MotionEvent.ACTION_UP, a)
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                send(MotionEvent.ACTION_DOWN, a)
+                send(MotionEvent.ACTION_UP, a, flags = MotionEvent.FLAG_CANCELED)
+            }
+            send(MotionEvent.ACTION_DOWN, a)
+            instrument.runOnMainSync { context!!.cancel() }
+            send(MotionEvent.ACTION_UP, a)
+            assertEquals(mouseCount, mousePositions.size)
+            assertEquals(1, clicks.size)
+            // A second finger before scrolling switches to native pinch, preserving IDs.
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+            assertFalse(feedbackVisible) // Native pinch must not display a duplicate local circle.
+            assertEquals(setOf(7, 19), held)
+            send(MotionEvent.ACTION_MOVE, a.copy(x = 250f), b.copy(x = 750f))
+            send(MotionEvent.ACTION_POINTER_UP, a, b)
+            send(MotionEvent.ACTION_MOVE, b.copy(y = 250f))
+            send(MotionEvent.ACTION_UP, b)
+            assertTrue(held.isEmpty())
+            assertEquals(2, keyboardChecks)
+            // Once scrolling starts, adding another finger cancels the rest of this gesture.
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_MOVE, a.copy(y = 200f))
+            val committedCount = events.size
+            val wheelCount = wheels.size
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+            send(MotionEvent.ACTION_POINTER_UP, a, b)
+            send(MotionEvent.ACTION_UP, b)
+            assertEquals(committedCount, events.size)
+            assertEquals(wheelCount, wheels.size)
+            assertEquals(1, clicks.size)
+            // First app identification changes the next gesture, without discarding a tap.
+            instrument.runOnMainSync { context!!.setScrollCompatibility(false) }
+            send(MotionEvent.ACTION_DOWN, a)
+            instrument.runOnMainSync { context!!.setScrollCompatibility(true) }
+            send(MotionEvent.ACTION_UP, a)
+            assertEquals(MoonBridge.LI_TOUCH_EVENT_UP, events.last().type)
+            assertEquals(3, keyboardChecks)
+            instrument.runOnMainSync { context!!.setScrollCompatibility(false) }
             // Exercise preference migration and the actual toolbar selector without a host connection.
             prefs.edit().remove(TouchMode.PREF).putBoolean("checkbox_touchscreen_trackpad", false).commit()
             assertEquals(TouchMode.DIRECT, TouchMode.read(screen))
@@ -146,6 +232,7 @@ class PhoneTouchTest {
                     override fun disconnect() = Unit
                     override fun gameModeChanged(enabled: Boolean) = Unit
                     override fun applicationChanged() { context!!.cancel() }
+                    override fun scrollCompatibilityChanged(enabled: Boolean) { context!!.setScrollCompatibility(enabled) }
                     override fun touchMode() = selected
                     override fun selectTouchMode(mode: TouchMode) { selected = mode; mode.save(screen) }
                 })
@@ -197,21 +284,31 @@ class PhoneTouchTest {
             onView(withText(screen.getString(R.string.touch_mode_phone))).inRoot(isDialog()).perform(click())
             assertEquals(TouchMode.PHONE, selected)
             assertEquals(TouchMode.PHONE, TouchMode.read(screen))
-            // Automatic and manual Orca selection must retain the same native contacts
-            // as the other desktop profiles, in both directions, without opening the IME.
+            // Only ChatGPT uses wheel scrolling; Orca/general retain native contacts.
             val checksBeforeProfiles = keyboardChecks
-            fun swipeInPhoneMode() {
+            fun swipeInPhoneMode(compatible: Boolean) {
                 assertEquals(TouchMode.PHONE, selected)
                 for (endY in listOf(200f, 400f)) {
                     val before = events.size
+                    val wheelsBefore = wheels.size
+                    val clicksBefore = clicks.size
                     send(MotionEvent.ACTION_DOWN, a)
                     send(MotionEvent.ACTION_MOVE, a.copy(y = endY))
                     send(MotionEvent.ACTION_UP, a.copy(y = endY))
-                    assertEquals(listOf(
-                        Contact(MoonBridge.LI_TOUCH_EVENT_DOWN, 7, .25f, .5f),
-                        Contact(MoonBridge.LI_TOUCH_EVENT_MOVE, 7, .25f, (endY - 100f) / 400f),
-                        Contact(MoonBridge.LI_TOUCH_EVENT_UP, 7, .25f, (endY - 100f) / 400f)
-                    ), events.drop(before))
+                    if (compatible) {
+                        assertEquals(before, events.size)
+                        assertEquals(wheelsBefore + 1, wheels.size)
+                        assertEquals(endY > 300f, wheels.last().first > 0)
+                        assertEquals(200f to 200f, mousePositions.last())
+                    } else {
+                        assertEquals(wheelsBefore, wheels.size)
+                        assertEquals(listOf(
+                            Contact(MoonBridge.LI_TOUCH_EVENT_DOWN, 7, .25f, .5f),
+                            Contact(MoonBridge.LI_TOUCH_EVENT_MOVE, 7, .25f, (endY - 100f) / 400f),
+                            Contact(MoonBridge.LI_TOUCH_EVENT_UP, 7, .25f, (endY - 100f) / 400f)
+                        ), events.drop(before))
+                    }
+                    assertEquals(clicksBefore, clicks.size)
                     assertTrue(held.isEmpty())
                     assertEquals(checksBeforeProfiles, keyboardChecks)
                 }
@@ -222,12 +319,22 @@ class PhoneTouchTest {
             for (profile in listOf(DesktopProfile.GENERAL, DesktopProfile.ORCA, DesktopProfile.CHATGPT)) {
                 instrument.runOnMainSync { toolbar.observeApplication(profile.id) }
                 assertEquals(profile, toolbar.profile)
-                swipeInPhoneMode()
+                swipeInPhoneMode(profile == DesktopProfile.CHATGPT)
             }
             for (profile in DesktopProfile.values()) {
-                instrument.runOnMainSync { toolbar.setProfile(profile) }
-                swipeInPhoneMode()
+                instrument.runOnMainSync { toolbar.setProfile(profile); toolbar.observeApplication(profile.id) }
+                swipeInPhoneMode(profile == DesktopProfile.CHATGPT)
             }
+            // A manual ChatGPT toolbar must not reinterpret Orca's touch gestures.
+            instrument.runOnMainSync { toolbar.setProfile(DesktopProfile.CHATGPT) }
+            swipeInPhoneMode(false)
+            instrument.runOnMainSync { toolbar.observeApplication("chatgpt") }
+            swipeInPhoneMode(true)
+            send(MotionEvent.ACTION_DOWN, a)
+            instrument.runOnMainSync { toolbar.observeApplication("general") }
+            val mouseBeforeSwitch = mousePositions.size
+            send(MotionEvent.ACTION_UP, a)
+            assertEquals(mouseBeforeSwitch, mousePositions.size)
             // A foreground change releases an in-flight contact and ignores the old release.
             send(MotionEvent.ACTION_DOWN, a)
             instrument.runOnMainSync { toolbar.observeApplication("orca") }

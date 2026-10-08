@@ -37,6 +37,7 @@ public final class DesktopToolbar {
         void gameModeChanged(boolean enabled);
         default void gamePointerModeChanged(boolean enabled) {}
         default void applicationChanged() {}
+        default void scrollCompatibilityChanged(boolean enabled) {}
         default void virtualKeyboardChanged(boolean visible) {}
         default void image() {}
         default void voice() {}
@@ -122,23 +123,28 @@ public final class DesktopToolbar {
 
         public DesktopProfile getProfile() { return profile; }
         public void setProfile(DesktopProfile value) {
+            actions.applicationChanged();
             setAutomaticMode(false);
             profile = value;
             preferences.edit().putString("profile", value.id).apply();
             rebuild.run();
+            updateScrollCompatibility();
         }
         public boolean isAutomaticMode() { return automatic; }
         public void setAutomaticMode(boolean enabled) {
+            if (automatic != enabled) actions.applicationChanged();
             automatic = enabled; appliedApp = null;
             preferences.edit().putBoolean("automatic_app", enabled).apply();
             rebuild.run();
             if (enabled && detectedApp != null) observeApplication(detectedApp);
+            updateScrollCompatibility();
         }
         public void observeApplication(String app) {
             // The first identification after connecting is not an app switch.
             // Cancelling input here can discard the user's first tap/IME request.
             if (detectedApp != null && !app.equals(detectedApp)) actions.applicationChanged();
             detectedApp = app;
+            updateScrollCompatibility();
             if (!automatic || app.equals(appliedApp) || !canSend() || !focused) return;
             if (app.equals("stardew") || app.equals("plateup")) {
                 game.setProfile(GameBindings.Profile.fromId(app), false);
@@ -149,6 +155,9 @@ public final class DesktopToolbar {
                 rebuild.run();
             }
             appliedApp = app;
+        }
+        private void updateScrollCompatibility() {
+            actions.scrollCompatibilityChanged(profile.usesPhoneScrollCompatibility(detectedApp, automatic, gameMode));
         }
         private boolean canSend() { return connected && !paused && !pip; }
 
@@ -168,6 +177,7 @@ public final class DesktopToolbar {
             hideVirtualKeyboard();
             game.releaseTouches();
             gameMode = enabled;
+            updateScrollCompatibility();
             if (enabled) expanded = false;
             actions.gameModeChanged(enabled);
             update();
@@ -379,6 +389,7 @@ public final class DesktopToolbar {
         };
         controller.rebuild.run();
         controller.update();
+        controller.updateScrollCompatibility();
         return controller;
     }
 

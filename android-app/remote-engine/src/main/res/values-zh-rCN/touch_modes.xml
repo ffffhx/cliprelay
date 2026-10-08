@@ -6,7 +6,7 @@
     <string name="touch_mode_trackpad">触控板</string>
     <string name="touch_mode_button">触控：%1$s</string>
     <string name="touch_mode_help">操作说明</string>
-    <string name="touch_mode_help_body">手机触控：点按按钮、单指滑动滚动，在支持触屏的软件中双指捏合缩放，长按打开菜单。包括 Orca 在内的桌面应用统一使用触屏手势。点击能识别的输入框自动弹出键盘，也可手动打开。\n\n直接点击：点哪操作哪，单指移动拖拽，双指滑动滚动，长按右键。适合拖动窗口、选择文字等操作。\n\n触控板：滑动移动鼠标，轻点左键，双指轻点右键，双指滑动滚动。\n\n电脑软件保留原来的界面，触控菜单、缩放和文字选择效果取决于软件自身的支持。</string>
+    <string name="touch_mode_help_body">手机触控：点按按钮、单指滑动滚动，在支持触屏的软件中双指捏合缩放，长按打开菜单。ChatGPT / Codex 自动兼容单指滚动，滑动作用于手指起点所在区域；Orca 等应用使用原生触屏手势。点击能识别的输入框自动弹出键盘，也可手动打开。\n\n直接点击：点哪操作哪，单指移动拖拽，双指滑动滚动，长按右键。适合拖动窗口、选择文字等操作。\n\n触控板：滑动移动鼠标，轻点左键，双指轻点右键，双指滑动滚动。\n\n电脑软件保留原来的界面，触控菜单、缩放和文字选择效果取决于软件自身的支持。</string>
     <string name="touch_mode_unsupported">此电脑暂不支持手机触控，已切换为直接点击</string>
-    <string name="touch_mode_phone_hint">各应用统一使用手机触控 · 单指滑动滚动 · 点击可识别的输入框弹出键盘</string>
+    <string name="touch_mode_phone_hint">单指滑动滚动 · 自动兼容 ChatGPT / Codex · 点击可识别的输入框弹出键盘</string>
 </resources>

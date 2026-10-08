@@ -6,9 +6,9 @@
     <string name="touch_mode_trackpad">Trackpad</string>
     <string name="touch_mode_button">Touch: %1$s</string>
     <string name="touch_mode_help">How to use</string>
-    <string name="touch_mode_help_body">Phone touch: tap buttons, swipe to scroll and pinch to zoom in apps that support touchscreen gestures. Long press opens a menu. All desktop apps use the same touch gestures, including Orca. Tap recognized input fields to open the phone keyboard; manual keyboard control remains available.\n\nDirect click: tap to click, move one finger to drag, use two fingers to scroll, and long press for right click. Useful for dragging windows and selecting text.\n\nTrackpad: slide to move the pointer, tap to click, tap with two fingers for right click, or slide with two fingers to scroll.\n\nComputer apps keep their own interface. Touch menus, zoom and text selection depend on the app.</string>
+    <string name="touch_mode_help_body">Phone touch: tap buttons, swipe to scroll and pinch to zoom in apps that support touchscreen gestures. Long press opens a menu. ChatGPT / Codex automatically uses compatible scrolling at the point where your swipe starts; Orca and other apps use native touchscreen gestures. Tap recognized input fields to open the phone keyboard; manual keyboard control remains available.\n\nDirect click: tap to click, move one finger to drag, use two fingers to scroll, and long press for right click. Useful for dragging windows and selecting text.\n\nTrackpad: slide to move the pointer, tap to click, tap with two fingers for right click, or slide with two fingers to scroll.\n\nComputer apps keep their own interface. Touch menus, zoom and text selection depend on the app.</string>
     <string name="touch_mode_unsupported">This computer does not support phone touch. Switched to Direct click.</string>
-    <string name="touch_mode_phone_hint">Touch gestures in every app · Swipe to scroll · Tap recognized fields to open the keyboard</string>
+    <string name="touch_mode_phone_hint">Swipe to scroll · ChatGPT / Codex compatibility · Tap recognized fields to open the keyboard</string>
     <string-array name="touch_mode_entries">
         <item>@string/touch_mode_phone</item><item>@string/touch_mode_direct</item><item>@string/touch_mode_trackpad</item>
     </string-array>
