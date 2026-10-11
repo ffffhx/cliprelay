@@ -20,6 +20,10 @@ if (Test-Path -LiteralPath $remoteRemove) {
     }
 }
 $clientPattern = [Regex]::Escape($clientPath)
+$desktopExecutable = Join-Path $installDirectory 'desktop\ClipRelay.exe'
+Get-CimInstance Win32_Process -Filter "Name = 'ClipRelay.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -ieq $desktopExecutable -and $_.ProcessId -ne $PID } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
         ($_.Name -ieq "powershell.exe" -or $_.Name -ieq "pwsh.exe") -and

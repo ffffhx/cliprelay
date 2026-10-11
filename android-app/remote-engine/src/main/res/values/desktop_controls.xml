@@ -6,8 +6,7 @@
     <string name="desktop_home">Back to computers</string>
     <item name="desktopHomeButton" type="id" />
     <string name="desktop_rail_home">Computers</string>
-    <string name="desktop_rail_profile">App ▾</string>
-    <string name="desktop_rail_newline">New line</string>
+    <string name="desktop_rail_profile">Mode ▾</string>
     <item name="desktopLeftRail" type="id" />
     <item name="desktopRightRail" type="id" />
     <item name="gameHomeButton" type="id" />

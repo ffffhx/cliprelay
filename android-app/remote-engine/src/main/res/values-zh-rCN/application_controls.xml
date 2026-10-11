@@ -1,13 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="desktop_auto_app">自动识别电脑当前应用</string>
-    <string name="desktop_auto_prefix">自动 · </string>
     <string name="desktop_profile_general">通用桌面</string>
-    <string name="desktop_profile_chatgpt">ChatGPT</string>
-    <string name="desktop_profile_orca">Orca</string>
-    <string name="desktop_profile_title">选择应用操作模式</string>
+    <string name="desktop_profile_title">选择操作模式</string>
+    <string name="desktop_more">更多操作</string>
+    <string name="desktop_more_button">更多 ⋯</string>
     <string name="desktop_keyboard">键盘</string>
-    <string name="desktop_newline">换行 ⇧Enter</string>
     <string name="desktop_paste">粘贴</string>
     <string name="desktop_copy">复制</string>
     <string name="desktop_select_all">全选</string>

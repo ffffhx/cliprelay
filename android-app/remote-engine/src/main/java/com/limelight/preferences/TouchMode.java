@@ -19,8 +19,9 @@ public enum TouchMode {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
         String value = prefs.getString(PREF, "");
         for (TouchMode mode : values()) if (mode.value.equals(value)) return mode;
-        // Preserve the user's old choice on upgrade, until they select the new mode.
-        return prefs.getBoolean("checkbox_touchscreen_trackpad", true) ? TRACKPAD : DIRECT;
+        // Native phone touch is the default on phones and tablets. Only an
+        // explicit choice in the current mode selector overrides it.
+        return PHONE;
     }
 
     public void save(Context context) {

@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.TextView
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.Espresso.onData
@@ -48,6 +49,9 @@ class ApplicationControlsUiTest {
 
     @Before fun setup() {
         names.forEach { instrument.targetContext.getSharedPreferences(it, 0).edit().clear().commit() }
+        // Previously saved app layouts must not affect the unified desktop.
+        instrument.targetContext.getSharedPreferences("cliprelay_desktop_controls", 0).edit()
+            .putString("profile", "chatgpt").putBoolean("automatic_app", true).commit()
         screen = instrument.startActivitySync(Intent().setClassName(instrument.targetContext.packageName,
             "com.limelight.PcView").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         ui {
@@ -113,6 +117,10 @@ class ApplicationControlsUiTest {
     }
 
     private fun clickId(id: Int) { ui { root.findViewById<View>(id).performClick() }; instrument.waitForIdleSync() }
+    private fun clickMore(label: Int) {
+        clickId(R.id.desktopMoreButton)
+        onData(org.hamcrest.Matchers.equalTo(screen.getString(label))).inRoot(isDialog()).perform(click())
+    }
     private fun screenshot(name: String) {
         instrument.waitForIdleSync()
         SystemClock.sleep(300)
@@ -135,7 +143,7 @@ class ApplicationControlsUiTest {
                 2000, 1920, 1080, "HEVC", 1_500_000, 118, 116, 120, 2, 35)
         }
         events.clear()
-        clickId(R.id.streamInfoButton)
+        clickMore(R.string.stream_info_title)
         onView(withId(R.id.streamInfoText)).inRoot(isDialog()).check { view, error ->
             if (error != null) throw error
             val text = (view as TextView).text.toString()
@@ -163,7 +171,6 @@ class ApplicationControlsUiTest {
         val video = root.findViewById<View>(R.id.surfaceView)
         val margin = (100 * screen.resources.displayMetrics.density).toInt()
         ui {
-            toolbar.setProfile(DesktopProfile.ORCA)
             toolbar.setExpanded(false)
             video.layoutParams = FrameLayout.LayoutParams(root.width - margin * 2, -1,
                 android.view.Gravity.CENTER)
@@ -186,11 +193,21 @@ class ApplicationControlsUiTest {
         touch(root, MotionEvent.ACTION_UP, root.width / 2f, root.height - 30f)
         assertEquals(beforeTouch + 2, desktopTouches)
         events.clear()
-        onView(withContentDescription(R.string.desktop_copy)).perform(scrollTo(), click())
+        assertNull(root.findViewById<View>(R.id.touchModeButton))
+        for (label in listOf(R.string.desktop_copy, R.string.desktop_paste, R.string.desktop_select_all)) {
+            onView(withText(label)).check(androidx.test.espresso.assertion.ViewAssertions.doesNotExist())
+        }
+        val backspace = root.findViewById<ImageButton>(R.id.desktopBackspaceButton)
+        assertNotNull(backspace.drawable)
+        assertEquals(screen.getString(R.string.desktop_backspace), backspace.contentDescription)
+        clickId(R.id.desktopBackspaceButton)
+        assertEquals(listOf("8:true:0", "8:false:0"), events)
+        events.clear()
+        clickMore(R.string.desktop_copy)
         assertEquals(listOf("17:true:2", "67:true:2", "67:false:2", "17:false:0"), events)
         assertTrue(held.isEmpty())
-        for (profile in listOf(DesktopProfile.GENERAL, DesktopProfile.CHATGPT, DesktopProfile.ORCA)) {
-            ui { toolbar.setProfile(profile) }
+        for (app in listOf("general", "chatgpt", "orca")) {
+            ui { toolbar.observeApplication(app) }
             instrument.waitForIdleSync()
             assertRails()
         }
@@ -235,8 +252,14 @@ class ApplicationControlsUiTest {
             onData(org.hamcrest.Matchers.equalTo(screen.getString(R.string.game_mode)))
                 .inRoot(isDialog()).perform(click())
         }
-        assertTrue(toolbar.isAutomaticMode)
         clickId(R.id.desktopProfileButton)
+        onView(isAssignableFrom(android.widget.ListView::class.java))
+            .inRoot(isDialog()).check { view, error ->
+                if (error != null) throw error
+                val list = view as android.widget.ListView
+                assertEquals(listOf(screen.getString(R.string.desktop_profile_general), screen.getString(R.string.game_mode)),
+                    (0 until list.adapter.count).map { list.adapter.getItem(it) })
+            }
         screenshot("application-menu-games-qa.png")
         onData(org.hamcrest.Matchers.equalTo(screen.getString(R.string.game_mode)))
             .inRoot(isDialog()).perform(click())
@@ -244,11 +267,9 @@ class ApplicationControlsUiTest {
             .check(androidx.test.espresso.assertion.ViewAssertions.matches(isDisplayed()))
         assertFalse(toolbar.isGameMode)
         assertFalse(game.isShown)
-        assertTrue(toolbar.isAutomaticMode)
         screenshot("game-mode-chooser-qa.png")
         onView(withText(android.R.string.cancel)).inRoot(isDialog()).perform(click())
         assertFalse(toolbar.isGameMode)
-        assertTrue(toolbar.isAutomaticMode)
         assertTrue(events.isEmpty())
 
         // The compact toolbar uses the same menu when the video fills the screen.
@@ -261,7 +282,6 @@ class ApplicationControlsUiTest {
         assertTrue(toolbar.isGameMode)
         assertTrue(game.isShown)
         assertEquals(GameBindings.Profile.STARDEW, game.profile)
-        assertFalse(toolbar.isAutomaticMode)
         ui { toolbar.observeApplication("plateup") }
         assertEquals("Automatic detection replaced an explicit game selection",
             GameBindings.Profile.STARDEW, game.profile)
@@ -272,7 +292,6 @@ class ApplicationControlsUiTest {
         assertFalse(toolbar.isGameMode)
         onView(withText(android.R.string.cancel)).inRoot(isDialog()).perform(click())
         assertEquals(GameBindings.Profile.STARDEW, game.profile)
-        assertFalse(toolbar.isAutomaticMode)
         chooseGame()
         onView(withText(R.string.game_profile)).inRoot(isDialog()).perform(click())
         assertTrue(toolbar.isGameMode)
@@ -328,31 +347,29 @@ class ApplicationControlsUiTest {
         assertTrue(held.isEmpty())
     }
 
-    @Test fun automaticModesReleaseKeysAndRespectManualOverride() {
+    @Test fun foregroundChangesReleaseKeysWithoutChangingSelectedMode() {
         val game = root.findViewById<GameControlsView>(R.id.gameControlsOverlay)
         ui { toolbar.observeApplication("stardew") }
         assertEquals("First identification cancelled the first touch", 0, applicationChanges)
+        assertFalse(toolbar.isGameMode)
+        ui { game.setProfile(GameBindings.Profile.STARDEW); toolbar.setGameMode(true) }
         assertTrue(toolbar.isGameMode)
         assertEquals(GameBindings.Profile.STARDEW, game.profile)
         val tool = game.findViewById<View>(R.id.gameGrab)
         instrument.waitForIdleSync()
         touch(tool, MotionEvent.ACTION_DOWN)
         assertEquals(setOf(67), held)
+        val changesBeforeSwitch = applicationChanges
         ui { toolbar.observeApplication("orca") }
-        assertEquals(1, applicationChanges)
+        assertEquals(changesBeforeSwitch + 1, applicationChanges)
         assertTrue(held.isEmpty())
-        assertFalse(toolbar.isGameMode)
-        assertEquals(DesktopProfile.ORCA, toolbar.profile)
-        ui { toolbar.setProfile(DesktopProfile.CHATGPT); toolbar.observeApplication("stardew") }
-        assertFalse(toolbar.isAutomaticMode)
-        assertFalse(toolbar.isGameMode)
-        assertEquals(DesktopProfile.CHATGPT, toolbar.profile)
-        ui { toolbar.setAutomaticMode(true) }
         assertTrue(toolbar.isGameMode)
         assertEquals(GameBindings.Profile.STARDEW, game.profile)
-        ui { toolbar.observeApplication("general") }
-        assertFalse(toolbar.isGameMode)
-        assertEquals(DesktopProfile.GENERAL, toolbar.profile)
+        ui { toolbar.setGameMode(false) }
+        for (app in listOf("chatgpt", "orca", "general", "stardew", "plateup")) {
+            ui { toolbar.observeApplication(app) }
+            assertFalse(toolbar.isGameMode)
+        }
         assertTrue(held.isEmpty())
     }
 

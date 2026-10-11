@@ -1,7 +1,7 @@
 package com.cliprelay.app
 
 import com.limelight.binding.input.touch.PhoneScrollState
-import com.limelight.ui.DesktopProfile
+import com.limelight.binding.input.ApplicationPolicy
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -91,15 +91,13 @@ class PhoneScrollStateTest {
         assertTrue(clicks.isEmpty())
     }
 
-    @Test fun onlyChatGptUsesCompatibilityAndKnownForegroundOverridesLayout() {
-        for (profile in DesktopProfile.values()) for (automatic in listOf(true, false)) {
-            assertTrue(profile.usesPhoneScrollCompatibility("chatgpt", automatic, false))
-            for (app in listOf("orca", "general", "stardew", "plateup", "unknown")) {
-                assertFalse(profile.usesPhoneScrollCompatibility(app, automatic, false))
-            }
-            assertFalse(profile.usesPhoneScrollCompatibility("chatgpt", automatic, true))
-            assertEquals(!automatic && profile == DesktopProfile.CHATGPT,
-                profile.usesPhoneScrollCompatibility(null, automatic, false))
+    @Test fun onlyChatGptUsesCompatibilityAndGamesAlwaysUseNativeTouch() {
+        assertTrue(ApplicationPolicy.usesPhoneScrollCompatibility("chatgpt", false))
+        for (app in listOf(null, "orca", "general", "stardew", "plateup", "unknown")) {
+            assertFalse(ApplicationPolicy.usesPhoneScrollCompatibility(app, false))
+        }
+        for (app in listOf(null, "chatgpt", "orca", "general", "stardew", "plateup")) {
+            assertFalse(ApplicationPolicy.usesPhoneScrollCompatibility(app, true))
         }
     }
 }

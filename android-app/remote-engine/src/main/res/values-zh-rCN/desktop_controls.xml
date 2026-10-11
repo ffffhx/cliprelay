@@ -5,6 +5,5 @@
     <string name="desktop_controls_collapse">收起</string>
     <string name="desktop_home">返回电脑列表</string>
     <string name="desktop_rail_home">返回电脑列表</string>
-    <string name="desktop_rail_profile">应用 ▾</string>
-    <string name="desktop_rail_newline">换行</string>
+    <string name="desktop_rail_profile">模式 ▾</string>
 </resources>

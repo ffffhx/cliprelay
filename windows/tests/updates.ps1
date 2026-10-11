@@ -36,6 +36,8 @@ try{
     $script:notifyIcon|Add-Member ScriptMethod ShowBalloonTip {param($ms,$title,$body,$icon) $this.Count++}
     Initialize-RelayUpdater
     $state=$script:relayUpdateState
+    # Keep the synthetic 1 -> 2 -> 3 scenario independent of release metadata.
+    $state.Current=[PSCustomObject]@{versionCode=1;versionName='0.1.0'}
     $state.NextCheck=[DateTime]::UtcNow.AddHours(1)
     $offer=@{versionCode=2;versionName='0.2.0';sizeBytes=123456;sha256=('a'*64);releaseNotes="新增更新提醒。`n屏幕共享体验改进。";downloadUrl="$script:relayUpdateBase/ClipRelay-Windows-0.2.0.zip"}
     foreach($mutation in @(
@@ -66,6 +68,7 @@ try{
     $script:relayUpdateState=$null
     Initialize-RelayUpdater
     $state=$script:relayUpdateState
+    $state.Current=[PSCustomObject]@{versionCode=1;versionName='0.1.0'}
     Complete-Check $offer
     Assert ($script:notifyIcon.Count -eq 1) 'Restart repeats dismissed notification'
     Set-RelayUpdateNotifications $false

@@ -11,6 +11,12 @@
 
 ## Windows：正确启动
 
+Electron 版优先使用 `%LOCALAPPDATA%\ClipRelay\start.ps1`（系统 PowerShell 5.1、`-NoProfile -STA -ExecutionPolicy Bypass`）；从仓库运行使用 `windows/start.ps1`，需要打开设置时加 `-OpenSettings`。先运行 `windows/electron/setup.ps1` 准备 runtime。启动脚本内部通过 WMI 启动立即退出的 helper，再用 `CreateNoWindow` 启动 `desktop/ClipRelay.exe`，不要将 EXE 直接挂在 agent Job 上。安装器和登录自启均使用 Electron 入口。
+
+Electron 拥有 HTML/CSS 窗口，原 PowerShell 作为它的后台子进程保留剪贴板和网络行为。不要单独重启这个子进程；通过托盘退出后，再调用 `start.ps1`。验收时额外确认 `desktop/ClipRelay.exe` 主进程存在、命名管道断开后后台会退出。
+
+以下命令仅适用于尚未迁移、没有 `desktop/ClipRelay.exe` 的旧安装：
+
 已安装时优先走 `%LOCALAPPDATA%\ClipRelay`（配置、图标、开机快捷方式都在这）。启动命令必须和开机项一致：
 
 ```
@@ -51,7 +57,7 @@ cmd.exe /c start "" "$lnk"
 
 临时从仓库跑、不安装时，同样用 WMI `Win32_Process.Create`，`-File` 指向仓库里的 `windows\cliprelay.ps1`，需要的话加 `-Peer`。不要在 agent 终端里直接 `-File` 常驻。
 
-安装用 `windows\install.ps1`；它内部的 `Start-Process` 只适合用户自己打开的 PowerShell。从 agent 跑安装脚本之后，仍要按上面的 WMI / 快捷方式再确认进程已独立起来。
+安装用 `windows\install.ps1`；新安装器末尾调用 `start.ps1`。安装命令退出后仍须确认应用和监听独立存活。
 
 ## 验收
 
@@ -66,5 +72,5 @@ cmd.exe /c start "" "$lnk"
 
 ## 其他端
 
-- Mac：只操作已安装的 Hammerspoon（拷/改 `~/.hammerspoon/init.lua` 后 Reload）。不要在终端里挂一个 lua 进程当客户端。
+- Mac：Electron 版通过 Finder 或 `open /path/to/ClipRelay.app` 独立启动，不把 `npm start` 挂在 agent 终端。切换前停用 Hammerspoon 中的旧 ClipRelay，保留配置供首次导入。仅维护旧安装时才修改 `~/.hammerspoon/init.lua` 并 Reload；不要在终端挂一个 lua 进程当客户端。用户已明确本次暂不要求 Mac 真机验证。
 - Android：使用 `android-app/` 原生 APK，由 App 的前台服务保持接收；不要把接收端塞进 agent 终端前台长驻。

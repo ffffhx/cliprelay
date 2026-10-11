@@ -19,6 +19,8 @@ android-app/hs_err_pid*.log
 .tools/
 windows/screen-share/runtime/
 windows/screen-share/engine/
+windows/desktop/
+node_modules/
 windows/remote-desktop/engine/
 windows/remote-desktop/bin/
 android-app/remote-engine/.cxx/

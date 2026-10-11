@@ -71,7 +71,8 @@ public class PreferenceConfiguration {
     private static final String GAMEPAD_MOTION_SENSORS_PREF_STRING = "checkbox_gamepad_motion_sensors";
     private static final String GAMEPAD_MOTION_FALLBACK_PREF_STRING = "checkbox_gamepad_motion_fallback";
 
-    static final String DEFAULT_RESOLUTION = "1280x720";
+    static final String DEFAULT_RESOLUTION = "1920x1080";
+    private static final String RESOLUTION_DEFAULT_MIGRATED = "cliprelay_1080p_default_migrated";
     static final String DEFAULT_FPS = "60";
     private static final boolean DEFAULT_STRETCH = false;
     private static final boolean DEFAULT_SOPS = true;
@@ -449,6 +450,19 @@ public class PreferenceConfiguration {
                 Build.FINGERPRINT.contains("PPR1.180610.011/4079208_2235.1395");
     }
 
+    static void migrateResolutionDefault(SharedPreferences prefs, PreferenceConfiguration config) {
+        if (prefs.getBoolean(RESOLUTION_DEFAULT_MIGRATED, false)) return;
+        SharedPreferences.Editor editor = prefs.edit().putBoolean(RESOLUTION_DEFAULT_MIGRATED, true);
+        // Upgrade the old default and the old 960p setting once on both phones and
+        // tablets. Later manual choices and other native/higher resolutions survive.
+        if (config.width == 1280 && (config.height == 720 || config.height == 960)) {
+            config.width = 1920;
+            config.height = 1080;
+            editor.putString(RESOLUTION_PREF_STRING, DEFAULT_RESOLUTION);
+        }
+        editor.apply();
+    }
+
     public static PreferenceConfiguration readPreferences(Context context) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
         PreferenceConfiguration config = new PreferenceConfiguration();
@@ -532,6 +546,8 @@ public class PreferenceConfiguration {
             config.height = PreferenceConfiguration.getHeightFromResolutionString(resStr);
             config.fps = Integer.parseInt(prefs.getString(FPS_PREF_STRING, PreferenceConfiguration.DEFAULT_FPS));
         }
+
+        migrateResolutionDefault(prefs, config);
 
         if (!prefs.contains(SMALL_ICONS_PREF_STRING)) {
             // We need to write small icon mode's default to disk for the settings page to display

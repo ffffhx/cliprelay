@@ -55,6 +55,11 @@ function Install-ScriptFile {
 }
 
 function Stop-InstalledClient {
+    # Stop the Electron owner first; its pipe closes the native UI gracefully.
+    $desktopExecutable = Join-Path $installDirectory 'desktop\ClipRelay.exe'
+    Get-CimInstance Win32_Process -Filter "Name = 'ClipRelay.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -ieq $desktopExecutable -and $_.ProcessId -ne $PID } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     $clientPattern = [Regex]::Escape($clientPath)
     $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
@@ -92,7 +97,7 @@ Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" -ErrorAction Silen
 Install-ScriptFile -Name "cliprelay.ps1" -Destination $clientPath
 Install-ScriptFile -Name "uninstall.ps1" -Destination $uninstallerPath
 Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
-foreach ($file in @('updates.ps1', 'update-client.cs', 'version.json')) {
+foreach ($file in @('updates.ps1', 'update-client.cs', 'version.json', 'start.ps1')) {
     Install-ScriptFile -Name $file -Destination (Join-Path $installDirectory $file)
 }
 $screenShareDirectory = Join-Path $installDirectory 'screen-share'
@@ -106,7 +111,25 @@ if (Test-Path (Join-Path $bundledEngine 'electron.exe')) {
         Copy-Item -LiteralPath $bundledEngine -Destination $screenShareDirectory -Recurse -Force
     }
 }
-& (Join-Path $screenShareDirectory 'setup.ps1') -Destination $screenShareDirectory
+$desktopSource = Join-Path $PSScriptRoot 'desktop'
+$desktopDirectory = Join-Path $installDirectory 'desktop'
+$electronDirectory = Join-Path $installDirectory 'electron'
+New-Item -ItemType Directory -Path $electronDirectory -Force | Out-Null
+Install-ScriptFile -Name 'electron/windows-files.json' -Destination (Join-Path $electronDirectory 'windows-files.json')
+$electronFiles = Get-Content -LiteralPath (Join-Path $electronDirectory 'windows-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($file in $electronFiles) {
+    $destination = [IO.Path]::GetFullPath((Join-Path $electronDirectory $file))
+    if (!$destination.StartsWith([IO.Path]::GetFullPath($electronDirectory) + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid Electron manifest path.' }
+    New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+    Install-ScriptFile -Name "electron/$file" -Destination (Join-Path $electronDirectory $file)
+}
+if (Test-Path -LiteralPath (Join-Path $desktopSource 'ClipRelay.exe')) {
+    if ([IO.Path]::GetFullPath($desktopSource) -ine [IO.Path]::GetFullPath($desktopDirectory)) {
+        Copy-Item -LiteralPath $desktopSource -Destination $installDirectory -Recurse -Force
+    }
+} else {
+    & (Join-Path $electronDirectory 'setup.ps1') -Destination $desktopDirectory
+}
 
 $remoteDirectory = Join-Path $installDirectory 'remote-desktop'
 New-Item -ItemType Directory -Path $remoteDirectory -Force | Out-Null
@@ -212,8 +235,8 @@ else {
     Write-Host "==> Registering startup for the current user"
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $windowsPowerShell
-    $shortcut.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clientPath`""
+    $shortcut.TargetPath = Join-Path $desktopDirectory 'ClipRelay.exe'
+    $shortcut.Arguments = '--background'
     $shortcut.WorkingDirectory = $installDirectory
     if (Test-Path -LiteralPath $iconPath) {
         $shortcut.IconLocation = "$iconPath,0"
@@ -262,20 +285,7 @@ else {
 
 Write-Host "==> Starting ClipRelay"
 Stop-InstalledClient
-$inner = @'
-$psi = New-Object Diagnostics.ProcessStartInfo
-$psi.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$psi.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$env:LOCALAPPDATA\ClipRelay\cliprelay.ps1`""
-$psi.WorkingDirectory = "$env:LOCALAPPDATA\ClipRelay"
-$psi.UseShellExecute = $false
-$psi.CreateNoWindow = $true
-[void][Diagnostics.Process]::Start($psi)
-'@
-$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
-$startup = ([wmiclass]'Win32_ProcessStartup').CreateInstance()
-$startup.ShowWindow = 0
-$started = ([wmiclass]'Win32_Process').Create("$windowsPowerShell -NoProfile -WindowStyle Hidden -EncodedCommand $encoded", $installDirectory, $startup)
-if ($started.ReturnValue -ne 0) { throw "ClipRelay launch failed: $($started.ReturnValue)" }
+& (Join-Path $installDirectory 'start.ps1')
 
 Write-Host ""
 Write-Host "ClipRelay for Windows is installed."

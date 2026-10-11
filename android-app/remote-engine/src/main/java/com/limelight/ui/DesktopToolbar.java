@@ -14,13 +14,13 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.Toast;
+import com.limelight.binding.input.ApplicationPolicy;
 import com.limelight.preferences.TouchMode;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.input.KeyboardPacket;
@@ -50,15 +50,11 @@ public final class DesktopToolbar {
         private View desktop;
         private EdgeHandle handle;
         private Actions actions;
-        private Button touchModeButton;
         private Button voiceButton;
         private Drawable voiceIdleBackground;
         private RemoteVoiceInput.State voiceState = RemoteVoiceInput.State.IDLE;
-        private DesktopProfile profile;
-        private SharedPreferences preferences;
         private Runnable rebuild;
-        private boolean automatic;
-        private String detectedApp, appliedApp;
+        private String detectedApp;
         private VirtualKeyboardView virtualKeyboard;
         private boolean keyboardOpen;
         private DesktopSideRails sideRails;
@@ -121,52 +117,22 @@ public final class DesktopToolbar {
             return true;
         }
 
-        public DesktopProfile getProfile() { return profile; }
-        public void setProfile(DesktopProfile value) {
-            actions.applicationChanged();
-            setAutomaticMode(false);
-            profile = value;
-            preferences.edit().putString("profile", value.id).apply();
-            rebuild.run();
-            updateScrollCompatibility();
-        }
-        public boolean isAutomaticMode() { return automatic; }
-        public void setAutomaticMode(boolean enabled) {
-            if (automatic != enabled) actions.applicationChanged();
-            automatic = enabled; appliedApp = null;
-            preferences.edit().putBoolean("automatic_app", enabled).apply();
-            rebuild.run();
-            if (enabled && detectedApp != null) observeApplication(detectedApp);
-            updateScrollCompatibility();
-        }
         public void observeApplication(String app) {
             // The first identification after connecting is not an app switch.
             // Cancelling input here can discard the user's first tap/IME request.
-            if (detectedApp != null && !app.equals(detectedApp)) actions.applicationChanged();
+            if (app == null) return;
+            if (detectedApp != null && !app.equals(detectedApp)) {
+                releaseTouches();
+                actions.applicationChanged();
+            }
             detectedApp = app;
             updateScrollCompatibility();
-            if (!automatic || app.equals(appliedApp) || !canSend() || !focused) return;
-            if (app.equals("stardew") || app.equals("plateup")) {
-                game.setProfile(GameBindings.Profile.fromId(app), false);
-                setGameMode(true);
-            } else {
-                if (gameMode) setGameMode(false);
-                profile = DesktopProfile.fromId(app);
-                rebuild.run();
-            }
-            appliedApp = app;
         }
         private void updateScrollCompatibility() {
-            actions.scrollCompatibilityChanged(profile.usesPhoneScrollCompatibility(detectedApp, automatic, gameMode));
+            actions.scrollCompatibilityChanged(ApplicationPolicy.usesPhoneScrollCompatibility(detectedApp, gameMode));
         }
         private boolean canSend() { return connected && !paused && !pip; }
 
-        public void updateTouchMode(TouchMode mode) {
-            String label = touchModeButton.getContext().getString(R.string.touch_mode_button,
-                    touchModeButton.getContext().getString(mode.label));
-            touchModeButton.setText(label);
-            touchModeButton.setContentDescription(label);
-        }
         private boolean gameMode, connected, focused, paused, pip, expanded;
 
         public void setExpanded(boolean value) { expanded = value; update(); }
@@ -175,7 +141,8 @@ public final class DesktopToolbar {
         public boolean isGameMode() { return gameMode; }
         public void setGameMode(boolean enabled) {
             hideVirtualKeyboard();
-            game.releaseTouches();
+            releaseTouches();
+            if (gameMode != enabled) actions.applicationChanged();
             gameMode = enabled;
             updateScrollCompatibility();
             if (enabled) expanded = false;
@@ -227,14 +194,9 @@ public final class DesktopToolbar {
         Controller controller = new Controller();
         controller.actions = actions;
         controller.focused = activity.hasWindowFocus();
-        controller.preferences = activity.getSharedPreferences("cliprelay_desktop_controls", 0);
-        controller.profile = DesktopProfile.fromId(controller.preferences.getString("profile", "general"));
-        controller.automatic = controller.preferences.getBoolean("automatic_app", true);
         DesktopInput keyboard = new DesktopInput(sink);
         controller.game = new GameControlsView(activity, sink,
-                () -> { controller.setAutomaticMode(false); controller.setGameMode(false); }, actions::gamePointerModeChanged);
-        controller.game.setApplicationModeActions(() -> controller.setAutomaticMode(true),
-                () -> controller.setAutomaticMode(false));
+                () -> controller.setGameMode(false), actions::gamePointerModeChanged);
         controller.game.setVirtualKeyboardAction(controller::showVirtualKeyboard);
         controller.game.setHomeAction(actions::home);
         controller.game.setStreamInfoAction(actions::streamInfo);
@@ -295,40 +257,28 @@ public final class DesktopToolbar {
             home.setId(R.id.desktopHomeButton);
             if (controller.isSideRailsActive()) home.setText(R.string.desktop_rail_home);
             home.setOnClickListener(v -> { if (controller.canSend()) actions.home(); });
-            Button profile = button(activity, primary, (controller.automatic ? activity.getString(R.string.desktop_auto_prefix) : "")
-                    + activity.getString(controller.profile.label) + " ▾");
+            Button profile = button(activity, primary, activity.getString(R.string.desktop_rail_profile));
             profile.setId(R.id.desktopProfileButton);
-            if (controller.isSideRailsActive()) profile.setText(activity.getString(R.string.desktop_rail_profile));
             profile.setOnClickListener(v -> {
-                DesktopProfile[] profiles = DesktopProfile.values();
-                int gameChoice = profiles.length + 1;
-                String[] labels = new String[profiles.length + 2];
-                labels[0] = activity.getString(R.string.desktop_auto_app);
-                for (int i = 0; i < profiles.length; i++) labels[i + 1] = activity.getString(profiles[i].label);
-                labels[gameChoice] = activity.getString(R.string.game_mode);
+                controller.releaseTouches();
+                String[] labels = { activity.getString(R.string.desktop_profile_general),
+                        activity.getString(R.string.game_mode) };
                 new AlertDialog.Builder(activity).setTitle(R.string.desktop_profile_title)
-                        .setSingleChoiceItems(labels, controller.automatic ? 0 : controller.profile.ordinal() + 1, (d, which) -> {
+                        .setSingleChoiceItems(labels, 0, (d, which) -> {
                             d.dismiss();
-                            if (which == gameChoice) {
+                            if (which == 1) {
                                 if (!controller.canSend()) return;
                                 controller.game.showProfiles(() -> {
                                     if (controller.canSend()) controller.setGameMode(true);
                                 });
                             }
-                            else if (which == 0) controller.setAutomaticMode(true);
-                            else controller.setProfile(profiles[which - 1]);
+                            else controller.setGameMode(false);
                         }).setNegativeButton(android.R.string.cancel, null).show();
             });
-            Button info = button(activity, primary, activity.getString(R.string.stream_info_title));
-            info.setId(R.id.streamInfoButton);
-            info.setOnClickListener(v -> { controller.releaseTouches(); actions.streamInfo(); });
+            button(activity, primary, activity.getString(R.string.virtual_keyboard_phone)).setOnClickListener(v -> actions.keyboard());
             Button virtual = button(activity, primary, activity.getString(R.string.virtual_keyboard));
             virtual.setId(R.id.virtualKeyboardButton);
             virtual.setOnClickListener(v -> controller.showVirtualKeyboard());
-            Button image = button(activity, primary, activity.getString(R.string.desktop_image));
-            image.setId(R.id.desktopImageButton);
-            image.setOnClickListener(v -> { if (controller.canSend()) actions.image(); });
-            button(activity, primary, activity.getString(R.string.virtual_keyboard_phone)).setOnClickListener(v -> actions.keyboard());
             Button voice = button(activity, primary, activity.getString(R.string.voice_input));
             voice.setId(R.id.desktopVoiceButton);
             voice.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
@@ -345,52 +295,70 @@ public final class DesktopToolbar {
             controller.voiceIdleBackground = voice.getBackground();
             controller.updateVoiceButton();
             voice.setOnClickListener(v -> { if (controller.canSend()) { controller.releaseTouches(); actions.voice(); } });
-            Button backspace = button(activity, secondary, activity.getString(R.string.desktop_backspace));
+            Button image = button(activity, primary, activity.getString(R.string.desktop_image));
+            image.setId(R.id.desktopImageButton);
+            image.setOnClickListener(v -> { if (controller.canSend()) actions.image(); });
+            shortcut(activity, secondary, controller, keyboard, "Enter", 0x0D);
+            ImageButton backspace = new ImageButton(activity);
+            backspace.setImageResource(R.drawable.remote_ic_backspace);
+            backspace.setColorFilter(Color.WHITE);
+            backspace.setContentDescription(activity.getString(R.string.desktop_backspace));
+            backspace.setTooltipText(activity.getString(R.string.desktop_backspace));
+            placeButton(activity, secondary, backspace);
             backspace.setId(R.id.desktopBackspaceButton);
             backspace.setOnClickListener(v -> { if (controller.canSend()) keyboard.tap(0x08); });
-            if (controller.profile.isChat()) {
-                shortcut(activity, secondary, controller, keyboard, "Enter", 0x0D);
-                shortcut(activity, secondary, controller, keyboard, activity.getString(controller.isSideRailsActive()
-                        ? R.string.desktop_rail_newline : R.string.desktop_newline), 0x10, 0x0D);
-                shortcut(activity, primary, controller, keyboard, activity.getString(R.string.desktop_paste), 0x11, 'V');
-                shortcut(activity, primary, controller, keyboard, activity.getString(R.string.desktop_copy), 0x11, 'C');
-                shortcut(activity, primary, controller, keyboard, activity.getString(R.string.desktop_select_all), 0x11, 'A');
-                shortcut(activity, primary, controller, keyboard, activity.getString(R.string.desktop_undo), 0x11, 'Z');
-                shortcut(activity, primary, controller, keyboard, activity.getString(R.string.desktop_redo), 0x11, 'Y');
-                button(activity, secondary, activity.getString(R.string.desktop_scroll_up)).setOnClickListener(v -> {
-                    if (controller.canSend()) sink.scroll((byte)3);
-                });
-                button(activity, secondary, activity.getString(R.string.desktop_scroll_down)).setOnClickListener(v -> {
-                    if (controller.canSend()) sink.scroll((byte)-3);
-                });
-            } else {
-                shortcut(activity, secondary, controller, keyboard, "Win", 0x5B);
-                shortcut(activity, secondary, controller, keyboard, "Enter", 0x0D);
-            }
-            if (controller.profile == DesktopProfile.ORCA) shortcut(activity, secondary, controller, keyboard, "Shift+Tab", 0x10, 0x09);
             shortcut(activity, secondary, controller, keyboard, "Esc", 0x1B);
-            controller.touchModeButton = button(activity, secondary, "");
-            controller.touchModeButton.setId(R.id.touchModeButton);
-            controller.updateTouchMode(actions.touchMode());
-            controller.touchModeButton.setOnClickListener(v -> new AlertDialog.Builder(activity)
-                    .setTitle(R.string.touch_mode_title)
-                    .setSingleChoiceItems(R.array.touch_mode_entries, actions.touchMode().ordinal(), (dialog, which) -> {
-                        TouchMode mode = TouchMode.values()[which];
-                        actions.selectTouchMode(mode);
-                        controller.updateTouchMode(mode);
-                        dialog.dismiss();
-                        if (mode == TouchMode.PHONE) Toast.makeText(activity, R.string.touch_mode_phone_hint, Toast.LENGTH_LONG).show();
-                    })
-                    .setNeutralButton(R.string.touch_mode_help, (dialog, which) -> new AlertDialog.Builder(activity)
-                            .setTitle(R.string.touch_mode_help).setMessage(R.string.touch_mode_help_body)
-                            .setPositiveButton(android.R.string.ok, null).show())
-                    .setNegativeButton(android.R.string.cancel, null).show());
-            button(activity, secondary, activity.getString(R.string.desktop_disconnect)).setOnClickListener(v -> actions.disconnect());
+            shortcut(activity, secondary, controller, keyboard, "Win", 0x5B);
+            Button more = button(activity, secondary, activity.getString(R.string.desktop_more_button));
+            more.setId(R.id.desktopMoreButton);
+            more.setOnClickListener(v -> showMore(activity, controller, keyboard, sink, actions));
         };
         controller.rebuild.run();
         controller.update();
         controller.updateScrollCompatibility();
         return controller;
+    }
+
+    private static void showMore(Activity activity, Controller controller, DesktopInput keyboard,
+                                 DesktopInput.Sink sink, Actions actions) {
+        controller.releaseTouches();
+        String[] labels = {activity.getString(R.string.desktop_copy), activity.getString(R.string.desktop_paste),
+                activity.getString(R.string.desktop_select_all),
+                activity.getString(R.string.touch_mode_button, activity.getString(actions.touchMode().label)),
+                activity.getString(R.string.desktop_undo), activity.getString(R.string.desktop_redo),
+                activity.getString(R.string.desktop_scroll_up), activity.getString(R.string.desktop_scroll_down),
+                activity.getString(R.string.stream_info_title), activity.getString(R.string.desktop_disconnect)};
+        new AlertDialog.Builder(activity).setTitle(R.string.desktop_more)
+                .setItems(labels, (dialog, which) -> {
+                    dialog.dismiss();
+                    if (which == 3) { showTouchModes(activity, actions); return; }
+                    if (which == 8) { actions.streamInfo(); return; }
+                    if (which == 9) { actions.disconnect(); return; }
+                    if (!controller.canSend()) return;
+                    switch (which) {
+                        case 0: keyboard.tap(0x11, 'C'); break;
+                        case 1: keyboard.tap(0x11, 'V'); break;
+                        case 2: keyboard.tap(0x11, 'A'); break;
+                        case 4: keyboard.tap(0x11, 'Z'); break;
+                        case 5: keyboard.tap(0x11, 'Y'); break;
+                        case 6: sink.scroll((byte)3); break;
+                        case 7: sink.scroll((byte)-3); break;
+                    }
+                }).setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private static void showTouchModes(Activity activity, Actions actions) {
+        new AlertDialog.Builder(activity).setTitle(R.string.touch_mode_title)
+                .setSingleChoiceItems(R.array.touch_mode_entries, actions.touchMode().ordinal(), (dialog, which) -> {
+                    TouchMode mode = TouchMode.values()[which];
+                    actions.selectTouchMode(mode);
+                    dialog.dismiss();
+                    if (mode == TouchMode.PHONE) Toast.makeText(activity, R.string.touch_mode_phone_hint, Toast.LENGTH_LONG).show();
+                })
+                .setNeutralButton(R.string.touch_mode_help, (dialog, which) -> new AlertDialog.Builder(activity)
+                        .setTitle(R.string.touch_mode_help).setMessage(R.string.touch_mode_help_body)
+                        .setPositiveButton(android.R.string.ok, null).show())
+                .setNegativeButton(android.R.string.cancel, null).show();
     }
 
     /** A 28dp visible circle with a 48dp touch target, kept against the right edge. */
@@ -487,15 +455,23 @@ public final class DesktopToolbar {
         Button button = new Button(activity);
         button.setText(label); button.setContentDescription(label); button.setTextSize(12);
         button.setAllCaps(false);
-        button.setTextColor(Color.WHITE); button.setBackgroundColor(Color.TRANSPARENT);
-        button.setMinWidth(0); button.setMinimumWidth(0); button.setFocusable(false);
+        button.setTextColor(Color.WHITE);
+        button.setMinWidth(0);
+        if (parent.getOrientation() == LinearLayout.VERTICAL) {
+            button.setTextSize(11);
+            button.setMinHeight(0);
+            button.setMaxLines(3);
+        }
+        placeButton(activity, parent, button);
+        return button;
+    }
+    private static void placeButton(Activity activity, LinearLayout parent, View button) {
+        button.setBackgroundColor(Color.TRANSPARENT);
+        button.setMinimumWidth(0); button.setMinimumHeight(0); button.setFocusable(false);
         int padding = Math.round(12 * activity.getResources().getDisplayMetrics().density);
         button.setPadding(padding, 0, padding, 0);
         if (parent.getOrientation() == LinearLayout.VERTICAL) {
             float density = activity.getResources().getDisplayMetrics().density;
-            button.setTextSize(11);
-            button.setMinHeight(0); button.setMinimumHeight(0);
-            button.setMaxLines(3);
             button.setPadding(Math.round(2 * density), 0, Math.round(2 * density), 0);
             StateListDrawable background = new StateListDrawable();
             for (boolean pressed : new boolean[]{true, false}) {
@@ -509,9 +485,9 @@ public final class DesktopToolbar {
             params.bottomMargin = Math.round(4 * density);
             parent.addView(button, params);
         } else {
-            parent.addView(button, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT));
+            parent.addView(button, new LinearLayout.LayoutParams(button instanceof ImageButton ? padding * 4
+                    : LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT));
         }
-        return button;
     }
     private static void shortcut(Activity activity, LinearLayout tools, Controller controller,
                                  DesktopInput input, String label, int... keys) {

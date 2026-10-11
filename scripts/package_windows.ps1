@@ -11,6 +11,7 @@ if ($version.versionName -cnotmatch '^\d+\.\d+\.\d+$' -or $version.versionCode -
 & python (Join-Path $PSScriptRoot 'build_network.py') windows
 if ($LASTEXITCODE -ne 0) { throw 'Embedded network build failed.' }
 & (Join-Path $source 'screen-share\setup.ps1') -Destination (Join-Path $source 'screen-share')
+& (Join-Path $source 'electron\setup.ps1')
 & (Join-Path $source 'remote-desktop\setup.ps1') -Destination (Join-Path $source 'remote-desktop')
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 [IO.Directory]::CreateDirectory($output) | Out-Null
@@ -18,8 +19,9 @@ $staging = Join-Path ([IO.Path]::GetTempPath()) ('cliprelay-package-' + [Guid]::
 $package = Join-Path $staging 'ClipRelay-Windows'
 [IO.Directory]::CreateDirectory($package) | Out-Null
 try {
+    Copy-Item -LiteralPath (Join-Path (Split-Path $source) 'LICENSE') -Destination (Join-Path $package 'LICENSE')
     # Explicit allowlist: never bundle config, history, tokens, keys or test files.
-    foreach ($name in @('cliprelay.ps1','install.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','version.json','release-notes.txt')) {
+    foreach ($name in @('cliprelay.ps1','start.ps1','install.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','version.json','release-notes.txt')) {
         Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $package $name)
     }
     $video = Join-Path $package 'screen-share'
@@ -27,7 +29,16 @@ try {
     foreach ($name in @('main.js','preload.js','package.json','share.html','share.css','share.js','bridge.ps1','setup.ps1','RESEARCH.md')) {
         Copy-Item -LiteralPath (Join-Path $source "screen-share\$name") -Destination (Join-Path $video $name)
     }
-    Copy-Item -LiteralPath (Join-Path $source 'screen-share\engine') -Destination $video -Recurse
+    Copy-Item -LiteralPath (Join-Path $source 'desktop') -Destination $package -Recurse
+    $desktopSource = Join-Path $package 'electron'
+    [IO.Directory]::CreateDirectory($desktopSource) | Out-Null
+    $sourceFiles = Get-Content -LiteralPath (Join-Path $source 'electron\windows-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $desktopFiles = @('windows-files.json') + $sourceFiles
+    foreach ($name in $desktopFiles) {
+        $target = Join-Path $desktopSource $name
+        [IO.Directory]::CreateDirectory((Split-Path $target)) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $source "electron\$name") -Destination $target
+    }
     $remote = Join-Path $package 'remote-desktop'
     [IO.Directory]::CreateDirectory($remote) | Out-Null
     foreach ($name in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {

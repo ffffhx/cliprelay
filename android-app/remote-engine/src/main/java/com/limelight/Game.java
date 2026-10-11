@@ -2756,7 +2756,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     : new AbsoluteTouchContext(conn, i, streamView);
         }
         if (persist) mode.save(this);
-        if (desktopToolbar != null) desktopToolbar.updateTouchMode(mode);
     }
 
     @Override

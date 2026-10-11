@@ -1,0 +1,81 @@
+'use strict';
+// Exercises the real sandboxed renderer through its preload and main-process
+// IPC. Deferred discovery/probes make stale-result races deterministic.
+const {app}=require('electron');
+const fs=require('node:fs');
+const path=require('node:path');
+const assert=require('node:assert/strict');
+const {DesktopWindows}=require('../electron/windows.cjs');
+const root=process.argv.find(value=>value.startsWith('--root='))?.slice(7);
+assert.equal(fs.readFileSync(path.join(root,'.electron-test-fixture'),'utf8'),'startup-registration-disabled');
+const output=path.join(root,'test-results');fs.mkdirSync(output,{recursive:true});
+app.setPath('userData',path.join(output,'profile'));app.on('window-all-closed',()=>{});
+const records=[],calls=[];
+const record=value=>{records.push(value);fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(records,null,2));};
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function waitFor(check,label){const end=Date.now()+15000;while(Date.now()<end){if(await check())return;await sleep(50);}throw new Error('Timeout: '+label);}
+const peer=(id,address,enabled=true,platform='windows')=>({id,name:id,address,port:47632,enabled,platform,accessToken:'',requiresAuth:false});
+const state={revision:0,config:{peers:[peer('phone','192.168.1.8',true,'android'),peer('office PC','192.168.1.20'),peer('backup tablet','192.168.1.30')],port:47632,notifications:true,startupEnabled:true,discoveryEnabled:true,deviceName:'Test PC',accessToken:''},addresses:[{Address:'test.local'},{Address:'192.168.1.9'}],runtime:{State:'success',Detail:'文本已发送到 192.168.1.9',At:null,ScreenshotHotkeyAvailable:true},sharing:{Stage:'idle',Active:false},update:{CurrentVersion:'0.1.0',Checked:true,Notify:true}};
+let discovery,probe,windows,previewPage=2,previewVersion='modern';
+const host={async request(action,data={}){
+  calls.push({action,data:structuredClone(data)});
+  if(action==='snapshot')return structuredClone(state);
+  if(action==='patch'){
+    if(data.expectedRevision!==undefined && data.expectedRevision!==state.revision)throw new Error('设备列表已改变，请重试。');
+    const {expectedRevision,...config}=data;Object.assign(state.config,structuredClone(config));state.revision++;return structuredClone(state);
+  }
+  if(action==='discover')return discovery?discovery.promise:[];
+  if(action==='merge')return {Peers:data.peers,Added:0,Updated:0,Removed:0};
+  if(action==='probe')return probe?probe.promise:data.peers.filter(p=>p.enabled).map((p,i)=>({Name:p.name,Success:i<2,StatusCode:i<2?200:0}));
+  if(action==='summary')return {Detail:'检测 部分送达 2/3 台 · phone ✓ · office PC ✓ · backup tablet × 无法连接'};
+  if(action==='normalize-peer')return data;
+  if(action==='preview-state')return previewVersion==='legacy'?{Success:false,StatusCode:404}:{Success:true,ResponseBody:JSON.stringify({active:true,moving:false,page:previewPage,pageCount:3,contentType:'text'})};
+  if(action==='preview-navigate'){previewPage=data.direction==='previous'?3:1;return [{Success:true,StatusCode:200}];}
+  if(action==='share'||action==='stop-sharing'||action==='copy'||action==='update-check'||action==='update-notify')return null;
+  throw new Error('Unexpected test action: '+action);
+}};
+const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};};
+const evaluate=(window,script)=>window.webContents.executeJavaScript(script);
+const button=(window,id)=>evaluate(window,`document.getElementById(${JSON.stringify(id)}).click()`);
+async function open(name,peerId){const window=windows.open(name,peerId);await waitFor(()=>evaluate(window,'document.body.dataset.ready === "true"').catch(()=>false),name);return window;}
+app.whenReady().then(async()=>{
+  windows=new DesktopWindows(host,path.resolve(__dirname,'..'));
+  discovery=deferred();let center=await open('control-center');
+  await waitFor(()=>calls.some(call=>call.action==='discover'),'automatic check');
+  await button(center,'PeerEnabledToggle0');await waitFor(()=>!state.config.peers[0].enabled,'disable during discovery');
+  const before=calls.filter(call=>call.action==='merge').length;discovery.resolve([]);discovery=null;await sleep(150);
+  assert.equal(calls.filter(call=>call.action==='merge').length,before);assert.equal(await evaluate(center,'document.getElementById("PeerStatusLabel0").textContent'),'已停用');
+  record({cancelStaleDiscovery:true});
+  probe=deferred();await button(center,'TestPeersButton');await waitFor(()=>calls.some(call=>call.action==='probe'),'probe');
+  await button(center,'PeerEnabledToggle1');await waitFor(()=>!state.config.peers[1].enabled,'disable during probe');
+  probe.resolve([{Success:true}]);probe=null;await sleep(150);
+  assert.equal(await evaluate(center,'document.getElementById("PeerStatusLabel1").textContent'),'已停用');
+  assert.match(await evaluate(center,'document.getElementById("ConnectionTitleLabel").textContent'),/待检测/);record({cancelStaleProbe:true});
+  state.config.peers.forEach(p=>p.enabled=true);state.revision++;windows.refresh();
+  await waitFor(()=>evaluate(center,'document.getElementById("PeerEnabledToggle0").getAttribute("aria-checked") === "true"'),'refresh roster');
+  await button(center,'TestPeersButton');await waitFor(()=>evaluate(center,'document.getElementById("OnlineStatusLabel").textContent === "2/3 台可用"'),'partial result');
+  const geometry=await evaluate(center,'[...document.querySelectorAll("[id^=PeerRow]")].map(node=>[node.offsetTop,node.offsetWidth,node.offsetHeight])');assert.deepEqual(geometry,[[0,168,60],[64,168,60],[128,168,60]]);
+  fs.writeFileSync(path.join(output,'control-center-partial.png'),(await center.webContents.capturePage()).toPNG());record({partialSummary:true,rowGeometry:true});
+  assert.equal(await evaluate(center,'typeof require'), 'undefined');
+  assert.match(await evaluate(center,'window.cliprelay.request("unknown-action").then(()=>"unsafe",error=>error.message)'),/Invalid desktop action/);record({sandboxAndActionAllowlist:true});
+  await evaluate(center,'document.getElementById("PortInput").value="0"');center.close();
+  await waitFor(()=>evaluate(center,'Boolean(document.querySelector("dialog[open]"))'),'invalid close');assert.equal(state.config.port,47632);
+  await evaluate(center,'document.querySelector("dialog button").click();document.getElementById("PortInput").value="47632"');record({invalidSettingsKeepWindowOpen:true});
+  const editor=await open('peer-editor','phone');
+  await evaluate(editor,'document.getElementById("peer-name").value="Renamed phone";[...document.querySelectorAll("button")].find(node=>node.textContent==="保存设备").click()');
+  await waitFor(()=>editor.isDestroyed(),'edit saved');assert.equal(state.config.peers[0].name,'Renamed phone');assert.equal(state.config.peers[0].platform,'android');record({peerEditPreservesIdentity:true});
+  const preview=await open('preview-remote');
+  await waitFor(()=>evaluate(preview,'document.body.innerText.includes("2 / 3")'),'preview page');
+  await evaluate(preview,'[...document.querySelectorAll("button")].find(node=>node.textContent==="← 上一页").click()');
+  await waitFor(()=>evaluate(preview,'document.body.innerText.includes("3 / 3")'),'previous page');
+  assert.equal(await evaluate(preview,'[...document.querySelectorAll("button")].find(node=>node.textContent==="← 上一页").disabled'),true);
+  previewVersion='legacy';await waitFor(()=>evaluate(preview,'document.body.innerText.includes("手机端需要更新")'),'legacy preview');
+  assert.equal(await evaluate(preview,'[...document.querySelectorAll("button")].find(node=>node.textContent==="← 上一页").disabled'),false);
+  preview.destroy();record({previewDirectionBoundariesAndLegacy:true});
+  state.config.peers[1].enabled=false;state.config.peers.push(peer('another computer','192.168.1.40'));state.config.peers.push(peer('more computer','192.168.1.41'));
+  const share=await open('screen-share-picker');assert.equal(share.getContentSize()[1],540);
+  assert.equal(await evaluate(share,'document.querySelectorAll("button[aria-pressed]").length'),4);
+  await evaluate(share,'[...document.querySelectorAll("button")].find(node=>node.textContent==="开始共享 →").click()');
+  await waitFor(()=>share.isDestroyed(),'share selected');assert.equal(calls.findLast(call=>call.action==='share').data.peer.id,'office PC');record({sharingDisabledClipboardPeer:true,sharingScrollableRoster:true});
+  center.destroy();windows.close();record({complete:true});app.quit();
+}).catch(error=>{record({error:error.stack});windows?.close();app.exit(1);});

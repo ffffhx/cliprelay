@@ -6,16 +6,19 @@
         try {
             $candidate = Get-Content $endpointFile -Raw -Encoding UTF8 | ConvertFrom-Json
             $process = Get-Process -Id $candidate.pid -ErrorAction Stop
-            if ($process.ProcessName -eq 'electron') { $endpoint = $candidate }
+            if ($process.ProcessName -in @('electron', 'ClipRelay')) { $endpoint = $candidate }
         } catch {}
     }
     if ($null -eq $endpoint) {
         if ($NoStart) { return $null }
         $engine = Join-Path $PSScriptRoot 'engine\electron.exe'
+        $desktop = Join-Path (Split-Path $PSScriptRoot) 'desktop\ClipRelay.exe'
+        if (Test-Path -LiteralPath $desktop) { $engine = $desktop }
         if (-not (Test-Path $engine)) { throw '视频共享组件未安装，请重新运行 Windows 安装脚本。' }
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $engine
         $psi.Arguments = '"' + $PSScriptRoot + '" --tray-pid=' + $PID
+        if ($engine -eq $desktop) { $psi.Arguments = '--screen-share-engine --tray-pid=' + $PID }
         $psi.WorkingDirectory = $PSScriptRoot
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
@@ -58,7 +61,7 @@ function script:Get-ScreenSharingStatus {
     try {
         $state = Get-Content -LiteralPath $statusFile -Raw -Encoding UTF8 | ConvertFrom-Json
         $engineProcess = Get-Process -Id $state.pid -ErrorAction Stop
-        if ($engineProcess.ProcessName -eq 'electron') { return $state }
+        if ($engineProcess.ProcessName -in @('electron', 'ClipRelay')) { return $state }
     } catch {}
     return $null
 }

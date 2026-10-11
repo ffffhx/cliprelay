@@ -6,13 +6,13 @@
 
 Mac、Windows 与 Android 手机在同一局域网内互传文本和截图的小工具。选中或截图即发，对方直接粘贴。
 
-- Mac 端基于 [Hammerspoon](https://www.hammerspoon.org/)，每台 Mac 一个 `init.lua`，无需构建。
-- Windows 端基于系统自带的 PowerShell 5.1 和 .NET，无需安装第三方运行时。
+- Windows 和 Mac 端使用 Electron。Windows 窗口由 HTML/CSS 复刻，剪贴板、热键、网络及后台服务继续调用原来的 PowerShell 5.1 / .NET 实现。
+- Mac 将原 `init.lua` 的菜单、单目标发送、剪贴板恢复和发现逻辑迁入 Electron；首次启动导入原有 ClipRelay 设置。
 - Android 端使用仓库维护的原生 APK，工程位于 `android-app/`，接收电脑发送的文本和截图。
 
 ## 工作原理
 
-- 每台设备运行一个 HTTP 服务（默认端口 `47632`）；文本使用 `POST /push`，JPEG 截图使用 `POST /push-image`。
+- 每台设备运行一个 HTTP 服务（默认端口 `47632`）；文本使用 `POST /push`，Windows / Android 的 JPEG 截图使用 `POST /push-image`。Mac 保持原 `init.lua` 的文本接收能力。
 - Windows、Mac 和原生 Android 的接收服务启动后会通过 mDNS/DNS-SD 发布 `_cliprelay._tcp.local`；扫描端向局域网查询该服务，并从结果中取得设备名、地址、端口和是否需要访问密钥。
 - Mac 按下 `Ctrl+Alt+G` 后，脚本模拟 `Cmd+C` 获取选中文本、恢复原剪贴板，再发送给对端。
 - Windows 直接监听普通的 `Ctrl+C`：当前应用照常完成复制，ClipRelay 把新文本并行发送给所有启用的接收设备；若没有发生新复制，则发送剪贴板当前文本。
@@ -24,29 +24,24 @@ Mac、Windows 与 Android 手机在同一局域网内互传文本和截图的小
 
 ## Mac 端
 
-```bash
-brew install --cask hammerspoon
-mkdir -p ~/.hammerspoon
-cp init.lua ~/.hammerspoon/init.lua
-```
-
-1. 打开 Hammerspoon，按提示授予「辅助功能」权限
-   （系统设置 → 隐私与安全性 → 辅助功能）。
-2. 默认可先保留顶部的 `DEFAULT_PEER`；启动后点击菜单栏的 `ClipRelay` → `扫描局域网设备…`
-   选择对端。所选地址、端口和访问密钥会持久保存。mDNS 不可用时，再把 `DEFAULT_PEER`
-   改为对端的局域网 IP 或 `.local` 主机名。
-3. 点 Hammerspoon 菜单栏图标 → Reload Config，看到「ClipRelay 已启动」即就绪。
-
-也可以使用一键安装脚本：
+在 macOS 上使用 Node.js 22.12 或更新版本、Xcode Command Line Tools 构建：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/mac-bootstrap.sh \
-  | bash -s -- Alice-Mac.local
+npm run setup:electron
+npm run build:mac -- arm64  # Intel Mac 使用 x64
 ```
+
+产物位于 `.tools/mac-electron/`，解压后将 `ClipRelay.app` 拖入「应用程序」，通过 Finder 打开。源码安装也可运行 `bash mac-bootstrap.sh`。
+
+1. 首次切换时，先停用 Hammerspoon 配置中的 ClipRelay 并 Reload，释放监听端口和快捷键。保留原配置文件，Electron 会读取其中的标准配置常量，以及 `hs.settings` 保存的设备、密钥、设备 ID 和发现开关；不会修改其他 Hammerspoon 配置。
+2. 为 ClipRelay 授予「辅助功能」权限（系统设置 → 隐私与安全性 → 辅助功能）。按 `Ctrl+Alt+G` 发送选中文本，恢复旧的纯文本剪贴板，发送失败仍保持静默。
+3. 菜单栏 `ClipRelay` → `扫描局域网设备…` 选择单个对端，需要时输入访问密钥。菜单和行为沿用原版。
+
+新配置位于 `~/Library/Application Support/ClipRelay/config.json`；之后启动优先读取此文件。`peer`、`peerPort`、`peerToken`、`localPort` 和 `hotkey` 可用于手动配置，修改后重新打开 App。构建包暂未签名或公证；本次按要求未进行 macOS 真机及安装包验收。`init.lua` 保留为迁移对照与旧版回退文件。
 
 ## Windows 端
 
-支持 Windows 10/11，使用系统自带的 Windows PowerShell 5.1。安装脚本会：
+支持 Windows 10/11 x64，安装包内含 Electron，后台继续使用系统自带的 Windows PowerShell 5.1。安装脚本会：
 
 - 把客户端和配置写入 `%LOCALAPPDATA%\ClipRelay`；
 - 注册当前用户登录自启；
@@ -57,20 +52,21 @@ curl -fsSL https://raw.githubusercontent.com/ffffhx/cliprelay/main/mac-bootstrap
 - 左侧设备列表可直接开关每台目标，通过 `···` 编辑或移除设备；支持添加和扫描最多 16 个目标，名称、地址、端口和访问密钥独立配置；全部关闭时暂停发送，本机仍可接收；
 - 支持修改本机监听端口、接收密钥、通知和开机自启，并可并行检测所有广播设备。
 
-在仓库根目录打开 PowerShell，执行（初始地址之后可由扫描结果替换）：
+从完整离线包安装：解压整个 `ClipRelay-Windows-*.zip`，双击 `Install.cmd`。源码构建需要 Node.js 22.12 或更新版本，先在仓库根目录执行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
+npm run setup:electron
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
+```
+
+也可从已准备好内置网络组件的仓库安装（初始地址之后可由扫描结果替换）：
+
+```powershell
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass `
   -File .\windows\install.ps1 -Peer 192.168.1.100
 ```
 
-也可以不克隆仓库，直接安装：
-
-```powershell
-$source = (Invoke-WebRequest -UseBasicParsing `
-  "https://raw.githubusercontent.com/ffffhx/cliprelay/main/windows/install.ps1").Content
-& ([scriptblock]::Create($source)) -Peer "192.168.1.100"
-```
+完整包包含远控和内置网络组件，不支持仅下载一个 `install.ps1` 作为离线安装包。
 
 添加防火墙规则时会出现一次 UAC 确认。安装完成后，正常按 `Ctrl+C` 即会同时复制
 到本机并广播；按 `Ctrl+Alt+F12` 会静默广播整个虚拟桌面的 JPEG 截图。接收的文本或
@@ -92,12 +88,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$env:LOCALAPPDATA\ClipRelay\uninstall.ps1"
 ```
 
-如只想临时运行、不安装自启或防火墙规则：
+如只想从仓库临时运行，先准备 Electron，再通过独立启动脚本拉起（不运行安装器）：
 
 ```powershell
+npm run build:windows
 powershell.exe -NoProfile -STA -ExecutionPolicy Bypass `
-  -File .\windows\cliprelay.ps1 -Peer 192.168.1.100
+  -File .\windows\start.ps1 -OpenSettings -Peer 192.168.1.100
 ```
+
+安装后的应用入口是 `%LOCALAPPDATA%\ClipRelay\desktop\ClipRelay.exe`；登录自启使用 `--background`。`start.ps1` 通过独立 helper 启动应用，终端退出后托盘和接收服务继续运行。Electron 与原后台通过随机命名管道通信；关闭设置窗口不退出后台，托盘「退出」会同时结束 Electron 与后台。
+
+迁移回归：`npm run test:electron`；Windows 原生桥接和 HTML 交互测试分别运行 `windows/tests/run-electron-live.ps1`、`windows/tests/run-electron-live.ps1 -Mode renderer`（系统 PowerShell 5.1，`-STA`）。脚本独立启动隔离测试 App 并输出结果目录，最终查看其中 `test-results/results.json` 的 `complete: true`；截图也在该目录。测试配置使用独立端口，配置保存不会改动用户的开机快捷方式。
 
 ## Android 端（原生 APK）
 
@@ -282,7 +283,8 @@ Android 0.10.6 起并行探测保存的地址，优先选局域网；内置通�
 中转会消耗服务器带宽，适合个人使用的容量需按实际串流码率规划；直连画面不经过服务器。
 
 「手机触控」将手指操作作为真实触屏输入传给电脑：点按、单指滑动滚动、双指捏合缩放和长按菜单由电脑软件处理。
-手机触控在 Orca 等桌面应用中发送原生触屏手势，使用 Windows 的圆形触点反馈。Android 0.10.26 起，识别到 ChatGPT / Codex 前台应用时，单指滑动自动转成鼠标滚轮，兼容其禁止触屏滚动的会话侧边栏；滚动固定作用于手指起点，轻点左键、长按右键，滑动结束不会点击会话。双指在开始滚动前落下时仍发送原生捏合手势；已开始单指滚动后加入第二指会取消本次手势。切到 Orca 或其他应用即恢复原生触控，直接点击和触控板模式保持原行为。旧电脑端没有应用识别时，可手动选择 ChatGPT 工具栏启用兼容；有前台识别时以实际应用为准，不因手动选择工具栏而改变其他应用的触控。需要拖拽会话排序或选字时可使用直接点击模式。
+Android 0.10.28 起，手机和平板统一默认 1920×1080、60 FPS，默认使用「手机触控」。升级时原有 1280×720 / 1280×960 设置一次性调整为 1080P，其他分辨率及帧率保持原选择；之后手动选择较低分辨率仍会保存。已经明确选择的触控模式仍会保留。返回电脑列表后，右上角齿轮进入「画质与操控」，可更改分辨率和触控模式。两端共用同一套工具栏：两侧空白足够时显示侧栏，否则使用底部菜单；按钮按应用模式展示，已移除聊天工具栏中的「换行 ⇧Enter」。
+手机触控在 Orca 等桌面应用中发送原生触屏手势，使用 Windows 的圆形触点反馈。Android 0.10.26 起，识别到 ChatGPT / Codex 前台应用时，单指滑动自动转成鼠标滚轮，兼容其禁止触屏滚动的会话侧边栏；滚动固定作用于手指起点，轻点左键、长按右键，滑动结束不会点击会话。双指在开始滚动前落下时仍发送原生捏合手势；已开始单指滚动后加入第二指会取消本次手势。切到 Orca 或其他应用即恢复原生触控，直接点击和触控板模式保持原行为。滑动兼容根据电脑实际前台应用自动生效，不需要选择专用工具栏；旧电脑端没有应用识别时，可以通过「更多 → 触控方式」使用直接点击或触控板的双指滚动。需要拖拽会话排序或选字时可使用直接点击模式。
 滚动、缩放和选字效果取决于软件的触屏支持，电脑界面不会变成手机版。「手机触控」点进可编辑输入框后会自动弹出手机键盘，点到普通按钮或只读区域后收起自动打开的键盘；手动收起后不会反复弹出。
 自动键盘需要新版 Windows 端和 Android 端。自绘控件、部分游戏或旧版电脑端可能无法提供输入焦点，此时仍可从工具栏打开「手机键盘」。
 Android 0.10.27 起，ChatGPT / Codex 的兼容触控在手机画面上显示跟手圆点，抬手后淡出；切换模式、切换应用或取消手势会立即清除。圆点由手机本地绘制，不接收点击，不会影响滚动落点，也不改变 Windows 的系统光标；原生触控和双指手势继续使用电脑端原有反馈。
@@ -292,8 +294,8 @@ Android 0.10.22 起，输入法反复修订语音识别或拼音候选时，临�
 拖动窗口、精确选字或操作老软件时可以切回「直接点击」「触控板」。不支持触屏输入的电脑会提示并切换为直接点击。
 手机触控中的三指手势也传给电脑，不使用旧模式的三指唤起键盘；切换模式、失焦、旋转及断开连接会取消触点。
 
-默认自动识别电脑前台应用，约 1–2 秒稳定后切换：星露谷物语（含 SMAPI）和速速上菜进入对应游戏按键，Orca 开发工具与 ChatGPT 使用各自桌面工具栏，其他应用返回通用桌面。只传输预设应用标识，不读取或传输窗口标题、应用路径及内容；沿用远控配对加密通道。旧版电脑或识别失败时保留当前布局。
-展开桌面工具栏后，可通过应用模式按钮手动切换到 ChatGPT 或 Orca；手动选择应用、游戏或返回桌面会关闭自动切换，选择「自动识别电脑当前应用」可恢复（游戏选择窗口也有此入口）。两个桌面模式提供 Enter、Shift+Enter 换行、复制、粘贴、全选、撤销、重做和上下滚动；Orca 另有 Shift+Tab。模式切换释放旧按键和触点，不会启动应用或向应用发送文字。
+操作模式只保留「通用桌面」与「游戏模式」，通过「模式」按钮手动选择；默认进入通用桌面，旧的 ChatGPT / Orca 工具栏选择不再生效。切换电脑前台应用不会改变操作模式或游戏按键布局。后台应用识别仅用于触摸兼容和切换应用时释放输入，只传输预设应用标识，不读取或传输窗口标题、应用路径及内容，沿用远控配对加密通道。
+通用桌面左侧依次为模式、手机键盘、虚拟键盘、语音输入、传图片；右侧依次为返回电脑列表、Enter、退格图标、Esc、Win、更多。复制、粘贴、全选、触控方式、撤销、重做、上下滚动、串流信息和断开连接统一放在「更多」中。画面两侧空间不足时，底部工具栏提供相同按钮。模式切换释放旧按键和触点，不会启动应用或向应用发送文字。
 复制、粘贴操作的是电脑剪贴板；滚动作用于电脑鼠标所在区域。
 
 「虚拟键盘」在手机底部展开电脑按键，提供字母、数字、Ctrl、Alt、Shift、Win、Tab、Enter、退格、空格与方向键；「功能 / 符号」页包含 F1–F12、Esc、Delete、Insert、Home、End、Page Up/Down 和标点。先点亮修饰键，再点其他键发送组合（例如 Ctrl → C、Ctrl → Shift → Esc）；组合完成自动松开，再点同一个修饰键可取消选择，长按修饰键则单独发送该键。选中的修饰键仅用于下一次虚拟键盘按键，不用于电脑画面上的鼠标点击。
@@ -306,7 +308,7 @@ Android 0.10.23 / Windows 0.3.5 新增侧边栏「语音输入」：先选中电
 
 先点选电脑上 Orca、ChatGPT 或其他支持图片粘贴的软件输入区，再点远控工具栏的「传图片」，会直接打开手机系统相册选择器。选好后通过现有配对加密通道上传，自动返回串流并执行一次 Ctrl+V，无需再次确认上传或手动粘贴，也不会自动按回车发送消息。取消选图会直接返回；上传失败可重试，不会触发粘贴。选择器仅授权选中的图片，不需要读取整个相册。支持手机可解码的常见图片，源文件上限 20 MB；大图适度缩小后转为 PNG，保留透明通道并去除源元数据，传输上限 8 MB。自动上传及粘贴需要 Windows 0.3.3、Android 0.10.10 或更高版本；选图期间暂停串流，电脑应用继续运行。
 
-在工具栏点击「应用 → 游戏模式」，先选择《速速上菜》或《星露谷物语》，再显示相应触屏方向控制和游戏按钮；游戏模式不再单独占用工具栏按钮。取消选择保留当前模式，右上角「⋯」菜单中的「切换游戏」可重新选择，并记住上次使用的游戏。《速速上菜》的键盘预设为：
+在工具栏点击「模式 → 游戏模式」，先选择《速速上菜》或《星露谷物语》，再显示相应触屏方向控制和游戏按钮；游戏模式不再单独占用工具栏按钮。取消选择保留当前模式，右上角「⋯」菜单中的「切换游戏」可重新选择，并记住上次使用的游戏。《速速上菜》的键盘预设为：
 WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停。
 方向支持斜向移动，按钮支持长按，可多指同时操作；游戏仍在电脑上运行。
 《星露谷物语》采用电脑默认键位：WASD 移动、C 使用工具、X 互动、E 背包、Tab 切换工具栏、Esc 暂停；顶部可直接选择 1–12 号物品格，菜单中有 F 任务日志和 M 地图。需要操作背包、商店或对话选项时，点「菜单触控」临时改为直接点击画面；点「返回按键」继续移动与工具操作。
@@ -417,7 +419,7 @@ adb shell am instrument -w com.cliprelay.app.test/com.cliprelay.app.RemoteDeskto
 - Mac 之间可以使用 `.local` 主机名，避免 DHCP 导致 IP 变化。
 - 部分 Windows/Android 环境无法稳定解析 `.local`，此时请使用局域网 IP，并在路由器中配置 DHCP 静态租约。
 - mDNS 标准使用 `224.0.0.251:5353`（IPv4）或 `ff02::fb:5353`（IPv6）组播，只在当前链路内工作；ClipRelay 当前从发现结果中选择 IPv4 作为发送地址。访客 Wi-Fi、AP 隔离、部分 VPN、防火墙或路由器的组播过滤会导致扫描不到；这不影响按 IP 手动配置。
-- 首次使用如 macOS 防火墙弹窗询问 Hammerspoon 是否接受传入连接，选择允许。
+- 首次使用如 macOS 防火墙弹窗询问 ClipRelay 是否接受传入连接，选择允许。
 - Android 13 及以上版本可能显示系统自带的剪贴板浮层；应用无法可靠关闭这个系统提示。
 - Windows 安装器创建的防火墙规则只允许“专用网络”；请勿为了使用本工具把公共网络改成专用网络。
 

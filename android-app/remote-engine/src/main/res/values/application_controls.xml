@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="desktop_auto_app">Auto-detect foreground app</string>
-    <string name="desktop_auto_prefix">Auto · </string>
     <string name="desktop_profile_general">Desktop</string>
-    <string name="desktop_profile_chatgpt">ChatGPT</string>
-    <string name="desktop_profile_orca">Orca</string>
-    <string name="desktop_profile_title">Controls for this app</string>
+    <string name="desktop_profile_title">Control mode</string>
+    <string name="desktop_more">More controls</string>
+    <string name="desktop_more_button">More ⋯</string>
+    <item name="desktopMoreButton" type="id" />
     <string name="desktop_keyboard">Keyboard</string>
-    <string name="desktop_newline">New line ⇧Enter</string>
     <string name="desktop_paste">Paste</string>
     <string name="desktop_copy">Copy</string>
     <string name="desktop_select_all">Select all</string>

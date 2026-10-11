@@ -5,7 +5,9 @@ param(
     [ValidateRange(0, 65535)]
     [int]$Port = 0,
 
-    [switch]$OpenSettings
+    [switch]$OpenSettings,
+
+    [string]$ElectronHostPipe = ''
 )
 
 # ClipRelay Windows client. It implements the same protocol as the macOS and
@@ -2242,6 +2244,11 @@ function Set-StartupRegistration {
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $windowsPowerShell
     $shortcut.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clientPath`""
+    $desktopExecutable = Join-Path $PSScriptRoot 'desktop\ClipRelay.exe'
+    if (Test-Path -LiteralPath $desktopExecutable) {
+        $shortcut.TargetPath = $desktopExecutable
+        $shortcut.Arguments = '--background'
+    }
     $shortcut.WorkingDirectory = $PSScriptRoot
     $iconPath = Join-Path $PSScriptRoot "cliprelay.ico"
     $shortcut.IconLocation = if (Test-Path -LiteralPath $iconPath) { "$iconPath,0" } else { "$windowsPowerShell,0" }
@@ -5984,6 +5991,12 @@ $script:screenShareWasActive = $false
 $script:screenShareLastText = '屏幕共享 · 未开始'
 Initialize-ScreenSharing
 
+$script:desktopHost = $null
+if ($ElectronHostPipe) {
+    . (Join-Path $PSScriptRoot 'electron\bridge.ps1')
+    Initialize-ElectronHost -PipeName $ElectronHostPipe
+}
+
 try {
     $createdNew = $false
     $mutexName = "Local\ClipRelay-$Port"
@@ -6135,6 +6148,7 @@ try {
         Show-ClipRelayNotification -Title "ClipRelay 已启动" -Message "Ctrl+C 广播文本；Ctrl+Alt+F12 广播所有显示器截图。已启用 $startupPeerCount 台设备，本机端口: $Port。"
     }
 
+    if ($null -ne $script:desktopHost) { $script:desktopHost.Send('ready') }
     if ($OpenSettings) {
         Show-PeerConfiguration
     }
@@ -6216,9 +6230,10 @@ finally {
         $mutex.Dispose()
     }
     if ($null -ne $openSettingsEvent) { $openSettingsEvent.Dispose() }
+    if ($null -ne $script:desktopHost) { Stop-ElectronHost -Restart $restartRequested }
 }
 
-if ($restartRequested) {
+if ($restartRequested -and -not $ElectronHostPipe) {
     $processInfo = New-Object System.Diagnostics.ProcessStartInfo
     $processInfo.FileName = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
     $processInfo.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""

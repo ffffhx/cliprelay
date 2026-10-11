@@ -2,6 +2,10 @@ package com.limelight.binding.input;
 
 /** Require consecutive foreground observations; errors never mean desktop. */
 public final class ApplicationPolicy {
+    public static boolean usesPhoneScrollCompatibility(String app, boolean gameMode) {
+        return !gameMode && "chatgpt".equals(app);
+    }
+
     private String candidate;
     private long since;
     public String observe(boolean supported, String app, long now) {

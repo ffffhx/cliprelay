@@ -1,0 +1,27 @@
+name: Electron macOS build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - run: npm run setup:electron
+      - run: npm run test:electron
+      - run: npm run build:mac -- ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipRelay-macOS-${{ matrix.arch }}
+          path: .tools/mac-electron/*.zip
+          if-no-files-found: error

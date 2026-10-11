@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.Espresso.onData
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.matcher.RootMatchers.isDialog
 import androidx.test.espresso.matcher.ViewMatchers.withText
@@ -20,7 +21,6 @@ import com.limelight.binding.input.touch.PhoneScrollState
 import com.limelight.nvstream.jni.MoonBridge
 import com.limelight.preferences.TouchMode
 import com.limelight.ui.DesktopToolbar
-import com.limelight.ui.DesktopProfile
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -221,8 +221,12 @@ class PhoneTouchTest {
             instrument.runOnMainSync { context!!.setScrollCompatibility(false) }
             // Exercise preference migration and the actual toolbar selector without a host connection.
             prefs.edit().remove(TouchMode.PREF).putBoolean("checkbox_touchscreen_trackpad", false).commit()
-            assertEquals(TouchMode.DIRECT, TouchMode.read(screen))
+            assertEquals(TouchMode.PHONE, TouchMode.read(screen))
             prefs.edit().putBoolean("checkbox_touchscreen_trackpad", true).commit()
+            assertEquals(TouchMode.PHONE, TouchMode.read(screen))
+            prefs.edit().remove("checkbox_touchscreen_trackpad").commit()
+            assertEquals(TouchMode.PHONE, TouchMode.read(screen))
+            TouchMode.TRACKPAD.save(screen)
             assertEquals(TouchMode.TRACKPAD, TouchMode.read(screen))
             var selected = TouchMode.TRACKPAD
             lateinit var toolbar: DesktopToolbar.Controller
@@ -279,9 +283,14 @@ class PhoneTouchTest {
                 toolbar.setGameMode(false)
                 assertTrue(handle.isShown)
                 handle.performClick()
-                root.findViewById<View>(R.id.touchModeButton).performClick()
             }
-            onView(withText(screen.getString(R.string.touch_mode_phone))).inRoot(isDialog()).perform(click())
+            fun chooseTouchMode(mode: TouchMode) {
+                instrument.runOnMainSync { root.findViewById<View>(R.id.desktopMoreButton).performClick() }
+                onData(org.hamcrest.Matchers.equalTo(screen.getString(R.string.touch_mode_button,
+                    screen.getString(selected.label)))).inRoot(isDialog()).perform(click())
+                onView(withText(screen.getString(mode.label))).inRoot(isDialog()).perform(click())
+            }
+            chooseTouchMode(TouchMode.PHONE)
             assertEquals(TouchMode.PHONE, selected)
             assertEquals(TouchMode.PHONE, TouchMode.read(screen))
             // Only ChatGPT uses wheel scrolling; Orca/general retain native contacts.
@@ -314,19 +323,15 @@ class PhoneTouchTest {
                 }
             }
             instrument.runOnMainSync {
-                toolbar.setConnected(true); toolbar.setFocused(true); toolbar.setAutomaticMode(true)
+                toolbar.setConnected(true); toolbar.setFocused(true)
             }
-            for (profile in listOf(DesktopProfile.GENERAL, DesktopProfile.ORCA, DesktopProfile.CHATGPT)) {
-                instrument.runOnMainSync { toolbar.observeApplication(profile.id) }
-                assertEquals(profile, toolbar.profile)
-                swipeInPhoneMode(profile == DesktopProfile.CHATGPT)
+            for (app in listOf("general", "orca", "chatgpt", "orca")) {
+                instrument.runOnMainSync { toolbar.observeApplication(app) }
+                assertFalse(toolbar.isGameMode)
+                swipeInPhoneMode(app == "chatgpt")
             }
-            for (profile in DesktopProfile.values()) {
-                instrument.runOnMainSync { toolbar.setProfile(profile); toolbar.observeApplication(profile.id) }
-                swipeInPhoneMode(profile == DesktopProfile.CHATGPT)
-            }
-            // A manual ChatGPT toolbar must not reinterpret Orca's touch gestures.
-            instrument.runOnMainSync { toolbar.setProfile(DesktopProfile.CHATGPT) }
+            // Reopening desktop mode must not reinterpret Orca's touch gestures.
+            instrument.runOnMainSync { toolbar.setGameMode(false) }
             swipeInPhoneMode(false)
             instrument.runOnMainSync { toolbar.observeApplication("chatgpt") }
             swipeInPhoneMode(true)
@@ -344,8 +349,7 @@ class PhoneTouchTest {
             assertEquals(cancelledCount, events.size)
             assertTrue(held.isEmpty())
             assertEquals(checksBeforeProfiles, keyboardChecks)
-            instrument.runOnMainSync { root.findViewById<View>(R.id.touchModeButton).performClick() }
-            onView(withText(screen.getString(R.string.touch_mode_direct))).inRoot(isDialog()).perform(click())
+            chooseTouchMode(TouchMode.DIRECT)
             assertEquals(TouchMode.DIRECT, selected)
             assertEquals(TouchMode.DIRECT, TouchMode.read(screen))
         } finally {

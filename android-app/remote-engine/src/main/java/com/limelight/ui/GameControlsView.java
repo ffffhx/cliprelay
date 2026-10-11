@@ -58,17 +58,12 @@ public final class GameControlsView extends FrameLayout {
     private final Button pause;
     private int size, opacity;
     private boolean mirrored, available, settingsOpen, menuOpen, pointerMode, dismissGesture;
-    private Runnable automaticMode = () -> {}, manualMode = () -> {};
     private Runnable virtualKeyboard = () -> {};
     private Runnable home = () -> {};
     public void setVirtualKeyboardAction(Runnable action) { virtualKeyboard = action; }
     public void setHomeAction(Runnable action) { home = action; }
     private Runnable streamInfo = () -> {};
     public void setStreamInfoAction(Runnable action) { streamInfo = action; }
-
-    public void setApplicationModeActions(Runnable automatic, Runnable manual) {
-        automaticMode = automatic; manualMode = manual;
-    }
 
     public GameControlsView(Activity activity, GameInputState.KeySink sink, Runnable exit) {
         this(activity, sink, exit, enabled -> {});
@@ -626,12 +621,9 @@ public final class GameControlsView extends FrameLayout {
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(R.string.game_choose_profile)
                 .setSingleChoiceItems(names, profile.ordinal(), (d, which) -> {
                     settingsOpen = false;
-                    manualMode.run();
                     setProfile(GameBindings.Profile.values()[which]);
                     onSelected.run();
                     d.dismiss();
-                }).setNeutralButton(R.string.desktop_auto_app, (d, which) -> {
-                    settingsOpen = false; automaticMode.run();
                 }).setNegativeButton(android.R.string.cancel, null).create();
         dialog.setOnDismissListener(d -> { settingsOpen = false; updateInputEnabled(); });
         dialog.show();
