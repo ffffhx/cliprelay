@@ -307,11 +307,58 @@ $minimizeButton = $form.Controls["MinimizeButton"]
 if ($null -eq $minimizeButton -or -not $minimizeButton.Visible) {
     throw "The control center does not expose a visible minimize button."
 }
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class TaskbarWindowProbe {
+    [DllImport("user32.dll")]
+    public static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetSystemMenu(IntPtr window, bool revert);
+    [DllImport("user32.dll")]
+    public static extern uint GetMenuState(IntPtr menu, uint item, uint flags);
+}
+'@
+$windowStyle = [TaskbarWindowProbe]::GetWindowLong($form.Handle, -16)
+if (($windowStyle -band 0x000A0000) -ne 0x000A0000) {
+    throw "The borderless control center must expose WS_SYSMENU and WS_MINIMIZEBOX for taskbar activation."
+}
+if (($windowStyle -band 0x00C00000) -ne 0) {
+    throw "Taskbar support must preserve the custom borderless title bar."
+}
 $minimizeButton.PerformClick()
 [System.Windows.Forms.Application]::DoEvents()
 if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized) {
     throw "The minimize button did not minimize the control center."
 }
+$systemMenu = [TaskbarWindowProbe]::GetSystemMenu($form.Handle, $false)
+$restoreState = [TaskbarWindowProbe]::GetMenuState($systemMenu, 0xF120, 0)
+if ($systemMenu -eq [IntPtr]::Zero -or $restoreState -eq [uint32]::MaxValue -or ($restoreState -band 3) -ne 0) {
+    throw "Windows must offer an enabled Restore command while the control center is minimized."
+}
+$null = [ClipRelay.NativeMethods]::SendMessage($form.Handle, 0x0112, [IntPtr]0xF120, [IntPtr]::Zero)
+[System.Windows.Forms.Application]::DoEvents()
+if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Normal -or -not $form.Visible) {
+    throw "The Windows Restore command did not restore the control center."
+}
+$null = [ClipRelay.NativeMethods]::SendMessage($form.Handle, 0x0112, [IntPtr]0xF020, [IntPtr]::Zero)
+[System.Windows.Forms.Application]::DoEvents()
+if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized) {
+    throw "The Windows Minimize command did not minimize the control center."
+}
+# Explorer may activate a borderless window without sending SC_RESTORE.
+$null = [ClipRelay.NativeMethods]::SendMessage($form.Handle, 0x0006, [IntPtr]0x10000, [IntPtr]::Zero)
+[System.Windows.Forms.Application]::DoEvents()
+if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized) {
+    throw "Deactivating the minimized control center must leave it minimized."
+}
+$null = [ClipRelay.NativeMethods]::SendMessage($form.Handle, 0x0006, [IntPtr]0x10002, [IntPtr]::Zero)
+[System.Windows.Forms.Application]::DoEvents()
+if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Normal) {
+    throw "Activating the minimized control center did not restore it."
+}
+$minimizeButton.PerformClick()
+[System.Windows.Forms.Application]::DoEvents()
 Show-RelayControlCenter
 [System.Windows.Forms.Application]::DoEvents()
 if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Normal -or -not $form.Visible) {

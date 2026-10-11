@@ -1321,6 +1321,7 @@ namespace ClipRelay
 
     public sealed class RelayForm : Form
     {
+        private const int WM_ACTIVATE = 0x0006;
         private const int WM_NCHITTEST = 0x0084;
         private const int HTCLIENT = 1;
         private const int HTCAPTION = 2;
@@ -1499,6 +1500,11 @@ namespace ClipRelay
             {
                 CreateParams parameters = base.CreateParams;
                 parameters.ClassStyle |= 0x00020000; // CS_DROPSHADOW
+                // FormBorderStyle.None strips the native minimize/system-menu
+                // styles. Keep them for taskbar windows so Explorer can restore
+                // a window minimized by our custom button, without a caption.
+                if (ShowInTaskbar && MinimizeBox)
+                    parameters.Style |= 0x00080000 | 0x00020000; // WS_SYSMENU | WS_MINIMIZEBOX
                 return parameters;
             }
         }
@@ -1520,6 +1526,12 @@ namespace ClipRelay
 
         protected override void WndProc(ref Message message)
         {
+            // Explorer can activate a borderless minimized window without
+            // sending SC_RESTORE. WinForms may still consider it active, so
+            // handle the native message even when Activated would not fire.
+            if (message.Msg == WM_ACTIVATE && (message.WParam.ToInt64() & 0xFFFF) != 0 &&
+                ShowInTaskbar && WindowState == FormWindowState.Minimized)
+                WindowState = FormWindowState.Normal;
             base.WndProc(ref message);
             if (message.Msg == WM_NCHITTEST && message.Result.ToInt32() == HTCLIENT)
             {
@@ -4995,7 +5007,7 @@ function Show-RelayControlCenter {
         $form.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Regular)
         $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
         $form.MaximizeBox = $false
-        $form.MinimizeBox = $false
+        $form.MinimizeBox = $true
         $form.ShowInTaskbar = $true
         $form.TopMost = $false
         if ($null -ne $script:appIcon) {
