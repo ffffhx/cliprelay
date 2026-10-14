@@ -1,11 +1,13 @@
 """Exercise a built Sunshine control extension in an isolated loopback fixture.
 
-No service installation, real pairing, stream launch, desktop input or changes
-to the user's Sunshine configuration. The short-lived test engine is detached
-through WMI and is identified by both its executable and unique config path.
+No service installation, real pairing, desktop input or changes to the user's
+Sunshine configuration. The optional stream receiver uses a temporary client
+certificate and records only counters, never video/audio content. The short-lived
+test engine is detached through WMI and identified by its executable and config.
 """
 import argparse
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -16,7 +18,10 @@ import ssl
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
+import xml.etree.ElementTree as ET
 
 POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
@@ -53,13 +58,126 @@ def choose_port() -> int:
     raise RuntimeError("No unused test port range available")
 
 
-def run(engine: Path, output: Path) -> None:
+def prepare_client(fixture: Path) -> str:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ClipRelay isolated stream test")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(minutes=1))
+            .not_valid_after(now + datetime.timedelta(days=1)).sign(key, hashes.SHA256()))
+    pem = cert.public_bytes(serialization.Encoding.PEM)
+    (fixture / "client.pem").write_bytes(pem)
+    (fixture / "client-key.pem").write_bytes(key.private_bytes(serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
+    (fixture / "clients.json").write_text(json.dumps({"root": {"uniqueid": str(uuid.uuid4()),
+        "named_devices": [{"name": "Isolated stream fixture", "uuid": str(uuid.uuid4()),
+                           "cert": pem.decode(), "enabled": True}]}}), encoding="utf-8")
+    return cert.fingerprint(hashes.SHA256()).hex()
+
+
+def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> dict:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.load_verify_locations(cafile=str(fixture / "cacert.pem"))
+    context.load_cert_chain(str(fixture / "client.pem"), str(fixture / "client-key.pem"))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+
+    def nvhttp(path, parameters=None):
+        query = urllib.parse.urlencode(dict(parameters or {}, uniqueid="cliprelay-isolated-test", uuid=str(uuid.uuid4())))
+        with opener.open(f"https://127.0.0.1:{port-5}/{path}?{query}", timeout=30) as response:
+            body = response.read(65537)
+            assert len(body) <= 65536
+            root = ET.fromstring(body)
+            assert root.get("status_code") == "200", f"{path}: {root.get('status_message')}"
+            return root
+
+    info = nvhttp("serverinfo")
+    key, key_id = secrets.token_hex(16), 1060
+    launch = nvhttp("launch", {"appid": 0, "mode": "1280x720x30", "sops": 0, "rikey": key,
+        "rikeyid": key_id, "localAudioPlayMode": 1, "surroundAudioInfo": 196610,
+        "remoteControllersBitmap": 0, "gcmap": 0, "gcpersist": 0})
+    assert launch.findtext("gamesession") == "1"
+    state_file, stop_file = fixture / "received.json", fixture / "stop-client"
+    iv = key_id.to_bytes(4, "big").hex() + "00" * 12
+    log = (fixture / "client.log").open("w", encoding="utf-8")
+    process = subprocess.Popen([str(client), info.findtext("appversion"), info.findtext("GfeVersion") or "3.23.0.74",
+        launch.findtext("sessionUrl0"), key, iv, str(state_file), str(stop_file)],
+        cwd=client.parent, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+    switches = []
+    try:
+        def receive_state():
+            assert process.poll() is None, "Native stream client exited; inspect client.log"
+            try:
+                return json.loads(state_file.read_text())
+            except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+                return {}
+
+        def await_capture(target=None, previous=None, previous_received=None):
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                status, state = call()
+                received = receive_state()
+                assert status == 200
+                if state["phase"] == "active" and state["capture"] and len(state["streams"]) == 1:
+                    stream = state["streams"][0]
+                    assert stream["owner"] == owner
+                    if (stream["generation"] == state["generation"] and stream["firstFrame"] > 0 and
+                            received.get("connected") and received.get("frames", 0) >= 3 and
+                            received.get("lastFrame", 0) >= stream["firstFrame"] and
+                            received.get("lastKeyframe", 0) > (previous_received or {}).get("lastFrame", 0) and
+                            (target is None or state["capture"]["id"] == target) and
+                            (previous is None or state["generation"] > previous["generation"])):
+                        return state, received
+                time.sleep(.15)
+            raise AssertionError(f"No received real frame for {target}; inspect engine/client logs")
+
+        state, received = await_capture()
+        stream_id, instance, initial = state["streams"][0]["id"], state["instance"], state["capture"]["id"]
+        targets = list(dict.fromkeys(state["displays"]))[:4]
+        if targets and targets[-1] != initial: targets.append(initial)
+        assert targets, "Active capture did not publish its display catalog"
+        for target in targets:
+            before = state
+            before_received = received
+            started = time.monotonic()
+            for _ in range(4):
+                _, state = call()
+                status, result = call({"instance": instance, "revision": state["revision"], "display": target})
+                assert status == 200
+                if result["accepted"]: break
+                assert result["outcome"] == "stale", result["outcome"]
+            else:
+                raise AssertionError("Display state never stabilized for selection")
+            state, received = await_capture(target, before, before_received)
+            assert state["instance"] == instance and state["streams"][0]["id"] == stream_id
+            assert state["streams"][0]["firstFrame"] > before["streams"][0]["firstFrame"]
+            switches.append({"display": target, "seconds": round(time.monotonic() - started, 3),
+                "generation": state["generation"], "firstFrame": state["streams"][0]["firstFrame"],
+                "receivedFrame": received["lastFrame"], "keyframe": received["lastKeyframe"], "capture": state["capture"]})
+        return {"sameConnection": True, "switches": switches, "receivedFrames": received["frames"],
+                "decodedOrPresented": False}
+    finally:
+        stop_file.touch()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        log.close()
+
+
+def run(engine: Path, output: Path, stream_client: Path | None = None) -> None:
     engine = engine.resolve(strict=True)
     executable = engine / "sunshine.exe"
     if not executable.is_file() or not (engine / "assets/web/index.html").is_file():
         raise RuntimeError("A complete engine artifact with its runtime assets is required")
     fixture = output.resolve() / secrets.token_hex(12)
     fixture.mkdir(parents=True, exist_ok=False)
+    owner = prepare_client(fixture) if stream_client else None
     config = fixture / "sunshine.conf"
     pidfile = fixture / "engine.pid"
     port = choose_port()
@@ -71,7 +189,8 @@ def run(engine: Path, output: Path) -> None:
     options = {
         "sunshine_name": "ClipRelay isolated engine test", "port": port, "bind_address": "127.0.0.1",
         "address_family": "ipv4", "origin_web_ui_allowed": "pc", "system_tray": "disabled",
-        "upnp": "disabled", "controller": "disabled", "min_log_level": 2,
+        "upnp": "disabled", "controller": "disabled", "mouse": "disabled", "keyboard": "disabled",
+        "stream_audio": "disabled", "min_log_level": 2,
         "dd_configuration_option": "disabled", "file_apps": (fixture / "apps.json").as_posix(),
         "file_state": (fixture / "clients.json").as_posix(), "credentials_file": (fixture / "credentials.json").as_posix(),
         "pkey": (fixture / "cakey.pem").as_posix(), "cert": (fixture / "cacert.pem").as_posix(),
@@ -150,6 +269,10 @@ if ($result.ReturnValue -ne 0) {{ throw 'Cannot launch isolated engine helper' }
         status, _ = call(dict(selection, unrelated="rejected"))
         assert status == 400
         report.update(passed=True, scenarios=6, instance=state["instance"], displays=state["displays"])
+        if stream_client:
+            report["passed"] = False
+            report["stream"] = verify_stream(stream_client.resolve(strict=True), fixture, port, call, owner)
+            report["passed"] = True
     finally:
         # Only terminate the uniquely identified test engine, never an installed service.
         stop = f"""
@@ -161,7 +284,7 @@ $matches = @(Get-CimInstance Win32_Process -Filter "Name = 'sunshine.exe'" | Whe
 foreach ($process in $matches) {{ Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop }}
 """
         powershell(stop)
-        for name in ("cakey.pem", "credentials.json"):
+        for name in ("cakey.pem", "credentials.json", "client-key.pem"):
             (fixture / name).unlink(missing_ok=True)
         (fixture / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps(report))
@@ -171,7 +294,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("engine", type=Path)
     parser.add_argument("--output", type=Path, default=Path(".tools/engine-control-tests"))
+    parser.add_argument("--stream-client", type=Path, help="Optional loopback-only native frame receiver")
     args = parser.parse_args()
     if os.name != "nt":
         raise SystemExit("This test requires Windows")
-    run(args.engine, args.output)
+    run(args.engine, args.output, args.stream_client)

@@ -19,6 +19,8 @@ artifact; it has read-only repository permission and does not publish a release.
 Sunshine's additional tray is disabled because ClipRelay owns the host tray.
 The patch also gives NVENC object targets their transitive Boost include requirements so
 the pinned FetchContent Boost works without unrelated system Boost headers.
+The upstream service launcher also links its log-rotation implementation and the
+same logging dependencies already used by the display/audio diagnostic tools.
 
 ## Protocol 1
 
@@ -85,6 +87,15 @@ The full engine build is separate from these tests. Actual switching, decoder
 readiness and input mapping still need real Windows multi-monitor validation.
 The extension reports attached capturable virtual displays but does not install
 a virtual display driver.
+
+`windows/tests/engine_control_test.py <artifact-directory>` runs six authenticated
+HTTP checks against a separate loopback-only engine with temporary configuration.
+Its optional `--stream-client <engine-stream-client.exe>` starts a temporary paired
+receiver, switches the available outputs, and checks real encoded-frame boundaries
+without reconnecting. Build that receiver with `windows/tests/build-engine-stream-client.ps1`
+and an LLVM MinGW compiler plus an OpenSSL DLL. It receives and discards video,
+records only counters, disables host input/audio capture, and never modifies the
+installed service. Receipt tests do not verify Android decoding or presentation.
 
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added header

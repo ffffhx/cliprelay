@@ -16,7 +16,7 @@ def prepare(source: Path, check: bool = False) -> None:
 
     if git("rev-parse", "HEAD") != pinned["commit"]:
         raise RuntimeError("Sunshine checkout does not match the pinned commit")
-    if git("diff", "HEAD", "--", "src", "cmake"):
+    if git("diff", "HEAD", "--", "src", "cmake", "tools"):
         raise RuntimeError("Refusing to patch an already modified Sunshine source tree")
     header = source / "src" / "cliprelay_control.h"
     if header.exists():
