@@ -1,5 +1,19 @@
+diff --git a/cmake/compile_definitions/common.cmake b/cmake/compile_definitions/common.cmake
+index 94fbb14..fadf763 100644
+--- a/cmake/compile_definitions/common.cmake
++++ b/cmake/compile_definitions/common.cmake
+@@ -106,6 +106,9 @@ if(WIN32)
+     # add_nvenc_sdk_implementation: args = `target_name`, `sdk_version`, `sdk_include_dir`
+     function(add_nvenc_sdk_implementation target_name sdk_version sdk_include_dir)
+         add_library(${target_name} OBJECT ${NVENC_IMPLEMENTATION_SOURCES})
++        # FetchContent Boost uses per-library include directories. NVENC includes
++        # logging.h, so it must inherit Boost.Log's usage requirements too.
++        target_link_libraries(${target_name} PRIVATE Boost::log)
+         target_include_directories(${target_name} BEFORE PRIVATE "${sdk_include_dir}")
+         target_compile_definitions(${target_name} PRIVATE
+                 NVENC_FACTORY_SUFFIX=${sdk_version}
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index 1b47397..9a4b844 100644
+index 1b47397..3fbfa26 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -37,6 +37,7 @@
@@ -10,17 +24,22 @@ index 1b47397..9a4b844 100644
  #include "confighttp.h"
  #include "crypto.h"
  #include "display_device.h"
-@@ -2310,6 +2311,74 @@ namespace confighttp {
+@@ -2310,6 +2311,80 @@ namespace confighttp {
    /**
     * @brief Start the HTTPS configuration server.
     */
 +  // Private engine extension, available only through Sunshine's existing
 +  // administrator authentication. ClipRelay's paired control service filters
 +  // streams to the authenticated client; credentials never travel to a phone.
++  const std::string &cliprelayInstance() {
++    static const auto instance = uuid_util::uuid_t::generate().string();
++    return instance;
++  }
++
 +  nlohmann::json cliprelayDisplayState() {
 +    const auto state = cliprelay::displays.snapshot();
 +    nlohmann::json result = {
-+      {"protocol", 1}, {"revision", state.revision}, {"generation", state.generation},
++      {"protocol", 1}, {"instance", cliprelayInstance()}, {"revision", state.revision}, {"generation", state.generation},
 +      {"phase", state.phase}, {"displays", state.displays},
 +      {"requestId", state.request_id}, {"requested", state.requested},
 +      {"result", state.result}, {"error", state.error}, {"capture", nullptr},
@@ -66,13 +85,14 @@ index 1b47397..9a4b844 100644
 +    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
 +    try {
 +      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
-+      if (!input.is_object() || input.size() != 2 || !input.contains("display") || !input.contains("revision") ||
-+          !input["display"].is_string() || !input["revision"].is_number_unsigned()) {
-+        bad_request(response, request, "Expected display and revision"); return;
++      if (!input.is_object() || input.size() != 3 || !input.contains("display") || !input.contains("revision") || !input.contains("instance") ||
++          !input["display"].is_string() || !input["revision"].is_number_unsigned() || !input["instance"].is_string()) {
++        bad_request(response, request, "Expected display, revision and instance"); return;
 +      }
 +      const auto id = input["display"].get<std::string>();
 +      if (id.empty() || id.size() > 256) { bad_request(response, request, "Invalid display"); return; }
-+      const auto outcome = cliprelay::displays.request(id, input["revision"].get<std::uint64_t>());
++      const auto outcome = input["instance"].get<std::string>() == cliprelayInstance()
++        ? cliprelay::displays.request(id, input["revision"].get<std::uint64_t>()) : "stale_instance";
 +      auto output = cliprelayDisplayState();
 +      output["accepted"] = outcome == "accepted";
 +      output["outcome"] = outcome;
@@ -85,7 +105,7 @@ index 1b47397..9a4b844 100644
    void start() {
      platf::set_thread_name("confighttp");
      const auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-@@ -2354,6 +2423,8 @@ namespace confighttp {
+@@ -2354,6 +2429,8 @@ namespace confighttp {
      server.resource["^/welcome/?$"]["GET"] = page_handler("welcome.html", false, true);
  
      // rest api

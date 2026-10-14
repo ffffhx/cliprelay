@@ -3,7 +3,8 @@
 This directory contains the reproducible source patch for the Windows engine
 pinned in `upstream.json`. It is development work: the installed engine and
 `windows/remote-desktop/engine.json` still use the upstream release. The paired
-Go control API and Android display picker must be integrated and tested before
+Go control API and Android frame tracking have local tests; the Android display picker
+and complete installed service must be integrated and tested before
 this can be described as a completed multi-display feature.
 
 Apply to a clean checkout using:
@@ -16,6 +17,8 @@ The script checks the exact upstream commit and patch applicability and refuses
 to overwrite existing source edits. The CI workflow builds a Windows AMD64
 artifact; it has read-only repository permission and does not publish a release.
 Sunshine's additional tray is disabled because ClipRelay owns the host tray.
+The patch also gives NVENC object targets Boost.Log's include requirements so
+the pinned FetchContent Boost works without unrelated system Boost headers.
 
 ## Protocol 1
 
@@ -23,8 +26,9 @@ Sunshine's additional tray is disabled because ClipRelay owns the host tray.
 when opening or refreshing a picker to enumerate currently capturable outputs;
 ordinary status polling does not create extra DXGI duplication sessions.
 
-`POST /api/cliprelay/displays` accepts only `display` (the exact output ID) and
-`revision` (the snapshot revision). Existing administrator authentication and
+`POST /api/cliprelay/displays` accepts only `display` (the exact output ID),
+`revision` (the snapshot revision), and `instance` (the engine process ID).
+Existing administrator authentication and
 CSRF protection apply. ClipRelay must proxy this through its paired mutual-TLS
 control API, bind ownership to the request certificate, and keep administrator
 credentials on the host. Do not expose administrator credentials to clients.
@@ -37,6 +41,8 @@ fails, the capture loop attempts to return to the previous available output.
 The response distinguishes acceptance from completion:
 
 - `revision` rejects requests made from stale snapshots.
+- `instance` is regenerated when the engine process restarts, preventing a stale
+  request from matching counters that have reset in a new process.
 - `generation` changes when the capture object is replaced.
 - `phase` is `idle`, `starting`, `switching`, or `active`.
 - `capture` describes the actual initialized output, including its physical
@@ -48,12 +54,20 @@ The response distinguishes acceptance from completion:
   and `firstFrame`: the first encoded real frame for that binding. Zero means
   unavailable. A dummy frame cannot establish readiness.
 
-The client must filter to its current stream, match the capture generation, and
+The client must filter to its current stream, match the engine instance and capture generation, and
 wait until it has decoded/rendered that stream's frame boundary before enabling
 input. Global `phase=active` is insufficient when multiple clients are present.
 The service must filter other clients' stream entries and fail closed while
 mapping targeted focus probes if the current capture cannot be established.
 Frame numbers and stream IDs are local to a running engine, not persistent IDs.
+
+The paired Go service exposes `GET/POST /v1/displays`, filtering stream owners and
+requiring the caller's current `stream` ID for selections. Its
+`GET /v1/display-focus` accepts `instance`, `stream`, `generation`, rendered
+`frame`, and normalized `x`/`y`. It removes encoder letterboxing, maps to the
+actual physical display, and rejects a focus result if capture changes while
+Windows UI Automation is answering. The legacy focus endpoint remains available
+for older clients; it does not provide the new multi-display contract.
 
 ## Validation
 
