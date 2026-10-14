@@ -52,6 +52,7 @@ jobs:
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-cppwinrt
             mingw-w64-ucrt-x86_64-curl-winssl
             mingw-w64-ucrt-x86_64-miniupnpc
@@ -59,14 +60,23 @@ jobs:
             mingw-w64-ucrt-x86_64-openssl
             mingw-w64-ucrt-x86_64-opus
             mingw-w64-ucrt-x86_64-MinHook
+      - uses: actions/cache/restore@v4
+        id: compiler-cache
+        with:
+          path: .sunshine-ccache
+          key: sunshine-control-ucrt64-v1-${{ hashFiles('engine/sunshine/upstream.json', '.github/workflows/sunshine-control.yml') }}
+          restore-keys: sunshine-control-ucrt64-v1-
       - name: Test display state and build complete engine
         run: |
           set -euo pipefail
           export PATH="$(cygpath "$NATIVE_NODE_DIRECTORY"):$PATH"
+          export CCACHE_DIR="$(cygpath -m "$PWD/.sunshine-ccache")"
+          ccache --max-size=600M
           g++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/control_test.cpp -o control-test.exe
           ./control-test.exe
           cmake -S sunshine-source -B sunshine-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DBUILD_TESTS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DSUNSHINE_ENABLE_TRAY=OFF -DSUNSHINE_USE_STATIC_QT=OFF \
             -DSUNSHINE_ASSETS_DIR=assets -DSUNSHINE_PUBLISHER_NAME=ClipRelay \
             -DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/ffffhx/cliprelay \
@@ -84,6 +94,12 @@ jobs:
           cp engine/sunshine/cliprelay_control.h engine-artifact/
           cp scripts/prepare_sunshine.py engine-artifact/
           sha256sum engine-artifact/sunshine.exe > engine-artifact/SHA256SUMS
+          ccache --show-stats
+      - uses: actions/cache/save@v4
+        if: always() && steps.compiler-cache.outputs.cache-hit != 'true'
+        with:
+          path: .sunshine-ccache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
           name: sunshine-cliprelay-control-windows-amd64

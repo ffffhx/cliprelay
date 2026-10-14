@@ -3,8 +3,8 @@
 This directory contains the reproducible source patch for the Windows engine
 pinned in `upstream.json`. It is development work: the installed engine and
 `windows/remote-desktop/engine.json` still use the upstream release. The paired
-Go control API and Android frame tracking have local tests; the Android display picker
-and complete installed service must be integrated and tested before
+Go control API, Android display picker, input pause and frame tracking are implemented
+with local tests. The complete installed service and Android UI still need runtime validation before
 this can be described as a completed multi-display feature.
 
 Apply to a clean checkout using:
@@ -17,7 +17,7 @@ The script checks the exact upstream commit and patch applicability and refuses
 to overwrite existing source edits. The CI workflow builds a Windows AMD64
 artifact; it has read-only repository permission and does not publish a release.
 Sunshine's additional tray is disabled because ClipRelay owns the host tray.
-The patch also gives NVENC object targets Boost.Log's include requirements so
+The patch also gives NVENC object targets their transitive Boost include requirements so
 the pinned FetchContent Boost works without unrelated system Boost headers.
 
 ## Protocol 1
