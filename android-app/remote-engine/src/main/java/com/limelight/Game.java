@@ -641,6 +641,28 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 conn.sendMouseButtonDown(button); conn.sendMouseButtonUp(button);
             }
         });
+        com.limelight.ui.GameInputState zoomKeys = new com.limelight.ui.GameInputState((key, down, modifiers) ->
+                conn.sendKeyboardInput((short)(0x8000 | key),
+                        down ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP, (byte)modifiers, (byte)0));
+        zoomKeys.setEnabled(true);
+        phoneTouch.setPinchSink(new com.limelight.binding.input.touch.PhonePinchState.Sink() {
+            public void position(float x, float y) {
+                conn.sendMousePosition((short)Math.max(0, Math.min(streamView.getWidth(), x)),
+                        (short)Math.max(0, Math.min(streamView.getHeight(), y)),
+                        (short)streamView.getWidth(), (short)streamView.getHeight());
+            }
+            public void scroll(short vertical, short horizontal) {
+                if (vertical != 0) conn.sendMouseHighResScroll(vertical);
+                if (horizontal != 0) conn.sendMouseHighResHScroll(horizontal);
+            }
+            public void zoom(boolean in) {
+                if (!connected || !hasWindowFocus()) return;
+                // Orca routes Ctrl+= / Ctrl+- to the focused terminal's font size.
+                // Each step releases all of its keys immediately, including on failure.
+                try { zoomKeys.update("pinch", 0x11, in ? 0xBB : 0xBD); }
+                finally { zoomKeys.releaseAll(); }
+            }
+        });
 
         // The toolbar captures the connection, so attach only after it and the
         // touch contexts have been initialized.
@@ -659,6 +681,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void streamInfo() { showStreamInfo(); }
                     @Override public void scrollCompatibilityChanged(boolean enabled) {
                         phoneTouch.setScrollCompatibility(enabled);
+                    }
+                    @Override public void pinchCompatibilityChanged(boolean enabled) {
+                        phoneTouch.setPinchCompatibility(enabled);
                     }
                     @Override public void applicationChanged() {
                         cancelDesktopTouches();
