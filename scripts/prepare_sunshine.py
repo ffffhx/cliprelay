@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 
 
 def prepare(source: Path, check: bool = False) -> None:
@@ -22,10 +23,15 @@ def prepare(source: Path, check: bool = False) -> None:
     if header.exists():
         raise RuntimeError("Refusing to replace an existing control header")
     patch = extension / "control.patch"
-    git("apply", "--check", str(patch))
-    if not check:
-        git("apply", str(patch))
-        shutil.copyfile(extension / "cliprelay_control.h", header)
+    # A Windows archive/checkout may carry CRLF even when the upstream tree is LF.
+    # Normalize the patch syntax without changing the caller's source files.
+    with tempfile.TemporaryDirectory(prefix="cliprelay-sunshine-") as temporary:
+        normalized = Path(temporary) / "control.patch"
+        normalized.write_bytes(patch.read_bytes().replace(b"\r\n", b"\n"))
+        git("apply", "--check", str(normalized))
+        if not check:
+            git("apply", str(normalized))
+            shutil.copyfile(extension / "cliprelay_control.h", header)
 
 
 if __name__ == "__main__":
