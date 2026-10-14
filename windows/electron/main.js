@@ -2,7 +2,7 @@
 const {app, dialog} = require('electron');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const {NativeHost, parseArguments} = require('./native-host.cjs');
+const {NativeHost, parseArguments, readAgentDebugPort} = require('./native-host.cjs');
 
 // The distribution keeps native assets outside ASAR so Windows PowerShell 5.1
 // and the existing installers can read them without extraction or duplication.
@@ -12,6 +12,15 @@ if (process.platform === 'darwin') {
 } else if (process.argv.includes('--screen-share-engine')) {
   require(path.join(root, 'screen-share', 'main.js'));
 } else {
+  // Shortcuts and login startup may launch the EXE directly. Keep the optional
+  // Agent connection independent of the launch method and native relay config.
+  if (!app.commandLine.hasSwitch('remote-debugging-port')) {
+    const debugPort = readAgentDebugPort(root);
+    if (debugPort) {
+      app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
+      app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+    }
+  }
   app.setName('ClipRelay');
   app.setAppUserModelId('ClipRelay.Desktop');
   const identity = crypto.createHash('sha256').update(root.toLowerCase()).digest('hex').slice(0,16);

@@ -4,6 +4,16 @@ const {spawn} = require('node:child_process');
 const net = require('node:net');
 const crypto = require('node:crypto');
 const path = require('node:path');
+const fs = require('node:fs');
+
+function readAgentDebugPort(root) {
+  let text;
+  try { text = fs.readFileSync(path.join(root, 'desktop-agent.json'), 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return 0; throw error; }
+  const port = JSON.parse(text.replace(/^\uFEFF/, '')).debugPort;
+  if (!Number.isInteger(port) || (port !== 0 && (port < 1024 || port > 65535))) throw new Error('Invalid Agent debug port.');
+  return port;
+}
 
 function parseArguments(args) {
   const result = {openSettings: false};
@@ -11,6 +21,12 @@ function parseArguments(args) {
     const arg = args[i];
     if (arg === '--open-settings') result.openSettings = true;
     else if (arg === '--background') continue;
+    // Electron consumes these switches too; permit the optional local Agent
+    // connection without passing its settings to the native clipboard engine.
+    else if (arg.startsWith('--remote-debugging-port=')) {
+      const value = arg.slice('--remote-debugging-port='.length);
+      if (!/^\d+$/.test(value) || Number(value) < 1024 || Number(value) > 65535) throw new Error('Invalid remote debugging port.');
+    } else if (arg === '--remote-debugging-address=127.0.0.1') continue;
     else if (arg === '--port') {
       const value = args[++i];
       if (!/^\d+$/.test(value || '') || Number(value) < 1 || Number(value) > 65535) throw new Error('Invalid --port.');
@@ -176,4 +192,4 @@ class NativeHost extends EventEmitter {
   }
 }
 
-module.exports = {NativeHost, parseArguments};
+module.exports = {NativeHost, parseArguments, readAgentDebugPort};

@@ -299,6 +299,7 @@ public final class DesktopToolbar {
             image.setId(R.id.desktopImageButton);
             image.setOnClickListener(v -> { if (controller.canSend()) actions.image(); });
             shortcut(activity, secondary, controller, keyboard, "Enter", 0x0D);
+            shortcut(activity, secondary, controller, keyboard, "Alt + \u2191", 0x12, 0x26);
             ImageButton backspace = new ImageButton(activity);
             backspace.setImageResource(R.drawable.remote_ic_backspace);
             backspace.setColorFilter(Color.WHITE);

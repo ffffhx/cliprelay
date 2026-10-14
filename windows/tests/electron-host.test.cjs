@@ -3,7 +3,10 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {EventEmitter,once}=require('node:events');
 const net=require('node:net');
-const {NativeHost,parseArguments}=require('../electron/native-host.cjs');
+const {NativeHost,parseArguments,readAgentDebugPort}=require('../electron/native-host.cjs');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 async function fixture(options={}){
   const children=[],launches=[];const host=new NativeHost({root:__dirname,launcher:'launch-native.ps1',...options,spawnProcess:(exe,args,settings)=>{const child=new EventEmitter();children.push(child);launches.push({exe,args,settings});return child;}});
@@ -14,6 +17,20 @@ async function fixture(options={}){
 test('startup options validate ports and keep peer strings out of shell syntax',()=>{
   assert.deepEqual(parseArguments(['--background','--port','47931','--peer','phone.local','--open-settings']),{openSettings:true,port:47931,peer:'phone.local'});
   for(const args of [['--port','0'],['--port','65536'],['--port','bad'],['--peer','x" -File evil'],['--unknown']])assert.throws(()=>parseArguments(args));
+});
+test('Electron Agent switches preserve native options and reject invalid endpoints',()=>{
+  assert.deepEqual(parseArguments(['--remote-debugging-port=9337','--remote-debugging-address=127.0.0.1','--open-settings','--port','47632']),{openSettings:true,port:47632});
+  for(const arg of ['--remote-debugging-port=0','--remote-debugging-port=1023','--remote-debugging-port=65536','--remote-debugging-port=bad','--remote-debugging-address=0.0.0.0'])assert.throws(()=>parseArguments([arg]));
+});
+test('persisted Agent debugging is opt-in and requires a numeric local port',()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-agent-config-'));
+  const file=path.join(root,'desktop-agent.json');
+  try {
+    assert.equal(readAgentDebugPort(root),0);
+    for(const port of [0,9337,65535]){fs.writeFileSync(file,'\uFEFF'+JSON.stringify({debugPort:port}));assert.equal(readAgentDebugPort(root),port);}
+    for(const port of ['9337',null,-1,1023,65536,9337.5]){fs.writeFileSync(file,JSON.stringify({debugPort:port}));assert.throws(()=>readAgentDebugPort(root),/Invalid Agent debug port/);}
+    fs.writeFileSync(file,'not json');assert.throws(()=>readAgentDebugPort(root));
+  } finally {if(fs.existsSync(file))fs.unlinkSync(file);fs.rmdirSync(root);}
 });
 test('host queues open until ready and correlates fragmented RPC responses',{skip:process.platform!=='win32'},async()=>{
   const {host,socket,children,launches}=await fixture({openSettings:true});

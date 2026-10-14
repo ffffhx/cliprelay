@@ -1,14 +1,16 @@
 ﻿[CmdletBinding()]
-param([switch]$OpenSettings, [int]$Port = 0, [string]$Peer = '')
+param([switch]$OpenSettings, [int]$Port = 0, [string]$Peer = '', [int]$DebugPort = 0)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $executable = Join-Path $PSScriptRoot 'desktop\ClipRelay.exe'
 if (!(Test-Path -LiteralPath $executable)) { throw 'Run windows\electron\setup.ps1 to prepare the Electron application first.' }
 if ($Port -lt 0 -or $Port -gt 65535) { throw 'Invalid port.' }
+if ($DebugPort -ne 0 -and ($DebugPort -lt 1024 -or $DebugPort -gt 65535)) { throw 'Invalid Agent debug port.' }
 if ($Peer -and ($Peer -match '[\s/\\:"\x00-\x1f]' -or $Peer.StartsWith('-'))) { throw 'Invalid peer address.' }
 $arguments = if ($OpenSettings) { '--open-settings' } else { '--background' }
 if ($Port) { $arguments += ' --port ' + $Port }
 if ($Peer) { $arguments += ' --peer "' + $Peer + '"' }
+if ($DebugPort) { $arguments += ' --remote-debugging-port=' + $DebugPort + ' --remote-debugging-address=127.0.0.1' }
 # WMI releases the application from the invoking terminal's Job Object. The
 # helper exits immediately, with no inherited console or redirected streams.
 $inner = @'
