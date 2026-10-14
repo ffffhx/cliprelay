@@ -74,6 +74,10 @@ jobs:
           cmake --build sunshine-build --parallel 2
           cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component application
           cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component assets
+          # Common assets and the compiled Web UI have no CMake component.
+          # Copy the complete runtime assets without installing Boost's SDK.
+          cmake -E copy_directory sunshine-build/assets engine-artifact/assets
+          test -f engine-artifact/assets/web/index.html
           cp engine/sunshine/upstream.json engine-artifact/
           cp sunshine-source/LICENSE engine-artifact/SUNSHINE-LICENSE
           git -C sunshine-source diff --binary > engine-artifact/cliprelay-source.patch
