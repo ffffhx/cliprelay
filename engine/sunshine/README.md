@@ -19,8 +19,8 @@ artifact; it has read-only repository permission and does not publish a release.
 Sunshine's additional tray is disabled because ClipRelay owns the host tray.
 The patch also gives NVENC object targets their transitive Boost include requirements so
 the pinned FetchContent Boost works without unrelated system Boost headers.
-The upstream service launcher also links its log-rotation implementation and the
-same logging dependencies already used by the display/audio diagnostic tools.
+The upstream service launcher also receives the transitive Boost includes needed
+by its shared log-rotation header.
 
 ## Protocol 1
 
