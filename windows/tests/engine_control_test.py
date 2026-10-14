@@ -79,7 +79,7 @@ def prepare_client(fixture: Path) -> str:
     return cert.fingerprint(hashes.SHA256()).hex()
 
 
-def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> dict:
+def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitrate_test: bool = False) -> dict:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
     context.load_verify_locations(cafile=str(fixture / "cacert.pem"))
@@ -108,7 +108,7 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> d
     iv = key_id.to_bytes(4, "big").hex() + "00" * 12
     log = (fixture / "client.log").open("w", encoding="utf-8")
     process = subprocess.Popen([str(client), info.findtext("appversion"), info.findtext("GfeVersion") or "3.23.0.74",
-        launch.findtext("sessionUrl0"), key, iv, str(state_file), str(stop_file)],
+        launch.findtext("sessionUrl0"), key, iv, str(state_file), str(stop_file)] + (["--pattern"] if bitrate_test else []),
         cwd=client.parent, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
     switches = []
     try:
@@ -140,6 +140,68 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> d
 
         state, received = await_capture()
         stream_id, instance, initial = state["streams"][0]["id"], state["instance"], state["capture"]["id"]
+        bitrate_results = []
+        if bitrate_test:
+            assert received.get("pattern"), "Synthetic motion window was not created"
+            status, _ = call(auth=False, endpoint="bitrate")
+            assert status == 401
+            _, rates = call(endpoint="bitrate")
+            assert rates["instance"] == instance and len(rates["streams"]) == 1
+            rate = rates["streams"][0]
+            assert rate["owner"] == owner and rate["id"] == stream_id and rate["supported"]
+            request = dict(instance=instance, owner=owner, stream=stream_id, revision=rate["revision"], budgetKbps=12000)
+            for body, outcome in ((dict(request, owner="f" * 64), "not_streaming"),
+                                  (dict(request, instance=str(uuid.uuid4())), "stale_instance"),
+                                  (dict(request, revision=0), "stale")):
+                status, reply = call(body, endpoint="bitrate")
+                assert status == 200 and not reply["accepted"] and reply["outcome"] == outcome
+            for body in (dict(request, budgetKbps=0), dict(request, budgetKbps=150001), dict(request, unknown=1)):
+                assert call(body, endpoint="bitrate")[0] == 400
+
+            for budget in (12000, 2000, 6000):
+                _, rates = call(endpoint="bitrate")
+                rate = rates["streams"][0]
+                before_frame = receive_state()["lastFrame"]
+                started = time.monotonic()
+                status, result = call(dict(request, revision=rate["revision"], budgetKbps=budget), endpoint="bitrate")
+                assert status == 200 and result["accepted"], result
+                request_id = result["streams"][0]["requestId"]
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    _, rates = call(endpoint="bitrate")
+                    rate = rates["streams"][0]
+                    received = receive_state()
+                    assert rate["result"] != "failed", rate
+                    if (rate["requestId"] == request_id and rate["result"] == "applied" and
+                            rate["budgetKbps"] == budget and rate["appliedFrame"] > before_frame and
+                            received.get("lastFrame", 0) >= rate["appliedFrame"]):
+                        break
+                    time.sleep(.05)
+                else:
+                    raise AssertionError(f"Bitrate {budget} did not produce a confirmed frame: {rate}")
+                confirmed_seconds = round(time.monotonic() - started, 3)
+                _, current = call()
+                assert current["instance"] == instance and current["streams"][0]["id"] == stream_id
+                assert current["generation"] == state["generation"] and current["capture"] == state["capture"]
+                assert current["streams"][0]["firstFrame"] == state["streams"][0]["firstFrame"]
+                time.sleep(1)  # settle the encoder's rate-control buffer
+                sample = receive_state()
+                sample_at = time.monotonic()
+                while time.monotonic() - sample_at < 6:
+                    received = receive_state()
+                    assert received.get("connected") and not received.get("termination")
+                    time.sleep(.1)
+                received = receive_state()
+                seconds = time.monotonic() - sample_at
+                bitrate_results.append({"budgetKbps": budget, "videoKbps": rate["videoKbps"],
+                    "payloadKbps": round((received["bytes"] - sample["bytes"]) * 8 / seconds / 1000, 1),
+                    "confirmedSeconds": confirmed_seconds, "appliedFrame": rate["appliedFrame"],
+                    "receivedFrames": received["frames"] - sample["frames"], "maxGapMs": received["maxGapMs"]})
+                (fixture / "bitrate.json").write_text(json.dumps(bitrate_results, indent=2), encoding="utf-8")
+            high, low, recovery = bitrate_results
+            assert low["payloadKbps"] < high["payloadKbps"] * .5, bitrate_results
+            assert recovery["payloadKbps"] > low["payloadKbps"] * 1.5, bitrate_results
+            assert all(s["receivedFrames"] >= 90 and s["maxGapMs"] < 1000 for s in bitrate_results), bitrate_results
         targets = list(dict.fromkeys(state["displays"]))[:4]
         if targets and targets[-1] != initial: targets.append(initial)
         assert targets, "Active capture did not publish its display catalog"
@@ -161,8 +223,11 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> d
             switches.append({"display": target, "seconds": round(time.monotonic() - started, 3),
                 "generation": state["generation"], "firstFrame": state["streams"][0]["firstFrame"],
                 "receivedFrame": received["lastFrame"], "keyframe": received["lastKeyframe"], "capture": state["capture"]})
+        if bitrate_test:
+            _, rates = call(endpoint="bitrate")
+            assert rates["streams"][0]["budgetKbps"] == 6000 and rates["streams"][0]["videoKbps"] == bitrate_results[-1]["videoKbps"]
         return {"sameConnection": True, "switches": switches, "receivedFrames": received["frames"],
-                "decodedOrPresented": False}
+                "decodedOrPresented": False, "bitrate": bitrate_results}
     finally:
         stop_file.touch()
         try:
@@ -183,7 +248,7 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> d
             raise AssertionError("Isolated stream did not finish cleanup")
 
 
-def run(engine: Path, output: Path, stream_client: Path | None = None) -> None:
+def run(engine: Path, output: Path, stream_client: Path | None = None, bitrate_test: bool = False) -> None:
     engine = engine.resolve(strict=True)
     executable = engine / "sunshine.exe"
     if not executable.is_file() or not (engine / "assets/web/index.html").is_file():
@@ -250,8 +315,9 @@ if ($result.ReturnValue -ne 0) {{ throw 'Cannot launch isolated engine helper' }
         context.load_verify_locations(cafile=str(cert))
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
 
-        def call(body=None, auth=True, refresh=False):
-            request = urllib.request.Request(f"https://127.0.0.1:{port+1}/api/cliprelay/displays" + ("?refresh=1" if refresh else ""),
+        def call(body=None, auth=True, refresh=False, endpoint="displays"):
+            assert endpoint in ("displays", "bitrate")
+            request = urllib.request.Request(f"https://127.0.0.1:{port+1}/api/cliprelay/{endpoint}" + ("?refresh=1" if refresh else ""),
                                              data=None if body is None else json.dumps(body).encode())
             if auth:
                 request.add_header("Authorization", "Basic " + base64.b64encode(("cliprelay-test:" + password).encode()).decode())
@@ -285,7 +351,7 @@ if ($result.ReturnValue -ne 0) {{ throw 'Cannot launch isolated engine helper' }
         report.update(passed=True, scenarios=6, instance=state["instance"], displays=state["displays"])
         if stream_client:
             report["passed"] = False
-            report["stream"] = verify_stream(stream_client.resolve(strict=True), fixture, port, call, owner)
+            report["stream"] = verify_stream(stream_client.resolve(strict=True), fixture, port, call, owner, bitrate_test)
             report["passed"] = True
     finally:
         # Only terminate the uniquely identified test engine, never an installed service.
@@ -309,7 +375,10 @@ if __name__ == "__main__":
     parser.add_argument("engine", type=Path)
     parser.add_argument("--output", type=Path, default=Path(".tools/engine-control-tests"))
     parser.add_argument("--stream-client", type=Path, help="Optional loopback-only native frame receiver")
+    parser.add_argument("--bitrate-test", action="store_true", help="Show synthetic motion for a 25-second live bitrate test")
     args = parser.parse_args()
     if os.name != "nt":
         raise SystemExit("This test requires Windows")
-    run(args.engine, args.output, args.stream_client)
+    if args.bitrate_test and not args.stream_client:
+        parser.error("--bitrate-test requires --stream-client")
+    run(args.engine, args.output, args.stream_client, args.bitrate_test)

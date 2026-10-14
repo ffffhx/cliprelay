@@ -11,6 +11,58 @@
 
 static volatile LONG frames, last_frame, last_keyframe, keyframes, terminated, stop_watchdog;
 static volatile LONG64 bytes_received;
+static volatile LONG64 last_received_ms, maximum_gap_ms;
+static volatile LONG pattern_ready;
+
+// Optional synthetic changing content for a bounded bitrate test. This owns its
+// window, never activates it, and disappears when the receiver exits. No input
+// is sent to another application and no desktop pixels are retained.
+static LRESULT CALLBACK pattern_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    return DefWindowProcW(window, message, wp, lp);
+}
+
+static DWORD WINAPI pattern_thread(void *unused) {
+    (void)unused;
+    WNDCLASSW type = {0};
+    type.lpfnWndProc = pattern_proc;
+    type.hInstance = GetModuleHandleW(NULL);
+    type.lpszClassName = L"ClipRelayBitrateTestPattern";
+    if (!RegisterClassW(&type)) return 1;
+    int width = GetSystemMetrics(SM_CXSCREEN) * 3 / 4;
+    int height = GetSystemMetrics(SM_CYSCREEN) * 3 / 4;
+    HWND window = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        type.lpszClassName, L"ClipRelay bitrate test", WS_POPUP | WS_BORDER,
+        (GetSystemMetrics(SM_CXSCREEN) - width) / 2, (GetSystemMetrics(SM_CYSCREEN) - height) / 2,
+        width, height, NULL, NULL, type.hInstance, NULL);
+    if (!window) return 2;
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    uint32_t *pixels = malloc(640 * 360 * sizeof(uint32_t));
+    if (!pixels) { DestroyWindow(window); return 3; }
+    BITMAPINFO bitmap = {0};
+    bitmap.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap.bmiHeader.biWidth = 640; bitmap.bmiHeader.biHeight = -360;
+    bitmap.bmiHeader.biPlanes = 1; bitmap.bmiHeader.biBitCount = 32;
+    bitmap.bmiHeader.biCompression = BI_RGB;
+    uint32_t random = 0x43525031;
+    InterlockedExchange(&pattern_ready, 1);
+    while (!InterlockedCompareExchange(&stop_watchdog, 0, 0)) {
+        MSG message;
+        while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) DispatchMessageW(&message);
+        for (int i = 0; i < 640 * 360; ++i) {
+            random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+            pixels[i] = random & 0x00ffffff;
+        }
+        HDC dc = GetDC(window);
+        StretchDIBits(dc, 0, 0, width, height, 0, 0, 640, 360, pixels, &bitmap, DIB_RGB_COLORS, SRCCOPY);
+        ReleaseDC(window, dc);
+        Sleep(33);
+    }
+    free(pixels);
+    DestroyWindow(window);
+    InterlockedExchange(&pattern_ready, 0);
+    return 0;
+}
 
 static int setup(int format, int width, int height, int fps, void *context, int flags) {
     (void)context; (void)flags;
@@ -18,6 +70,15 @@ static int setup(int format, int width, int height, int fps, void *context, int 
 }
 
 static int receive_frame(PDECODE_UNIT unit) {
+    LONG64 now = (LONG64)GetTickCount64();
+    LONG64 previous = InterlockedExchange64(&last_received_ms, now);
+    if (previous) {
+        LONG64 gap = now - previous, maximum;
+        do {
+            maximum = InterlockedCompareExchange64(&maximum_gap_ms, 0, 0);
+            if (gap <= maximum) break;
+        } while (InterlockedCompareExchange64(&maximum_gap_ms, gap, maximum) != maximum);
+    }
     InterlockedIncrement(&frames);
     InterlockedExchange(&last_frame, unit->frameNumber);
     InterlockedAdd64(&bytes_received, unit->fullLength);
@@ -65,17 +126,19 @@ static int report(const char *path, int connected) {
     if (snprintf(temporary, sizeof temporary, "%s.tmp", path) >= (int)sizeof temporary) return 0;
     FILE *file = fopen(temporary, "wb");
     if (!file) return 0;
-    fprintf(file, "{\"connected\":%s,\"frames\":%ld,\"lastFrame\":%lu,\"lastKeyframe\":%lu,\"keyframes\":%ld,\"bytes\":%lld,\"termination\":%ld}",
+    fprintf(file, "{\"connected\":%s,\"frames\":%ld,\"lastFrame\":%lu,\"lastKeyframe\":%lu,\"keyframes\":%ld,\"bytes\":%lld,\"termination\":%ld,\"maxGapMs\":%lld,\"pattern\":%s}",
         connected ? "true" : "false", InterlockedCompareExchange(&frames, 0, 0),
         (unsigned long)InterlockedCompareExchange(&last_frame, 0, 0),
         (unsigned long)InterlockedCompareExchange(&last_keyframe, 0, 0), InterlockedCompareExchange(&keyframes, 0, 0),
-        (long long)InterlockedCompareExchange64(&bytes_received, 0, 0), InterlockedCompareExchange(&terminated, 0, 0));
+        (long long)InterlockedCompareExchange64(&bytes_received, 0, 0), InterlockedCompareExchange(&terminated, 0, 0),
+        (long long)InterlockedCompareExchange64(&maximum_gap_ms, 0, 0),
+        InterlockedCompareExchange(&pattern_ready, 0, 0) ? "true" : "false");
     fclose(file);
     return MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
 int main(int argc, char **argv) {
-    if (argc != 8 || (strncmp(argv[3], "rtsp://127.0.0.1:", 17) != 0 &&
+    if ((argc != 8 && (argc != 9 || strcmp(argv[8], "--pattern") != 0)) || (strncmp(argv[3], "rtsp://127.0.0.1:", 17) != 0 &&
                       strncmp(argv[3], "rtspenc://127.0.0.1:", 20) != 0)) {
         fputs("Expected loopback test session arguments\n", stderr);
         return 2;
@@ -106,6 +169,11 @@ int main(int argc, char **argv) {
     listener.logMessage = log_message;
     HANDLE timer = CreateThread(NULL, 0, watchdog, NULL, 0, NULL);
     if (!timer) return 3;
+    HANDLE pattern = NULL;
+    if (argc == 9) {
+        SetProcessDPIAware();
+        pattern = CreateThread(NULL, 0, pattern_thread, NULL, 0, NULL);
+    }
     int result = LiStartConnection(&server, &config, &listener, &video, NULL, NULL, 0, NULL, 0);
     if (result == 0) {
         while (!InterlockedCompareExchange(&terminated, 0, 0) && GetFileAttributesA(argv[7]) == INVALID_FILE_ATTRIBUTES) {
@@ -117,6 +185,7 @@ int main(int argc, char **argv) {
     InterlockedExchange(&stop_watchdog, 1);
     WaitForSingleObject(timer, 2000);
     CloseHandle(timer);
+    if (pattern) { WaitForSingleObject(pattern, 2000); CloseHandle(pattern); }
     report(argv[6], 0);
     return result != 0 || InterlockedCompareExchange(&terminated, 0, 0) != 0 ? 1 : 0;
 }

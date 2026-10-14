@@ -36,7 +36,7 @@ $sources += @((Join-Path $core 'nanors\rs.c'), (Join-Path $core 'nanors\deps\obl
 $includes = @('src','enet\include','nanors','nanors\deps','nanors\deps\obl') | ForEach-Object { '-I' + (Join-Path $core $_) }
 $includes += '-I' + (Join-Path $native 'openssl\include')
 $executable = Join-Path $output 'engine-stream-client.exe'
-& $compiler -std=c11 -O2 -DNDEBUG -DHAS_SOCKLEN_T -DHAS_QOS_FLOWID -DHAS_PQOS_FLOWID -D_WIN32_WINNT=0x0601 @includes @sources $library -lws2_32 -lwinmm -o $executable
+& $compiler -std=c11 -O2 -DNDEBUG -DHAS_SOCKLEN_T -DHAS_QOS_FLOWID -DHAS_PQOS_FLOWID -D_WIN32_WINNT=0x0601 @includes @sources $library -lws2_32 -lwinmm -lgdi32 -luser32 -o $executable
 if ($LASTEXITCODE -ne 0) { throw 'Native stream test client build failed' }
 Copy-Item -LiteralPath $CryptoDll -Destination (Join-Path $output $cryptoName)
 Get-FileHash -LiteralPath $executable -Algorithm SHA256
