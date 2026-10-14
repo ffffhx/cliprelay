@@ -1,0 +1,88 @@
+name: Sunshine Control Build
+
+on:
+  push:
+    branches: ['codex/sunshine-control-*']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', '.github/workflows/sunshine-control.yml']
+  pull_request:
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', '.github/workflows/sunshine-control.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sunshine-control-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 55
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: LizardByte/Sunshine
+          ref: 63d35f702ee9e362e43263742981836ec0710384
+          submodules: recursive
+          path: sunshine-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply pinned engine patch
+        shell: powershell
+        run: |
+          python scripts/prepare_sunshine.py sunshine-source
+          if ($LASTEXITCODE -ne 0) { throw 'Engine patch failed' }
+          $nodeDirectory = Split-Path (Get-Command node.exe).Source
+          "NATIVE_NODE_DIRECTORY=$nodeDirectory" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-curl-winssl
+            mingw-w64-ucrt-x86_64-miniupnpc
+            mingw-w64-ucrt-x86_64-onevpl
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-MinHook
+      - name: Test display state and build complete engine
+        run: |
+          set -euo pipefail
+          export PATH="$(cygpath "$NATIVE_NODE_DIRECTORY"):$PATH"
+          g++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/control_test.cpp -o control-test.exe
+          ./control-test.exe
+          cmake -S sunshine-source -B sunshine-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DBUILD_TESTS=OFF \
+            -DSUNSHINE_ENABLE_TRAY=OFF -DSUNSHINE_USE_STATIC_QT=OFF \
+            -DSUNSHINE_ASSETS_DIR=assets -DSUNSHINE_PUBLISHER_NAME=ClipRelay \
+            -DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/ffffhx/cliprelay \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/ffffhx/cliprelay/issues
+          cmake --build sunshine-build --parallel 2
+          cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component application
+          cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component assets
+          cp engine/sunshine/upstream.json engine-artifact/
+          cp sunshine-source/LICENSE engine-artifact/SUNSHINE-LICENSE
+          git -C sunshine-source diff --binary > engine-artifact/cliprelay-source.patch
+          cp engine/sunshine/cliprelay_control.h engine-artifact/
+          cp scripts/prepare_sunshine.py engine-artifact/
+          sha256sum engine-artifact/sunshine.exe > engine-artifact/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunshine-cliprelay-control-windows-amd64
+          path: engine-artifact/
+          if-no-files-found: error
+          retention-days: 14

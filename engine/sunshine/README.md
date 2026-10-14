@@ -1,0 +1,77 @@
+# ClipRelay Sunshine control extension
+
+This directory contains the reproducible source patch for the Windows engine
+pinned in `upstream.json`. It is development work: the installed engine and
+`windows/remote-desktop/engine.json` still use the upstream release. The paired
+Go control API and Android display picker must be integrated and tested before
+this can be described as a completed multi-display feature.
+
+Apply to a clean checkout using:
+
+```
+python scripts/prepare_sunshine.py path/to/Sunshine
+```
+
+The script checks the exact upstream commit and patch applicability and refuses
+to overwrite existing source edits. The CI workflow builds a Windows AMD64
+artifact; it has read-only repository permission and does not publish a release.
+Sunshine's additional tray is disabled because ClipRelay owns the host tray.
+
+## Protocol 1
+
+`GET /api/cliprelay/displays` returns the current capture state. Add `?refresh=1`
+when opening or refreshing a picker to enumerate currently capturable outputs;
+ordinary status polling does not create extra DXGI duplication sessions.
+
+`POST /api/cliprelay/displays` accepts only `display` (the exact output ID) and
+`revision` (the snapshot revision). Existing administrator authentication and
+CSRF protection apply. ClipRelay must proxy this through its paired mutual-TLS
+control API, bind ownership to the request certificate, and keep administrator
+credentials on the host. Do not expose administrator credentials to clients.
+
+Selection is session-only and affects the shared capture source. Multiple
+simultaneous clients consequently see the same display. Reordering outputs does
+not reinterpret an ID as a numeric monitor index. If capture initialization
+fails, the capture loop attempts to return to the previous available output.
+
+The response distinguishes acceptance from completion:
+
+- `revision` rejects requests made from stale snapshots.
+- `generation` changes when the capture object is replaced.
+- `phase` is `idle`, `starting`, `switching`, or `active`.
+- `capture` describes the actual initialized output, including its physical
+  desktop rectangle. Negative desktop coordinates are preserved. An initialized
+  rectangle alone does not mean a video frame has been encoded.
+- `requestId`, `result`, and `error` report a pending, applied, or failed switch.
+- Each entry in `streams` includes its paired certificate's DER SHA-256 owner,
+  an engine-local stream ID, negotiated video dimensions, capture generation,
+  and `firstFrame`: the first encoded real frame for that binding. Zero means
+  unavailable. A dummy frame cannot establish readiness.
+
+The client must filter to its current stream, match the capture generation, and
+wait until it has decoded/rendered that stream's frame boundary before enabling
+input. Global `phase=active` is insufficient when multiple clients are present.
+The service must filter other clients' stream entries and fail closed while
+mapping targeted focus probes if the current capture cannot be established.
+Frame numbers and stream IDs are local to a running engine, not persistent IDs.
+
+## Validation
+
+`control_test.cpp` is a standalone C++23 test for the shared capture state. It
+covers output reordering, hot-unplug, optimistic concurrency, stale encoder
+callbacks, buffered/dummy packets, negative coordinates, independent stream
+lifetimes, failure recovery and requests racing with capture initialization.
+
+```
+clang++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/control_test.cpp -o control-test.exe
+control-test.exe
+```
+
+The full engine build is separate from these tests. Actual switching, decoder
+readiness and input mapping still need real Windows multi-monitor validation.
+The extension reports attached capturable virtual displays but does not install
+a virtual display driver.
+
+This patch and control code are GPL-3.0-only, matching the modified Sunshine
+engine. Distribute the pinned upstream source reference, patch and added header
+with any modified engine binary.
