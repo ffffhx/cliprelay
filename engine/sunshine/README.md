@@ -97,6 +97,13 @@ and an LLVM MinGW compiler plus an OpenSSL DLL. It receives and discards video,
 records only counters, disables host input/audio capture, and never modifies the
 installed service. Receipt tests do not verify Android decoding or presentation.
 
+The full engine build and six real HTTP checks passed on Windows. An isolated
+encrypted loopback stream on Intel Quick Sync preserved its connection and stream
+ID across rebuilding the one attached display, receiving a new keyframe after
+0.703 seconds in that single test. This does not validate physical multi-monitor
+switching, hotplug, Android presentation or Internet latency. Source bundles keep
+the `engine/sunshine` and `scripts` layout so their prepare script can be used directly.
+
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added header
 with any modified engine binary.

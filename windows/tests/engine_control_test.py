@@ -96,10 +96,13 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> d
             return root
 
     info = nvhttp("serverinfo")
+    apps = nvhttp("applist")
+    app_id = apps.findtext("App/ID")
+    assert app_id and int(app_id) > 0, "Isolated desktop app is missing"
     key, key_id = secrets.token_hex(16), 1060
-    launch = nvhttp("launch", {"appid": 0, "mode": "1280x720x30", "sops": 0, "rikey": key,
+    launch = nvhttp("launch", {"appid": app_id, "mode": "1280x720x30", "sops": 0, "rikey": key,
         "rikeyid": key_id, "localAudioPlayMode": 1, "surroundAudioInfo": 196610,
-        "remoteControllersBitmap": 0, "gcmap": 0, "gcpersist": 0})
+        "remoteControllersBitmap": 0, "gcmap": 0, "gcpersist": 0, "corever": 1})
     assert launch.findtext("gamesession") == "1"
     state_file, stop_file = fixture / "received.json", fixture / "stop-client"
     iv = key_id.to_bytes(4, "big").hex() + "00" * 12
@@ -168,6 +171,16 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str) -> d
             process.kill()
             process.wait(timeout=5)
         log.close()
+        # Let the engine finish per-stream cleanup before its fixture is stopped.
+        nvhttp("cancel")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            status, state = call()
+            if status == 200 and state["phase"] == "idle" and not state["streams"]:
+                break
+            time.sleep(.15)
+        else:
+            raise AssertionError("Isolated stream did not finish cleanup")
 
 
 def run(engine: Path, output: Path, stream_client: Path | None = None) -> None:
@@ -185,7 +198,8 @@ def run(engine: Path, output: Path, stream_client: Path | None = None) -> None:
     credentials = {"username": "cliprelay-test", "salt": salt,
                    "password": hashlib.sha256((password + salt).encode()).digest()[::-1].hex().upper()}
     (fixture / "credentials.json").write_text(json.dumps(credentials), encoding="utf-8")
-    (fixture / "apps.json").write_text('{"env":{},"apps":[]}', encoding="utf-8")
+    (fixture / "apps.json").write_text(json.dumps({"env": {}, "apps":
+        [{"name": "Isolated desktop fixture", "image-path": "desktop.png"}] if stream_client else []}), encoding="utf-8")
     options = {
         "sunshine_name": "ClipRelay isolated engine test", "port": port, "bind_address": "127.0.0.1",
         "address_family": "ipv4", "origin_web_ui_allowed": "pc", "system_tray": "disabled",

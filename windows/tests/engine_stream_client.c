@@ -3,6 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,13 @@ static int receive_frame(PDECODE_UNIT unit) {
 
 static void connection_terminated(int error) {
     InterlockedExchange(&terminated, error == 0 ? 1 : error);
+}
+
+static void log_message(const char *format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(stderr, format, arguments);
+    va_end(arguments);
 }
 
 static DWORD WINAPI watchdog(void *unused) {
@@ -95,6 +103,7 @@ int main(int argc, char **argv) {
     video.setup = setup; video.submitDecodeUnit = receive_frame;
     video.capabilities = CAPABILITY_DIRECT_SUBMIT;
     listener.connectionTerminated = connection_terminated;
+    listener.logMessage = log_message;
     HANDLE timer = CreateThread(NULL, 0, watchdog, NULL, 0, NULL);
     if (!timer) return 3;
     int result = LiStartConnection(&server, &config, &listener, &video, NULL, NULL, 0, NULL, 0);
