@@ -13,7 +13,7 @@ index 94fbb14..a5fcb30 100644
          target_compile_definitions(${target_name} PRIVATE
                  NVENC_FACTORY_SUFFIX=${sdk_version}
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index 1b47397..3fbfa26 100644
+index 1b47397..5a70c85 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -37,6 +37,7 @@
@@ -24,7 +24,7 @@ index 1b47397..3fbfa26 100644
  #include "confighttp.h"
  #include "crypto.h"
  #include "display_device.h"
-@@ -2310,6 +2311,80 @@ namespace confighttp {
+@@ -2310,6 +2311,129 @@ namespace confighttp {
    /**
     * @brief Start the HTTPS configuration server.
     */
@@ -102,15 +102,66 @@ index 1b47397..3fbfa26 100644
 +    }
 +  }
 +
++  nlohmann::json cliprelayBitrateState() {
++    nlohmann::json output = {{"protocol", 1}, {"instance", cliprelayInstance()}, {"streams", nlohmann::json::array()}};
++    for (const auto &s : cliprelay::bitrates.snapshot()) {
++      output["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"revision", s.revision},
++        {"supported", s.supported}, {"budgetKbps", s.budget}, {"videoKbps", s.video},
++        {"requestId", s.request_id}, {"requestedKbps", s.requested}, {"targetVideoKbps", s.target},
++        {"appliedFrame", s.applied_frame}, {"result", s.result}, {"error", s.error}});
++    }
++    return output;
++  }
++
++  void cliprelayBitrate(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++    if (!request->query_string.empty()) { bad_request(response, request, "Invalid bitrate query"); return; }
++    send_response(response, cliprelayBitrateState());
++  }
++
++  void cliprelaySetBitrate(const resp_https_t &response, const req_https_t &request) {
++    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
++    if (!validate_csrf_token(response, request, get_client_id(request))) return;
++    std::array<char, 1025> body {};
++    request->content.read(body.data(), body.size());
++    const auto length = request->content.gcount();
++    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
++    try {
++      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
++      if (!input.is_object() || input.size() != 5 || !input.contains("instance") || !input["instance"].is_string() ||
++          !input.contains("owner") || !input["owner"].is_string() || !input.contains("stream") || !input["stream"].is_number_unsigned() ||
++          !input.contains("revision") || !input["revision"].is_number_unsigned() ||
++          !input.contains("budgetKbps") || !input["budgetKbps"].is_number_unsigned()) {
++        bad_request(response, request, "Expected instance, owner, stream, revision and budgetKbps"); return;
++      }
++      const auto owner = input["owner"].get<std::string>();
++      const auto budget = input["budgetKbps"].get<std::uint64_t>();
++      if (owner.size() != 64 || owner.find_first_not_of("0123456789abcdef") != std::string::npos || budget < 500 || budget > 150000) {
++        bad_request(response, request, "Invalid bitrate request"); return;
++      }
++      const auto outcome = input["instance"].get<std::string>() == cliprelayInstance()
++        ? cliprelay::bitrates.request(input["stream"].get<std::uint64_t>(), owner, input["revision"].get<std::uint64_t>(), static_cast<int>(budget))
++        : "stale_instance";
++      auto output = cliprelayBitrateState();
++      output["accepted"] = outcome == "accepted";
++      output["outcome"] = outcome;
++      send_response(response, output);
++    } catch (const nlohmann::json::exception &) {
++      bad_request(response, request, "Invalid bitrate request");
++    }
++  }
++
    void start() {
      platf::set_thread_name("confighttp");
      const auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-@@ -2354,6 +2429,8 @@ namespace confighttp {
+@@ -2354,6 +2478,10 @@ namespace confighttp {
      server.resource["^/welcome/?$"]["GET"] = page_handler("welcome.html", false, true);
  
      // rest api
 +    server.resource["^/api/cliprelay/displays$"]["GET"] = cliprelayDisplays;
 +    server.resource["^/api/cliprelay/displays$"]["POST"] = cliprelaySelectDisplay;
++    server.resource["^/api/cliprelay/bitrate$"]["GET"] = cliprelayBitrate;
++    server.resource["^/api/cliprelay/bitrate$"]["POST"] = cliprelaySetBitrate;
      server.resource["^/api/browse$"]["GET"] = browseDirectory;
      server.resource["^/api/apps$"]["GET"] = getApps;
      server.resource["^/api/apps$"]["POST"] = saveApp;
@@ -144,8 +195,20 @@ index 151b8a6..68d5802 100644
              offset_x = desc.DesktopCoordinates.left;
              offset_y = desc.DesktopCoordinates.top;
              width = desc.DesktopCoordinates.right - offset_x;
+diff --git a/src/rtsp.cpp b/src/rtsp.cpp
+index c7135dd..cc9c78f 100644
+--- a/src/rtsp.cpp
++++ b/src/rtsp.cpp
+@@ -1255,6 +1255,7 @@ namespace rtsp_stream {
+     // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
+     // down to nearly nothing.
+     if (configuredBitrateKbps) {
++      config.monitor.bitrateBudgetKbps = static_cast<int>(configuredBitrateKbps);
+       BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
+ 
+       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
 diff --git a/src/stream.cpp b/src/stream.cpp
-index 1291c9c..17d16d6 100644
+index 1291c9c..8d35ab3 100644
 --- a/src/stream.cpp
 +++ b/src/stream.cpp
 @@ -24,6 +24,7 @@ extern "C" {
@@ -156,7 +219,7 @@ index 1291c9c..17d16d6 100644
  #include "display_device.h"
  #include "globals.h"
  #include "input.h"
-@@ -2147,6 +2148,20 @@ namespace stream {
+@@ -2147,6 +2148,27 @@ namespace stream {
      session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
  
      BOOST_LOG(debug) << "Start capturing Video"sv;
@@ -171,14 +234,21 @@ index 1291c9c..17d16d6 100644
 +        owner += hex[fingerprint[i] >> 4];
 +        owner += hex[fingerprint[i] & 15];
 +      }
-+      cliprelay::displays.add_stream(session, owner, session->config.monitor.width, session->config.monitor.height);
++      auto stream_id = cliprelay::displays.add_stream(session, owner, session->config.monitor.width, session->config.monitor.height);
++      cliprelay::bitrates.add(session, stream_id, owner, session->config.monitor.bitrateBudgetKbps,
++        session->config.monitor.bitrate, config::stream.fec_percentage,
++        (session->config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * session->config.audio.channels,
++        config::video.max_bitrate);
 +    }
-+    auto cliprelay_guard = util::fail_guard([&] { cliprelay::displays.remove_stream(session); });
++    auto cliprelay_guard = util::fail_guard([&] {
++      cliprelay::bitrates.remove(session);
++      cliprelay::displays.remove_stream(session);
++    });
      video::capture(session->mail, session->config.monitor, session);
    }
  
 diff --git a/src/video.cpp b/src/video.cpp
-index 843a19a..8c17292 100644
+index 843a19a..9db4001 100644
 --- a/src/video.cpp
 +++ b/src/video.cpp
 @@ -27,6 +27,7 @@ extern "C" {
@@ -189,7 +259,79 @@ index 843a19a..8c17292 100644
  #include "display_device.h"
  #include "globals.h"
  #include "input.h"
-@@ -1481,6 +1482,17 @@ namespace video {
+@@ -538,6 +539,71 @@ namespace video {
+ 
+     // inject sps/vps data into idr pictures
+     int inject;  ///< Number of upcoming IDR frames that should receive rewritten parameter sets.
++
++    // The pinned FFmpeg QSV encoder observes these fields before each input,
++    // flushes earlier packets, and reports MFXVideoENCODE_Reset failures. Other
++    // backends must have an explicit implementation before advertising support.
++    bool live_bitrate_supported() const {
++      return avcodec_ctx && avcodec_ctx->codec &&
++        std::string_view(avcodec_ctx->codec->name).ends_with("_qsv");
++    }
++
++    struct rate_parameters {
++      int64_t bit_rate, maximum, minimum;
++      int buffer, occupancy;
++    };
++    rate_parameters previous_rate {};
++    std::optional<cliprelay::bitrate_state> rate_update;
++    std::chrono::steady_clock::time_point rate_deadline;
++
++    bool rollback_bitrate(void *key, const std::string &reason) {
++      if (!rate_update) return false;
++      auto state = cliprelay::bitrates.state(key);
++      if (!state || state->request_id != rate_update->request_id || state->result != "pending") {
++        rate_update.reset();
++        return false;
++      }
++      avcodec_ctx->bit_rate = previous_rate.bit_rate;
++      avcodec_ctx->rc_max_rate = previous_rate.maximum;
++      avcodec_ctx->rc_min_rate = previous_rate.minimum;
++      avcodec_ctx->rc_buffer_size = previous_rate.buffer;
++      avcodec_ctx->rc_initial_buffer_occupancy = previous_rate.occupancy;
++      cliprelay::bitrates.fail(key, rate_update->request_id, reason);
++      rate_update.reset();
++      request_idr_frame();
++      return true;
++    }
++
++    void update_bitrate(void *key, int64_t frame) {
++      if (!live_bitrate_supported()) return;
++      if (rate_update) {
++        const auto state = cliprelay::bitrates.state(key);
++        if (!state || state->result != "pending" || state->request_id != rate_update->request_id)
++          rate_update.reset();
++        else if (std::chrono::steady_clock::now() >= rate_deadline)
++          rollback_bitrate(key, "encoder_timeout");
++      }
++      if (rate_update) return;
++      auto update = cliprelay::bitrates.take(key, frame);
++      if (!update) return;
++      auto &ctx = avcodec_ctx;
++      previous_rate = {ctx->bit_rate, ctx->rc_max_rate, ctx->rc_min_rate,
++        ctx->rc_buffer_size, ctx->rc_initial_buffer_occupancy};
++      const int64_t bitrate = static_cast<int64_t>(update->target) * 1000;
++      // Preserve the negotiated CBR/VBR relationship and the encoder's VBV
++      // duration. No codec, resolution, frame rate or capture state changes.
++      const auto delta = ctx->rc_max_rate - ctx->bit_rate;
++      if (ctx->rc_max_rate > 0) {
++        ctx->rc_buffer_size = static_cast<int>(ctx->rc_buffer_size * bitrate / ctx->rc_max_rate);
++        ctx->rc_initial_buffer_occupancy = static_cast<int>(ctx->rc_initial_buffer_occupancy * bitrate / ctx->rc_max_rate);
++      }
++      ctx->bit_rate = bitrate - delta;
++      ctx->rc_max_rate = bitrate;
++      if (ctx->rc_min_rate > 0) ctx->rc_min_rate = bitrate;
++      rate_update = update;
++      rate_deadline = std::chrono::steady_clock::now() + 3s;
++      request_idr_frame();
++    }
+   };
+ 
+   /**
+@@ -1481,6 +1547,17 @@ namespace video {
     * @param display_name Display name.
     * @param config Configuration values to apply.
     */
@@ -207,7 +349,7 @@ index 843a19a..8c17292 100644
    void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
      // We try this twice, in case we still get an error on reinitialization
      for (int x = 0; x < 2; ++x) {
-@@ -1515,6 +1527,7 @@ namespace video {
+@@ -1515,6 +1592,7 @@ namespace video {
      // Refresh the display names
      auto old_display_names = std::move(display_names);
      display_names = platf::display_names(dev_type);
@@ -215,7 +357,7 @@ index 843a19a..8c17292 100644
  
      // If we now have no displays, let's put the old display array back and fail
      if (display_names.empty() && !old_display_names.empty()) {
-@@ -1566,6 +1579,7 @@ namespace video {
+@@ -1566,6 +1644,7 @@ namespace video {
      std::vector<capture_ctx_t> capture_ctxs;
  
      auto fg = util::fail_guard([&]() {
@@ -223,7 +365,7 @@ index 843a19a..8c17292 100644
        capture_ctx_queue->stop();
  
        // Stop all sessions listening to this thread
-@@ -1595,6 +1609,7 @@ namespace video {
+@@ -1595,6 +1674,7 @@ namespace video {
      if (!disp) {
        return;
      }
@@ -231,7 +373,7 @@ index 843a19a..8c17292 100644
      display_wp = disp;
  
      constexpr auto capture_buffer_size = 12;
-@@ -1724,7 +1739,7 @@ namespace video {
+@@ -1724,7 +1804,7 @@ namespace video {
            capture_ctxs.emplace_back(std::move(*capture_ctx_queue->pop()));
          }
  
@@ -240,7 +382,7 @@ index 843a19a..8c17292 100644
            artificial_reinit = true;
            return false;
          }
-@@ -1743,6 +1758,7 @@ namespace video {
+@@ -1743,6 +1823,7 @@ namespace video {
        switch (status) {
          case platf::capture_e::reinit:
            {
@@ -248,7 +390,7 @@ index 843a19a..8c17292 100644
              reinit_event.raise(true);
  
              // Some classes of images contain references to the display --> display won't delete unless img is deleted
-@@ -1786,8 +1802,17 @@ namespace video {
+@@ -1786,8 +1867,17 @@ namespace video {
                  display_p = std::clamp(*switch_display_event->pop(), 0, static_cast<int>(display_names.size()) - 1);
                }
  
@@ -266,7 +408,7 @@ index 843a19a..8c17292 100644
                if (disp) {
                  break;
                }
-@@ -1796,6 +1821,7 @@ namespace video {
+@@ -1796,6 +1886,7 @@ namespace video {
                return;
              }
  
@@ -274,15 +416,24 @@ index 843a19a..8c17292 100644
              display_wp = disp;
  
              reinit_event.reset();
-@@ -1891,6 +1917,7 @@ namespace video {
+@@ -1824,6 +1915,7 @@ namespace video {
+    * @return 0 when packets are queued; nonzero when encoding or packetization fails.
+    */
+   int encode_avcodec(int64_t frame_nr, avcodec_encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
++    session.update_bitrate(channel_data, frame_nr);
+     auto &frame = session.device->frame;
+     frame->pts = frame_nr;
+ 
+@@ -1891,6 +1983,8 @@ namespace video {
  
        packet->replacements = &session.replacements;
        packet->channel_data = channel_data;
 +      cliprelay::displays.encoded(channel_data, av_packet->pts);
++      cliprelay::bitrates.encoded(channel_data, av_packet->pts);
        packets->raise(std::move(packet));
      }
  
-@@ -1922,6 +1949,7 @@ namespace video {
+@@ -1922,6 +2016,7 @@ namespace video {
      packet->channel_data = channel_data;
      packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
      packet->frame_timestamp = frame_timestamp;
@@ -290,16 +441,38 @@ index 843a19a..8c17292 100644
      packets->raise(std::move(packet));
  
      return 0;
-@@ -2413,6 +2441,8 @@ namespace video {
+@@ -1939,7 +2034,12 @@ namespace video {
+    */
+   int encode(int64_t frame_nr, encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
+     if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
+-      return encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp);
++      auto result = encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp);
++      if (result && avcodec_session->rollback_bitrate(channel_data, "encoder_rejected")) {
++        BOOST_LOG(warning) << "Live bitrate update rejected; restoring the previous rate";
++        result = encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp);
++      }
++      return result;
+     } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
+       return encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp);
+     }
+@@ -2408,11 +2508,16 @@ namespace video {
+     const encoder_t &encoder,
+     void *channel_data
+   ) {
++    if (auto rate = cliprelay::bitrates.begin_encoder(channel_data); rate > 0) config.bitrate = rate;
+     auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
+     if (!session) {
        return;
      }
  
 +    cliprelay::displays.bind(channel_data, disp->cliprelay_generation);
++    auto av_session = dynamic_cast<avcodec_encode_session_t *>(session.get());
++    cliprelay::bitrates.support(channel_data, av_session && av_session->live_bitrate_supported());
 +
      // As a workaround for NVENC hangs and to generally speed up encoder reinit,
      // we will complete the encoder teardown in a separate thread if supported.
      // This will move expensive processing off the encoder thread to allow us
-@@ -2479,6 +2509,7 @@ namespace video {
+@@ -2479,6 +2584,7 @@ namespace video {
              BOOST_LOG(error) << "Could not convert image"sv;
              return;
            }
@@ -307,7 +480,16 @@ index 843a19a..8c17292 100644
          } else if (!images->running()) {
            break;
          }
-@@ -2657,6 +2688,7 @@ namespace video {
+@@ -2638,6 +2744,8 @@ namespace video {
+ 
+     encode_session.ctx = &ctx;
+ 
++    if (auto rate = cliprelay::bitrates.begin_encoder(ctx.channel_data); rate > 0) ctx.config.bitrate = rate;
++
+     auto encode_device = make_encode_device(*disp, encoder, ctx.config);
+     if (!encode_device) {
+       return std::nullopt;
+@@ -2657,6 +2765,7 @@ namespace video {
      }
      ctx.hdr_events->raise(std::move(hdr_info));
  
@@ -315,7 +497,16 @@ index 843a19a..8c17292 100644
      auto session = make_encode_session(disp, encoder, ctx.config, img.width, img.height, std::move(encode_device));
      if (!session) {
        return std::nullopt;
-@@ -2712,8 +2744,17 @@ namespace video {
+@@ -2669,6 +2778,8 @@ namespace video {
+     }
+ 
+     encode_session.session = std::move(session);
++    auto av_session = dynamic_cast<avcodec_encode_session_t *>(encode_session.session.get());
++    cliprelay::bitrates.support(ctx.channel_data, av_session && av_session->live_bitrate_supported());
+ 
+     return encode_session;
+   }
+@@ -2712,8 +2823,17 @@ namespace video {
          display_p = std::clamp(*switch_display_event->pop(), 0, static_cast<int>(display_names.size()) - 1);
        }
  
@@ -333,7 +524,7 @@ index 843a19a..8c17292 100644
        if (disp) {
          break;
        }
-@@ -2728,6 +2769,8 @@ namespace video {
+@@ -2728,6 +2848,8 @@ namespace video {
        return encode_e::error;
      }
  
@@ -342,7 +533,7 @@ index 843a19a..8c17292 100644
      std::vector<sync_session_t> synced_sessions;
      for (auto &ctx : synced_session_ctxs) {
        auto synced_session = make_synced_session(disp.get(), encoder, *img, *ctx);
-@@ -2793,6 +2836,9 @@ namespace video {
+@@ -2793,6 +2915,9 @@ namespace video {
              frame_timestamp = img->frame_timestamp;
            }
  
@@ -352,7 +543,7 @@ index 843a19a..8c17292 100644
            if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp)) {
              BOOST_LOG(error) << "Could not encode video packet"sv;
              ctx->shutdown_event->raise(true);
-@@ -2805,7 +2851,7 @@ namespace video {
+@@ -2805,7 +2930,7 @@ namespace video {
            ++pos;
          })
  
@@ -361,6 +552,18 @@ index 843a19a..8c17292 100644
            ec = platf::capture_e::reinit;
            return false;
          }
+diff --git a/src/video.h b/src/video.h
+index 63f3cf5..c8ff1a7 100644
+--- a/src/video.h
++++ b/src/video.h
+@@ -39,6 +39,7 @@ namespace video {
+     int dynamicRange;  ///< Encoding color depth: 0 = 8-bit, 1 = 10-bit.
+     int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4.
+     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
++    int bitrateBudgetKbps = 0;  ///< Original budget including audio/FEC, before RTSP normalization.
+   };
+ 
+   namespace amf {
 diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
 index 5a2c9e1..829a593 100644
 --- a/tools/CMakeLists.txt

@@ -63,6 +63,19 @@ The service must filter other clients' stream entries and fail closed while
 mapping targeted focus probes if the current capture cannot be established.
 Frame numbers and stream IDs are local to a running engine, not persistent IDs.
 
+`GET/POST /api/cliprelay/bitrate` is a per-stream control endpoint. POST requires
+`instance`, `owner` (host-derived certificate fingerprint), `stream`, `revision`
+and `budgetKbps` (500–150000). The budget includes audio/FEC/transport overhead,
+using the same conversion as RTSP and respecting the host's maximum bitrate.
+Each stream has its own request revision, result and `appliedFrame`; an accepted
+request is confirmed only by a packet whose PTS follows the encoder update.
+Display generation, transport, frame numbering and other clients are unchanged.
+The confirmed rate survives display reconstruction. Encoder restarts cancel
+unconfirmed updates; errors/timeouts attempt to restore the prior parameters.
+Currently only the pinned FFmpeg Quick Sync backend advertises live support.
+Other encoders, paired-service/Android integration and live runtime validation
+remain pending. This must not yet replace client reconnection behavior.
+
 The paired Go service exposes `GET/POST /v1/displays`, filtering stream owners and
 requiring the caller's current `stream` ID for selections. Its
 `GET /v1/display-focus` accepts `instance`, `stream`, `generation`, rendered

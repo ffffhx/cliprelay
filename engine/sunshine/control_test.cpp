@@ -132,5 +132,82 @@ int main() {
     d.encoded(&client_a, 2);
     assert(d.snapshot().result == "pending" && d.pending());
   }
-  std::cout << "8 live display control scenarios passed\n";
+  {
+    cliprelay::bitrate_control b;
+    b.add(&client_a, 1, owner, 5000, 3500, 20, 192, 0);
+    assert(b.begin_encoder(&client_a) == 3500);
+    auto s = *b.state(&client_a);
+    assert(b.request(1, owner, s.revision, 2000) == "unsupported_encoder");
+    b.support(&client_a, true);
+    s = *b.state(&client_a);
+    assert(b.request(2, owner, s.revision, 2000) == "not_streaming");
+    assert(b.request(1, std::string(64, 'b'), s.revision, 2000) == "not_streaming");
+    assert(b.request(1, owner, s.revision, 499) == "invalid_bitrate");
+    assert(b.request(1, owner, s.revision, 150001) == "invalid_bitrate");
+    assert(b.request(1, owner, s.revision, 2000) == "accepted");
+    assert(b.request(1, owner, s.revision, 3000) == "stale");
+    assert(b.request(1, owner, b.state(&client_a)->revision, 3000) == "busy");
+    b.encoded(&client_a, 99); // unconsumed request is not an encoder update
+    assert(b.state(&client_a)->result == "pending");
+    auto update = *b.take(&client_a, 100);
+    assert(update.target == 1268 && !b.take(&client_a, 101));
+    b.encoded(&client_a, 99); // queued packet from before the parameter update
+    assert(b.state(&client_a)->budget == 5000);
+    b.encoded(&client_a, 100);
+    s = *b.state(&client_a);
+    assert(s.budget == 2000 && s.video == 1268 && s.result == "applied" && s.applied_frame == 100);
+    b.fail(&client_a, update.request_id, "late_error");
+    assert(b.begin_encoder(&client_a) == 1268); // persists after a display restart
+    assert(b.state(&client_a)->result == "applied");
+  }
+  {
+    cliprelay::bitrate_control b;
+    b.add(&client_a, 10, owner, 6000, 4500, 20, 192, 5000);
+    b.support(&client_a, true);
+    auto s = *b.state(&client_a);
+    assert(b.request(10, owner, s.revision, 150000) == "accepted");
+    auto update = *b.take(&client_a, 50);
+    assert(update.target == 5000); // host cap survives live updates
+    b.fail(&client_a, update.request_id - 1, "stale_error");
+    assert(b.state(&client_a)->result == "pending");
+    b.fail(&client_a, update.request_id, "encoder_rejected");
+    b.encoded(&client_a, 50);
+    s = *b.state(&client_a);
+    assert(s.result == "failed" && s.video == 4500 && s.budget == 6000 && !s.applied_frame);
+    assert(b.request(10, owner, s.revision, 8000) == "accepted");
+    b.take(&client_a, 51);
+    assert(b.begin_encoder(&client_a) == 4500);
+    assert(b.state(&client_a)->error == "encoder_restarted");
+    b.encoded(&client_a, 51);
+    assert(b.state(&client_a)->video == 4500);
+    b.remove(&client_a);
+    b.add(&client_a, 11, owner, 5000, 3500, 20, 192, 0); // same pointer, new stream
+    b.support(&client_a, true);
+    assert(b.request(10, owner, b.state(&client_a)->revision, 8000) == "not_streaming");
+  }
+  {
+    cliprelay::bitrate_control b;
+    b.add(&client_a, 1, owner, 5000, 3500, 20, 192, 0);
+    b.add(&client_b, 2, std::string(64, 'b'), 8000, 5500, 20, 512, 0);
+    b.support(&client_a, true); b.support(&client_b, true);
+    const auto before = *b.state(&client_b);
+    const auto revision = b.state(&client_a)->revision;
+    std::string a, c;
+    std::thread t1([&] { a = b.request(1, owner, revision, 2000); });
+    std::thread t2([&] { c = b.request(1, owner, revision, 6000); });
+    t1.join(); t2.join();
+    assert((a == "accepted") != (c == "accepted"));
+    assert((a == "stale") != (c == "stale"));
+    b.take(&client_a, 20); b.encoded(&client_a, 20);
+    const auto after = *b.state(&client_b);
+    assert(after.video == before.video && after.revision == before.revision && after.result.empty());
+    b.remove(&client_a);
+    assert(b.snapshot().size() == 1 && b.state(&client_b));
+  }
+  {
+    assert(cliprelay::video_bitrate(500, 20, 512, 0) == 288);
+    assert(cliprelay::video_bitrate(10000, 81, 192, 0) == 9308);
+    assert(cliprelay::video_bitrate(10000, 20, 512, 4000) == 4000);
+  }
+  std::cout << "8 display and 4 live bitrate control scenarios passed\n";
 }

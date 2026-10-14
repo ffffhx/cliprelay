@@ -47,11 +47,12 @@ namespace cliprelay {
       }
     }
 
-    void add_stream(void *key, std::string owner, int width, int height) {
-      if (!key || owner.size() != 64 || width <= 0 || height <= 0) return;
+    std::uint64_t add_stream(void *key, std::string owner, int width, int height) {
+      if (!key || owner.size() != 64 || width <= 0 || height <= 0) return 0;
       std::lock_guard lock(mutex_);
       streams_[key] = {std::move(owner), ++next_stream_, 0, width, height, 0, 0};
       ++state_.revision;
+      return next_stream_;
     }
 
     void remove_stream(void *key) {
@@ -186,4 +187,134 @@ namespace cliprelay {
   };
 
   inline display_control displays;
+
+  // Same budget convention as the RTSP negotiation: include FEC, audio and
+  // transport overhead, then respect the host's encoder limit. All inputs here
+  // are negotiated host values except the bounded user budget.
+  inline int video_bitrate(int budget, int fec, int audio, int maximum) {
+    if (fec >= 0 && fec <= 80) budget /= 100.f / (100 - fec);
+    budget -= std::min(audio, budget / 5);
+    budget -= std::min(500, budget / 10);
+    return maximum > 0 ? std::min(budget, maximum) : budget;
+  }
+
+  struct bitrate_state {
+    std::string owner;
+    std::uint64_t id = 0, revision = 1, request_id = 0;
+    int budget = 0, video = 0, requested = 0, target = 0;
+    int fec = 0, audio = 0, maximum = 0;
+    bool supported = false;
+    std::int64_t minimum_frame = 0, applied_frame = 0;
+    std::string result, error;
+  };
+
+  class bitrate_control {
+  public:
+    void add(void *key, std::uint64_t id, std::string owner, int budget, int video, int fec, int audio, int maximum) {
+      if (!key || !id || owner.size() != 64 || video <= 0) return;
+      std::lock_guard lock(mutex_);
+      bitrate_state s;
+      s.id = id; s.owner = std::move(owner); s.budget = budget;
+      s.video = maximum > 0 ? std::min(video, maximum) : video;
+      s.fec = fec; s.audio = audio; s.maximum = maximum;
+      streams_[key] = std::move(s);
+    }
+
+    void remove(void *key) {
+      std::lock_guard lock(mutex_);
+      streams_.erase(key);
+    }
+
+    // A display restart uses the last CONFIRMED bitrate. An in-flight update
+    // cannot silently become the starting configuration of another encoder.
+    int begin_encoder(void *key) {
+      std::lock_guard lock(mutex_);
+      auto it = streams_.find(key);
+      if (it == streams_.end()) return 0;
+      auto &s = it->second;
+      if (s.result == "pending") fail_locked(s, "encoder_restarted");
+      s.supported = false;
+      ++s.revision;
+      return s.video;
+    }
+
+    void support(void *key, bool supported) {
+      std::lock_guard lock(mutex_);
+      auto it = streams_.find(key);
+      if (it == streams_.end()) return;
+      it->second.supported = supported;
+      ++it->second.revision;
+    }
+
+    std::string request(std::uint64_t id, const std::string &owner, std::uint64_t revision, int budget) {
+      std::lock_guard lock(mutex_);
+      for (auto &[key, s] : streams_) {
+        if (s.id != id || s.owner != owner) continue;
+        if (s.revision != revision) return "stale";
+        if (!s.supported) return "unsupported_encoder";
+        if (s.result == "pending") return "busy";
+        if (budget < 500 || budget > 150000) return "invalid_bitrate";
+        s.requested = budget;
+        s.target = video_bitrate(budget, s.fec, s.audio, s.maximum);
+        s.result = "pending";
+        s.error.clear();
+        s.minimum_frame = s.applied_frame = 0;
+        ++s.request_id;
+        ++s.revision;
+        return "accepted";
+      }
+      return "not_streaming";
+    }
+
+    std::optional<bitrate_state> take(void *key, std::int64_t frame) {
+      std::lock_guard lock(mutex_);
+      auto it = streams_.find(key);
+      if (it == streams_.end()) return std::nullopt;
+      auto &s = it->second;
+      if (s.result != "pending" || s.minimum_frame || frame <= 0) return std::nullopt;
+      s.minimum_frame = frame;
+      return s;
+    }
+
+    void encoded(void *key, std::int64_t frame) {
+      std::lock_guard lock(mutex_);
+      auto it = streams_.find(key);
+      if (it == streams_.end()) return;
+      auto &s = it->second;
+      if (s.result != "pending" || !s.minimum_frame || frame < s.minimum_frame) return;
+      s.budget = s.requested; s.video = s.target; s.applied_frame = frame;
+      s.result = "applied";
+      ++s.revision;
+    }
+
+    void fail(void *key, std::uint64_t request, const std::string &error) {
+      std::lock_guard lock(mutex_);
+      auto it = streams_.find(key);
+      if (it != streams_.end() && it->second.request_id == request && it->second.result == "pending")
+        fail_locked(it->second, error);
+    }
+
+    std::optional<bitrate_state> state(void *key) const {
+      std::lock_guard lock(mutex_);
+      auto it = streams_.find(key);
+      return it == streams_.end() ? std::nullopt : std::optional(it->second);
+    }
+
+    std::vector<bitrate_state> snapshot() const {
+      std::lock_guard lock(mutex_);
+      std::vector<bitrate_state> result;
+      for (const auto &[key, s] : streams_) result.push_back(s);
+      return result;
+    }
+
+  private:
+    static void fail_locked(bitrate_state &s, const std::string &error) {
+      s.result = "failed"; s.error = error; s.minimum_frame = 0;
+      ++s.revision;
+    }
+    mutable std::mutex mutex_;
+    std::map<void *, bitrate_state> streams_;
+  };
+
+  inline bitrate_control bitrates;
 }
