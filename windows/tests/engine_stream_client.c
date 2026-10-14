@@ -125,7 +125,7 @@ static int report(const char *path, int connected) {
     char temporary[MAX_PATH * 2];
     if (snprintf(temporary, sizeof temporary, "%s.tmp", path) >= (int)sizeof temporary) return 0;
     FILE *file = fopen(temporary, "wb");
-    if (!file) return 0;
+    if (!file) { perror("Opening receiver state"); return 0; }
     fprintf(file, "{\"connected\":%s,\"frames\":%ld,\"lastFrame\":%lu,\"lastKeyframe\":%lu,\"keyframes\":%ld,\"bytes\":%lld,\"termination\":%ld,\"maxGapMs\":%lld,\"pattern\":%s}",
         connected ? "true" : "false", InterlockedCompareExchange(&frames, 0, 0),
         (unsigned long)InterlockedCompareExchange(&last_frame, 0, 0),
@@ -133,8 +133,18 @@ static int report(const char *path, int connected) {
         (long long)InterlockedCompareExchange64(&bytes_received, 0, 0), InterlockedCompareExchange(&terminated, 0, 0),
         (long long)InterlockedCompareExchange64(&maximum_gap_ms, 0, 0),
         InterlockedCompareExchange(&pattern_ready, 0, 0) ? "true" : "false");
-    fclose(file);
-    return MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (fclose(file) != 0) { perror("Writing receiver state"); return 0; }
+    // The Python reader can briefly hold the old file without delete sharing.
+    // Keep atomic publication, but do not stop the stream for that read race.
+    DWORD error = 0;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        if (MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return 1;
+        error = GetLastError();
+        if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION && error != ERROR_ACCESS_DENIED) break;
+        Sleep(10);
+    }
+    fprintf(stderr, "Publishing receiver state failed: %lu\n", (unsigned long)error);
+    return 0;
 }
 
 int main(int argc, char **argv) {

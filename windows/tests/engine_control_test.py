@@ -111,13 +111,21 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitr
         launch.findtext("sessionUrl0"), key, iv, str(state_file), str(stop_file)] + (["--pattern"] if bitrate_test else []),
         cwd=client.parent, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
     switches = []
+    state_read_retries = 0
     try:
         def receive_state():
-            assert process.poll() is None, "Native stream client exited; inspect client.log"
-            try:
-                return json.loads(state_file.read_text())
-            except (FileNotFoundError, PermissionError, json.JSONDecodeError):
-                return {}
+            nonlocal state_read_retries
+            deadline = time.monotonic() + .5
+            while True:
+                assert process.poll() is None, "Native stream client exited; inspect client.log"
+                try:
+                    return json.loads(state_file.read_text())
+                except (FileNotFoundError, PermissionError, json.JSONDecodeError) as error:
+                    if time.monotonic() >= deadline:
+                        if isinstance(error, FileNotFoundError): return {}  # handshake has not completed yet
+                        raise AssertionError("Receiver state remained unreadable for 500ms") from error
+                    state_read_retries += 1
+                    time.sleep(.01)
 
         def await_capture(target=None, previous=None, previous_received=None):
             deadline = time.monotonic() + 25
@@ -189,7 +197,7 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitr
                 sample_at = time.monotonic()
                 while time.monotonic() - sample_at < 6:
                     received = receive_state()
-                    assert received.get("connected") and not received.get("termination")
+                    assert received.get("connected") and not received.get("termination"), received
                     time.sleep(.1)
                 received = receive_state()
                 seconds = time.monotonic() - sample_at
@@ -227,7 +235,7 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitr
             _, rates = call(endpoint="bitrate")
             assert rates["streams"][0]["budgetKbps"] == 6000 and rates["streams"][0]["videoKbps"] == bitrate_results[-1]["videoKbps"]
         return {"sameConnection": True, "switches": switches, "receivedFrames": received["frames"],
-                "decodedOrPresented": False, "bitrate": bitrate_results}
+                "decodedOrPresented": False, "bitrate": bitrate_results, "stateReadRetries": state_read_retries}
     finally:
         stop_file.touch()
         try:
@@ -353,6 +361,9 @@ if ($result.ReturnValue -ne 0) {{ throw 'Cannot launch isolated engine helper' }
             report["passed"] = False
             report["stream"] = verify_stream(stream_client.resolve(strict=True), fixture, port, call, owner, bitrate_test)
             report["passed"] = True
+    except Exception as error:
+        report["error"] = f"{type(error).__name__}: {error}"
+        raise
     finally:
         # Only terminate the uniquely identified test engine, never an installed service.
         stop = f"""
