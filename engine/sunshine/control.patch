@@ -208,7 +208,7 @@ index c7135dd..cc9c78f 100644
  
        // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
 diff --git a/src/stream.cpp b/src/stream.cpp
-index 1291c9c..8d35ab3 100644
+index 1291c9c..5643de1 100644
 --- a/src/stream.cpp
 +++ b/src/stream.cpp
 @@ -24,6 +24,7 @@ extern "C" {
@@ -219,7 +219,21 @@ index 1291c9c..8d35ab3 100644
  #include "display_device.h"
  #include "globals.h"
  #include "input.h"
-@@ -2147,6 +2148,27 @@ namespace stream {
+@@ -1562,11 +1563,8 @@ namespace stream {
+       // We need to know the final frame size to calculate the last packet size, and we
+       // must avoid matching replacements against the frame header or any other non-video
+       // part of the payload.
+-      if (packet->is_idr() && packet->replacements) {
+-        for (auto &replacement : *packet->replacements) {
+-          auto frame_old = replacement.old;
+-          auto frame_new = replacement._new;
+-
++      if (packet->is_idr()) {
++        for (const auto &[frame_old, frame_new] : packet->replacements) {
+           payload_with_replacements = replace(payload, frame_old, frame_new);
+           payload = {(char *) payload_with_replacements.data(), payload_with_replacements.size()};
+         }
+@@ -2147,6 +2145,27 @@ namespace stream {
      session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
  
      BOOST_LOG(debug) << "Start capturing Video"sv;
@@ -248,7 +262,7 @@ index 1291c9c..8d35ab3 100644
    }
  
 diff --git a/src/video.cpp b/src/video.cpp
-index 843a19a..9db4001 100644
+index 843a19a..f6b081e 100644
 --- a/src/video.cpp
 +++ b/src/video.cpp
 @@ -27,6 +27,7 @@ extern "C" {
@@ -424,16 +438,23 @@ index 843a19a..9db4001 100644
      auto &frame = session.device->frame;
      frame->pts = frame_nr;
  
-@@ -1891,6 +1983,8 @@ namespace video {
+@@ -1889,8 +1981,14 @@ namespace video {
+         packet->frame_timestamp = frame_timestamp;
+       }
  
-       packet->replacements = &session.replacements;
+-      packet->replacements = &session.replacements;
++      if (av_packet->flags & AV_PKT_FLAG_KEY) {
++        for (const auto &replacement : session.replacements) {
++          packet->replacements.emplace_back(replacement.old, replacement._new);
++        }
++      }
        packet->channel_data = channel_data;
 +      cliprelay::displays.encoded(channel_data, av_packet->pts);
 +      cliprelay::bitrates.encoded(channel_data, av_packet->pts);
        packets->raise(std::move(packet));
      }
  
-@@ -1922,6 +2016,7 @@ namespace video {
+@@ -1922,6 +2020,7 @@ namespace video {
      packet->channel_data = channel_data;
      packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
      packet->frame_timestamp = frame_timestamp;
@@ -441,7 +462,7 @@ index 843a19a..9db4001 100644
      packets->raise(std::move(packet));
  
      return 0;
-@@ -1939,7 +2034,12 @@ namespace video {
+@@ -1939,7 +2038,12 @@ namespace video {
     */
    int encode(int64_t frame_nr, encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
      if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
@@ -455,7 +476,7 @@ index 843a19a..9db4001 100644
      } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
        return encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp);
      }
-@@ -2408,11 +2508,16 @@ namespace video {
+@@ -2408,11 +2512,16 @@ namespace video {
      const encoder_t &encoder,
      void *channel_data
    ) {
@@ -472,7 +493,7 @@ index 843a19a..9db4001 100644
      // As a workaround for NVENC hangs and to generally speed up encoder reinit,
      // we will complete the encoder teardown in a separate thread if supported.
      // This will move expensive processing off the encoder thread to allow us
-@@ -2479,6 +2584,7 @@ namespace video {
+@@ -2479,6 +2588,7 @@ namespace video {
              BOOST_LOG(error) << "Could not convert image"sv;
              return;
            }
@@ -480,7 +501,7 @@ index 843a19a..9db4001 100644
          } else if (!images->running()) {
            break;
          }
-@@ -2638,6 +2744,8 @@ namespace video {
+@@ -2638,6 +2748,8 @@ namespace video {
  
      encode_session.ctx = &ctx;
  
@@ -489,7 +510,7 @@ index 843a19a..9db4001 100644
      auto encode_device = make_encode_device(*disp, encoder, ctx.config);
      if (!encode_device) {
        return std::nullopt;
-@@ -2657,6 +2765,7 @@ namespace video {
+@@ -2657,6 +2769,7 @@ namespace video {
      }
      ctx.hdr_events->raise(std::move(hdr_info));
  
@@ -497,7 +518,7 @@ index 843a19a..9db4001 100644
      auto session = make_encode_session(disp, encoder, ctx.config, img.width, img.height, std::move(encode_device));
      if (!session) {
        return std::nullopt;
-@@ -2669,6 +2778,8 @@ namespace video {
+@@ -2669,6 +2782,8 @@ namespace video {
      }
  
      encode_session.session = std::move(session);
@@ -506,7 +527,7 @@ index 843a19a..9db4001 100644
  
      return encode_session;
    }
-@@ -2712,8 +2823,17 @@ namespace video {
+@@ -2712,8 +2827,17 @@ namespace video {
          display_p = std::clamp(*switch_display_event->pop(), 0, static_cast<int>(display_names.size()) - 1);
        }
  
@@ -524,7 +545,7 @@ index 843a19a..9db4001 100644
        if (disp) {
          break;
        }
-@@ -2728,6 +2848,8 @@ namespace video {
+@@ -2728,6 +2852,8 @@ namespace video {
        return encode_e::error;
      }
  
@@ -533,7 +554,7 @@ index 843a19a..9db4001 100644
      std::vector<sync_session_t> synced_sessions;
      for (auto &ctx : synced_session_ctxs) {
        auto synced_session = make_synced_session(disp.get(), encoder, *img, *ctx);
-@@ -2793,6 +2915,9 @@ namespace video {
+@@ -2793,6 +2919,9 @@ namespace video {
              frame_timestamp = img->frame_timestamp;
            }
  
@@ -543,7 +564,7 @@ index 843a19a..9db4001 100644
            if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp)) {
              BOOST_LOG(error) << "Could not encode video packet"sv;
              ctx->shutdown_event->raise(true);
-@@ -2805,7 +2930,7 @@ namespace video {
+@@ -2805,7 +2934,7 @@ namespace video {
            ++pos;
          })
  
@@ -553,7 +574,7 @@ index 843a19a..9db4001 100644
            return false;
          }
 diff --git a/src/video.h b/src/video.h
-index 63f3cf5..c8ff1a7 100644
+index 63f3cf5..2b283e2 100644
 --- a/src/video.h
 +++ b/src/video.h
 @@ -39,6 +39,7 @@ namespace video {
@@ -564,6 +585,18 @@ index 63f3cf5..c8ff1a7 100644
    };
  
    namespace amf {
+@@ -527,7 +528,10 @@ namespace video {
+       }
+     };
+ 
+-    std::vector<replace_t> *replacements = nullptr;  ///< Optional encoded-byte substitutions applied before packetization.
++    // The sender may still be processing this packet after display/encoder
++    // teardown. Own the parameter-set bytes instead of borrowing the encoder's
++    // vector and string_views across the asynchronous queue.
++    std::vector<std::pair<std::string, std::string>> replacements;
+     void *channel_data = nullptr;  ///< Platform or protocol state carried with this packet.
+     bool after_ref_frame_invalidation = false;  ///< Whether the frame follows reference-frame invalidation.
+     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;  ///< Capture timestamp associated with the frame.
 diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
 index 5a2c9e1..829a593 100644
 --- a/tools/CMakeLists.txt

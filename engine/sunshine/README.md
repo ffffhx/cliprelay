@@ -73,8 +73,24 @@ Display generation, transport, frame numbering and other clients are unchanged.
 The confirmed rate survives display reconstruction. Encoder restarts cancel
 unconfirmed updates; errors/timeouts attempt to restore the prior parameters.
 Currently only the pinned FFmpeg Quick Sync backend advertises live support.
-Other encoders, paired-service/Android integration and live runtime validation
-remain pending. This must not yet replace client reconnection behavior.
+The paired service exposes `GET/POST /v1/bitrate`, derives the owner from mutual
+TLS, validates ownership before forwarding and filters other clients' state.
+Android uses that endpoint and waits for the applied frame to be presented;
+unsupported hosts/encoders use the existing reconnect path. Runtime validation
+of Android presentation, other codecs/GPUs and injected driver failures remains
+pending. Network-type changes still use reconnect recovery.
+
+An isolated encrypted loopback test on Intel Quick Sync H.264 changed budgets
+12 → 2 → 6 Mbps on the same connection, with capture generation unchanged.
+Synthetic motion produced video payloads of 8.845 → 1.388 → 4.207 Mbps; confirmation
+frame receipt took 94, 141 and 78 ms. The largest received-frame gap was 47 ms.
+These are one-machine receipt measurements at 1280×720/30 fps, not Android
+presentation or Internet measurements. The final 6 Mbps setting also survived
+display reconstruction. Use the native receiver's `--bitrate-test` fixture option
+to repeat this test; it briefly displays a non-activating synthetic motion window.
+
+Queued keyframes own their parameter-set replacement bytes so encoder teardown
+cannot leave the sender referring to the old encoder's storage.
 
 The paired Go service exposes `GET/POST /v1/displays`, filtering stream owners and
 requiring the caller's current `stream` ID for selections. Its
