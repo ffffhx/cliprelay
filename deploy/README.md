@@ -1,7 +1,9 @@
 # ClipRelay 腾讯云更新源
 
 手机更新清单：`https://124-221-36-36.anyip.dev:8443/cliprelay/update.json`。
-APK 同样通过这个 HTTPS 地址下载，手机不需要连接 GitHub。
+APK 优先通过这个 HTTPS 地址下载。Android v0.10.30 起同时核对 GitHub Release
+备用清单；云端落后时可以发现并下载 GitHub 上的新版本。同版本优先走云端。
+如果某个源不可用且另一个源没有更新，不再误报「最新版」，而是提示检查失败。
 
 Windows 使用独立清单：`https://124-221-36-36.anyip.dev:8443/cliprelay/windows/update.json`。
 安装包位于同目录的 `ClipRelay-Windows-X.Y.Z.zip`，不会覆盖 Android 清单。
@@ -11,7 +13,13 @@ Windows 使用独立清单：`https://124-221-36-36.anyip.dev:8443/cliprelay/win
 提高 Android `versionCode` 和 `versionName` 后推送到 main，原有 Android Release
 工作流构建签名包并发布 GitHub Release。随后 Android Cloud Sync 下载发布文件，
 校验 SHA-256，通过 SSH 将文件推送到腾讯云；服务器无需访问 GitHub。
-Cloud Sync 可以单独手动重跑，用于补发已有 Release。
+Cloud Sync 可以单独手动重跑，并每小时检查是否需要补同步，只选择正式 Android Release。
+云端版本已经相同或更高时跳过 APK 下载和上传。上传每 10 秒报告进度，使用 SSH
+保活；连续 2 分钟无传输进度或单次超过 15 分钟时终止该次连接，最多尝试两次。
+任务总上限 40 分钟。上传后重新下载云端安装包校验 SHA-256。
+
+发布器测试：`python -m unittest discover -s deploy -p test_upload_android_release.py`。
+手机端更新源选择、旧源、离线和冲突信息测试位于 `UpdateResolverTest`。
 
 仓库配置：
 

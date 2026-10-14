@@ -18,6 +18,7 @@ import com.cliprelay.app.BuildConfig
 import com.cliprelay.app.MainActivity
 import com.cliprelay.app.R
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -25,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -37,6 +39,7 @@ object AppUpdater {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var automaticChecksJob: Job? = null
+    private val operationMutex = Mutex()
 
     @Synchronized
     fun startAutomaticChecks(context: Context) {
@@ -45,7 +48,7 @@ object AppUpdater {
         automaticChecksJob = scope.launch {
             checkOnce(applicationContext, force = false)
             while (isActive) {
-                delay(CHECK_INTERVAL_MILLIS)
+                delay(RETRY_INTERVAL_MILLIS)
                 checkOnce(applicationContext, force = false)
             }
         }
@@ -53,25 +56,25 @@ object AppUpdater {
 
     @Synchronized
     fun checkNow(context: Context) {
-        if (state.value.phase == UpdatePhase.CHECKING) return
-        state.value = state.value.copy(
-            phase = UpdatePhase.CHECKING,
-            progressPercent = null,
-            message = "正在连接更新服务器",
-        )
-        scope.launch { checkOnce(context.applicationContext, force = true, phaseAlreadySet = true) }
+        scope.launch { checkOnce(context.applicationContext, force = true) }
     }
 
     @Synchronized
     fun download(context: Context) {
-        val info = state.value.available ?: return
-        if (state.value.phase == UpdatePhase.DOWNLOADING) return
-        state.value = state.value.copy(
-            phase = UpdatePhase.DOWNLOADING,
-            progressPercent = 0,
-            message = "正在下载 v${info.versionName}",
-        )
-        scope.launch { downloadUpdate(context.applicationContext, info) }
+        scope.launch {
+            if (!operationMutex.tryLock()) return@launch
+            try {
+                val info = state.value.available ?: return@launch
+                state.value = state.value.copy(
+                    phase = UpdatePhase.DOWNLOADING,
+                    progressPercent = 0,
+                    message = "正在下载 v${info.versionName}",
+                )
+                downloadUpdate(context.applicationContext, info)
+            } finally {
+                operationMutex.unlock()
+            }
+        }
     }
 
     fun apkReadyForInstall(context: Context): File? {
@@ -95,30 +98,40 @@ object AppUpdater {
     private suspend fun checkOnce(
         context: Context,
         force: Boolean,
-        phaseAlreadySet: Boolean = false,
     ) {
+        if (!operationMutex.tryLock()) return
+        try {
+            checkOnceLocked(context, force)
+        } finally {
+            operationMutex.unlock()
+        }
+    }
+
+    private suspend fun checkOnceLocked(context: Context, force: Boolean) {
         val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val lastCheck = preferences.getLong(KEY_LAST_CHECK, 0L)
         if (!force && now - lastCheck < CHECK_INTERVAL_MILLIS) return
 
-        if (!phaseAlreadySet) {
-            state.value = state.value.copy(
-                phase = UpdatePhase.CHECKING,
-                progressPercent = null,
-                message = "正在自动检查更新",
-            )
-        }
+        state.value = state.value.copy(
+            phase = UpdatePhase.CHECKING,
+            progressPercent = null,
+            message = if (force) "正在检查更新" else "正在自动检查更新",
+        )
 
         try {
-            val manifestJson = fetchText(BuildConfig.UPDATE_MANIFEST_URL)
-            val info = UpdateManifestParser.parse(manifestJson)
-            preferences.edit { putLong(KEY_LAST_CHECK, now) }
+            val resolved = UpdateResolver.check(
+                listOf(BuildConfig.UPDATE_MANIFEST_URL, BuildConfig.UPDATE_FALLBACK_MANIFEST_URL),
+                BuildConfig.VERSION_CODE.toLong(),
+                ::fetchText,
+            )
+            val info = resolved.info
+            if (resolved.allSourcesChecked) preferences.edit { putLong(KEY_LAST_CHECK, now) }
 
             if (info.versionCode <= BuildConfig.VERSION_CODE.toLong()) {
                 state.value = UpdateState(
                     phase = UpdatePhase.UP_TO_DATE,
-                    message = "当前已是最新版",
+                    message = UpdateResolver.noUpdateMessage(info.versionCode, BuildConfig.VERSION_CODE.toLong()),
                 )
                 NotificationManagerCompat.from(context).cancel(UPDATE_NOTIFICATION_ID)
                 return
@@ -138,16 +151,11 @@ object AppUpdater {
                 },
             )
             showUpdateNotification(context, info)
-        } catch (_: NoPublishedReleaseException) {
-            preferences.edit { putLong(KEY_LAST_CHECK, now) }
-            state.value = UpdateState(
-                phase = UpdatePhase.UP_TO_DATE,
-                message = "当前已是最新版，线上发布通道尚未启用",
-            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Exception) {
-            state.value = state.value.copy(
+            state.value = UpdateState(
                 phase = UpdatePhase.ERROR,
-                progressPercent = null,
                 message = "检查更新失败：${error.userMessage()}",
             )
         }
@@ -219,14 +227,7 @@ object AppUpdater {
     }
 
     private fun fetchText(url: String): String {
-        val connection = try {
-            openConnectionFollowingRedirects(url, JSON_MIME_TYPE)
-        } catch (error: HttpStatusException) {
-            if (error.statusCode == HttpURLConnection.HTTP_NOT_FOUND) {
-                throw NoPublishedReleaseException()
-            }
-            throw error
-        }
+        val connection = openConnectionFollowingRedirects(url, JSON_MIME_TYPE)
         return try {
             val bytes = connection.inputStream.use { input ->
                 ByteArrayOutputStream().use { output ->
@@ -256,10 +257,12 @@ object AppUpdater {
             }
             val connection = (current.openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
-                connectTimeout = CONNECT_TIMEOUT_MILLIS
-                readTimeout = READ_TIMEOUT_MILLIS
+                connectTimeout = if (accept == JSON_MIME_TYPE) MANIFEST_TIMEOUT_MILLIS else CONNECT_TIMEOUT_MILLIS
+                readTimeout = if (accept == JSON_MIME_TYPE) MANIFEST_TIMEOUT_MILLIS else READ_TIMEOUT_MILLIS
+                useCaches = false
                 requestMethod = "GET"
                 setRequestProperty("Accept", accept)
+                setRequestProperty("Cache-Control", "no-cache")
                 setRequestProperty("User-Agent", "ClipRelay-Android/${BuildConfig.VERSION_NAME}")
             }
             val responseCode = connection.responseCode
@@ -281,6 +284,19 @@ object AppUpdater {
     }
 
     private fun verifyDownloadedApk(context: Context, apk: File, info: UpdateInfo) {
+        // Cached downloads must match the currently selected manifest as well.
+        val digest = MessageDigest.getInstance("SHA-256")
+        apk.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        require(digest.digest().joinToString("") { "%02x".format(it) } == info.sha256) {
+            "安装包校验失败"
+        }
         val packageManager = context.packageManager
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             PackageManager.GET_SIGNING_CERTIFICATES
@@ -293,6 +309,7 @@ object AppUpdater {
         require(archive.packageName == context.packageName) { "安装包不是 ClipRelay" }
         val archiveVersionCode = PackageInfoCompat.getLongVersionCode(archive)
         require(archiveVersionCode == info.versionCode) { "安装包版本与更新信息不一致" }
+        require(archive.versionName == info.versionName) { "安装包版本名称与更新信息不一致" }
         require(archiveVersionCode > BuildConfig.VERSION_CODE.toLong()) { "安装包不是更高版本" }
 
         val installed = packageManager.getPackageInfo(context.packageName, flags)
@@ -355,8 +372,6 @@ object AppUpdater {
     private fun Throwable.userMessage(): String =
         message?.trim()?.takeIf(String::isNotEmpty) ?: javaClass.simpleName
 
-    private class NoPublishedReleaseException : Exception()
-
     private class HttpStatusException(val statusCode: Int) :
         Exception("更新服务器返回 HTTP $statusCode")
 
@@ -368,6 +383,8 @@ object AppUpdater {
     private const val JSON_MIME_TYPE = "application/json"
     private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     private const val CHECK_INTERVAL_MILLIS = 24L * 60L * 60L * 1000L
+    private const val RETRY_INTERVAL_MILLIS = 60L * 60L * 1000L
+    private const val MANIFEST_TIMEOUT_MILLIS = 10_000
     private const val CONNECT_TIMEOUT_MILLIS = 15_000
     private const val READ_TIMEOUT_MILLIS = 60_000
     private const val MAX_REDIRECTS = 5

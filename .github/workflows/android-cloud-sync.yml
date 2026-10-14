@@ -5,6 +5,8 @@ on:
     workflows: [Android Release]
     types: [completed]
   workflow_dispatch:
+  schedule:
+    - cron: '23 * * * *'
 
 permissions:
   contents: read
@@ -15,14 +17,49 @@ concurrency:
 
 jobs:
   sync:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
-      - name: Download published release and upload to Tencent Cloud
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'main' }}
+          persist-credentials: false
+      - name: Test publisher
+        run: python3 -m unittest discover -s deploy -p test_upload_android_release.py
+      - name: Resolve newest Android release
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir dist
+          gh api "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          tag="$(jq -r '[.[] | select(.draft == false and .prerelease == false) |
+            select(.tag_name | test("^android-v[0-9]+\\.[0-9]+\\.[0-9]+$"))] |
+            sort_by(.tag_name | ltrimstr("android-v") | split(".") | map(tonumber)) |
+            last | .tag_name // empty' "$RUNNER_TEMP/releases.json")"
+          test -n "$tag"
+          gh release download "$tag" --pattern update.json --dir dist
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          python3 deploy/upload_android_release.py --directory dist --check-only >> "$GITHUB_OUTPUT"
+      - name: Download APK
+        if: steps.release.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r .versionName dist/update.json)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release download "$RELEASE_TAG" --pattern "ClipRelay-${version}.apk" --dir dist
+      - name: Upload and verify Tencent Cloud release
+        if: steps.release.outputs.needed == 'true'
+        env:
           DEPLOY_KEY: ${{ secrets.CLIPRELAY_UPDATES_SSH_KEY }}
           KNOWN_HOSTS: ${{ vars.CLIPRELAY_UPDATES_KNOWN_HOSTS }}
         shell: bash
@@ -37,27 +74,4 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > "$key"
           chmod 600 "$key"
           printf '%s\n' "$KNOWN_HOSTS" > "$hosts"
-          mkdir dist
-          tag="$(gh release view --json tagName --jq .tagName)"
-          gh release download "$tag" --pattern update.json --dir dist
-          version="$(jq -r .versionName dist/update.json)"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          apk="ClipRelay-${version}.apk"
-          gh release download "$tag" --pattern "$apk" --dir dist
-          digest="$(jq -r .sha256 dist/update.json)"
-          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
-          (cd dist && printf '%s  %s\n' "$digest" "$apk" | sha256sum -c -)
-          tar -C dist -cf - update.json "$apk" | ssh \
-            -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
-            -o ConnectTimeout=20 cliprelay-updates@124.221.36.36 publish
-          curl --fail --silent --show-error --retry 3 \
-            "https://124-221-36-36.anyip.dev:8443/cliprelay/update.json?verify=$GITHUB_RUN_ID" \
-            -o "$RUNNER_TEMP/cloud-update.json"
-          jq -e --arg version "$version" --arg digest "$digest" \
-            --argjson code "$(jq -r .versionCode dist/update.json)" \
-            '.versionName == $version and .versionCode == $code and .sha256 == $digest' \
-            "$RUNNER_TEMP/cloud-update.json"
-          curl --fail --silent --show-error --retry 3 \
-            "$(jq -r .apkUrl "$RUNNER_TEMP/cloud-update.json")" -o "$RUNNER_TEMP/cloud.apk"
-          printf '%s  %s\n' "$digest" "$RUNNER_TEMP/cloud.apk" | sha256sum -c -
+          python3 deploy/upload_android_release.py --directory dist --key "$key" --known-hosts "$hosts"
