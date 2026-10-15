@@ -2,7 +2,7 @@ name: Desktop Network Build
 on:
   push:
     branches: ['codex/desktop-network-*']
-    paths: ['network/**', 'scripts/build_desktop_network.py', 'scripts/network_notices.py', 'windows/tests/desktop_network_process.py', '.github/workflows/desktop-network.yml']
+    paths: ['network/**', 'scripts/build_desktop_network.py', 'scripts/network_notices.py', 'windows/tests/desktop_network_process.py', 'windows/tests/network-channel.test.cjs', 'windows/electron/mac/network-channel.cjs', 'windows/electron/mac/paired-transport.cjs', 'LICENSE', '.github/workflows/desktop-network.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +16,10 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: runner.os != 'Linux'
+        with:
+          node-version: '22'
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.7'
@@ -43,6 +47,11 @@ jobs:
       - name: Verify Mac process ownership
         if: runner.os == 'macOS'
         run: python3 windows/tests/desktop_network_process.py .tools/desktop-network/runtime/cliprelay-client-network --report .tools/desktop-network/process-report.json
+      - name: Verify main-process helper manager with the native packaged helper
+        if: runner.os != 'Linux'
+        env:
+          CLIPRELAY_NETWORK_HELPER_ARTIFACT: ${{ github.workspace }}/.tools/desktop-network
+        run: node --test windows/tests/network-channel.test.cjs
       - name: Preserve Mac executable mode
         if: runner.os == 'macOS'
         run: tar -czf .tools/desktop-network-macos.tar.gz -C .tools desktop-network

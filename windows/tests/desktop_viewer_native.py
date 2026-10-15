@@ -105,7 +105,9 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
             del value,data
             deadline=time.monotonic()+45
             while time.monotonic()<deadline:
-                if process.poll() is not None:raise RuntimeError('Viewer exited before streaming; inspect viewer.log')
+                if process.poll() is not None:
+                    report['exitCode']=process.returncode
+                    raise RuntimeError('Viewer exited before streaming; inspect viewer.log')
                 current=state()
                 if current['phase']=='active' and current['capture'] and len(current['streams'])==1:break
                 time.sleep(.2)

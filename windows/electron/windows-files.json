@@ -26,6 +26,7 @@
   "desktop-client.cjs",
   "mac/client-identity.cjs",
   "mac/stream-viewer.cjs",
+  "mac/network-channel.cjs",
   "mac/paired-store.cjs",
   "mac/paired-controller.cjs",
   "mac/paired-crypto.cjs",

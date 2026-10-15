@@ -42,7 +42,9 @@ def build(target, output):
         for item in files:
             item.unlink()
     write_notices(ROOT, go, env, target, output=output / 'NETWORK-LICENSES.txt', packages=['./cmd/cliprelay-client-network'])
+    shutil.copyfile(ROOT / 'LICENSE', output / 'LICENSE')
     with tarfile.open(output / 'cliprelay-network-source.tar.gz', 'w:gz') as archive:
+        archive.add(ROOT / 'LICENSE', arcname='LICENSE')
         for name in ['go.mod', 'go.sum']:
             archive.add(ROOT / 'network' / name, arcname='network/' + name)
         for directory in ['desktopclient', 'mobile', 'transport', 'cmd/cliprelay-client-network']:
