@@ -14,8 +14,7 @@ import (
 func main() {
 	directory := flag.String("state-dir", "", "private persistent node directory")
 	flag.Parse()
-	info, err := os.Stdin.Stat()
-	if flag.NArg() != 0 || !filepath.IsAbs(*directory) || err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+	if flag.NArg() != 0 || !filepath.IsAbs(*directory) || !ownedInput(os.Stdin) {
 		os.Exit(2)
 	}
 	if err := desktopclient.Run(context.Background(), os.Stdin, os.Stdout, desktopclient.FactoryForDirectory(*directory)); err != nil {

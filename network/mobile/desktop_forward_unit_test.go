@@ -1,6 +1,8 @@
 package mobile
 
 import (
+	"errors"
+	"io"
 	"net"
 	"strconv"
 	"testing"
@@ -26,6 +28,33 @@ func TestDesktopPortCollisionRollsBackWholeGroup(t *testing.T) {
 			listener.Close()
 			continue
 		}
+		// An OS-selected port does not imply that its neighbours are free.
+		// Prove all preceding binds can succeed before testing rollback.
+		available := true
+		var probes []io.Closer
+		for _, offset := range []int{-5, 0, 2, 21} {
+			probe, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidate+offset)))
+			if err != nil {
+				available = false
+				break
+			}
+			probes = append(probes, probe)
+		}
+		if available {
+			probe, err := net.ListenPacket("udp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidate+9)))
+			if err != nil {
+				available = false
+			} else {
+				probes = append(probes, probe)
+			}
+		}
+		for _, probe := range probes {
+			probe.Close()
+		}
+		if !available {
+			listener.Close()
+			continue
+		}
 		base, blocker = candidate, listener
 		break
 	}
@@ -38,6 +67,10 @@ func TestDesktopPortCollisionRollsBackWholeGroup(t *testing.T) {
 	node.mu.Unlock()
 	if err == nil {
 		t.Fatal("accepted an incomplete local forwarding group")
+	}
+	var conflict *net.OpError
+	if !errors.As(err, &conflict) || conflict.Addr.String() != blocker.LocalAddr().String() {
+		t.Fatal("did not reach the intended second UDP port collision", err)
 	}
 	for _, offset := range []int{-5, 0, 2, 21} {
 		listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(base+offset)))

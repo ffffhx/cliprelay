@@ -142,10 +142,10 @@ test('actual packaged Go helper cancels pending registration on manager shutdown
   const manager=new NetworkChannel({directory:process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT,stateDirectory:path.join(root,'node'),
     spawnProcess:(...args)=>{child=spawn(...args);child.stdout.once('data',bytes=>initial(bytes));return child;}});
   t.after(async()=>{await manager.stop();fs.rmSync(root,{recursive:true,force:true});});
-  const opening=manager.start(enrollment()),rejected=assert.rejects(opening,{code:'CANCELLED'});
+  const outcome=manager.start(enrollment()).then(()=>({ready:true}),error=>({error:error.code}));
   let timer,bytes;
-  try{bytes=await Promise.race([status,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('native helper startup deadline')),8000);})]);}
+  try{bytes=await Promise.race([status,outcome.then(value=>{throw new Error('native helper ended before initialization: '+JSON.stringify(value));}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('native helper startup deadline')),8000);})]);}
   finally{clearTimeout(timer);}
   assert.equal(JSON.parse(bytes).ready,false);assert.equal(manager.snapshot().route,null);
-  await manager.stop();await rejected;assert.equal(child.exitCode,0);
+  await manager.stop();assert.deepEqual(await outcome,{error:'CANCELLED'});assert.equal(child.exitCode,0);
 });

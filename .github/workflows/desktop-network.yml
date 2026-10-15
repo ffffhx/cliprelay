@@ -27,7 +27,7 @@ jobs:
           cache-dependency-path: network/go.sum
       - name: Ownership and transport tests
         working-directory: network
-        run: go test -count=1 -timeout=120s ./desktopclient ./mobile ./transport
+        run: go test -count=1 -timeout=120s ./cmd/cliprelay-client-network ./desktopclient ./mobile ./transport
       - name: Check concurrent helper lifecycle
         if: runner.os == 'Linux'
         working-directory: network

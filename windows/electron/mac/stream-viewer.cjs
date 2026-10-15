@@ -83,7 +83,7 @@ class StreamViewer{
   stop(){
     ++this.generation;
     if(!this.child){this.phase='idle';this.host=null;this.changed();return;}
-    const child=this.child;this.phase='closing';this.changed();child.stdin?.end();
+    const child=this.child;this.phase='closing';this.changed();child.stdin?.end(()=>child.stdin.destroy());
     clearTimeout(this.killTimer);this.killTimer=setTimeout(()=>{if(this.child===child)child.kill();},3000);this.killTimer.unref?.();
   }
 }

@@ -158,7 +158,10 @@ class NetworkChannel{
     clearInterval(record.poll);clearTimeout(record.response);
     for(const timer of record.timers)clearTimeout(timer);
     if(this.current===record){this.route=null;this.path='connecting';this.phase=record.failure?'error':'closing';this.error=record.failure || '';this.changed();}
-    record.child?.stdin?.end();
+    // libuv may expose a duplex pipe even for child stdin. End flushes writes;
+    // destroy then closes the actual handle so native readers always see EOF.
+    const input=record.child?.stdin;
+    input?.end(()=>input.destroy());
     record.timers.push(setTimeout(()=>{if(this.current===record)record.child?.kill('SIGKILL');},this.shutdownMs));
     return record.ending;
   }
