@@ -155,7 +155,7 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         shutil.copyfile(root / name, dest)
         source_hashes[name] = hashlib.sha256(dest.read_bytes()).hexdigest()
     shutil.copyfile(source / 'LICENSE', artifact / 'SUNSHINE-LICENSE')
-    shutil.copyfile(source / 'third-party/libvirtualhid/LICENSE', artifact / 'LIBVIRTUALHID-LICENSE')
+    shutil.copyfile(source / 'third-party/libvirtualhid/LICENSE.md', artifact / 'LIBVIRTUALHID-LICENSE')
     shutil.copyfile(test_results, artifact / 'input-tests.xml')
     dependency_receipt = json.loads((dependencies / 'build.json').read_text())
     if (dependency_receipt['identity']['arch'] != arch
