@@ -21,7 +21,7 @@ $package = Join-Path $staging 'ClipRelay-Windows'
 try {
     Copy-Item -LiteralPath (Join-Path (Split-Path $source) 'LICENSE') -Destination (Join-Path $package 'LICENSE')
     # Explicit allowlist: never bundle config, history, tokens, keys or test files.
-    foreach ($name in @('cliprelay.ps1','start.ps1','install.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','paired-relay.cs','version.json','release-notes.txt')) {
+    foreach ($name in @('cliprelay.ps1','start.ps1','install.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','version.json','release-notes.txt')) {
         Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $package $name)
     }
     $video = Join-Path $package 'screen-share'
@@ -47,7 +47,7 @@ try {
     }
     $remote = Join-Path $package 'remote-desktop'
     [IO.Directory]::CreateDirectory($remote) | Out-Null
-    foreach ($name in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','desktop-user.cs','file-transfer.cs','clipboard-exchange.cs','privacy-screen.cs','session-lock.cs','audio-mute.cs','audio-endpoints.cs','audio-control.cs','wake.cs','terminal.cs','terminal-native.cs','relay-ipc.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+    foreach ($name in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
         Copy-Item -LiteralPath (Join-Path $source "remote-desktop\$name") -Destination $remote
     }
     Copy-Item -LiteralPath (Join-Path $source 'remote-desktop\engine') -Destination $remote -Recurse
