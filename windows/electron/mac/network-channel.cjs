@@ -55,7 +55,7 @@ function privateDirectory(directory){
 // A route is transient; never persist its port or pass enrollment to renderers.
 class NetworkChannel{
   constructor({directory,stateDirectory,onUpdate=()=>{},spawnProcess=spawn,resolveExecutable=executable,
-               startupMs=30000,pollMs=2000,responseMs=5000,shutdownMs=5000}){
+               startupMs=30000,pollMs=2000,responseMs=5000,shutdownMs=8000}){
     Object.assign(this,{directory,stateDirectory,onUpdate,spawnProcess,resolveExecutable,startupMs,pollMs,responseMs,shutdownMs});
     this.phase='idle';this.error='';this.current=null;this.route=null;this.path='connecting';
   }
@@ -162,6 +162,9 @@ class NetworkChannel{
     // destroy then closes the actual handle so native readers always see EOF.
     const input=record.child?.stdin;
     input?.end(()=>input.destroy());
+    // Pinned tsnet.Server.Close allows five seconds for its final flush. Keep
+    // the route withdrawn immediately, but allow that cleanup to finish before
+    // the last-resort kill. A matching five-second timer races normal shutdown.
     record.timers.push(setTimeout(()=>{if(this.current===record)record.child?.kill('SIGKILL');},this.shutdownMs));
     return record.ending;
   }

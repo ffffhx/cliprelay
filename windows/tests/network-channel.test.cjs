@@ -34,7 +34,7 @@ process.stdin.on('data',chunk=>{
     }
   }
 });
-process.stdin.on('end',()=>{if(mode!=='stubborn')process.exit(0);});
+process.stdin.on('end',()=>{if(mode==='flush')setTimeout(()=>process.exit(0),5200);else if(mode!=='stubborn')process.exit(0);});
 setInterval(()=>{},1000);
 setTimeout(()=>process.exit(9),10000);
 `;
@@ -148,4 +148,12 @@ test('actual packaged Go helper cancels pending registration on manager shutdown
   finally{clearTimeout(timer);}
   assert.equal(JSON.parse(bytes).ready,false);assert.equal(manager.snapshot().route,null);
   await manager.stop();assert.deepEqual(await outcome,{error:'CANCELLED'});assert.equal(child.exitCode,0);
+});
+
+test('normal upstream five-second cleanup can finish after the route is withdrawn',async t=>{
+  const f=setup(t,'flush',{shutdownMs:undefined});await f.manager.start(enrollment());
+  const child=f.children[0],started=Date.now(),ending=f.manager.stop();
+  assert.equal(f.manager.snapshot().route,null);assert.equal(f.manager.snapshot().phase,'closing');
+  await ending;assert.equal(child.exitCode,0);assert.equal(child.signalCode,null);assert.ok(Date.now()-started>=5000);
+  assert.equal(f.manager.snapshot().phase,'idle');
 });
