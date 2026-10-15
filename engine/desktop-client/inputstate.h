@@ -69,7 +69,7 @@ public:
     void close() { active_ = false; entries_.clear(); }
     void open() { active_ = true; }
     int add(uint64_t now, uint32_t interval, Callback callback) {
-        if (!active_ || !interval || !callback || entries_.size() >= 64 || next_ == std::numeric_limits<int>::max()) return 0;
+        if (!active_ || !interval || !callback || entries_.size() >= 64 || next_ == (std::numeric_limits<int>::max)()) return 0;
         const int id = ++next_;
         entries_.emplace(id, Entry{now + interval, interval, std::move(callback)});
         return id;

@@ -157,6 +157,9 @@ bool SdlInputHandler::acceptInputEpochEvent(SDL_Event& event)
         return true;
     }
     case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP:
+        // SDL duplicates touch as mouse input. The normal mouse handler ignores
+        // it; do so before it can consume a physical mouse's tracked UP.
+        if (event.button.which == SDL_TOUCH_MOUSEID) return false;
         return button({Mouse,0,event.button.button,0},event.type==SDL_MOUSEBUTTONDOWN);
     case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP:
         return button({Button,event.cbutton.which,event.cbutton.button,0},event.type==SDL_CONTROLLERBUTTONDOWN);

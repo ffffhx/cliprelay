@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../inputstate.h"
 #include <cassert>
 #include <iostream>
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <map>
+#include <set>
+#include <tuple>
+// Windows headers may define this macro before the input header is included.
+#define max(a,b) windows_max_macro_must_not_expand(a,b)
+#include "../inputstate.h"
+#undef max
 #ifdef NDEBUG
 #error Input policy tests require assertions
 #endif

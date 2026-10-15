@@ -76,6 +76,12 @@ int main(int argc,char** argv) {
         event=key(handler,SDL_KEYUP,SDL_SCANCODE_B);assert(!handler.acceptInputEpochEvent(event));
         event=key(handler,SDL_KEYDOWN,SDL_SCANCODE_B);assert(handler.acceptInputEpochEvent(event));
 
+        event={};event.type=SDL_MOUSEBUTTONDOWN;event.button.timestamp=handler.m_InputSince+10;
+        event.button.button=SDL_BUTTON_LEFT;assert(handler.acceptInputEpochEvent(event));
+        event.type=SDL_MOUSEBUTTONUP;event.button.which=SDL_TOUCH_MOUSEID;
+        assert(!handler.acceptInputEpochEvent(event)); // cannot consume real mouse UP
+        event.button.which=0;assert(handler.acceptInputEpochEvent(event));
+
         // Real SDL controller state held through reset cannot be reintroduced.
         const int device=SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER,SDL_CONTROLLER_AXIS_MAX,SDL_CONTROLLER_BUTTON_MAX,0);
         assert(device>=0&&SDL_IsGameController(device));
@@ -121,5 +127,5 @@ int main(int argc,char** argv) {
         assert(SDL_JoystickDetachVirtual(device)==0);
     }
     SDL_Quit();
-    std::cout << "5 production SDL adapter scenarios passed\n";
+    std::cout << "6 production SDL adapter scenarios passed\n";
 }
