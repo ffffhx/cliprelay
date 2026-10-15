@@ -17,6 +17,12 @@ $pairingFixture = Join-Path $directory 'pairing-fixture.exe'
 # certificate-generation timeout compiling the standard library.
 & go build -o $pairingFixture (Join-Path $PSScriptRoot 'mac-pairing-fixture/main.go')
 if ($LASTEXITCODE -ne 0) { throw 'Could not compile the pairing certificate fixture.' }
+$hostTests = Join-Path $directory 'host-terminal-tests.exe'
+Push-Location (Join-Path $repository 'network')
+try {
+    & go test -c -o $hostTests ./inputfocus
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compile the native terminal protocol tests.' }
+} finally { Pop-Location }
 $random = New-Object byte[] 32
 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($random)
 $password = ConvertTo-SecureString ('Cr!9' + [Convert]::ToBase64String($random)) -AsPlainText -Force
@@ -45,9 +51,11 @@ try {
         '$env:GOTELEMETRY = ''off''',
         ('$env:CLIPRELAY_PAIRING_TEST_FIXTURE = ' + (Quote-Literal $pairingFixture)),
         ('$env:CLIPRELAY_TERMINAL_TEST_WORKER = ' + (Quote-Literal (Join-Path $repository '.tools/uu-parity/terminal-tests.exe'))),
+        '$env:CLIPRELAY_TERMINAL_MOUSE_FIXTURE = $env:CLIPRELAY_TERMINAL_TEST_WORKER',
         ('& ' + (Quote-Literal $node) + ' --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs'),
         '$testExit = $LASTEXITCODE',
-        '[IO.File]::WriteAllText((Join-Path $env:TEMP ''node-exit.txt''), [string]$testExit)',
+        ('if ($testExit -eq 0) { & ' + (Quote-Literal $hostTests) + ' -test.run ''^TestTerminal'' -test.timeout 90s -test.v; $testExit = $LASTEXITCODE }'),
+        '[IO.File]::WriteAllText((Join-Path $env:TEMP ''terminal-exit.txt''), [string]$testExit)',
         'exit $testExit'
     )
     [IO.File]::WriteAllLines($script, $child, (New-Object Text.UTF8Encoding($true)))
@@ -63,11 +71,11 @@ try {
     Get-Content -LiteralPath $stdout -Encoding UTF8
     Get-Content -LiteralPath $stderr -Encoding UTF8
     # PowerShell 5.1 can lose Process.ExitCode after a credentialed launch.
-    # Require the child's actual Node exit code in this fresh private directory,
+    # Require the child's combined Node/Go test result in this fresh private directory,
     # after the process has exited. Missing/partial receipts still fail closed.
-    $receipt = Join-Path $directory 'node-exit.txt'
+    $receipt = Join-Path $directory 'terminal-exit.txt'
     if (-not (Test-Path -LiteralPath $receipt) -or [IO.File]::ReadAllText($receipt) -cne '0') {
-        throw 'Isolated terminal tests did not report a successful Node exit.'
+        throw 'Isolated terminal tests did not report successful completion.'
     }
     Write-Output 'Real terminal tests passed under an isolated non-administrator account.'
 } finally {

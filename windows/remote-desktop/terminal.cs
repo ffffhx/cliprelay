@@ -13,21 +13,22 @@ using System.Web.Script.Serialization;
 namespace ClipRelay.Remote {
     public sealed class TerminalFault : Exception {public TerminalFault(string code):base(code){}}
     public sealed class TerminalRequest {
-        public string op,owner,instance,id,shell,data;
-        public long sequence,offset;
-        public int columns,rows;
+        public string op,owner,instance,id,shell,data,action;
+        public long sequence,offset,epoch,gesture;
+        public int columns,rows,column,row,button,modifiers;
         public string[] owners;
     }
     public sealed class TerminalSessionState {
         public string id,shell,state;
         public int columns,rows,exitCode;
         public long openSequence,acceptedSequence,writtenSequence,start,end,remainingMs;
+        public TerminalMouseState mouse;
     }
     public sealed class TerminalReply {
         public bool ok;
         public string code="",instance="",data="";
         public long nextOpen,offset,next;
-        public int pasteLimit;
+        public int pasteLimit,mouseProtocol;
         public bool gap;
         public TerminalSessionState session;
         public TerminalSessionState[] sessions;
@@ -53,6 +54,7 @@ namespace ClipRelay.Remote {
             public int columns,rows,exitCode;
             public TerminalBuffer output=new TerminalBuffer(1024*1024);
             public ITerminalProcess process;
+            public TerminalMouseState mouse;
         }
         readonly object gate=new object();
         readonly Dictionary<string,Session> sessions=new Dictionary<string,Session>();
@@ -76,11 +78,14 @@ namespace ClipRelay.Remote {
             string op=str("op");
             string fields=op=="sync"?"op,owners":op=="list"?"op,owner":op=="open"?"op,owner,instance,id,shell,columns,rows,sequence":
                 op=="read"?"op,owner,instance,id,offset":(op=="write" || op=="paste")?"op,owner,instance,id,sequence,data":
+                op=="mouse"?"op,owner,instance,id,sequence,action,epoch,gesture,column,row,button,modifiers":
                 op=="resize"?"op,owner,instance,id,columns,rows":op=="close"?"op,owner,instance,id":"";
             Require(fields.Length>0 && value.Keys.All(key=>fields.Split(',').Contains(key)),"TERMINAL_BAD_REQUEST");
-            var request=new TerminalRequest {op=op,owner=str("owner"),instance=str("instance"),id=str("id"),shell=str("shell"),data=str("data"),sequence=number("sequence"),offset=number("offset")};
+            var request=new TerminalRequest {op=op,owner=str("owner"),instance=str("instance"),id=str("id"),shell=str("shell"),data=str("data"),action=str("action"),sequence=number("sequence"),offset=number("offset"),epoch=number("epoch"),gesture=number("gesture")};
             long columns=number("columns"),rows=number("rows");Require(columns>=0 && columns<=240 && rows>=0 && rows<=120,"TERMINAL_BAD_REQUEST");
             request.columns=(int)columns;request.rows=(int)rows;
+            foreach(string field in new[]{"column","row","button","modifiers"})Require(number(field)>=0 && number(field)<=65535,"TERMINAL_BAD_REQUEST");
+            request.column=(int)number("column");request.row=(int)number("row");request.button=(int)number("button");request.modifiers=(int)number("modifiers");
             if(op=="sync") {
                 object raw;Require(value.TryGetValue("owners",out raw) && raw is object[],"TERMINAL_BAD_REQUEST");
                 var array=(object[])raw;Require(array.Length<=256 && array.All(item=>item is string && Match(Owner,(string)item)),"TERMINAL_BAD_REQUEST");
@@ -100,7 +105,7 @@ namespace ClipRelay.Remote {
                 long next;if(!nextOpen.TryGetValue(request.owner,out next)) {
                     Require(nextOpen.Count<256,"TERMINAL_CAPACITY");next=1;nextOpen.Add(request.owner,next);
                 }
-                if(request.op=="list")return new TerminalReply {ok=true,instance=instance,nextOpen=next,pasteLimit=16396,sessions=sessions.Values.Where(s=>s.owner==request.owner).OrderBy(s=>s.openSequence).Select(State).ToArray()};
+                if(request.op=="list")return new TerminalReply {ok=true,instance=instance,nextOpen=next,pasteLimit=16396,mouseProtocol=1,sessions=sessions.Values.Where(s=>s.owner==request.owner).OrderBy(s=>s.openSequence).Select(State).ToArray()};
                 Require(request.instance==instance,"TERMINAL_STALE");
                 Require(Match(Id,request.id),"TERMINAL_BAD_REQUEST");string key=request.owner+":"+request.id;
                 Session session;sessions.TryGetValue(key,out session);
@@ -130,6 +135,7 @@ namespace ClipRelay.Remote {
                     TerminalReply reply=Reply(session);reply.data=Convert.ToBase64String(bytes);reply.offset=offset;reply.next=offset+bytes.Length;reply.gap=gap;return reply;
                 }
                 Require(session.state=="running","TERMINAL_CLOSED");
+                if(request.op=="mouse") {session.process.Mouse(new TerminalMouseCommand{action=request.action,sequence=request.sequence,epoch=request.epoch,gesture=request.gesture,column=request.column,row=request.row,button=request.button,modifiers=request.modifiers});return Reply(session);}
                 if(request.op=="resize") {Require(Dimensions(request),"TERMINAL_BAD_REQUEST");session.process.Resize(request.columns,request.rows);session.columns=request.columns;session.rows=request.rows;return Reply(session);}
                 bool paste=request.op=="paste";
                 Require(request.op=="write" || paste,"TERMINAL_BAD_REQUEST");
@@ -149,11 +155,11 @@ namespace ClipRelay.Remote {
         }}
         static bool Dimensions(TerminalRequest request){return request.columns>=20 && request.columns<=240 && request.rows>=5 && request.rows<=120;}
         TerminalReply Reply(Session session=null){return new TerminalReply {ok=true,instance=instance,session=session==null?null:State(session)};}
-        TerminalSessionState State(Session session){return new TerminalSessionState {id=session.id,shell=session.shell,state=session.state,columns=session.columns,rows=session.rows,exitCode=session.exitCode,
+        TerminalSessionState State(Session session){var mouse=session.process==null?session.mouse:session.process.MouseState;return new TerminalSessionState {id=session.id,shell=session.shell,state=session.state,columns=session.columns,rows=session.rows,exitCode=session.exitCode,mouse=mouse,
             openSequence=session.openSequence,acceptedSequence=session.accepted,writtenSequence=session.process==null?session.written:session.process.WrittenSequence,start=session.output.Start,end=session.output.End,
             remainingMs=session.state=="running"?Math.Max(0,1800000-(now()-session.lastAccess)):0};}
         void Stop(Session session,string state){if(session.state!="running")return;session.state=state;session.finished=now();
-            ITerminalProcess process=session.process;session.process=null;if(process!=null){session.exitCode=process.Exited?process.ExitCode:-1;session.written=process.WrittenSequence;process.Dispose();}}
+            ITerminalProcess process=session.process;session.process=null;if(process!=null){session.exitCode=process.Exited?process.ExitCode:-1;session.written=process.WrittenSequence;process.Dispose();session.mouse=process.MouseState;}}
         void MaintainLocked() {
             if(now()-authorizedAt>=20000)owners.Clear();
             foreach(Session session in sessions.Values) {

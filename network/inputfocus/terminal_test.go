@@ -193,6 +193,190 @@ func TestTerminalPasteCapabilityAndWholeRequestBounds(t *testing.T) {
 		t.Fatal("invalid requests reached worker")
 	}
 }
+func TestTerminalMouseRequestAndReceiptBoundaries(t *testing.T) {
+	seq, epoch, gesture := int64(1), int64(3), int64(1)
+	good := terminalRequest{Op: "mouse", Instance: terminalTestInstance, ID: privacyTestLease, Sequence: &seq, Epoch: &epoch, Gesture: &gesture, Action: "press", Column: 5, Row: 7}
+	if !validTerminalRequest(good) {
+		t.Fatal("valid press rejected")
+	}
+	for _, kind := range []string{"zero-epoch", "missing-gesture", "negative-position", "unknown-action", "extra-data", "extra-offset", "modifier-bit", "press-button", "renew-position", "hover-gesture"} {
+		t.Run(kind, func(t *testing.T) {
+			r := good
+			zero := int64(0)
+			switch kind {
+			case "zero-epoch":
+				r.Epoch = &zero
+			case "missing-gesture":
+				r.Gesture = nil
+			case "negative-position":
+				r.Column = -1
+			case "unknown-action":
+				r.Action = "execute"
+			case "extra-data":
+				r.Data = "YQ=="
+			case "extra-offset":
+				r.Offset = &zero
+			case "modifier-bit":
+				r.Modifiers = 1
+			case "press-button":
+				r.Button = 3
+			case "renew-position":
+				r.Action = "renew"
+			case "hover-gesture":
+				r.Action = "move"
+				r.Button = 3
+			}
+			if validTerminalRequest(r) {
+				t.Fatal("invalid mouse command accepted")
+			}
+		})
+	}
+	m := terminalMouseState{Mode: 1002, Format: 1006, Epoch: 3, Gesture: 1, NextGesture: 2, AcceptedSequence: 1, Phase: "pending", Outcome: "queued", RemainingMs: 1500}
+	s := terminalSession{ID: privacyTestLease, Shell: "cmd", State: "running", Columns: 80, Rows: 24, OpenSequence: 1, Mouse: &m}
+	reply := terminalReply{OK: true, Instance: terminalTestInstance, Session: &s}
+	if !validTerminalReply(good, reply) {
+		t.Fatal("valid accepted mouse receipt rejected")
+	}
+	m.AcceptedSequence = 0
+	if validTerminalReply(good, reply) {
+		t.Fatal("mouse acknowledgment not bound to sequence")
+	}
+	m.AcceptedSequence = 1
+	m.Offset = 1
+	if validTerminalSession(s) {
+		t.Fatal("mode from unseen output accepted")
+	}
+	m.Offset = 0
+	m.Buttons = 8
+	if validTerminalSession(s) {
+		t.Fatal("unknown pressed button accepted")
+	}
+	m.Buttons = 0
+	m.WrittenSequence = 2
+	if validTerminalSession(s) {
+		t.Fatal("unaccepted write accepted")
+	}
+	m.WrittenSequence = 0
+	m.Phase = "unknown"
+	if validTerminalSession(s) {
+		t.Fatal("unknown lifecycle accepted")
+	}
+}
+
+func TestTerminalMouseRealTLSExpiryAndLostReceipt(t *testing.T) {
+	executable, fixture := os.Getenv("CLIPRELAY_TERMINAL_TEST_WORKER"), os.Getenv("CLIPRELAY_TERMINAL_MOUSE_FIXTURE")
+	if executable == "" || fixture == "" {
+		t.Skip("set terminal worker and mouse fixture for native TLS mouse validation")
+	}
+	if !filepath.IsAbs(fixture) || strings.ContainsAny(fixture, "\r\n\"") {
+		t.Fatal("invalid fixture executable path")
+	}
+	worker := &probe{executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	defer worker.stop()
+	clients := filepath.Join(t.TempDir(), "clients.json")
+	cert := fileTestCertificate(t)
+	filePairing(t, clients, cert.Certificate[0])
+	control := &terminalControl{clients: clients, read: worker.read}
+	seed := httptest.NewTLSServer(http.NotFoundHandler())
+	host := seed.TLS.Certificates[0]
+	seed.Close()
+	server := httptest.NewUnstartedServer(control.handler(http.NotFoundHandler()))
+	server.TLS = controlTLSConfig(host, clients)
+	server.StartTLS()
+	defer server.Close()
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
+	call := func(request terminalRequest, status int) terminalReply {
+		t.Helper()
+		payload, _ := json.Marshal(request)
+		response, err := client.Post(server.URL+"/v1/terminal", "application/json", strings.NewReader(string(payload)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var result terminalReply
+		if json.NewDecoder(response.Body).Decode(&result) != nil || response.StatusCode != status {
+			t.Fatal(response.StatusCode, result)
+		}
+		return result
+	}
+	listed := call(terminalRequest{Op: "list"}, 200)
+	if listed.MouseProtocol != 1 {
+		t.Fatal("mouse capability missing")
+	}
+	sequence := int64(1)
+	call(terminalRequest{Op: "open", Instance: listed.Instance, ID: privacyTestLease, Shell: "cmd", Columns: 120, Rows: 30, Sequence: &sequence}, 200)
+	call(terminalRequest{Op: "write", Instance: listed.Instance, ID: privacyTestLease, Sequence: &sequence, Data: base64.StdEncoding.EncodeToString([]byte("\"" + fixture + "\" --mouse-echo\r"))}, 200)
+	offset := int64(0)
+	output := ""
+	var mouse *terminalMouseState
+	read := func() {
+		t.Helper()
+		result := call(terminalRequest{Op: "read", Instance: listed.Instance, ID: privacyTestLease, Offset: &offset}, 200)
+		data, _ := base64.StdEncoding.DecodeString(result.Data)
+		output += string(data)
+		offset = result.Next
+		mouse = result.Session.Mouse
+	}
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		read()
+		if mouse != nil && mouse.Mode == 1002 && mouse.Format == 1006 && strings.Contains(output, "MOUSE_READY") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if mouse == nil || mouse.Mode != 1002 || mouse.Format != 1006 {
+		t.Fatal("VT mouse mode not observed")
+	}
+	epoch, gesture := mouse.Epoch, mouse.NextGesture
+	command := terminalRequest{Op: "mouse", Instance: listed.Instance, ID: privacyTestLease, Sequence: &sequence, Epoch: &epoch, Gesture: &gesture, Action: "press", Column: 5, Row: 7}
+	call(command, 200)
+	call(command, 200)
+	conflict := command
+	conflict.Button = 2
+	if call(conflict, 409).Code != "TERMINAL_MOUSE_CONFLICT" {
+		t.Fatal("conflicting retry accepted")
+	}
+	sequence = 2
+	command.Action = "move"
+	command.Column = 6
+	command.Row = 8
+	command.Modifiers = 16
+	call(command, 200)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(output, "MOUSE_CAPTURE:") {
+		read()
+		time.Sleep(25 * time.Millisecond)
+	}
+	marker := strings.Index(output, "MOUSE_CAPTURE:")
+	if marker < 0 {
+		t.Fatal("mouse cleanup not received by native application")
+	}
+	captured := strings.Fields(output[marker+len("MOUSE_CAPTURE:"):])
+	if len(captured) == 0 {
+		t.Fatal("mouse capture empty")
+	}
+	actual, err := base64.StdEncoding.DecodeString(captured[0])
+	if err != nil || string(actual) != "\x1b[<0;5;7M\x1b[<48;6;8M\x1b[<16;6;8m" {
+		t.Fatalf("unexpected native mouse events %q, %v", actual, err)
+	}
+	if mouse.Buttons != 0 || mouse.AcceptedSequence != 2 || mouse.WrittenSequence != 2 {
+		t.Fatal("cleanup receipt inaccurate", mouse)
+	}
+	sequence = 3
+	command.Action = "renew"
+	command.Column = 0
+	command.Row = 0
+	command.Modifiers = 0
+	stale := call(command, 409)
+	if stale.Code != "TERMINAL_MOUSE_MODE" && stale.Code != "TERMINAL_MOUSE_GESTURE" {
+		t.Fatal("expired gesture renewed", stale)
+	}
+	call(terminalRequest{Op: "close", Instance: listed.Instance, ID: privacyTestLease}, 200)
+}
 func TestTerminalMalformedStateAndBusyFailClosed(t *testing.T) {
 	for _, kind := range []string{"instance", "sequence", "shell", "id", "offset"} {
 		t.Run(kind, func(t *testing.T) {

@@ -45,7 +45,7 @@ try {
     Reject { Assert-ClipRelayFiles -Directory $fixture -Files ([pscustomobject]@{'absent.bin'=('a'*64)}) } 'missing-file-rejected'
     Reject { Assert-ClipRelayPackage -Directory $fixture } 'incomplete-install-source-rejected'
     $manifest = Get-ClipRelayHostManifest (Join-Path $root 'remote-desktop')
-    Check ($manifest.serviceSources -contains 'privacy-screen.cs' -and $manifest.serviceSources -contains 'audio-control.cs' -and $manifest.serviceSources -contains 'wake.cs' -and $manifest.serviceSources -contains 'terminal-native.cs') 'host-manifest-includes-all-feature-workers'
+    Check ($manifest.serviceSources -contains 'privacy-screen.cs' -and $manifest.serviceSources -contains 'audio-control.cs' -and $manifest.serviceSources -contains 'wake.cs' -and $manifest.serviceSources -contains 'terminal-native.cs' -and $manifest.serviceSources -contains 'terminal-mouse.cs') 'host-manifest-includes-all-feature-workers'
     # Exercise the real installer in a child process: incomplete input must fail before
     # creating/changing a target, launching an app, elevation or service operations.
     $fakeLocal = Join-Path $fixture 'local'

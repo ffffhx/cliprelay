@@ -434,6 +434,10 @@ Windows / Mac 控制端已接入独立终端窗口，从已配对电脑的「终
 
 长粘贴最终源码 `157a8c8` 的[三平台 CI](https://github.com/ffffhx/cliprelay/actions/runs/38798360020)、[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38798364756)与 [Mac 两种架构完整包](https://github.com/ffffhx/cliprelay/actions/runs/38798369812)均已通过。三平台终端用例清单与本地 24 项一致：Windows 全部通过，Mac/Linux 各仅跳过 Windows 专属 ConPTY 一项。本地 Electron 自带运行时另有 27 项相关检查通过。下载包已核对最终源码、完整性清单、终端许可资源及原生组件；Windows 在临时测试机通过安装和独立进程验收，下载包内实际服务程序也通过了长粘贴丢回执重试。实际用户窗口、中文输入法和鼠标松开仍待后续验证与修复，未替换本机现有安装。
 
+Windows 终端主机新增 `list.mouseProtocol=1` 和独立的 `mouse` 请求，按会话、模式版本、手势和请求序号管理鼠标。真实 VT 输出解析器跟踪鼠标模式，忽略 OSC/DCS 等字符串内容；支持左/中/右键、修饰键、拖动、悬停和滚轮的协议编码。按住状态 1500 毫秒不再续期时，撤掉尚未写入的事件；已经写入的按下通过保留的队列容量优先释放。相同请求重试不会延长期限或复活旧手势。程序切换模式后不会补发旧模式的松开；输入管道持续阻塞时标记失败，由会话维护器关闭该终端及其子进程，不能承诺阻塞的管道仍会收到松开。
+
+该能力目前仅接入电脑端协议和原生写入器，桌面与 Android 界面尚未改用新请求；现有原始字节鼠标输入不享有上述手势清理，完整拖拽问题仍需客户端接入才能解决。15 组队列/模式检查、真实双向 TLS 与 ConPTY 自动松开检查已通过，包括丢回执重试、队列满额、模式切换与调整大小交叉、写入中断和多键清理。完整服务编译、现有 24 项 Node / 27 项 Electron 终端检查与 12 项 Android 终端协议检查通过；这不是实际桌面或手机界面验收，未修改现有安装。
+
 桌面终端通过主进程的固定证书双向 TLS 访问同一后端；独立窗口启用 sandbox 和 contextIsolation，页面不能读取配对私钥、联网、打开链接或通过 OSC 52 操作本地剪贴板。旧会话按键、延迟粘贴和结束确认不能影响新会话；路由更换会丢弃未发送输入，未确认输入使用原序号核对。历史回放与新输出按准确字节边界分开，避免重复响应历史查询。输入只保存在内存，不记录命令或终端输出。输入确认仅代表后端接收或写入，不代表命令执行成功。
 
 桌面终端本地 Node 与 Electron 运行时各 21 项测试通过，包括真实 ConPTY、固定证书 TLS、丢失输入回执后的去重、PowerShell、尺寸变化、路由替换、服务重启、真实 xterm 解析器和窗口权限。验证命令：先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs`。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、终端鼠标、公网与安装版 SYSTEM 路径验收。

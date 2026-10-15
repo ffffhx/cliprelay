@@ -14,6 +14,8 @@ namespace ClipRelay.Remote {
         bool Exited { get; }
         int ExitCode { get; }
         bool Queue(byte[] data,long sequence,bool paste=false);
+        void Mouse(TerminalMouseCommand command);
+        TerminalMouseState MouseState { get; }
         long WrittenSequence { get; }
         bool Failed { get; }
         void Resize(int columns,int rows);
@@ -50,13 +52,12 @@ namespace ClipRelay.Remote {
         [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
         [DllImport("kernel32.dll")] static extern bool CancelIoEx(IntPtr handle,IntPtr overlapped);
-        readonly object gate=new object();
-        readonly Queue<Tuple<byte[],long>> pending=new Queue<Tuple<byte[],long>>();
+        readonly TerminalInputQueue inputs;
         readonly Action<byte[]> output;
         FileStream input,reader;
         Thread writing,reading;
         IntPtr console,process,job;
-        int queued,disposed;
+        int disposed;Timer watchdog;
         long written;
         volatile bool failed;
         public int ProcessId {get;private set;}
@@ -64,6 +65,7 @@ namespace ClipRelay.Remote {
         public int ExitCode {get{uint code;return process!=IntPtr.Zero && GetExitCodeProcess(process,out code)?unchecked((int)code):-1;}}
         public long WrittenSequence {get{return Interlocked.Read(ref written);}}
         public bool Failed {get{return failed;}}
+        public TerminalMouseState MouseState {get{return inputs.State();}}
         static void Check(bool result){if(!result)throw new Win32Exception(Marshal.GetLastWin32Error());}
         static void CheckResult(int result){if(result<0)Marshal.ThrowExceptionForHR(result);}
         public NativeTerminalProcess(string shell,int columns,int rows,Action<byte[]> output) {
@@ -74,6 +76,7 @@ namespace ClipRelay.Remote {
                     throw new InvalidOperationException("TERMINAL_USER_REQUIRED");
             }
             this.output=output;
+            var clock=Stopwatch.StartNew();inputs=new TerminalInputQueue(()=>clock.ElapsedMilliseconds,columns,rows);
             IntPtr inputRead=IntPtr.Zero,inputWrite=IntPtr.Zero,outputRead=IntPtr.Zero,outputWrite=IntPtr.Zero,attributes=IntPtr.Zero;
             bool initialized=false;
             var info=new ProcessInfo();
@@ -103,6 +106,7 @@ namespace ClipRelay.Remote {
                 process=info.process;info.process=IntPtr.Zero;ProcessId=(int)info.pid;
                 Check(AssignProcessToJobObject(job,process));Check(ResumeThread(info.thread)!=UInt32.MaxValue);
                 writing=new Thread(Write){IsBackground=true,Name="ClipRelay terminal input"};writing.Start();
+                watchdog=new Timer(state=>{if(disposed==0 && inputs.AbortRequired)failed=true;},null,100,100);
             } catch {if(process!=IntPtr.Zero)TerminateProcess(process,1);Dispose();throw;}
             finally {
                 foreach(IntPtr handle in new[]{inputRead,inputWrite,outputRead,outputWrite,info.process,info.thread})if(handle!=IntPtr.Zero)CloseHandle(handle);
@@ -111,24 +115,24 @@ namespace ClipRelay.Remote {
         }
         void Read() {
             FileStream stream=reader;
-            try {byte[] bytes=new byte[8192];int count;while((count=stream.Read(bytes,0,bytes.Length))>0){byte[] chunk=new byte[count];Buffer.BlockCopy(bytes,0,chunk,0,count);output(chunk);}}
+            try {byte[] bytes=new byte[8192];int count;while((count=stream.Read(bytes,0,bytes.Length))>0){byte[] chunk=new byte[count];Buffer.BlockCopy(bytes,0,chunk,0,count);inputs.Observe(chunk,output);}}
             catch(Exception){if(disposed==0 && !Exited)failed=true;}
         }
         void Write() {
-            try {while(true){Tuple<byte[],long> item;lock(gate){while(pending.Count==0 && disposed==0)Monitor.Wait(gate);if(disposed!=0)return;item=pending.Dequeue();}
-                input.Write(item.Item1,0,item.Item1.Length);input.Flush();Interlocked.Exchange(ref written,item.Item2);lock(gate)queued-=item.Item1.Length;}}
+            try {while(true){TerminalInputItem item;lock(inputs.Gate){while((item=inputs.Begin())==null && disposed==0)Monitor.Wait(inputs.Gate,100);if(disposed!=0)return;}
+                input.Write(item.Bytes,0,item.Bytes.Length);input.Flush();inputs.Complete(item);if(!item.Mouse)Interlocked.Exchange(ref written,item.Sequence);}}
             catch(Exception){if(disposed==0)failed=true;}
         }
         public bool Queue(byte[] data,long sequence,bool paste=false) {
             // Complete paste framing belongs to one queue item, including when
             // the client disconnects after acceptance. Reject capacity as a whole.
-            lock(gate){if(disposed!=0 || failed || Exited || data.Length==0 || data.Length>(paste?16396:4096) || queued+data.Length>32768)return false;
-                pending.Enqueue(Tuple.Create((byte[])data.Clone(),sequence));queued+=data.Length;Monitor.PulseAll(gate);return true;}
+            if(disposed!=0 || failed || Exited)return false;return inputs.Queue(data,sequence,paste);
         }
-        public void Resize(int columns,int rows){if(disposed!=0)throw new IOException("TERMINAL_CLOSED");CheckResult(ResizePseudoConsole(console,new Coord(columns,rows)));}
+        public void Mouse(TerminalMouseCommand command){TerminalManager.Require(disposed==0 && !failed && !Exited,"TERMINAL_CLOSED");inputs.Mouse(command);}
+        public void Resize(int columns,int rows){if(disposed!=0)throw new IOException("TERMINAL_CLOSED");lock(inputs.Gate){CheckResult(ResizePseudoConsole(console,new Coord(columns,rows)));inputs.Resize(columns,rows);}}
         public void Dispose() {
             if(Interlocked.Exchange(ref disposed,1)!=0)return;
-            lock(gate){pending.Clear();Monitor.PulseAll(gate);}
+            if(watchdog!=null)watchdog.Dispose();if(inputs!=null)inputs.Stop();
             if(job!=IntPtr.Zero)TerminateJobObject(job,0);
             if(console!=IntPtr.Zero){
                 IntPtr handle=console;console=IntPtr.Zero;

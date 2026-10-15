@@ -12,13 +12,16 @@ public static class TerminalTests {
         public bool Exited{get;set;}public int ExitCode{get{return 7;}}public long WrittenSequence{get;set;}public bool Failed{get;set;}
         public bool Busy,Stopped;public int Writes;public Action<byte[]> Output;
         public byte[] LastInput;public bool LastPaste;
+        public TerminalInputQueue Inputs;
+        public TerminalMouseState MouseState{get{return Inputs.State();}}
+        public void Mouse(TerminalMouseCommand command){Inputs.Mouse(command);}
         public bool Queue(byte[] data,long sequence,bool paste=false){if(Busy)return false;Writes++;WrittenSequence=sequence;LastInput=(byte[])data.Clone();LastPaste=paste;return true;}
-        public void Resize(int columns,int rows){}
-        public void Dispose(){Stopped=true;}
+        public void Resize(int columns,int rows){Inputs.Resize(columns,rows);}
+        public void Dispose(){Stopped=true;Inputs.Stop();}
     }
     sealed class Fixture : IDisposable {
         public long Now=100;public readonly List<Fake> Processes=new List<Fake>();public readonly TerminalManager Manager;public string Instance;
-        public Fixture(){Manager=new TerminalManager(()=>Now,(s,c,r,o)=>{var process=new Fake{Output=o};Processes.Add(process);return process;});Sync(A,B);Instance=List(A).instance;}
+        public Fixture(){Manager=new TerminalManager(()=>Now,(s,c,r,o)=>{var process=new Fake{Inputs=new TerminalInputQueue(()=>Now,c,r)};process.Output=bytes=>process.Inputs.Observe(bytes,o);Processes.Add(process);return process;});Sync(A,B);Instance=List(A).instance;}
         public void Sync(params string[] owners){Ok(Manager.Handle(new TerminalRequest{op="sync",owners=owners}));}
         public TerminalReply List(string owner){return Manager.Handle(new TerminalRequest{op="list",owner=owner});}
         public TerminalRequest Request(string op,string owner=A,string id=Id){return new TerminalRequest{op=op,owner=owner,id=id,instance=Instance};}
@@ -73,6 +76,13 @@ public static class TerminalTests {
             request.sequence=3;Ok(f.Manager.Handle(request));Error(f.Write("same",3),"TERMINAL_INPUT_CONFLICT");
             Error(f.Write(new string('x',4097),4),"TERMINAL_BAD_REQUEST");
         }
+        using(var f=new Fixture()) {
+            Ok(f.Open());Assert(f.List(A).mouseProtocol==1,"mouse capability missing");f.Processes[0].Output(Encoding.UTF8.GetBytes("\u001b[?1002;1006h"));
+            var request=f.Request("mouse");request.action="press";request.sequence=1;request.epoch=f.List(A).sessions[0].mouse.epoch;request.gesture=1;request.column=5;request.row=7;
+            Ok(f.Manager.Handle(request));Ok(f.Manager.Handle(request));Assert(f.List(A).sessions[0].mouse.acceptedSequence==1 && f.List(A).sessions[0].acceptedSequence==0,"mouse advanced keyboard sequence");
+            request.owner=B;Error(f.Manager.Handle(request),"TERMINAL_NOT_FOUND");request.owner=A;request.button=2;Error(f.Manager.Handle(request),"TERMINAL_MOUSE_CONFLICT");
+            Ok(f.Manager.Handle(f.Request("close")));Assert(f.List(A).sessions[0].mouse.phase=="closed" && f.List(A).sessions[0].mouse.buttons==0,"closed mouse state retained");
+        }
         var ring=new TerminalBuffer(8);ring.Append(Encoding.UTF8.GetBytes("0123456789"));long offset;bool gap;
         Assert(Encoding.UTF8.GetString(ring.Read(0,out offset,out gap))=="23456789" && offset==2 && gap,"ring gap missing");
         try{ring.Read(11,out offset,out gap);throw new Exception("future offset accepted");}catch(TerminalFault){}
@@ -101,7 +111,8 @@ public static class TerminalTests {
         AppDomain.CurrentDomain.UnhandledException+=(sender,eventArgs)=>{try{Console.Error.WriteLine("TERMINAL_TEST_UNHANDLED "+eventArgs.ExceptionObject.GetType().FullName);}catch{}};
         if(args.Length==1 && args[0]=="--pid-wait"){Console.WriteLine("TERMINAL_CHILD_PID:"+Process.GetCurrentProcess().Id);Thread.Sleep(15000);return 0;}
         if(args.Length==1 && args[0]=="--terminal-probe")return TerminalWorker.Run();
+        if(args.Length==1 && args[0]=="--mouse-echo")return TerminalMouseTests.NativeEcho();
         if(args.Length==1 && args[0]=="--native"){Native();return 0;}
-        Policies();return 0;
+        Policies();TerminalMouseTests.Run();return 0;
     }catch(Exception error){Console.Error.WriteLine(error);return 1;}}
 }

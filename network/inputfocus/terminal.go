@@ -17,42 +17,66 @@ import (
 )
 
 type terminalRequest struct {
-	Op       string `json:"op"`
-	Instance string `json:"instance,omitempty"`
-	ID       string `json:"id,omitempty"`
-	Shell    string `json:"shell,omitempty"`
-	Columns  int    `json:"columns,omitempty"`
-	Rows     int    `json:"rows,omitempty"`
-	Sequence *int64 `json:"sequence,omitempty"`
-	Offset   *int64 `json:"offset,omitempty"`
-	Data     string `json:"data,omitempty"`
+	Op        string `json:"op"`
+	Instance  string `json:"instance,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Shell     string `json:"shell,omitempty"`
+	Columns   int    `json:"columns,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
+	Sequence  *int64 `json:"sequence,omitempty"`
+	Offset    *int64 `json:"offset,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Epoch     *int64 `json:"epoch,omitempty"`
+	Gesture   *int64 `json:"gesture,omitempty"`
+	Column    int    `json:"column,omitempty"`
+	Row       int    `json:"row,omitempty"`
+	Button    int    `json:"button,omitempty"`
+	Modifiers int    `json:"modifiers,omitempty"`
 }
-type terminalSession struct {
-	ID               string `json:"id"`
-	Shell            string `json:"shell"`
-	State            string `json:"state"`
-	Columns          int    `json:"columns"`
-	Rows             int    `json:"rows"`
-	ExitCode         int    `json:"exitCode"`
-	OpenSequence     int64  `json:"openSequence"`
+
+type terminalMouseState struct {
+	Mode             int    `json:"mode"`
+	Format           int    `json:"format"`
+	Buttons          int    `json:"buttons"`
+	RemainingMs      int    `json:"remainingMs"`
+	Epoch            int64  `json:"epoch"`
+	Offset           int64  `json:"offset"`
+	Gesture          int64  `json:"gesture"`
+	NextGesture      int64  `json:"nextGesture"`
 	AcceptedSequence int64  `json:"acceptedSequence"`
 	WrittenSequence  int64  `json:"writtenSequence"`
-	Start            int64  `json:"start"`
-	End              int64  `json:"end"`
-	RemainingMs      int64  `json:"remainingMs"`
+	Phase            string `json:"phase"`
+	Outcome          string `json:"outcome"`
+}
+type terminalSession struct {
+	ID               string              `json:"id"`
+	Shell            string              `json:"shell"`
+	State            string              `json:"state"`
+	Columns          int                 `json:"columns"`
+	Rows             int                 `json:"rows"`
+	ExitCode         int                 `json:"exitCode"`
+	OpenSequence     int64               `json:"openSequence"`
+	AcceptedSequence int64               `json:"acceptedSequence"`
+	WrittenSequence  int64               `json:"writtenSequence"`
+	Start            int64               `json:"start"`
+	End              int64               `json:"end"`
+	RemainingMs      int64               `json:"remainingMs"`
+	Mouse            *terminalMouseState `json:"mouse,omitempty"`
 }
 type terminalReply struct {
-	OK         bool              `json:"ok"`
-	Code       string            `json:"code,omitempty"`
-	Instance   string            `json:"instance"`
-	NextOpen   int64             `json:"nextOpen,omitempty"`
-	PasteLimit int               `json:"pasteLimit,omitempty"`
-	Offset     int64             `json:"offset"`
-	Next       int64             `json:"next"`
-	Gap        bool              `json:"gap"`
-	Data       string            `json:"data,omitempty"`
-	Session    *terminalSession  `json:"session,omitempty"`
-	Sessions   []terminalSession `json:"sessions,omitempty"`
+	OK            bool              `json:"ok"`
+	Code          string            `json:"code,omitempty"`
+	Instance      string            `json:"instance"`
+	NextOpen      int64             `json:"nextOpen,omitempty"`
+	PasteLimit    int               `json:"pasteLimit,omitempty"`
+	MouseProtocol int               `json:"mouseProtocol,omitempty"`
+	Offset        int64             `json:"offset"`
+	Next          int64             `json:"next"`
+	Gap           bool              `json:"gap"`
+	Data          string            `json:"data,omitempty"`
+	Session       *terminalSession  `json:"session,omitempty"`
+	Sessions      []terminalSession `json:"sessions,omitempty"`
 }
 type terminalControl struct {
 	clients string
@@ -143,6 +167,9 @@ func (p *terminalControl) maintain(ctx context.Context) {
 	}
 }
 func validTerminalRequest(r terminalRequest) bool {
+	if r.Op != "mouse" && (r.Action != "" || r.Epoch != nil || r.Gesture != nil || r.Column != 0 || r.Row != 0 || r.Button != 0 || r.Modifiers != 0) {
+		return false
+	}
 	if r.Op == "list" {
 		return r.Instance == "" && r.ID == "" && r.Shell == "" && r.Columns == 0 && r.Rows == 0 && r.Sequence == nil && r.Offset == nil && r.Data == ""
 	}
@@ -152,6 +179,27 @@ func validTerminalRequest(r terminalRequest) bool {
 	dimensions := r.Columns >= 20 && r.Columns <= 240 && r.Rows >= 5 && r.Rows <= 120
 	sequence := r.Sequence != nil && *r.Sequence > 0 && *r.Sequence < 1<<53
 	switch r.Op {
+	case "mouse":
+		if r.Shell != "" || r.Columns != 0 || r.Rows != 0 || !sequence || r.Offset != nil || r.Data != "" || r.Epoch == nil || *r.Epoch < 1 || *r.Epoch >= 1<<53 || r.Gesture == nil || *r.Gesture < 0 || *r.Gesture >= 1<<53 {
+			return false
+		}
+		if r.Action == "renew" || r.Action == "cancel" {
+			return *r.Gesture > 0 && r.Column == 0 && r.Row == 0 && r.Button == 0 && r.Modifiers == 0
+		}
+		if r.Column < 1 || r.Column > 65535 || r.Row < 1 || r.Row > 65535 || r.Modifiers < 0 || r.Modifiers > 28 || r.Modifiers%4 != 0 {
+			return false
+		}
+		switch r.Action {
+		case "press":
+			return r.Button >= 0 && r.Button <= 2
+		case "release":
+			return *r.Gesture > 0 && r.Button >= 0 && r.Button <= 2
+		case "move":
+			return r.Button >= 0 && r.Button <= 3 && ((*r.Gesture == 0) == (r.Button == 3))
+		case "wheel":
+			return *r.Gesture == 0 && r.Button >= 0 && r.Button <= 3
+		}
+		return false
 	case "open":
 		return (r.Shell == "cmd" || r.Shell == "powershell") && dimensions && sequence && r.Offset == nil && r.Data == ""
 	case "read":
@@ -172,21 +220,31 @@ func validTerminalRequest(r terminalRequest) bool {
 }
 func validTerminalSession(s terminalSession) bool {
 	state := s.State == "running" || s.State == "closed" || s.State == "exited" || s.State == "expired" || s.State == "revoked" || s.State == "failed"
-	return fileID.MatchString(s.ID) && (s.Shell == "cmd" || s.Shell == "powershell") && state && s.Columns >= 20 && s.Columns <= 240 && s.Rows >= 5 && s.Rows <= 120 &&
+	return validTerminalMouse(s.Mouse, s.End) && fileID.MatchString(s.ID) && (s.Shell == "cmd" || s.Shell == "powershell") && state && s.Columns >= 20 && s.Columns <= 240 && s.Rows >= 5 && s.Rows <= 120 &&
 		s.OpenSequence > 0 && s.OpenSequence < 1<<53 && s.AcceptedSequence >= 0 && s.AcceptedSequence < 1<<53 && s.WrittenSequence >= 0 && s.WrittenSequence <= s.AcceptedSequence &&
 		s.Start >= 0 && s.End >= s.Start && s.End < 1<<53 && s.End-s.Start <= 1024*1024 && s.RemainingMs >= 0 && s.RemainingMs <= 1800000
+}
+func validTerminalMouse(m *terminalMouseState, end int64) bool {
+	if m == nil {
+		return true
+	}
+	mode := m.Mode == -1 || m.Mode == 0 || m.Mode == 9 || m.Mode >= 1000 && m.Mode <= 1003
+	format := m.Format == -1 || m.Format == 0 || m.Format == 1005 || m.Format == 1006 || m.Format == 1015 || m.Format == 1016
+	phase := m.Phase == "idle" || m.Phase == "pending" || m.Phase == "held" || m.Phase == "expired" || m.Phase == "cancelled" || m.Phase == "mode-changed" || m.Phase == "closed"
+	outcome := m.Outcome == "none" || m.Outcome == "queued" || m.Outcome == "written" || m.Outcome == "renewed" || m.Outcome == "cancelled" || m.Outcome == "expired" || m.Outcome == "mode-changed"
+	return mode && format && phase && outcome && m.Buttons >= 0 && m.Buttons <= 7 && m.RemainingMs >= 0 && m.RemainingMs <= 1500 && m.Epoch > 0 && m.Epoch < 1<<53 && m.Offset >= 0 && m.Offset <= end && m.Gesture >= 0 && m.NextGesture > m.Gesture && m.NextGesture < 1<<53 && m.AcceptedSequence >= 0 && m.AcceptedSequence < 1<<53 && m.WrittenSequence >= 0 && m.WrittenSequence <= m.AcceptedSequence && (m.Phase != "closed" || m.Buttons == 0 && m.RemainingMs == 0)
 }
 func validTerminalReply(request terminalRequest, value terminalReply) bool {
 	if !value.OK || !fileID.MatchString(value.Instance) {
 		return false
 	}
 	if request.Op == "list" {
-		if value.NextOpen <= 0 || value.NextOpen >= 1<<53 || value.Session != nil || len(value.Sessions) > 32 || value.Data != "" || (value.PasteLimit != 0 && value.PasteLimit != 16396) {
+		if value.NextOpen <= 0 || value.NextOpen >= 1<<53 || value.Session != nil || len(value.Sessions) > 32 || value.Data != "" || (value.PasteLimit != 0 && value.PasteLimit != 16396) || (value.MouseProtocol != 0 && value.MouseProtocol != 1) {
 			return false
 		}
 		seen := make(map[string]bool)
 		for _, s := range value.Sessions {
-			if !validTerminalSession(s) || seen[s.ID] || s.OpenSequence >= value.NextOpen {
+			if !validTerminalSession(s) || value.MouseProtocol == 1 && s.Mouse == nil || seen[s.ID] || s.OpenSequence >= value.NextOpen {
 				return false
 			}
 			seen[s.ID] = true
@@ -209,6 +267,9 @@ func validTerminalReply(request terminalRequest, value terminalReply) bool {
 	}
 	if request.Op == "write" || request.Op == "paste" {
 		return value.Session.AcceptedSequence == *request.Sequence
+	}
+	if request.Op == "mouse" {
+		return value.Session.Mouse != nil && value.Session.Mouse.AcceptedSequence == *request.Sequence
 	}
 	return true
 }
@@ -288,7 +349,7 @@ func (p *terminalControl) handler(next http.Handler) http.Handler {
 				fail(429, result.Code)
 			case "TERMINAL_UNPAIRED":
 				fail(403, result.Code)
-			case "TERMINAL_STALE", "TERMINAL_NOT_FOUND", "TERMINAL_CLOSED", "TERMINAL_OFFSET", "TERMINAL_SEQUENCE", "TERMINAL_ID_CONFLICT", "TERMINAL_INPUT_CONFLICT":
+			case "TERMINAL_STALE", "TERMINAL_NOT_FOUND", "TERMINAL_CLOSED", "TERMINAL_OFFSET", "TERMINAL_SEQUENCE", "TERMINAL_ID_CONFLICT", "TERMINAL_INPUT_CONFLICT", "TERMINAL_MOUSE_MODE", "TERMINAL_MOUSE_GESTURE", "TERMINAL_MOUSE_SEQUENCE", "TERMINAL_MOUSE_CONFLICT":
 				fail(409, result.Code)
 			case "TERMINAL_USER_REQUIRED", "TERMINAL_UNSUPPORTED":
 				fail(503, result.Code)
