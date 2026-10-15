@@ -7,6 +7,37 @@
  CONFIG += c++17
  
  unix:!macx {
+--- a/app/Info.plist
++++ b/app/Info.plist
+@@ -13,7 +13,7 @@
+ 	<key>CFBundleIconFile</key>
+ 	<string>moonlight</string>
+ 	<key>CFBundleIdentifier</key>
+-	<string>com.moonlight-stream.Moonlight</string>
++	<string>com.cliprelay.stream</string>
+ 	<key>NSHighResolutionCapable</key>
+ 	<true/>
+ 	<key>CFBundlePackageType</key>
+@@ -41,7 +41,7 @@
+ 		<true/>
+ 	</dict>
+ 	<key>NSLocalNetworkUsageDescription</key>
+-	<string>Moonlight uses the local network to connect to your gaming PC for streaming.</string>
++	<string>ClipRelay connects to your paired computer to display and control its desktop.</string>
+ 	<key>NSBonjourServices</key>
+ 	<array>
+ 		<string>_nvstream._tcp</string>
+@@ -51,8 +51,8 @@
+ 	<key>CFBundleShortVersionString</key>
+ 	<string>VERSION</string>
+ 	<key>CFBundleDisplayName</key>
+-	<string>Moonlight</string>
++	<string>ClipRelay Stream</string>
+     <key>LSApplicationCategoryType</key>
+-	<string>public.app-category.games</string>
++	<string>public.app-category.utilities</string>
+ </dict>
+ </plist>
 --- a/app/main.cpp
 +++ b/app/main.cpp
 @@ -39,6 +39,7 @@
@@ -34,6 +65,35 @@
          QSettings::setDefaultFormat(QSettings::IniFormat);
          QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QDir::currentPath());
          QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, QDir::currentPath());
+@@ -464,7 +465,7 @@
+     if (IS_UNSPECIFIED_HANDLE(oldConErr))
+ #endif
+     {
+-        s_LoggerFile = new QFile(tempDir.filePath(QString("Moonlight-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
++        s_LoggerFile = new QFile(tempDir.filePath(QString("ClipRelayStream-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
+         if (s_LoggerFile->open(QIODevice::WriteOnly | QIODevice::Text)) {
+             QTextStream(stderr) << "Redirecting log output to " << s_LoggerFile->fileName() << Qt::endl;
+             s_LoggerStream.setDevice(s_LoggerFile);
+@@ -497,7 +498,7 @@
+ 
+ #ifdef LOG_TO_FILE
+     // Prune the oldest existing logs if there are more than 10
+-    QStringList existingLogNames = tempDir.entryList(QStringList("Moonlight-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
++    QStringList existingLogNames = tempDir.entryList(QStringList("ClipRelayStream-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
+     for (int i = 10; i < existingLogNames.size(); i++) {
+         qInfo() << "Removing old log file:" << existingLogNames.at(i);
+         QFile(tempDir.filePath(existingLogNames.at(i))).remove();
+@@ -715,8 +716,8 @@
+     // Set our app name for SDL to use with PulseAudio and PipeWire. This matches what we
+     // provide as our app name to libsoundio too. On SDL 2.0.18+, SDL_APP_NAME is also used
+     // for screensaver inhibitor reporting.
+-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Moonlight");
+-    SDL_SetHint(SDL_HINT_APP_NAME, "Moonlight");
++    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "ClipRelay Stream");
++    SDL_SetHint(SDL_HINT_APP_NAME, "ClipRelay Stream");
+ 
+     // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
+     // support applications that assume they can warp the cursor (which isn't possible
 @@ -803,8 +804,19 @@
      }
  #endif
@@ -309,6 +369,15 @@
          delete m_InputHandler;
          m_InputHandler = nullptr;
          SDL_QuitSubSystem(SDL_INIT_VIDEO);
+@@ -1843,7 +1845,7 @@
+ #ifdef Q_OS_DARWIN
+     std::string windowName = QString(m_Computer->name).toStdString();
+ #else
+-    std::string windowName = QString(m_Computer->name + " - Moonlight").toStdString();
++    std::string windowName = QString(m_Computer->name + " - ClipRelay").toStdString();
+ #endif
+ 
+     m_Window = SDL_CreateWindow(windowName.c_str(),
 @@ -1964,6 +1966,12 @@
      // because we want to suspend all Qt processing until the stream is over.
      SDL_Event event;
