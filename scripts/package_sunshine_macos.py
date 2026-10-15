@@ -8,6 +8,7 @@ import platform
 import plistlib
 import re
 import shutil
+import struct
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -23,12 +24,52 @@ def inside(path, root):
     return resolved
 
 
-def package(source, build, artifact, arch, test_results):
+def minimum_macos(data):
+    """Read the loader's deployment requirement, not the compiler invocation."""
+    if len(data) < 32 or data[:4] != b'\xcf\xfa\xed\xfe':
+        raise RuntimeError('Expected a 64-bit little-endian Mach-O image')
+    count, size = struct.unpack_from('<II', data, 16)
+    position, versions = 32, []
+    if position + size > len(data):
+        raise RuntimeError('Invalid Mach-O load command bounds')
+    for _ in range(count):
+        if position + 8 > 32 + size:
+            raise RuntimeError('Truncated Mach-O load command')
+        command, length = struct.unpack_from('<II', data, position)
+        if length < 8 or position + length > 32 + size:
+            raise RuntimeError('Invalid Mach-O load command size')
+        if command == 0x32:  # LC_BUILD_VERSION
+            if length < 24 or struct.unpack_from('<I', data, position+8)[0] != 1:
+                raise RuntimeError('Expected a macOS build-version command')
+            versions.append(struct.unpack_from('<I', data, position+12)[0])
+        elif command == 0x24:  # LC_VERSION_MIN_MACOSX
+            if length < 16:
+                raise RuntimeError('Truncated minimum-version command')
+            versions.append(struct.unpack_from('<I', data, position+8)[0])
+        position += length
+    if position != 32 + size or len(versions) != 1:
+        raise RuntimeError('Expected one macOS deployment requirement')
+    value = versions[0]
+    return (value >> 16, (value >> 8) & 255, value & 255)
+
+
+def check_deployment(data, target):
+    actual = minimum_macos(data)
+    if actual > target:
+        raise RuntimeError(f'Native dependency requires macOS {actual}; target is {target}')
+    return '.'.join(map(str, actual))
+
+
+def package(source, build, artifact, arch, test_results, dependencies, build_log):
     if platform.system() != 'Darwin' or platform.machine() != arch:
         raise RuntimeError('Package verification requires the matching native macOS runner')
     root = Path(__file__).resolve().parents[1]
     source, build, artifact = (p.resolve(strict=True) for p in (source, build, artifact))
     pinned = json.loads((root / 'engine/sunshine/upstream.json').read_text())
+    dependency_pins = json.loads((root / 'engine/sunshine/macos-dependencies.json').read_text())
+    target = tuple(map(int, dependency_pins['deploymentTarget'].split('.'))) + (0,)
+    if 'built for newer' in build_log.read_text(errors='replace'):
+        raise RuntimeError('Linker found an object or library newer than the deployment target')
     if command('git', '-C', str(source), 'rev-parse', 'HEAD') != pinned['commit']:
         raise RuntimeError('Unexpected upstream source revision')
     suites = ET.parse(test_results).getroot()
@@ -59,7 +100,7 @@ def package(source, build, artifact, arch, test_results):
     # an ad-hoc signature for this internal build, not a distribution identity.
     subprocess.run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
     subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True)
-    native = {}
+    native, minimum_versions = {}, {}
     for path in sorted(app.rglob('*')):
         if path.is_symlink():
             inside(path, app)
@@ -75,6 +116,7 @@ def package(source, build, artifact, arch, test_results):
         architectures = command('/usr/bin/lipo', '-archs', str(path)).split()
         if architectures != [arch]:
             raise RuntimeError(f'Unexpected native architectures: {path}: {architectures}')
+        minimum_versions[path.relative_to(artifact).as_posix()] = check_deployment(path.read_bytes(), target)
         dependencies = []
         for line in command('/usr/bin/otool', '-L', str(path)).splitlines()[1:]:
             name = line.strip().split(' (compatibility version', 1)[0]
@@ -98,7 +140,9 @@ def package(source, build, artifact, arch, test_results):
     tracked = ['engine/sunshine/' + name for name in [
         'upstream.json', 'control.patch', 'cliprelay_control.h', 'cliprelay_audio.h',
         'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md']]
-    tracked += ['scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', '.github/workflows/sunshine-macos.yml']
+    tracked += ['engine/sunshine/macos-dependencies.json', 'scripts/prepare_sunshine.py',
+                'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py',
+                '.github/workflows/sunshine-macos.yml']
     source_hashes = {}
     for name in tracked:
         dest = artifact / 'source' / name
@@ -107,6 +151,14 @@ def package(source, build, artifact, arch, test_results):
         source_hashes[name] = hashlib.sha256(dest.read_bytes()).hexdigest()
     shutil.copyfile(source / 'LICENSE', artifact / 'SUNSHINE-LICENSE')
     shutil.copyfile(test_results, artifact / 'input-tests.xml')
+    dependency_receipt = json.loads((dependencies / 'build.json').read_text())
+    if (dependency_receipt['identity']['arch'] != arch
+            or dependency_receipt['identity']['deploymentTarget'] != dependency_pins['deploymentTarget']
+            or dependency_receipt['sources'] != dependency_pins['sources']):
+        raise RuntimeError('Native dependency build does not match the pinned inputs')
+    notices = artifact / 'dependency-licenses'
+    shutil.copytree(dependencies / 'licenses', notices)
+    shutil.copyfile(dependencies / 'build.json', artifact / 'dependency-build.json')
     manifest = {
         'protocol': 1, 'platform': 'darwin', 'arch': arch,
         'sourceCommit': command('git', '-C', str(root), 'rev-parse', 'HEAD'),
@@ -115,6 +167,7 @@ def package(source, build, artifact, arch, test_results):
         'buildDependenciesTag': command('git', '-C', str(source / 'third-party/build-deps'), 'describe', '--tags', '--exact-match'),
         'executable': binary.relative_to(artifact).as_posix(), 'sourceHashes': source_hashes,
         'inputTests': expected, 'nativeDependencies': native,
+        'deploymentTarget': dependency_pins['deploymentTarget'], 'nativeMinimumOS': minimum_versions,
         'signature': 'ad-hoc', 'notarized': False,
         'scope': 'Internal engine build only. No ClipRelay host UI, permission grant, capture, network listener or hardware streaming acceptance.',
         'files': {}, 'symlinks': {}
@@ -132,8 +185,8 @@ def package(source, build, artifact, arch, test_results):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    for option in ['source', 'build', 'artifact', 'test-results']:
+    for option in ['source', 'build', 'artifact', 'test-results', 'dependencies', 'build-log']:
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], required=True)
     args = parser.parse_args()
-    package(args.source, args.build, args.artifact, args.arch, args.test_results)
+    package(args.source, args.build, args.artifact, args.arch, args.test_results, args.dependencies, args.build_log)

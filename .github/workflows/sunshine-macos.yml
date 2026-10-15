@@ -3,9 +3,9 @@ name: Sunshine macOS Host Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', '.github/workflows/sunshine-macos.yml']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', '.github/workflows/sunshine-macos.yml']
   pull_request:
-    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', '.github/workflows/sunshine-macos.yml']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', '.github/workflows/sunshine-macos.yml']
   workflow_dispatch:
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 50
+    timeout-minutes: 80
     env:
       MACOSX_DEPLOYMENT_TARGET: '14.2'
       HOMEBREW_NO_AUTO_UPDATE: '1'
@@ -44,8 +44,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
-      - name: Install build dependencies
-        run: brew install cmake ninja pkgconf icu4c miniupnpc openssl@3 opus
+      - name: Install build tools
+        run: brew install cmake ninja pkgconf
+      - uses: actions/cache@v4
+        with:
+          path: mac-dependencies/install
+          key: macos-host-dependencies-${{ matrix.arch }}-v1-${{ hashFiles('engine/sunshine/macos-dependencies.json', 'scripts/build_sunshine_macos_dependencies.py') }}
+      - name: Build pinned runtime dependencies for macOS 14.2
+        run: python3 scripts/build_sunshine_macos_dependencies.py mac-dependencies
       - name: Apply pinned source and test platform independent controls
         run: |
           set -euo pipefail
@@ -61,16 +67,20 @@ jobs:
       - name: Build complete engine and input integration tests
         run: |
           set -euo pipefail
+          prefix="$PWD/mac-dependencies/install"
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
           cmake -S sunshine-source -B sunshine-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DBUILD_TESTS=ON \
-            -DSUNSHINE_ENABLE_TRAY=OFF -DBOOST_USE_STATIC=ON -DOPUS_USE_STATIC=OFF \
-            -DICU_ROOT="$(brew --prefix icu4c)" \
-            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
-            -DOpus_ROOT_DIR="$(brew --prefix opus)" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.2 -DCMAKE_PREFIX_PATH="$prefix" \
+            -DCMAKE_EXE_LINKER_FLAGS="-L$prefix/lib" \
+            -DSUNSHINE_ENABLE_TRAY=OFF -DBOOST_USE_STATIC=ON -DOPUS_USE_STATIC=ON \
+            -DBoost_DIR="$prefix/lib/cmake/Boost-1.89.0" -DICU_ROOT="$prefix" \
+            -DOPENSSL_ROOT_DIR="$prefix" -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DOpus_ROOT_DIR="$prefix" \
             -DSUNSHINE_PUBLISHER_NAME=ClipRelay \
             -DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/ffffhx/cliprelay \
             -DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/ffffhx/cliprelay/issues
-          cmake --build sunshine-build --parallel 3
+          cmake --build sunshine-build --parallel 3 2>&1 | tee engine-build.log
           ./sunshine-build/tests/test_sunshine \
             --gtest_filter='ClipRelayInputTest.*' \
             --gtest_output=xml:input-tests.xml
@@ -80,7 +90,8 @@ jobs:
           cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component Runtime
           python3 scripts/package_sunshine_macos.py \
             --source sunshine-source --build sunshine-build --artifact engine-artifact \
-            --arch '${{ matrix.arch }}' --test-results input-tests.xml
+            --arch '${{ matrix.arch }}' --test-results input-tests.xml \
+            --dependencies mac-dependencies/install --build-log engine-build.log
           tar -czf 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' engine-artifact
           shasum -a 256 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' > 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz.sha256'
       - uses: actions/upload-artifact@v4
