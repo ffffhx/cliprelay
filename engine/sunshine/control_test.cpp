@@ -3,6 +3,7 @@
 #include <cassert>
 #include <iostream>
 #include <thread>
+#include <barrier>
 
 using cliprelay::display_control;
 using cliprelay::display_geometry;
@@ -19,6 +20,81 @@ void start(display_control &d) {
   d.real_frame(&client_a, g, 1);
   d.encoded(&client_a, 1);
   assert(d.snapshot().phase == "active");
+}
+
+struct guarded_display {
+  display_control display;
+  cliprelay::input_registry inputs;
+  std::shared_ptr<cliprelay::input_epoch> gate = std::make_shared<cliprelay::input_epoch>();
+  guarded_display() {
+    start(display); inputs.add(&client_a,1,owner,gate);
+    assert(gate->begin(1,true)); gate->acknowledge(1,true);
+  }
+  std::string request(std::uint64_t stream=1,std::uint32_t epoch=1,const std::string& target="right") {
+    return inputs.select(stream,epoch,[&](const auto& token) {
+      return display.request(target,display.snapshot().revision,stream,epoch,token);
+    });
+  }
+};
+
+void guarded_display_tests() {
+  {
+    guarded_display f;
+    assert(f.request(2)=="input_not_exclusive");
+    assert(f.request(1,3)=="input_not_paused");
+    assert(f.request()=="accepted");
+    auto state=f.display.snapshot();assert(state.input_epoch==1&&state.request_stream==1);
+    assert(f.request()=="input_busy");
+    assert(!f.gate->begin(2,false));
+    assert(f.display.take_selection({"left","right"},0)==1);
+    f.display.invalidate();auto generation=f.display.begin_capture(right_screen);
+    f.display.bind(&client_a,generation);
+    f.display.encoded(&client_a,20); // a dummy frame cannot release the pause
+    assert(!f.gate->begin(2,false));
+    f.display.real_frame(&client_a,generation,21);f.display.encoded(&client_a,20);
+    assert(!f.gate->begin(2,false));
+    f.display.encoded(&client_a,21);
+    assert(f.display.snapshot().result=="applied"&&f.gate->begin(2,false));
+  }
+  {
+    guarded_display f;
+    assert(f.request(1,1,"missing")=="display_unavailable");
+    assert(f.gate->begin(2,false)); // failed request cannot retain a pause lease
+  }
+  {
+    guarded_display f;assert(f.request()=="accepted");
+    assert(f.display.take_selection({"left"},0)==0);
+    assert(f.display.snapshot().result=="failed"&&f.gate->begin(2,false));
+  }
+  {
+    for(bool competing:{false,true}) {
+      guarded_display f;assert(f.request()=="accepted");
+      if(competing) {
+        auto other=std::make_shared<cliprelay::input_epoch>();
+        const auto id=f.display.add_stream(&client_b,std::string(64,'b'),1280,720);
+        f.inputs.add(&client_b,id,std::string(64,'b'),other);
+      } else f.inputs.remove(&client_a);
+      assert(f.display.take_selection({"left","right"},0)==0);
+      assert(f.display.snapshot().result=="failed"&&f.display.snapshot().error=="input_unavailable");
+    }
+  }
+  {
+    guarded_display f;assert(f.request()=="accepted");
+    assert(f.display.take_selection({"left","right"},0)==1);
+    auto generation=f.display.begin_capture(right_screen);f.display.bind(&client_a,generation);
+    f.inputs.remove(&client_a);
+    f.display.real_frame(&client_a,generation,20);f.display.encoded(&client_a,20);
+    assert(f.display.snapshot().result=="failed"&&!f.gate->begin(2,false));
+  }
+  {
+    for(int i=0;i<100;++i) {
+      guarded_display f;std::barrier ready(3);std::string result;bool resumed=false;
+      std::thread select([&]{ready.arrive_and_wait();result=f.request();});
+      std::thread resume([&]{ready.arrive_and_wait();resumed=f.gate->begin(2,false);});
+      ready.arrive_and_wait();select.join();resume.join();
+      assert((result=="accepted"&&!resumed)||(result=="input_not_paused"&&resumed));
+    }
+  }
 }
 
 int main() {
@@ -251,5 +327,6 @@ int main() {
     auto streams = d.snapshot(100).streams;
     for (const auto &s : streams) assert(s.audio_ready == (s.owner == owner));
   }
-  std::cout << "8 display, 4 live bitrate and 3 audio readiness scenarios passed\n";
+  guarded_display_tests();
+  std::cout << "8 display, 4 live bitrate, 3 audio readiness and 6 guarded input/display scenarios passed\n";
 }

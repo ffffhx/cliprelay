@@ -229,7 +229,7 @@ index 7861538..2f416ec 100644
  
    /**
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index 1b47397..bf56a8e 100644
+index 1b47397..c364049 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -37,6 +37,8 @@
@@ -241,7 +241,7 @@ index 1b47397..bf56a8e 100644
  #include "confighttp.h"
  #include "crypto.h"
  #include "display_device.h"
-@@ -2310,6 +2312,144 @@ namespace confighttp {
+@@ -2310,6 +2312,159 @@ namespace confighttp {
    /**
     * @brief Start the HTTPS configuration server.
     */
@@ -258,6 +258,7 @@ index 1b47397..bf56a8e 100644
 +    nlohmann::json result = {
 +      {"protocol", 1}, {"instance", cliprelayInstance()}, {"revision", state.revision}, {"generation", state.generation},
 +      {"phase", state.phase}, {"displays", state.displays},
++      {"inputEpochSelection", true}, {"requestStream", state.request_stream}, {"inputEpoch", state.input_epoch},
 +      {"requestId", state.request_id}, {"requested", state.requested},
 +      {"result", state.result}, {"error", state.error}, {"capture", nullptr},
 +      {"streams", nlohmann::json::array()}
@@ -303,14 +304,28 @@ index 1b47397..bf56a8e 100644
 +    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
 +    try {
 +      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
-+      if (!input.is_object() || input.size() != 3 || !input.contains("display") || !input.contains("revision") || !input.contains("instance") ||
-+          !input["display"].is_string() || !input["revision"].is_number_unsigned() || !input["instance"].is_string()) {
++      const bool guarded = input.is_object() && (input.contains("inputEpoch") || input.contains("stream"));
++      if (!input.is_object() || input.size() != (guarded ? 5 : 3) || !input.contains("display") || !input.contains("revision") || !input.contains("instance") ||
++          !input["display"].is_string() || !input["revision"].is_number_unsigned() || !input["instance"].is_string() ||
++          (guarded && (!input.contains("stream") || !input.contains("inputEpoch") || !input["stream"].is_number_unsigned() ||
++            !input["inputEpoch"].is_number_unsigned() || input["stream"].get<std::uint64_t>() == 0 ||
++            input["stream"].get<std::uint64_t>() > 9007199254740991ULL || input["inputEpoch"].get<std::uint64_t>() > UINT32_MAX ||
++            !(input["inputEpoch"].get<std::uint32_t>() & 1)))) {
 +        bad_request(response, request, "Expected display, revision and instance"); return;
 +      }
 +      const auto id = input["display"].get<std::string>();
 +      if (id.empty() || id.size() > 256) { bad_request(response, request, "Invalid display"); return; }
-+      const auto outcome = input["instance"].get<std::string>() == cliprelayInstance()
-+        ? cliprelay::displays.request(id, input["revision"].get<std::uint64_t>()) : "stale_instance";
++      std::string outcome = "stale_instance";
++      if (input["instance"].get<std::string>() == cliprelayInstance()) {
++        const auto revision = input["revision"].get<std::uint64_t>();
++        if (guarded) {
++          const auto stream = input["stream"].get<std::uint64_t>();
++          const auto epoch = input["inputEpoch"].get<std::uint32_t>();
++          outcome = cliprelay::inputs.select(stream, epoch, [&](const auto &selection) {
++            return cliprelay::displays.request(id, revision, stream, epoch, selection);
++          });
++        } else outcome = cliprelay::displays.request(id, revision);
++      }
 +      auto output = cliprelayDisplayState();
 +      output["accepted"] = outcome == "accepted";
 +      output["outcome"] = outcome;
@@ -386,7 +401,7 @@ index 1b47397..bf56a8e 100644
    void start() {
      platf::set_thread_name("confighttp");
      const auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-@@ -2354,6 +2494,11 @@ namespace confighttp {
+@@ -2354,6 +2509,11 @@ namespace confighttp {
      server.resource["^/welcome/?$"]["GET"] = page_handler("welcome.html", false, true);
  
      // rest api

@@ -185,7 +185,7 @@ func TestDisplayEnginePinRedirectAndResponseBounds(t *testing.T) {
 	}))
 	defer server.Close()
 	call := func(cert []byte) (displayState, error) {
-		return requestEngineDisplay(context.Background(), server.URL, "test-secret", cert, false, &displaySelection{testDisplayInstance, "right", 12, 10})
+		return requestEngineDisplay(context.Background(), server.URL, "test-secret", cert, false, &displaySelection{Instance: testDisplayInstance, Display: "right", Revision: 12, Stream: 10})
 	}
 	if _, err := call([]byte("wrong pinned certificate")); err == nil {
 		t.Fatal("untrusted host accepted")
