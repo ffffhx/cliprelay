@@ -54,6 +54,20 @@ test('progress from an old native process cannot describe a replacement route',a
   f.child.send(progress());await until(()=>f.viewer.snapshot().progress);const old=f.viewer.record;state.host.routeId='replacement';f.viewer.reconcile();assert.equal(f.viewer.snapshot().progress,null);
   await until(()=>f.children.length===2&&f.viewer.phase==='running');f.viewer.events(old,Buffer.from(JSON.stringify(progress(99))+'\n'));assert.equal(f.viewer.snapshot().progress,null);
 });
+
+test('progress requires the negotiated capability and a native connection',async t=>{
+  for(const legacy of [true,false])await t.test(legacy?'legacy':'before connection',async t=>{
+    const f=manager(store(),{resolveTelemetry:()=>!legacy},{silent:!legacy});t.after(()=>f.viewer.stop());await f.viewer.open();
+    if(legacy)await until(()=>f.viewer.phase==='running');
+    f.child.send(progress());await until(()=>f.viewer.phase==='error');assert.equal(f.viewer.error,'VIEWER_PROTOCOL_ERROR');
+  });
+});
+
+test('route changes invalidate incoming progress before the periodic reconcile',async t=>{
+  const state=store(),f=manager(state,{resolveTelemetry:()=>true},{closeDelay:100});t.after(()=>f.viewer.stop());await f.viewer.open();await until(()=>f.viewer.phase==='running');
+  state.host.routeId='replacement';f.child.send(progress());await until(()=>f.viewer.phase==='recovering');
+  assert.equal(f.viewer.snapshot().progress,null);f.viewer.stop();
+});
 test('real child receives credentials only through a pipe and exits when owner closes it',async()=>{
   const f=manager(store());try{
     const pending=f.viewer.open();await new Promise(resolve=>setImmediate(resolve));

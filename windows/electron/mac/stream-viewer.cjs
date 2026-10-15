@@ -163,7 +163,9 @@ class StreamViewer{
         event.event==='progress'?!record.telemetry || !record.connected || keys!=='event,height,received,receivedAgeMs,rendered,renderedAgeMs,version,width':true)){
         this.finish('VIEWER_PROTOCOL_ERROR');return;
       }
-      if(!this.authorized()){this.finish();return;}
+      const authorized=this.authorized();
+      if(!authorized){this.finish();return;}
+      if(!sameRoute(authorized,record.host)){this.recover();return;}
       if(event.event==='progress'){
         const integer=(v,min,max)=>Number.isSafeInteger(v)&&v>=min&&v<=max,p=record.progress;
         if(!integer(event.received,0,0xffffffff)||!integer(event.rendered,0,event.received)||!integer(event.width,event.rendered?1:0,event.rendered?65536:0)||!integer(event.height,event.rendered?1:0,event.rendered?65536:0)||

@@ -24,7 +24,7 @@ import urllib.request
 from engine_control_test import POWERSHELL, choose_port, powershell, prepare_client, quote
 
 
-def run(engine: Path, viewer: Path, output: Path, overlay_fixture: Path = None, recovery=False):
+def run(engine: Path, viewer: Path, output: Path, overlay_fixture: Path = None, recovery=False, telemetry=False):
     if recovery and not overlay_fixture:raise ValueError('Recovery acceptance requires the isolated overlay fixture')
     engine=engine.resolve(strict=True);viewer=viewer.resolve(strict=True)
     fixture=output.resolve()/secrets.token_hex(12);fixture.mkdir(parents=True,exist_ok=False)
@@ -109,7 +109,7 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
         for key in ['ELECTRON_RUN_AS_NODE','CHROME_CRASHPAD_PIPE_NAME','QT_QPA_PLATFORM','QT_PLUGIN_PATH','QML2_IMPORT_PATH']:env.pop(key,None)
         log=(fixture/'viewer.log').open('wb')
         try:
-            if recovery:
+            if recovery or telemetry:
                 process=subprocess.Popen(['node',str(Path(__file__).with_name('desktop-viewer-recovery-native.cjs')),str(viewer.parent.parent),str(fixture)],
                     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,env=env,creationflags=subprocess.CREATE_NO_WINDOW)
                 events=queue.Queue();history=[]
@@ -134,6 +134,16 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
             else:raise RuntimeError('Viewer never established a video stream; inspect viewer.log')
             report['activeStreamObserved']=True
             time.sleep(5)
+            if telemetry:
+                progress=[item['progress'] for item in history if item.get('type')=='state' and item.get('progress')]
+                assert len(progress)>=5,'Native progress reports missing'
+                visible=[item for item in progress if item['rendered']>0]
+                assert len(visible)>=3 and visible[-1]['rendered']>visible[0]['rendered'],'Presented frames must advance'
+                assert all(0<item['rendered']<=item['received'] and item['width']==1280 and item['height']==720 for item in visible)
+                assert visible[-1]['rendered']>=current['streams'][0]['firstFrame']>0,'Native boundary must match the active host stream'
+                assert visible[-1]['renderedAgeMs']<2000,'Presentation feedback is stale'
+                report['presentation']={'reports':len(progress),'first':visible[0],'last':visible[-1],
+                    'hostFirstFrame':current['streams'][0]['firstFrame'],'mode':'native successful present submission; physical panel not measured'}
             if recovery:
                 stop_network()
                 deadline=time.monotonic()+30
@@ -170,12 +180,13 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
             else:raise RuntimeError('Host still has a stream after viewer exit')
             report['hostStreamReleased']=True
         finally:log.close()
-        if recovery:
+        if recovery or telemetry:
             viewer_reader.join(timeout=2)
             process.stdout.close()
             logs=[file.read_text(encoding='utf-8',errors='replace') for file in sorted(fixture.glob('attempt-*.log'))]
-            report['recovery']['renderedAttempts']=[max(map(float,re.findall(r'Rendering frame rate: ([0-9.]+) FPS',text)),default=0) for text in logs]
-            assert sum(rate>5 for rate in report['recovery']['renderedAttempts'])>=2, 'Both original and recovered video must render frames'
+            if recovery:
+                report['recovery']['renderedAttempts']=[max(map(float,re.findall(r'Rendering frame rate: ([0-9.]+) FPS',text)),default=0) for text in logs]
+                assert sum(rate>5 for rate in report['recovery']['renderedAttempts'])>=2, 'Both original and recovered video must render frames'
             text='\n'.join(logs)
         else:text=(fixture/'viewer.log').read_text(encoding='utf-8',errors='replace')
         rates=re.findall(r'Rendering frame rate: ([0-9.]+) FPS',text)
@@ -196,7 +207,7 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
         report['passed']=True
     except Exception as error:
         report['error']=str(error)
-        if recovery and 'history' in locals():report['recoveryEvents']=history
+        if (recovery or telemetry) and 'history' in locals():report['supervisorEvents']=history
         raise
     finally:
         if process and process.poll() is None:
@@ -228,4 +239,5 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('engine',type=Path);parser.add_argument('viewer',type=Path);parser.add_argument('--output',type=Path,default=Path('.tools/desktop-viewer-tests'))
     parser.add_argument('--overlay-fixture',type=Path)
     parser.add_argument('--recovery',action='store_true')
-    args=parser.parse_args();run(args.engine,args.viewer,args.output,args.overlay_fixture,args.recovery)
+    parser.add_argument('--telemetry',action='store_true')
+    args=parser.parse_args();run(args.engine,args.viewer,args.output,args.overlay_fixture,args.recovery,args.telemetry)
