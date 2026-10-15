@@ -2,6 +2,7 @@ import {lightWindow,remoteQueue,listOptions} from './remote-controls.js';
 export async function mount(context){
   const {api,close}=context;const {label,button,list,input}=lightWindow(context);
   label('手机远控',24,20,300,32,'font-size:24px;font-weight:bold');
+  button('控制其他电脑','RemoteDesktopClient',510,8,140,()=>api.window('desktop-client'));
   const status=label('正在连接后台服务…',24,62,315);
   let enabled=false,running=false,pairings=[],clients=[],pollIndex=0;
   const toggle=button('开启远控','RemoteDesktopToggle',510,45,140,()=>queue.submit({action:enabled?'disable':'enable'}));

@@ -6,7 +6,7 @@ const dimensions = {
   'control-center': [760,720], 'peer-editor':[500,454], 'screen-share-picker':[560,540],
   'preview-remote':[480,400], 'updates':[560,520], 'remote-desktop':[700,660], 'remote-network':[620,620]
 };
-const actions = new Set(['snapshot','patch','normalize-peer','discover','merge','probe','summary','copy','share','stop-sharing','preview-state','preview-navigate','remote','update-check','update-download','update-open','update-notify']);
+const actions = new Set(['snapshot','patch','normalize-peer','discover','merge','probe','paired-peers','summary','copy','share','stop-sharing','preview-state','preview-navigate','remote','update-check','update-download','update-open','update-notify']);
 
 class DesktopWindows {
   constructor(host, root) {
@@ -33,8 +33,15 @@ class DesktopWindows {
       else if (action === 'close') { window.relayCanClose = true; window.close(); }
       else if (action === 'minimize') window.minimize();
       else if (action === 'pin') { window.setAlwaysOnTop(!window.isAlwaysOnTop()); return window.isAlwaysOnTop(); }
+      else if (action === 'desktop-client') {
+        if (!this.client) { const {DesktopClient} = require('./desktop-client.cjs'); this.client = new DesktopClient(this.root); }
+        this.client.open();
+      }
       else if (action === 'resize' && this.windows.get('screen-share-picker') === window && data.width === 560 && [372,456,540].includes(data.height)) window.setContentSize(data.width,data.height);
       else if (action === 'open' && data && dimensions[data.name]) this.open(data.name, data.peerId);
+      else if (action === 'peer-mode' && window === this.windows.get('peer-editor') && ['paired','legacy'].includes(data?.mode)) {
+        window.loadFile(this.page,{query:{view:'peer-editor',peerId:window.relayPeerId,paired:data.mode==='paired'?'1':'',legacy:data.mode==='legacy'?'1':''}});
+      }
       else if (action === 'peer-menu' && typeof data?.id === 'string') {
         Menu.buildFromTemplate([
           {label:'编辑设备',click:()=>this.open('peer-editor',data.id)},
@@ -65,6 +72,7 @@ class DesktopWindows {
       webPreferences:{preload:path.join(__dirname,'preload.js'),nodeIntegration:false,contextIsolation:true,sandbox:true}
     });
     this.windows.set(name,window);
+    window.relayPeerId = peerId || '';
     window.setMenu(null);
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',event=>event.preventDefault());
@@ -79,6 +87,6 @@ class DesktopWindows {
   }
 
   refresh() { for (const window of this.windows.values()) if (!window.isDestroyed()) window.webContents.send('relay:refresh'); }
-  close() { for (const window of this.windows.values()) window.destroy(); }
+  close() { this.client?.close(); for (const window of this.windows.values()) window.destroy(); }
 }
 module.exports = {DesktopWindows};

@@ -14,6 +14,12 @@ async function build(){
   try{
     const source=path.join(staging,'source');fs.mkdirSync(source);
     fs.cpSync(path.join(__dirname,'mac'),path.join(source,'mac'),{recursive:true});
+    if(process.env.CLIPRELAY_VIEWER_ARTIFACT){
+      const artifact=path.resolve(process.env.CLIPRELAY_VIEWER_ARTIFACT);
+      require('./mac/stream-viewer.cjs').executable(artifact,'darwin');
+      // Preserve the relative framework symlinks made by macdeployqt.
+      fs.cpSync(artifact,path.join(source,'mac','stream-viewer'),{recursive:true,verbatimSymlinks:true});
+    }
     fs.writeFileSync(path.join(source,'main.js'),"require('./mac/main.cjs');\n");
     for(const name of ['package.json','package-lock.json'])fs.copyFileSync(path.join(__dirname,name),path.join(source,name));
     fs.copyFileSync(path.join(repo,'LICENSE'),path.join(source,'LICENSE'));

@@ -22,5 +22,20 @@
   "renderer/views/remote-desktop.js",
   "renderer/views/remote-network.js",
   "renderer/views/screen-share-picker.js",
-  "renderer/views/updates.js"
+  "renderer/views/updates.js",
+  "desktop-client.cjs",
+  "mac/client-identity.cjs",
+  "mac/stream-viewer.cjs",
+  "mac/paired-store.cjs",
+  "mac/paired-controller.cjs",
+  "mac/paired-crypto.cjs",
+  "mac/paired-relay.cjs",
+  "mac/paired-transport.cjs",
+  "mac/pairing.cjs",
+  "mac/paired-ui.js",
+  "mac/preload.cjs",
+  "mac/ui.html",
+  "mac/ui.css",
+  "mac/ui.js",
+  "stage-viewer.ps1"
 ]

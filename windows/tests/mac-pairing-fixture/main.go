@@ -1,0 +1,71 @@
+// Generates fresh, synthetic identities for Node TLS tests. Nothing is persisted.
+package main
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"io"
+	"math/big"
+	"os"
+	"time"
+)
+
+func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--inspect-cert" {
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, 20000))
+		if err != nil {
+			panic(err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			panic("invalid certificate")
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			panic(err)
+		}
+		if err = cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
+			panic(err)
+		}
+		if cert.IsCA || len(cert.ExtKeyUsage) != 1 || cert.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+			panic("invalid client purpose")
+		}
+		if err = json.NewEncoder(os.Stdout).Encode(map[string]string{"signature": hex.EncodeToString(cert.Signature)}); err != nil {
+			panic(err)
+		}
+		return
+	}
+	result := make(map[string]map[string]string)
+	for _, name := range []string{"host", "client", "wrong"} {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(err)
+		}
+		serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
+		if err != nil {
+			panic(err)
+		}
+		template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "ClipRelay fixture " + name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		if err != nil {
+			panic(err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			panic(err)
+		}
+		private, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			panic(err)
+		}
+		result[name] = map[string]string{"cert": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), "key": string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private})), "signature": hex.EncodeToString(cert.Signature)}
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		panic(err)
+	}
+}
