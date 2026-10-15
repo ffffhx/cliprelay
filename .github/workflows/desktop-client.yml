@@ -2,7 +2,7 @@ name: Desktop Client Build
 on:
   push:
     branches: ['codex/desktop-client-*']
-    paths: ['engine/desktop-client/**', 'scripts/*desktop_client*', '.github/workflows/desktop-client.yml']
+    paths: ['engine/desktop-client/**', 'scripts/*desktop_client*', 'scripts/test_desktop_input.py', '.github/workflows/desktop-client.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,6 +26,8 @@ jobs:
           node-version: '22'
       - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev libssl-dev
       - run: python3 scripts/prepare_desktop_client.py desktop-source
+      - name: Test native input epochs and stale shared batches
+        run: python3 scripts/test_desktop_input.py desktop-source --output /tmp/cliprelay-input-epochs
       - name: Test embedded route port bounds
         run: |
           cc -std=c11 -Wall -Wextra -Werror engine/desktop-client/tests/portmap.c -o /tmp/cliprelay-portmap

@@ -2,7 +2,7 @@
 import time
 
 
-def verify_input_epochs(process, call, receive_state, instance, stream_id, owner, epochs):
+def verify_input_epochs(process, call, receive_state, instance, stream_id, owner, epochs, native_core=False):
     def state():
         status, value = call(endpoint="input")
         assert status == 200 and value["protocol"] == 1 and value["instance"] == instance
@@ -39,6 +39,16 @@ def verify_input_epochs(process, call, receive_state, instance, stream_id, owner
         else:
             raise AssertionError("Host input worker did not acknowledge the requested epoch")
         results.append({"epoch":epoch,"paused":current["paused"],"acknowledgmentMs":round((time.monotonic()-started)*1000)})
+        if native_core:
+            send(epoch,3)  # Only after exact authenticated host acknowledgment.
+            local_deadline = time.monotonic()+4
+            while time.monotonic()<local_deadline:
+                if receive_state().get("inputLocalAcknowledged") == epoch:
+                    break
+                time.sleep(.03)
+            else:
+                raise AssertionError("Native input sender did not accept the verified host acknowledgment")
+            results[-1]["localAcknowledgmentMs"] = round((time.monotonic()-started)*1000)
         if epoch == 3:
             send(2,2)  # Delayed resume from the previous cycle must not reopen input.
             time.sleep(.2)

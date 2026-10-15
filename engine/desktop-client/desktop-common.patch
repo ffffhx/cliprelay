@@ -1,46 +1,5 @@
---- a/src/Limelight.h
-+++ b/src/Limelight.h
-@@ -100,6 +100,10 @@
-     // in /launch and /resume requests.
-     char remoteInputAesKey[16];
-     char remoteInputAesIv[16];
-+
-+    // ClipRelay owned loopback route. Zero/zero keeps normal direct behavior.
-+    uint16_t cliprelayLocalPort;
-+    uint16_t cliprelayHostPort;
- } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
- 
- // Use this function to zero the stream configuration when allocated on the stack or heap
-@@ -438,6 +442,9 @@
- // desktop resolution and streaming resolution with HDR enabled. This value is
- // supported on GFE 3.22+.
- #define ML_ERROR_FRAME_CONVERSION -104
-+
-+// ClipRelay: distinguish transport loss from allocation/protocol errors.
-+#define ML_ERROR_NETWORK_LOST -105
- 
- // This callback is invoked to log debug message
- typedef void(*ConnListenerLogMessage)(const char* format, ...);
---- a/src/ControlStream.c
-+++ b/src/ControlStream.c
-@@ -1177,7 +1177,7 @@
-                         // assume the server died tragically, so go ahead and tear down.
-                         PltUnlockMutex(&enetMutex);
-                         Limelog("Disconnect event timeout expired\n");
--                        ListenerCallbacks.connectionTerminated(-1);
-+                        ListenerCallbacks.connectionTerminated(ML_ERROR_NETWORK_LOST);
-                         return;
-                     }
-                 }
-@@ -1379,7 +1379,7 @@
-         }
-         else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
-             Limelog("Control stream received unexpected disconnect event\n");
--            ListenerCallbacks.connectionTerminated(-1);
-+            ListenerCallbacks.connectionTerminated(ML_ERROR_NETWORK_LOST);
-             return;
-         }
-     }
+diff --git a/src/Connection.c b/src/Connection.c
+index bac9a6e..48925a0 100644
 --- a/src/Connection.c
 +++ b/src/Connection.c
 @@ -1,4 +1,5 @@
@@ -49,7 +8,7 @@
  
  static int stage = STAGE_NONE;
  static ConnListenerConnectionTerminated originalTerminationCallback;
-@@ -261,6 +262,15 @@
+@@ -261,6 +262,15 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
      memset(&LocalAddr, 0, sizeof(LocalAddr));
      NegotiatedVideoFormat = 0;
      memcpy(&StreamConfig, streamConfig, sizeof(StreamConfig));
@@ -65,7 +24,7 @@
      RemoteAddrString = strdup(serverInfo->address);
  
      // The values in RTSP SETUP will be used to populate these.
-@@ -279,6 +289,11 @@
+@@ -279,6 +289,11 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
          Limelog("RTSP port: %u\n", RtspPortNumber);
      }
  
@@ -77,6 +36,831 @@
      alreadyTerminated = false;
      ConnectionInterrupted = false;
      
+diff --git a/src/ControlStream.c b/src/ControlStream.c
+index 2b5182e..1800324 100644
+--- a/src/ControlStream.c
++++ b/src/ControlStream.c
+@@ -1177,7 +1177,7 @@ static void controlReceiveThreadFunc(void* context) {
+                         // assume the server died tragically, so go ahead and tear down.
+                         PltUnlockMutex(&enetMutex);
+                         Limelog("Disconnect event timeout expired\n");
+-                        ListenerCallbacks.connectionTerminated(-1);
++                        ListenerCallbacks.connectionTerminated(ML_ERROR_NETWORK_LOST);
+                         return;
+                     }
+                 }
+@@ -1379,7 +1379,7 @@ static void controlReceiveThreadFunc(void* context) {
+         }
+         else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
+             Limelog("Control stream received unexpected disconnect event\n");
+-            ListenerCallbacks.connectionTerminated(-1);
++            ListenerCallbacks.connectionTerminated(ML_ERROR_NETWORK_LOST);
+             return;
+         }
+     }
+diff --git a/src/InputStream.c b/src/InputStream.c
+index 3b56098..c441ab2 100644
+--- a/src/InputStream.c
++++ b/src/InputStream.c
+@@ -8,6 +8,15 @@ static bool needsBatchedScroll;
+ static int batchedScrollDelta;
+ static PPLT_CRYPTO_CONTEXT cryptoContext;
+ 
++// Lock order is epoch -> batch. Public producers hold the epoch lock through
++// their cache/queue mutation; the sender never holds batch during network I/O.
++static PLT_MUTEX cliprelayInputEpochMutex;
++static uint32_t cliprelayInputEpoch;
++static bool cliprelayInputEpochActive;
++static bool cliprelayInputEpochOpen;
++static bool cliprelayInputEpochPending;
++static bool cliprelayInputEpochFailed;
++
+ static LINKED_BLOCKING_QUEUE packetQueue;
+ static LINKED_BLOCKING_QUEUE packetHolderFreeList;
+ static PLT_THREAD inputSendThread;
+@@ -51,6 +60,7 @@ typedef struct _PACKET_HOLDER {
+     LINKED_BLOCKING_QUEUE_ENTRY entry;
+     uint32_t enetPacketFlags;
+     uint8_t channelId;
++    uint32_t cliprelayEpoch;
+ 
+     // The union must be the last member since we abuse the NV_UNICODE_PACKET
+     // text field to store variable length data which gets split before being
+@@ -94,6 +104,15 @@ static struct {
+ 
+ // Initializes the input stream
+ int initializeInputStream(void) {
++    if (StreamConfig.cliprelayInputEpochs && (!IS_SUNSHINE() || !APP_VERSION_AT_LEAST(7, 1, 431))) {
++        return LI_ERR_UNSUPPORTED;
++    }
++    cliprelayInputEpoch = 0;
++    cliprelayInputEpochActive = StreamConfig.cliprelayInputEpochs != 0;
++    cliprelayInputEpochOpen = !cliprelayInputEpochActive;
++    cliprelayInputEpochPending = false;
++    cliprelayInputEpochFailed = false;
++    PltCreateMutex(&cliprelayInputEpochMutex);
+     memcpy(currentAesIv, StreamConfig.remoteInputAesIv, sizeof(currentAesIv));
+ 
+     // Set a high maximum queue size limit to ensure input isn't dropped
+@@ -118,6 +137,7 @@ int initializeInputStream(void) {
+     // Start with the virtual mouse centered
+     absCurrentPosX = absCurrentPosY = 0.5f;
+ 
++    memset(currentQueuedControllerPacket, 0, sizeof(currentQueuedControllerPacket));
+     memset(currentGamepadSensorState, 0, sizeof(currentGamepadSensorState));
+     memset(&currentRelativeMouseState, 0, sizeof(currentRelativeMouseState));
+     memset(&currentAbsoluteMouseState, 0, sizeof(currentAbsoluteMouseState));
+@@ -155,6 +175,7 @@ void destroyInputStream(void) {
+     }
+ 
+     PltDeleteMutex(&batchedInputMutex);
++    PltDeleteMutex(&cliprelayInputEpochMutex);
+ }
+ 
+ static int encryptData(unsigned char* plaintext, int plaintextLen,
+@@ -201,7 +222,7 @@ static void freePacketHolder(PPACKET_HOLDER holder) {
+     }
+ }
+ 
+-static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
++static PPACKET_HOLDER allocatePacketHolderRaw(int extraLength) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -232,7 +253,96 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
+     }
+ }
+ 
+-static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
++// All allocations are made by a producer holding cliprelayInputEpochMutex,
++// except startup haptics, which is skipped when epochs are enabled.
++static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
++    PPACKET_HOLDER holder = allocatePacketHolderRaw(extraLength);
++    if (holder != NULL) holder->cliprelayEpoch = cliprelayInputEpoch;
++    return holder;
++}
++
++static void cliprelayInputHeader(unsigned char* bytes, uint32_t epoch, unsigned operation, size_t bodyLength) {
++    uint32_t length = BE32((uint32_t)(12 + bodyLength));
++    uint32_t magic = LE32(0x4352494e);
++    uint32_t wireEpoch = BE32(epoch);
++    memcpy(bytes, &length, 4);
++    memcpy(bytes + 4, &magic, 4);
++    memcpy(bytes + 8, &wireEpoch, 4);
++    bytes[12] = (unsigned char)operation;
++    memset(bytes + 13, 0, 3);
++}
++
++// Read while holding either the epoch mutex or batch mutex. Transitions hold
++// both, so an old holder cannot consume/reset a newer epoch's shared batch.
++static bool cliprelayInputCurrentLocked(PPACKET_HOLDER holder) {
++    return !cliprelayInputEpochActive ||
++        (cliprelayInputEpochOpen && holder->cliprelayEpoch == cliprelayInputEpoch);
++}
++
++static bool cliprelayInputCurrent(PPACKET_HOLDER holder) {
++    bool current;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    current = cliprelayInputCurrentLocked(holder);
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return current;
++}
++
++int LiClipRelayInputCommand(uint32_t epoch, bool pause) {
++    int result;
++    PLINKED_BLOCKING_QUEUE_ENTRY entry;
++    unsigned char bytes[16];
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    if (!initialized || !cliprelayInputEpochActive || cliprelayInputEpochFailed ||
++        cliprelayInputEpochPending || cliprelayInputEpoch == UINT32_MAX ||
++        epoch != cliprelayInputEpoch + 1 || pause != ((epoch & 1) != 0)) {
++        PltUnlockMutex(&cliprelayInputEpochMutex);
++        return -2;
++    }
++    PltLockMutex(&batchedInputMutex);
++    cliprelayInputEpoch = epoch;
++    cliprelayInputEpochOpen = false;
++    cliprelayInputEpochPending = true;
++    memset(currentQueuedControllerPacket, 0, sizeof(currentQueuedControllerPacket));
++    memset(currentGamepadSensorState, 0, sizeof(currentGamepadSensorState));
++    memset(&currentRelativeMouseState, 0, sizeof(currentRelativeMouseState));
++    memset(&currentAbsoluteMouseState, 0, sizeof(currentAbsoluteMouseState));
++    currentPenButtonState = 0;
++    batchedScrollDelta = 0;
++    absCurrentPosX = absCurrentPosY = 0.5f;
++    PltUnlockMutex(&batchedInputMutex);
++    entry = LbqFlushQueueItems(&packetQueue);
++    while (entry != NULL) {
++        PLINKED_BLOCKING_QUEUE_ENTRY next = entry->flink;
++        freePacketHolder(entry->data);
++        entry = next;
++    }
++    cliprelayInputHeader(bytes, epoch, pause ? 1 : 2, 0);
++    result = sendInputPacketOnControlStream(bytes, sizeof(bytes), CTRL_CHANNEL_GENERIC, ENET_PACKET_FLAG_RELIABLE, false);
++    if (result < 0) cliprelayInputEpochFailed = true;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    // This confirms local gating and transport submission only. The trusted
++    // owner must independently verify the exact host's acknowledgment.
++    return result;
++}
++
++int LiClipRelayInputAcknowledge(uint32_t epoch) {
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    if (!initialized || !cliprelayInputEpochActive || cliprelayInputEpochFailed ||
++        !cliprelayInputEpochPending || epoch != cliprelayInputEpoch) {
++        PltUnlockMutex(&cliprelayInputEpochMutex);
++        return -2;
++    }
++    PltLockMutex(&batchedInputMutex);
++    cliprelayInputEpochPending = false;
++    cliprelayInputEpochOpen = (epoch & 1) == 0;
++    PltUnlockMutex(&batchedInputMutex);
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return 0;
++}
++
++static bool sendInputPacketLegacy(PPACKET_HOLDER holder, bool moreData) {
+     SOCK_RET err;
+ 
+     // On GFE 3.22, the entire control stream is encrypted (and support for separate RI encrypted)
+@@ -306,6 +416,37 @@ static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
+     return true;
+ }
+ 
++static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
++    int result;
++    unsigned char bytes[16 + MAX_INPUT_PACKET_SIZE];
++    PltLockMutex(&cliprelayInputEpochMutex);
++    if (!cliprelayInputEpochActive) {
++        PltUnlockMutex(&cliprelayInputEpochMutex);
++        return sendInputPacketLegacy(holder, moreData);
++    }
++    if (!cliprelayInputCurrentLocked(holder)) {
++        PltUnlockMutex(&cliprelayInputEpochMutex);
++        return true;
++    }
++    const size_t length = PACKET_SIZE(holder);
++    if (length > MAX_INPUT_PACKET_SIZE || length < sizeof(NV_INPUT_HEADER)) {
++        PltUnlockMutex(&cliprelayInputEpochMutex);
++        return false;
++    }
++    cliprelayInputHeader(bytes, holder->cliprelayEpoch, 3, length);
++    memcpy(bytes + 16, &holder->packet, length);
++    result = sendInputPacketOnControlStream(bytes, (int)(16 + length), holder->channelId, holder->enetPacketFlags, moreData);
++    if (result < 0) {
++        PltLockMutex(&batchedInputMutex);
++        cliprelayInputEpochFailed = true;
++        cliprelayInputEpochOpen = false;
++        PltUnlockMutex(&batchedInputMutex);
++    }
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    if (result < 0) ListenerCallbacks.connectionTerminated(result);
++    return result >= 0;
++}
++
+ static void floatToNetfloat(float in, netfloat out) {
+     if (IS_LITTLE_ENDIAN()) {
+         memcpy(out, &in, sizeof(in));
+@@ -344,6 +485,11 @@ static void inputSendThreadProc(void* context) {
+             return;
+         }
+ 
++        if (!cliprelayInputCurrent(holder)) {
++            freePacketHolder(holder);
++            continue;
++        }
++
+         // If it's a multi-controller packet, latch it by clearing currentQueuedControllerPacket.
+         // This will prevent another thread from batching additional data into it while we're
+         // trying to send it.
+@@ -376,7 +522,8 @@ static void inputSendThreadProc(void* context) {
+             PltLockMutex(&batchedInputMutex);
+ 
+             // Send as many packets as it takes to get the entire delta through
+-            while (currentRelativeMouseState.deltaX != 0 || currentRelativeMouseState.deltaY != 0) {
++            while (cliprelayInputCurrentLocked(holder) &&
++                   (currentRelativeMouseState.deltaX != 0 || currentRelativeMouseState.deltaY != 0)) {
+                 bool more = false;
+ 
+                 if (currentRelativeMouseState.deltaX < INT16_MIN) {
+@@ -422,7 +569,7 @@ static void inputSendThreadProc(void* context) {
+             }
+ 
+             // The state change is no longer pending
+-            currentRelativeMouseState.dirty = false;
++            if (cliprelayInputCurrentLocked(holder)) currentRelativeMouseState.dirty = false;
+ 
+             PltUnlockMutex(&batchedInputMutex);
+ 
+@@ -446,6 +593,12 @@ static void inputSendThreadProc(void* context) {
+ 
+             PltLockMutex(&batchedInputMutex);
+ 
++            if (!cliprelayInputCurrentLocked(holder)) {
++                PltUnlockMutex(&batchedInputMutex);
++                freePacketHolder(holder);
++                continue;
++            }
++
+             // Populate the packet with the latest state
+             holder->packet.mouseMoveAbs.x = BE16(currentAbsoluteMouseState.x);
+             holder->packet.mouseMoveAbs.y = BE16(currentAbsoluteMouseState.y);
+@@ -485,7 +638,7 @@ static void inputSendThreadProc(void* context) {
+                 }
+ 
+                 // If it's not a pen packet, we're done
+-                if (penBatchHolder->packet.header.magic != LE32(SS_PEN_MAGIC)) {
++                if (holder->cliprelayEpoch != penBatchHolder->cliprelayEpoch || penBatchHolder->packet.header.magic != LE32(SS_PEN_MAGIC)) {
+                     break;
+                 }
+ 
+@@ -517,6 +670,12 @@ static void inputSendThreadProc(void* context) {
+ 
+             PltLockMutex(&batchedInputMutex);
+ 
++            if (!cliprelayInputCurrentLocked(holder)) {
++                PltUnlockMutex(&batchedInputMutex);
++                freePacketHolder(holder);
++                continue;
++            }
++
+             // LI_MOTION_TYPE_* values are 1-based, so we have to subtract 1 to index into our state array
+             float x = currentGamepadSensorState[controllerNumber][motionType - 1].x;
+             float y = currentGamepadSensorState[controllerNumber][motionType - 1].y;
+@@ -533,6 +692,12 @@ static void inputSendThreadProc(void* context) {
+                 holder->enetPacketFlags = 0;
+             }
+ 
++            if (!cliprelayInputCurrentLocked(holder)) {
++                PltUnlockMutex(&batchedInputMutex);
++                freePacketHolder(holder);
++                continue;
++            }
++
+             // Populate the packet with the latest state
+             floatToNetfloat(x, holder->packet.controllerMotion.x);
+             floatToNetfloat(y, holder->packet.controllerMotion.y);
+@@ -554,16 +719,16 @@ static void inputSendThreadProc(void* context) {
+             // have been processed prior to sending these UTF-8 events to avoid interference between
+             // the two (especially with modifier keys).
+             flushInputOnControlStream();
+-            while (!PltIsThreadInterrupted(&inputSendThread) && isControlDataInTransit()) {
++            while (!PltIsThreadInterrupted(&inputSendThread) && cliprelayInputCurrent(holder) && isControlDataInTransit()) {
+                 PltSleepMs(10);
+             }
+ 
+             // Finally, sleep an additional 50 ms to allow the events to be processed by Windows
+-            PltSleepMs(50);
++            if (cliprelayInputCurrent(holder)) PltSleepMs(50);
+ 
+             // We send each Unicode code point individually. This way we can always ensure they will
+             // never straddle a packet boundary (which will cause a parsing error on the host).
+-            while (i < totalLength && !PltIsThreadInterrupted(&inputSendThread)) {
++            while (i < totalLength && !PltIsThreadInterrupted(&inputSendThread) && cliprelayInputCurrent(holder)) {
+                 uint32_t codePointLength;
+                 uint8_t firstByte = (uint8_t)holder->packet.unicode.text[i];
+                 if ((firstByte & 0x80) == 0x00) {
+@@ -587,6 +752,11 @@ static void inputSendThreadProc(void* context) {
+                     break;
+                 }
+ 
++                if (codePointLength > totalLength - i) {
++                    Limelog("Truncated unicode code point\n");
++                    break;
++                }
++
+                 // Use the original packet as a template and fixup to send one code point at a time
+                 splitPacket = *holder;
+                 splitPacket.packet.unicode.header.size = BE32(sizeof(uint32_t) + codePointLength);
+@@ -675,7 +845,7 @@ int startInputStream(void) {
+     initialized = true;
+ 
+     // GFE will not send haptics events without this magic packet first
+-    sendEnableHaptics();
++    if (!cliprelayInputEpochActive) sendEnableHaptics();
+ 
+     return err;
+ }
+@@ -683,7 +853,12 @@ int startInputStream(void) {
+ // Stops the input stream
+ int stopInputStream(void) {
+     // No more packets should be queued now
++    PltLockMutex(&cliprelayInputEpochMutex);
+     initialized = false;
++    PltLockMutex(&batchedInputMutex);
++    if (cliprelayInputEpochActive) cliprelayInputEpochOpen = false;
++    PltUnlockMutex(&batchedInputMutex);
++    PltUnlockMutex(&cliprelayInputEpochMutex);
+     LbqSignalQueueShutdown(&packetHolderFreeList);
+ 
+     // Signal the input send thread to drain all pending
+@@ -704,7 +879,7 @@ int stopInputStream(void) {
+ }
+ 
+ // Send a mouse move event to the streaming machine
+-int LiSendMouseMoveEvent(short deltaX, short deltaY) {
++static int LiSendMouseMoveEventInternal(short deltaX, short deltaY) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -771,7 +946,7 @@ int LiSendMouseMoveEvent(short deltaX, short deltaY) {
+ }
+ 
+ // Send a mouse position update to the streaming machine
+-int LiSendMousePositionEvent(short x, short y, short referenceWidth, short referenceHeight) {
++static int LiSendMousePositionEventInternal(short x, short y, short referenceWidth, short referenceHeight) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -838,18 +1013,18 @@ int LiSendMousePositionEvent(short x, short y, short referenceWidth, short refer
+ }
+ 
+ // Send a relative motion event using absolute position to the streaming machine
+-int LiSendMouseMoveAsMousePositionEvent(short deltaX, short deltaY, short referenceWidth, short referenceHeight) {
++static int LiSendMouseMoveAsMousePositionEventInternal(short deltaX, short deltaY, short referenceWidth, short referenceHeight) {
+     // Convert the current position to be relative to the provided reference dimensions
+     short oldPositionX = (short)(absCurrentPosX * referenceWidth);
+     short oldPositionY = (short)(absCurrentPosY * referenceHeight);
+ 
+-    return LiSendMousePositionEvent(CLAMP(oldPositionX + deltaX, 0, referenceWidth),
++    return LiSendMousePositionEventInternal(CLAMP(oldPositionX + deltaX, 0, referenceWidth),
+                                     CLAMP(oldPositionY + deltaY, 0, referenceHeight),
+                                     referenceWidth, referenceHeight);
+ }
+ 
+ // Send a mouse button event to the streaming machine
+-int LiSendMouseButtonEvent(char action, int button) {
++static int LiSendMouseButtonEventInternal(char action, int button) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -883,7 +1058,7 @@ int LiSendMouseButtonEvent(char action, int button) {
+ }
+ 
+ // Send a key press event to the streaming machine
+-int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char flags) {
++static int LiSendKeyboardEvent2Internal(short keyCode, char keyAction, char modifiers, char flags) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -963,11 +1138,11 @@ int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char fla
+     return err;
+ }
+ 
+-int LiSendKeyboardEvent(short keyCode, char keyAction, char modifiers) {
+-    return LiSendKeyboardEvent2(keyCode, keyAction, modifiers, 0);
++static int LiSendKeyboardEventInternal(short keyCode, char keyAction, char modifiers) {
++    return LiSendKeyboardEvent2Internal(keyCode, keyAction, modifiers, 0);
+ }
+ 
+-int LiSendUtf8TextEvent(const char *text, unsigned int length) {
++static int LiSendUtf8TextEventInternal(const char *text, unsigned int length) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -1153,6 +1328,11 @@ static int sendControllerEventInternal(short controllerNumber, short activeGamep
+         if (err != LBQ_SUCCESS) {
+             LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
+             Limelog("Input queue reached maximum size limit\n");
++            PltLockMutex(&batchedInputMutex);
++            if (currentQueuedControllerPacket[controllerNumber] == holder) {
++                currentQueuedControllerPacket[controllerNumber] = NULL;
++            }
++            PltUnlockMutex(&batchedInputMutex);
+             freePacketHolder(holder);
+         }
+     }
+@@ -1165,7 +1345,7 @@ static int sendControllerEventInternal(short controllerNumber, short activeGamep
+ }
+ 
+ // Send a controller event to the streaming machine
+-int LiSendControllerEvent(int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
++static int LiSendControllerEventInternal(int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
+     short leftStickX, short leftStickY, short rightStickX, short rightStickY)
+ {
+     return sendControllerEventInternal(0, 0x1, buttonFlags, leftTrigger, rightTrigger,
+@@ -1173,7 +1353,7 @@ int LiSendControllerEvent(int buttonFlags, unsigned char leftTrigger, unsigned c
+ }
+ 
+ // Send a controller event to the streaming machine
+-int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
++static int LiSendMultiControllerEventInternal(short controllerNumber, short activeGamepadMask,
+     int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
+     short leftStickX, short leftStickY, short rightStickX, short rightStickY)
+ {
+@@ -1183,7 +1363,7 @@ int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
+ }
+ 
+ // Send a high resolution scroll event to the streaming machine
+-int LiSendHighResScrollEvent(short scrollAmount) {
++static int LiSendHighResScrollEventInternal(short scrollAmount) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -1278,12 +1458,12 @@ int LiSendHighResScrollEvent(short scrollAmount) {
+ }
+ 
+ // Send a scroll event to the streaming machine
+-int LiSendScrollEvent(signed char scrollClicks) {
+-    return LiSendHighResScrollEvent(scrollClicks * LI_WHEEL_DELTA);
++static int LiSendScrollEventInternal(signed char scrollClicks) {
++    return LiSendHighResScrollEventInternal(scrollClicks * LI_WHEEL_DELTA);
+ }
+ 
+ // Send a high resolution horizontal scroll event
+-int LiSendHighResHScrollEvent(short scrollAmount) {
++static int LiSendHighResHScrollEventInternal(short scrollAmount) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -1322,11 +1502,11 @@ int LiSendHighResHScrollEvent(short scrollAmount) {
+     return err;
+ }
+ 
+-int LiSendHScrollEvent(signed char scrollClicks) {
+-    return LiSendHighResHScrollEvent(scrollClicks * LI_WHEEL_DELTA);
++static int LiSendHScrollEventInternal(signed char scrollClicks) {
++    return LiSendHighResHScrollEventInternal(scrollClicks * LI_WHEEL_DELTA);
+ }
+ 
+-int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y, float pressureOrDistance,
++static int LiSendTouchEventInternal(uint8_t eventType, uint32_t pointerId, float x, float y, float pressureOrDistance,
+                      float contactAreaMajor, float contactAreaMinor, uint16_t rotation) {
+     PPACKET_HOLDER holder;
+     int err;
+@@ -1373,7 +1553,7 @@ int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y, fl
+     return err;
+ }
+ 
+-int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
++static int LiSendPenEventInternal(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
+                    float x, float y, float pressureOrDistance,
+                    float contactAreaMajor, float contactAreaMinor,
+                    uint16_t rotation, uint8_t tilt) {
+@@ -1426,7 +1606,7 @@ int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
+     return err;
+ }
+ 
+-int LiSendControllerArrivalEvent(uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type,
++static int LiSendControllerArrivalEventInternal(uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type,
+                                  uint32_t supportedButtonFlags, uint16_t capabilities) {
+     PPACKET_HOLDER holder;
+     int err;
+@@ -1471,10 +1651,10 @@ int LiSendControllerArrivalEvent(uint8_t controllerNumber, uint16_t activeGamepa
+     }
+ 
+     // Send a MC event just in case the host software doesn't support arrival events.
+-    return LiSendMultiControllerEvent(controllerNumber, activeGamepadMask, 0, 0, 0, 0, 0, 0, 0);
++    return LiSendMultiControllerEventInternal(controllerNumber, activeGamepadMask, 0, 0, 0, 0, 0, 0, 0);
+ }
+ 
+-int LiSendControllerTouchEvent2(uint8_t controllerNumber, uint8_t eventType, uint8_t touchpadIndex, uint32_t pointerId, float x, float y, float pressure) {
++static int LiSendControllerTouchEvent2Internal(uint8_t controllerNumber, uint8_t eventType, uint8_t touchpadIndex, uint32_t pointerId, float x, float y, float pressure) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -1523,11 +1703,11 @@ int LiSendControllerTouchEvent2(uint8_t controllerNumber, uint8_t eventType, uin
+     return err;
+ }
+ 
+-int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType, uint32_t pointerId, float x, float y, float pressure) {
+-    return LiSendControllerTouchEvent2(controllerNumber, eventType, 0, pointerId, x, y, pressure);
++static int LiSendControllerTouchEventInternal(uint8_t controllerNumber, uint8_t eventType, uint32_t pointerId, float x, float y, float pressure) {
++    return LiSendControllerTouchEvent2Internal(controllerNumber, eventType, 0, pointerId, x, y, pressure);
+ }
+ 
+-int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType, float x, float y, float z) {
++static int LiSendControllerMotionEventInternal(uint8_t controllerNumber, uint8_t motionType, float x, float y, float z) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -1598,7 +1778,7 @@ int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType, fl
+     return err;
+ }
+ 
+-int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState, uint8_t batteryPercentage) {
++static int LiSendControllerBatteryEventInternal(uint8_t controllerNumber, uint8_t batteryState, uint8_t batteryPercentage) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -1639,3 +1819,231 @@ int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
+ 
+     return err;
+ }
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendMouseMoveEvent(short deltaX, short deltaY) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendMouseMoveEventInternal(deltaX, deltaY) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendMousePositionEvent(short x, short y, short referenceWidth, short referenceHeight) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendMousePositionEventInternal(x, y, referenceWidth, referenceHeight) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendMouseMoveAsMousePositionEvent(short deltaX, short deltaY, short referenceWidth, short referenceHeight) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendMouseMoveAsMousePositionEventInternal(deltaX, deltaY, referenceWidth, referenceHeight) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendMouseButtonEvent(char action, int button) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendMouseButtonEventInternal(action, button) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char flags) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendKeyboardEvent2Internal(keyCode, keyAction, modifiers, flags) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendKeyboardEvent(short keyCode, char keyAction, char modifiers) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendKeyboardEventInternal(keyCode, keyAction, modifiers) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendUtf8TextEvent(const char *text, unsigned int length) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendUtf8TextEventInternal(text, length) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendControllerEvent(int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
++    short leftStickX, short leftStickY, short rightStickX, short rightStickY) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendControllerEventInternal(buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
++    int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
++    short leftStickX, short leftStickY, short rightStickX, short rightStickY) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendMultiControllerEventInternal(controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendHighResScrollEvent(short scrollAmount) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendHighResScrollEventInternal(scrollAmount) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendScrollEvent(signed char scrollClicks) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendScrollEventInternal(scrollClicks) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendHighResHScrollEvent(short scrollAmount) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendHighResHScrollEventInternal(scrollAmount) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendHScrollEvent(signed char scrollClicks) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendHScrollEventInternal(scrollClicks) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y, float pressureOrDistance,
++                     float contactAreaMajor, float contactAreaMinor, uint16_t rotation) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendTouchEventInternal(eventType, pointerId, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
++                   float x, float y, float pressureOrDistance,
++                   float contactAreaMajor, float contactAreaMinor,
++                   uint16_t rotation, uint8_t tilt) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendPenEventInternal(eventType, toolType, penButtons, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation, tilt) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendControllerArrivalEvent(uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type,
++                                 uint32_t supportedButtonFlags, uint16_t capabilities) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendControllerArrivalEventInternal(controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendControllerTouchEvent2(uint8_t controllerNumber, uint8_t eventType, uint8_t touchpadIndex, uint32_t pointerId, float x, float y, float pressure) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendControllerTouchEvent2Internal(controllerNumber, eventType, touchpadIndex, pointerId, x, y, pressure) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType, uint32_t pointerId, float x, float y, float pressure) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendControllerTouchEventInternal(controllerNumber, eventType, pointerId, x, y, pressure) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType, float x, float y, float z) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendControllerMotionEventInternal(controllerNumber, motionType, x, y, z) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
++
++// Gate before the producer can change cached mouse/controller/pen state.
++int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState, uint8_t batteryPercentage) {
++    int result;
++    if (!initialized) return -2;
++    PltLockMutex(&cliprelayInputEpochMutex);
++    result = initialized && (!cliprelayInputEpochActive || cliprelayInputEpochOpen)
++        ? LiSendControllerBatteryEventInternal(controllerNumber, batteryState, batteryPercentage) : -2;
++    PltUnlockMutex(&cliprelayInputEpochMutex);
++    return result;
++}
+diff --git a/src/Limelight.h b/src/Limelight.h
+index 22bee46..d852f6e 100644
+--- a/src/Limelight.h
++++ b/src/Limelight.h
+@@ -100,6 +100,14 @@ typedef struct _STREAM_CONFIGURATION {
+     // in /launch and /resume requests.
+     char remoteInputAesKey[16];
+     char remoteInputAesIv[16];
++
++    // ClipRelay owned loopback route. Zero/zero keeps normal direct behavior.
++    uint16_t cliprelayLocalPort;
++    uint16_t cliprelayHostPort;
++
++    // Optional ClipRelay host input epochs. Starts with input blocked until
++    // the owner completes the pause/resume handshake. Zero preserves legacy.
++    bool cliprelayInputEpochs;
+ } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
+ 
+ // Use this function to zero the stream configuration when allocated on the stack or heap
+@@ -439,6 +447,9 @@ typedef void(*ConnListenerConnectionTerminated)(int errorCode);
+ // supported on GFE 3.22+.
+ #define ML_ERROR_FRAME_CONVERSION -104
+ 
++// ClipRelay: distinguish transport loss from allocation/protocol errors.
++#define ML_ERROR_NETWORK_LOST -105
++
+ // This callback is invoked to log debug message
+ typedef void(*ConnListenerLogMessage)(const char* format, ...);
+ 
+@@ -570,6 +581,12 @@ const char* LiGetStageName(int stage);
+ bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVariance);
+ 
+ // This function queues a relative mouse move event to be sent to the remote server.
++// Owner-only handshake. Command completion means local gating and encrypted
++// submission, not host release. Acknowledge must follow matching authenticated
++// host state; only an even acknowledged epoch reopens input admission.
++int LiClipRelayInputCommand(uint32_t epoch, bool pause);
++int LiClipRelayInputAcknowledge(uint32_t epoch);
++
+ int LiSendMouseMoveEvent(short deltaX, short deltaY);
+ 
+ // This function queues a mouse position update event to be sent to the remote server.
+diff --git a/src/RtspConnection.c b/src/RtspConnection.c
+index e958101..64f1a68 100644
 --- a/src/RtspConnection.c
 +++ b/src/RtspConnection.c
 @@ -1,4 +1,5 @@
@@ -85,7 +869,7 @@
  #include "Rtsp.h"
  
  #define RTSP_CONNECT_TIMEOUT_SEC 10
-@@ -1198,6 +1199,12 @@
+@@ -1198,6 +1199,12 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
          else {
              Limelog("Audio port: %u\n", AudioPortNumber);
          }
@@ -98,7 +882,7 @@
  
          // Parse the Sunshine ping payload protocol extension if present
          memset(&AudioPingPayload, 0, sizeof(AudioPingPayload));
-@@ -1282,6 +1289,12 @@
+@@ -1282,6 +1289,12 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
          else {
              Limelog("Video port: %u\n", VideoPortNumber);
          }
@@ -111,16 +895,16 @@
  
          freeMessage(&response);
      }
-@@ -1325,6 +1338,12 @@
-         }
+@@ -1326,6 +1339,12 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
          else {
              Limelog("Control port: %u\n", ControlPortNumber);
-+        }
+         }
 +        if (!ClipRelayMapPort(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, 10, &ControlPortNumber)) {
 +            Limelog("ClipRelay control port mismatch\n");
 +            freeMessage(&response);
 +            ret = -1;
 +            goto Exit;
-         }
++        }
  
          freeMessage(&response);
+     }

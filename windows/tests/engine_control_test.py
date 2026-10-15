@@ -80,7 +80,7 @@ def prepare_client(fixture: Path) -> str:
     return cert.fingerprint(hashes.SHA256()).hex()
 
 
-def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitrate_test: bool = False, audio_helper: Path | None = None, input_epochs: bool = False) -> dict:
+def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitrate_test: bool = False, audio_helper: Path | None = None, input_epochs: bool = False, native_input_epochs: bool = False) -> dict:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
     context.load_verify_locations(cafile=str(fixture / "cacert.pem"))
@@ -109,7 +109,7 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitr
     iv = key_id.to_bytes(4, "big").hex() + "00" * 12
     log = (fixture / "client.log").open("w", encoding="utf-8")
     process = subprocess.Popen([str(client), info.findtext("appversion"), info.findtext("GfeVersion") or "3.23.0.74",
-        launch.findtext("sessionUrl0"), key, iv, str(state_file), str(stop_file)] + (["--pattern"] if bitrate_test else []) + (["--audio"] if audio_helper else []) + (["--input-epochs"] if input_epochs else []),
+        launch.findtext("sessionUrl0"), key, iv, str(state_file), str(stop_file)] + (["--pattern"] if bitrate_test else []) + (["--audio"] if audio_helper else []) + (["--native-input-epochs" if native_input_epochs else "--input-epochs"] if input_epochs else []),
         cwd=client.parent, stdin=subprocess.PIPE if input_epochs else None, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
     switches = []
     state_read_retries = 0
@@ -152,7 +152,7 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitr
         input_results = []
         if input_epochs:
             from engine_input_test import verify_input_epochs
-            input_results = verify_input_epochs(process, call, receive_state, instance, stream_id, owner, (1,2,3,4,5))
+            input_results = verify_input_epochs(process, call, receive_state, instance, stream_id, owner, (1,2,3,4,5), native_input_epochs)
         audio_results = None
         if audio_helper:
             from engine_audio_test import verify_audio
@@ -244,9 +244,9 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitr
             _, rates = call(endpoint="bitrate")
             assert rates["streams"][0]["budgetKbps"] == 6000 and rates["streams"][0]["videoKbps"] == bitrate_results[-1]["videoKbps"]
         if input_epochs:
-            input_results += verify_input_epochs(process, call, receive_state, instance, stream_id, owner, (6,))
+            input_results += verify_input_epochs(process, call, receive_state, instance, stream_id, owner, (6,), native_input_epochs)
         return {"sameConnection": True, "switches": switches, "receivedFrames": received["frames"],
-                "decodedOrPresented": False, "bitrate": bitrate_results, "audio": audio_results, "inputEpochs": input_results, "stateReadRetries": state_read_retries}
+                "decodedOrPresented": False, "bitrate": bitrate_results, "audio": audio_results, "inputEpochs": input_results, "nativeInputEpochs": native_input_epochs, "stateReadRetries": state_read_retries}
     finally:
         stop_file.touch()
         try:
@@ -268,7 +268,7 @@ def verify_stream(client: Path, fixture: Path, port: int, call, owner: str, bitr
             raise AssertionError("Isolated stream did not finish cleanup")
 
 
-def run(engine: Path, output: Path, stream_client: Path | None = None, bitrate_test: bool = False, audio_helper: Path | None = None, audio_host: bool = False, input_epochs: bool = False) -> None:
+def run(engine: Path, output: Path, stream_client: Path | None = None, bitrate_test: bool = False, audio_helper: Path | None = None, audio_host: bool = False, input_epochs: bool = False, native_input_epochs: bool = False) -> None:
     engine = engine.resolve(strict=True)
     executable = engine / "sunshine.exe"
     if not executable.is_file() or not (engine / "assets/web/index.html").is_file():
@@ -379,7 +379,7 @@ if ($result.ReturnValue -ne 0) {{ throw 'Cannot launch isolated engine helper' }
         report.update(passed=True, scenarios=6, instance=state["instance"], displays=state["displays"])
         if stream_client:
             report["passed"] = False
-            report["stream"] = verify_stream(stream_client.resolve(strict=True), fixture, port, call, owner, bitrate_test, audio_helper, input_epochs)
+            report["stream"] = verify_stream(stream_client.resolve(strict=True), fixture, port, call, owner, bitrate_test, audio_helper, input_epochs, native_input_epochs)
             report["passed"] = True
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
@@ -419,7 +419,9 @@ if __name__ == "__main__":
     parser.add_argument("--audio-test", type=Path, help="Path to audio-loopback.exe; verify decoded tone across virtual-endpoint mute")
     parser.add_argument("--audio-host-root", action="store_true", help="Test host ancestor exclusion and sibling voice-worker tone suppression")
     parser.add_argument("--input-epochs", action="store_true", help="Verify encrypted input pause/resume acknowledgments without sending user input")
+    parser.add_argument("--native-input-epochs", action="store_true", help="Exercise the patched desktop core's local gate and verified host acknowledgment")
     args = parser.parse_args()
+    args.input_epochs = args.input_epochs or args.native_input_epochs
     if os.name != "nt":
         raise SystemExit("This test requires Windows")
     if args.bitrate_test and not args.stream_client:
@@ -430,4 +432,4 @@ if __name__ == "__main__":
         parser.error("--audio-host-root requires --audio-test")
     if args.input_epochs and not args.stream_client:
         parser.error("--input-epochs requires --stream-client")
-    run(args.engine, args.output, args.stream_client, args.bitrate_test, args.audio_test.resolve(strict=True) if args.audio_test else None, args.audio_host_root, args.input_epochs)
+    run(args.engine, args.output, args.stream_client, args.bitrate_test, args.audio_test.resolve(strict=True) if args.audio_test else None, args.audio_host_root, args.input_epochs, args.native_input_epochs)

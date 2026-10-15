@@ -237,3 +237,23 @@ all 680 Windows package files match the archive manifest.
 Each Mac package matches 40 application sources, 1,845 viewer files, four helper
 files and 163 relative framework links. These remain development artifacts;
 managed UI, installed hardware streaming and public WAN acceptance are pending.
+
+The common input sender now has an optional `cliprelayInputEpochs` configuration
+field and owner-only command/acknowledgment APIs. When enabled, input starts
+blocked. Every public producer is gated before changing cached state; transitions
+clear queued input and mouse/controller/sensor/pen batches. Holders retain their
+original epoch, including split text, and cannot consume newer shared batches.
+The UTF-8 control-drain wait can be canceled without holding the epoch mutex.
+Packets use the host's authenticated envelope while retaining their original
+channel and reliability. A command return confirms local gating and transport
+submission; the owner must verify matching host state before acknowledging it.
+Only an acknowledged even epoch reopens local admission. Errors keep it blocked.
+
+`scripts/test_desktop_input.py <patched-source> --output <executable>` exercises
+the real producers, queue and sender with an in-memory transport. Its ten
+scenarios cover all 20 public producers, full-queue cleanup, failed commands,
+late mouse/controller/sensor batches, recycled controllers after queue overflow,
+pen coalescing, cancellation of text waits
+and legacy compatibility. The desktop entry point does not enable this option
+yet: SDL held-state clearing, owner-pipe commands and the host/presentation
+handshake must be integrated before exposing display switching.

@@ -3,12 +3,18 @@ param(
     [Parameter(Mandatory=$true)][string]$CompilerDirectory,
     [Parameter(Mandatory=$true)][string]$CryptoDll,
     [string]$OpusDll = '',
+    [string]$DesktopSource = '',
     [string]$OutputDirectory = '.tools\uu-parity\engine-stream-client'
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $native = Join-Path $root 'android-app\remote-engine\src\main\jni\moonlight-core'
 $core = Join-Path $native 'moonlight-common-c'
+$extraFlags = @()
+if ($DesktopSource) {
+    $core = Join-Path ((Resolve-Path -LiteralPath $DesktopSource).Path) 'moonlight-common-c\moonlight-common-c'
+    $extraFlags += '-DCLIPRELAY_NATIVE_INPUT_EPOCHS'
+}
 $output = [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory))
 $compiler = Join-Path $CompilerDirectory 'clang.exe'
 $dlltool = Join-Path $CompilerDirectory 'llvm-dlltool.exe'
@@ -38,7 +44,7 @@ $includes = @('src','enet\include','nanors','nanors\deps','nanors\deps\obl') | F
 $includes += '-I' + (Join-Path $native 'openssl\include')
 $includes += '-I' + (Join-Path $native 'opus\include')
 $executable = Join-Path $output 'engine-stream-client.exe'
-& $compiler -std=c11 -O2 -DNDEBUG -DHAS_SOCKLEN_T -DHAS_QOS_FLOWID -DHAS_PQOS_FLOWID -D_WIN32_WINNT=0x0601 @includes @sources $library -lws2_32 -lwinmm -lgdi32 -luser32 -o $executable
+& $compiler -std=c11 -O2 -DNDEBUG -DHAS_SOCKLEN_T -DHAS_QOS_FLOWID -DHAS_PQOS_FLOWID -D_WIN32_WINNT=0x0601 @extraFlags @includes @sources $library -lws2_32 -lwinmm -lgdi32 -luser32 -o $executable
 if ($LASTEXITCODE -ne 0) { throw 'Native stream test client build failed' }
 Copy-Item -LiteralPath $CryptoDll -Destination (Join-Path $output $cryptoName)
 if ($OpusDll) {

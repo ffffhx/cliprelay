@@ -49,7 +49,7 @@ def build(source, platform):
             if item.name in {'.git','build','libs','cliprelay-artifact'}: continue
             archive.add(item,arcname='moonlight-qt/'+item.name,filter=lambda info: None if '/.git/' in info.name or info.name.endswith('/.git') else info)
         archive.add(extension,arcname='cliprelay-extension')
-        for name in ['build_desktop_client.py','prepare_desktop_client.py']:
+        for name in ['build_desktop_client.py','prepare_desktop_client.py','test_desktop_input.py']:
             archive.add(Path(__file__).with_name(name),arcname='scripts/'+name)
     hashes={str(p.relative_to(artifact)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest() for p in artifact.rglob('*') if p.is_file() and not p.is_symlink()}
     (artifact/'manifest.json').write_text(json.dumps({'platform':platform,'protocol':1,'capabilities':['direct','embedded-network','session-events-v1','presentation-events-v1'],'files':hashes},indent=2)+'\n')

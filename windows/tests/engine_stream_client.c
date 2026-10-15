@@ -22,6 +22,8 @@ static CRITICAL_SECTION audio_gate;
 static double audio_tone, tone_sine, tone_cosine;
 static uint64_t tone_index;
 static unsigned tone_count;
+static int use_native_input_epochs;
+static unsigned input_local_acknowledged;
 static HMODULE opus_module;
 static OpusMSDecoder *audio_decoder;
 static OpusMSDecoder *(*opus_create)(opus_int32,int,int,int,const unsigned char*,int*);
@@ -38,7 +40,21 @@ static int input_commands(void) {
     if (available < 8) return 1;
     unsigned char command[8], packet[16] = {0,0,0,12,0x4e,0x49,0x52,0x43,0,0,0,0,0,0,0,0};
     if (!ReadFile(pipe, command, 8, &received, NULL) || received != 8 || command[4] || command[5] || command[6] ||
-        (command[7] != 1 && command[7] != 2) || !(command[0] || command[1] || command[2] || command[3])) return 0;
+        (command[7] != 1 && command[7] != 2 && !(use_native_input_epochs && command[7] == 3)) ||
+        !(command[0] || command[1] || command[2] || command[3])) return 0;
+#ifdef CLIPRELAY_NATIVE_INPUT_EPOCHS
+    if (use_native_input_epochs) {
+        uint32_t epoch = ((uint32_t)command[0]<<24)|((uint32_t)command[1]<<16)|((uint32_t)command[2]<<8)|command[3];
+        if (command[7] == 3) {
+            if (LiClipRelayInputAcknowledge(epoch) != 0) return 0;
+            input_local_acknowledged = epoch;
+            return 1;
+        }
+        int result = LiClipRelayInputCommand(epoch, command[7] == 1);
+        // The fixture deliberately submits invalid initial/replayed commands.
+        return result == 0 || result == -2;
+    }
+#endif
     memcpy(packet + 8, command, 4); packet[12] = command[7];
     return sendInputPacketOnControlStream(packet, sizeof packet, 0, 1, false) >= 0;
 }
@@ -205,7 +221,7 @@ static int report(const char *path, int connected) {
     FILE *file = fopen(temporary, "wb");
     if (!file) { perror("Opening receiver state"); return 0; }
     EnterCriticalSection(&audio_gate); double tone = audio_tone; LeaveCriticalSection(&audio_gate);
-    fprintf(file, "{\"connected\":%s,\"frames\":%ld,\"lastFrame\":%lu,\"lastKeyframe\":%lu,\"keyframes\":%ld,\"bytes\":%lld,\"termination\":%ld,\"maxGapMs\":%lld,\"pattern\":%s,\"audioPackets\":%ld,\"audioSamples\":%lld,\"audioErrors\":%ld,\"audioTone\":%.9f}",
+    fprintf(file, "{\"connected\":%s,\"frames\":%ld,\"lastFrame\":%lu,\"lastKeyframe\":%lu,\"keyframes\":%ld,\"bytes\":%lld,\"termination\":%ld,\"maxGapMs\":%lld,\"pattern\":%s,\"audioPackets\":%ld,\"audioSamples\":%lld,\"audioErrors\":%ld,\"audioTone\":%.9f,\"inputLocalAcknowledged\":%u}",
         connected ? "true" : "false", InterlockedCompareExchange(&frames, 0, 0),
         (unsigned long)InterlockedCompareExchange(&last_frame, 0, 0),
         (unsigned long)InterlockedCompareExchange(&last_keyframe, 0, 0), InterlockedCompareExchange(&keyframes, 0, 0),
@@ -213,7 +229,7 @@ static int report(const char *path, int connected) {
         (long long)InterlockedCompareExchange64(&maximum_gap_ms, 0, 0),
         InterlockedCompareExchange(&pattern_ready, 0, 0) ? "true" : "false",
         InterlockedCompareExchange(&audio_packets, 0, 0), (long long)InterlockedCompareExchange64(&audio_samples, 0, 0),
-        InterlockedCompareExchange(&audio_errors, 0, 0), tone);
+        InterlockedCompareExchange(&audio_errors, 0, 0), tone, input_local_acknowledged);
     if (fclose(file) != 0) { perror("Writing receiver state"); return 0; }
     // The Python reader can briefly hold the old file without delete sharing.
     // Keep atomic publication, but do not stop the stream for that read race.
@@ -239,6 +255,9 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--pattern") && !use_pattern) use_pattern = 1;
         else if (!strcmp(argv[i], "--audio") && !use_audio) use_audio = 1;
         else if (!strcmp(argv[i], "--input-epochs") && !use_input_epochs) use_input_epochs = 1;
+#ifdef CLIPRELAY_NATIVE_INPUT_EPOCHS
+        else if (!strcmp(argv[i], "--native-input-epochs") && !use_input_epochs) use_native_input_epochs = use_input_epochs = 1;
+#endif
         else return 2;
     }
     if (use_audio && !load_opus()) { fputs("Missing fixture Opus DLL\n", stderr); return 2; }
@@ -250,6 +269,9 @@ int main(int argc, char **argv) {
     AUDIO_RENDERER_CALLBACKS audio;
     LiInitializeServerInformation(&server);
     LiInitializeStreamConfiguration(&config);
+#ifdef CLIPRELAY_NATIVE_INPUT_EPOCHS
+    config.cliprelayInputEpochs = use_native_input_epochs != 0;
+#endif
     LiInitializeVideoCallbacks(&video);
     LiInitializeConnectionCallbacks(&listener);
     LiInitializeAudioCallbacks(&audio);
