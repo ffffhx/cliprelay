@@ -377,6 +377,8 @@ Android 终端进一步修复历史回放与新输出混在同次读取中的情
 
 完整 Android 源码提交 `67bec799` 的 [CI 构建](https://github.com/ffffhx/cliprelay/actions/runs/38784674666)现已通过。下载后的测试 XML 与本地 260 项用例清单完全一致：Linux 通过 257 项，跳过 3 项仅适用于 Windows 的文件、Shell 和网卡互操作测试；这 3 项均已在本地 Windows 通过。APK 的签名、17 个新增功能类、四个 ABI 的 UTF-8 JNI 导出及 Termux 来源/许可文件已核验。该包仅完成构建与内容验证，没有安装或执行新增设备测试。记录见 `.tools/uu-parity/android-publication-artifacts.json` 和 `.tools/uu-parity/terminal-replay-artifacts.json`。
 
+文字选择与粘贴预览提交 `bb24687` 的 [Android CI](https://github.com/ffffhx/cliprelay/actions/runs/38789927499)已通过。下载的 XML 与本地 272 项用例清单完全一致：Linux 通过 269 项，仅跳过上述 3 项已在本地 Windows 通过的互操作测试。CI APK、本地 QA 应用与测试包均通过签名检查；新功能类、四个 ABI 的 UTF-8 JNI 导出、Termux 许可及宽字符高亮修改说明已核验。12 项终端设备用例确认已包含在本地测试 APK 中，尚未执行；没有安装到模拟器或替换现有应用。记录见 `.tools/uu-parity/terminal-interaction-artifacts.json`。本次仅修改 Android，Windows 与 Mac 沿用已验证的包。
+
 在工具栏点击「模式 → 游戏模式」，先选择《速速上菜》或《星露谷物语》，再显示相应触屏方向控制和游戏按钮；游戏模式不再单独占用工具栏按钮。取消选择保留当前模式，右上角「⋯」菜单中的「切换游戏」可重新选择，并记住上次使用的游戏。《速速上菜》的键盘预设为：
 WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停。
 方向支持斜向移动，按钮支持长按，可多指同时操作；游戏仍在电脑上运行。
