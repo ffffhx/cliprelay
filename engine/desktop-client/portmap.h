@@ -16,7 +16,7 @@ static inline bool ClipRelayRouteValid(uint16_t localBase, uint16_t hostBase, co
 static inline bool ClipRelayMapPort(uint16_t localBase, uint16_t hostBase, int offset, uint16_t* port) {
     if (localBase == 0 && hostBase == 0) return true;
     if (!ClipRelayRouteValid(localBase, hostBase, "127.0.0.1") || port == NULL ||
-        (offset != 2 && offset != 9 && offset != 10 && offset != 11) ||
+        (offset != 21 && offset != 9 && offset != 10 && offset != 11) ||
         *port != (uint16_t)(hostBase + offset)) return false;
     *port = (uint16_t)(localBase + offset);
     return true;

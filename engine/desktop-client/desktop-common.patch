@@ -39,7 +39,7 @@
          Limelog("RTSP port: %u\n", RtspPortNumber);
      }
  
-+    if (!ClipRelayMapPort(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, 2, &RtspPortNumber)) {
++    if (!ClipRelayMapPort(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, 21, &RtspPortNumber)) {
 +        Limelog("ClipRelay RTSP port mismatch\n");
 +        err = -1;
 +        goto Cleanup;

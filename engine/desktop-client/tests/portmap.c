@@ -5,7 +5,7 @@
 
 int main(void) {
     const uint16_t bases[] = {1029, 32000, 65514};
-    const int offsets[] = {2, 9, 10, 11};
+    const int offsets[] = {21, 9, 10, 11};
     int checked = 0;
     for (unsigned i = 0; i < sizeof(bases)/sizeof(bases[0]); i++) {
         for (unsigned j = 0; j < sizeof(bases)/sizeof(bases[0]); j++) {
@@ -23,6 +23,10 @@ int main(void) {
     assert(!ClipRelayMapPort(32000, 48789, 10, &port) && port == 48798);
     assert(!ClipRelayMapPort(32000, 48789, 9, NULL));
     assert(!ClipRelayMapPort(32000, 48789, 1, &port));
+    port = 48010; // Actual Sunshine/GameStream RTSP port for HTTP base47989.
+    assert(ClipRelayMapPort(32000, 47989, 21, &port) && port == 32021);
+    port = 47991; // HTTP+2 is ClipRelay's paired control API, never RTSP.
+    assert(!ClipRelayMapPort(32000, 47989, 21, &port));
     assert(!ClipRelayMapPort(0, 48789, 9, &port));
     assert(!ClipRelayRouteValid(32000, 48789, "localhost"));
     assert(!ClipRelayRouteValid(32000, 48789, "127.0.0.2"));

@@ -40,7 +40,7 @@ The state-directory argument contains no enrollment credential. Private tsnet
 node state persists there; the owning app must protect and manage that directory.
 
 The helper allocates one port group on literal `127.0.0.1`: relative to the returned
-HTTP base port, HTTPS is -5, RTSP +2, paired control +21, video UDP +9, control UDP
+HTTP base port, HTTPS is -5, RTSP +21, paired control +2, video UDP +9, control UDP
 +10 and audio UDP +11. Destination ports stay fixed at the existing host defaults.
 `ready` means the node and local forwarding sockets are ready; it does not prove
 that a remote desktop is online or that video is being presented. The helper
