@@ -20,6 +20,7 @@ command = [args.compiler, '-std=c11', '-O1', '-DLC_DEBUG', '-Wall', '-Wextra', '
 if sys.platform == 'win32':
     command += ['-DHAS_SOCKLEN_T','-DHAS_QOS_FLOWID','-DHAS_PQOS_FLOWID','-D_WIN32_WINNT=0x0601','-lws2_32','-lwinmm']
 else:
-    command += ['-pthread','-lm']
+    # Strict C11 hides POSIX socket declarations unless explicitly requested.
+    command += ['-D_POSIX_C_SOURCE=200809L','-D_DEFAULT_SOURCE','-pthread','-lm']
 subprocess.run(command+['-o',str(args.output)], check=True, timeout=120)
 subprocess.run([str(args.output.resolve(strict=True))], check=True, timeout=15)
