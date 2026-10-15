@@ -2,7 +2,7 @@ export function mountPrivacy(root,request){
   const node=(tag,text)=>{const item=document.createElement(tag);if(text)item.textContent=text;return item;};
   const section=node('section'),enable=node('button','开启隐私屏'),disable=node('button','恢复本机显示'),status=node('p');
   status.setAttribute('aria-live','polite');
-  section.append(node('h3','隐私屏'),node('p','遮住被控电脑的本机屏幕，远程画面保持可见。连接中断后自动恢复；重新连接需再次开启。电脑前可按 Ctrl+Alt+Shift+P 恢复显示。'),enable,disable,status);root.append(section);
+  section.append(node('h3','隐私屏'),node('p','遮住被控电脑的本机屏幕，远程画面保持可见。连接中断后自动恢复；重新连接需再次开启。电脑前可按 Ctrl+Alt+Shift+P 恢复显示。'),node('p','不遮挡锁屏、UAC 等安全桌面，也不锁定本机键鼠。'),enable,disable,status);root.append(section);
   let state={},viewId='',busy=false,error='';
   const messages={PRIVACY_UNSUPPORTED:'当前电脑不支持隐私屏，请检查电脑端版本。',PRIVACY_DESKTOP_UNAVAILABLE:'电脑桌面暂时无法开启隐私屏。',PRIVACY_NO_EXCLUSIVE_STREAM:'隐私屏需要这台电脑只有一个远控连接。',PRIVACY_BUSY:'隐私屏正在使用或处理中。',PRIVACY_NOT_READY:'请等远程画面恢复后再开启隐私屏。',PRIVACY_EXPIRED:'隐私屏已到期，请确认画面后重新开启。',PRIVACY_INVALID_RESPONSE:'电脑返回的隐私屏状态无效。'};
   function render(next){

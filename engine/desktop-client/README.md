@@ -359,7 +359,7 @@ runs this controller against production Go display/privacy handlers with real
 mutual TLS, including lease renewal and route cleanup. Its display source and
 mask worker are simulated, so it does not claim physical screen acceptance.
 The unchanged C# worker also passes its eight lifecycle/recovery scenarios.
-Desktop audio mute, session-end lock and wake controls remain to be added.
+Desktop session-end lock and wake controls remain to be added.
 
 Privacy source commit `b1ff746d97e9728d45aed2de3872d23f5827403a` passes the
 three-platform run 38769236478. Complete packages Windows 38769246502 and Mac
@@ -369,3 +369,23 @@ installation, independent process and pipe lifetime checks. Both Mac architectur
 retain the verified native viewer/network components and 163 internal links.
 See `.tools/uu-parity/desktop-privacy-artifacts.json`; physical GUI/mask acceptance
 remains pending and the developer machine's installed application is unchanged.
+
+Desktop audio mute now uses `/v1/audio-mute` independently of privacy masks. Its
+strict display parser retains process-audio readiness and generation metadata;
+only the main process chooses the stream, generation and random lease. A queued
+click cannot retarget a replacement capture. Audio generation/readiness changes,
+stale video and route/session replacement stop the old lease without reacquiring.
+Both foreground controls share serialized lifecycle, monotonic expiry and cleanup
+in `foreground-lease.cjs`. Audio restoration additionally requires `recovering` to
+be false, so inactive-but-recovering state and HTTP 503 recovery-pending responses
+cannot be displayed as restored or enable a new mute.
+
+The 98 combined Electron cases pass, including the existing privacy suite after
+the shared lifecycle extraction. Go privacy/audio tests pass 19 top-level groups
+and 46 test events without skips, including real worker status/EOF. The new real
+mutual-TLS fixture connects both desktop controllers to production Go handlers,
+checks pending recovery, independent controls, capture-generation replacement
+and route cleanup. Its audio/capture/mask workers are simulated. The unchanged
+C# audio worker passes 26 lifecycle cases with fake endpoints. No physical output
+is muted, and the existing default-off process-capture setting remains unchanged;
+SYSTEM/cross-session and physical audio acceptance are still required.
