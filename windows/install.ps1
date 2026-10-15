@@ -7,6 +7,8 @@ param(
 
     [switch]$NoStartup,
 
+    [switch]$ValidateOnly,
+
     [string]$BaseUrl = "https://raw.githubusercontent.com/ffffhx/cliprelay/main/windows"
 )
 
@@ -74,11 +76,15 @@ function Stop-InstalledClient {
     }
 }
 
+. (Join-Path $PSScriptRoot 'install-support.ps1')
+# Complete validation precedes process termination, copying, elevation and settings writes.
+Assert-ClipRelayPackage -Directory $PSScriptRoot
 Write-Host "==> Installing ClipRelay to $installDirectory"
 $existingConfig = $null
 if (Test-Path -LiteralPath $configPath) {
     # Fail before stopping the app if settings cannot be read; never replace them.
     $existingConfig = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($existingConfig -isnot [pscustomobject]) { throw 'Existing configuration must be an object.' }
     if (-not $PSBoundParameters.ContainsKey('Peer') -and $null -ne $existingConfig.PSObject.Properties['peer']) {
         $Peer = [string]$existingConfig.peer
     }
@@ -88,6 +94,8 @@ if (Test-Path -LiteralPath $configPath) {
     }
     if (-not $PSBoundParameters.ContainsKey('NoStartup')) { $NoStartup = -not (Test-Path -LiteralPath $shortcutPath) }
 }
+$configuration = New-ClipRelayInstallConfiguration -Existing $existingConfig -Peer $Peer -Port $Port -PeerProvided $PSBoundParameters.ContainsKey('Peer') -PortProvided $PSBoundParameters.ContainsKey('Port')
+if ($ValidateOnly) { Write-Host 'Complete Windows package and configuration verified; no installation changes made.'; return }
 $null = New-Item -ItemType Directory -Path $installDirectory -Force
 Stop-InstalledClient
 $videoExecutable = Join-Path $installDirectory 'screen-share\engine\electron.exe'
@@ -97,7 +105,7 @@ Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" -ErrorAction Silen
 Install-ScriptFile -Name "cliprelay.ps1" -Destination $clientPath
 Install-ScriptFile -Name "uninstall.ps1" -Destination $uninstallerPath
 Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
-foreach ($file in @('updates.ps1', 'update-client.cs', 'version.json', 'start.ps1')) {
+foreach ($file in @('updates.ps1', 'update-client.cs', 'paired-relay.cs', 'version.json', 'start.ps1', 'install-support.ps1')) {
     Install-ScriptFile -Name $file -Destination (Join-Path $installDirectory $file)
 }
 $screenShareDirectory = Join-Path $installDirectory 'screen-share'
@@ -143,11 +151,15 @@ if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'desktop-network\manifest.js
 }
 $remoteDirectory = Join-Path $installDirectory 'remote-desktop'
 New-Item -ItemType Directory -Path $remoteDirectory -Force | Out-Null
-foreach ($file in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+$hostManifest = Get-ClipRelayHostManifest (Join-Path $PSScriptRoot 'remote-desktop')
+foreach ($file in @('files.json') + $hostManifest.serviceSources + $hostManifest.supportFiles) {
     Install-ScriptFile -Name "remote-desktop/$file" -Destination (Join-Path $remoteDirectory $file)
 }
 $remoteBin = Join-Path $remoteDirectory 'bin'
 New-Item -ItemType Directory -Path $remoteBin -Force | Out-Null
+foreach ($name in @('ClipRelay.Remote.Service.exe','ClipRelay.Remote.Client.dll')) {
+    Install-ScriptFile -Name "remote-desktop/bin/$name" -Destination (Join-Path $remoteBin $name)
+}
 $networkSource = Join-Path $PSScriptRoot 'remote-desktop\bin\cliprelay-network.exe'
 if (!(Test-Path -LiteralPath $networkSource)) { throw 'Use the complete ClipRelay Windows package (embedded network component missing).' }
 if ([IO.Path]::GetFullPath($networkSource) -ine [IO.Path]::GetFullPath((Join-Path $remoteBin 'cliprelay-network.exe'))) {
@@ -160,80 +172,18 @@ if (Test-Path -LiteralPath (Join-Path $bundledRemote 'sunshine.exe')) {
     }
 }
 # Prepare the bundled engine before elevation. No separate Sunshine installer is used.
-& (Join-Path $remoteDirectory 'setup.ps1') -Destination $remoteDirectory
+& (Join-Path $remoteDirectory 'setup.ps1') -Destination $remoteDirectory -UsePreparedBinaries
 $remoteSetup = Join-Path $remoteDirectory 'setup.ps1'
 $operatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $isAdmin = ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($isAdmin) {
-    & $remoteSetup -Install -OperatorSid $operatorSid
+    & $remoteSetup -Install -UsePreparedBinaries -OperatorSid $operatorSid
 } else {
-    $remoteInstall = Start-Process -FilePath $windowsPowerShell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$remoteSetup`" -Install -OperatorSid $operatorSid"
+    $remoteInstall = Start-Process -FilePath $windowsPowerShell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$remoteSetup`" -Install -UsePreparedBinaries -OperatorSid $operatorSid"
     if ($remoteInstall.ExitCode -ne 0) { throw 'ClipRelay remote desktop service installation did not complete.' }
 }
 
-$notifications = $true
-$accessToken = ""
-$deviceId = [Guid]::NewGuid().ToString("N")
-$deviceName = [Environment]::MachineName
-$discoveryEnabled = $true
-$peers = $null
-if ($null -ne $existingConfig) {
-    $existingNotif = $existingConfig.PSObject.Properties["notifications"]
-    if ($null -ne $existingNotif -and $null -ne $existingNotif.Value) {
-        $notifications = [bool]$existingNotif.Value
-    }
-    $existingAccessToken = $existingConfig.PSObject.Properties["accessToken"]
-    if ($null -ne $existingAccessToken -and $null -ne $existingAccessToken.Value) {
-        $accessToken = [string]$existingAccessToken.Value
-    }
-    $existingDeviceId = $existingConfig.PSObject.Properties["deviceId"]
-    if ($null -ne $existingDeviceId -and -not [string]::IsNullOrWhiteSpace([string]$existingDeviceId.Value)) {
-        $deviceId = [string]$existingDeviceId.Value
-    }
-    $existingDeviceName = $existingConfig.PSObject.Properties["deviceName"]
-    if ($null -ne $existingDeviceName -and -not [string]::IsNullOrWhiteSpace([string]$existingDeviceName.Value)) {
-        $deviceName = [string]$existingDeviceName.Value
-    }
-    $existingDiscoveryEnabled = $existingConfig.PSObject.Properties["discoveryEnabled"]
-    if ($null -ne $existingDiscoveryEnabled -and $null -ne $existingDiscoveryEnabled.Value) {
-        $discoveryEnabled = [bool]$existingDiscoveryEnabled.Value
-    }
-    $existingPeers = $existingConfig.PSObject.Properties["peers"]
-    if ($null -ne $existingPeers) {
-        $peers = @($existingPeers.Value)
-    }
-}
-if ($null -eq $peers -and -not [string]::IsNullOrWhiteSpace($Peer)) {
-    $peers = @([ordered]@{
-        id          = "installed-peer"
-        name        = "接收设备"
-        address     = $Peer.Trim()
-        port        = $Port
-        accessToken = $accessToken
-        enabled     = $true
-        requiresAuth = $false
-        platform    = ""
-    })
-}
-if ($null -eq $peers) { $peers = @() }
-$primaryPeer = $peers | Where-Object {
-    $enabledProperty = $_.PSObject.Properties["enabled"]
-    $null -eq $enabledProperty -or [bool]$enabledProperty.Value
-} | Select-Object -First 1
-if ($null -eq $primaryPeer) {
-    $primaryPeer = $peers | Select-Object -First 1
-}
-$configuration = [ordered]@{
-    peer          = $(if ($null -ne $primaryPeer) { [string]$primaryPeer.address } else { '' })
-    peers         = @($peers)
-    port          = $Port
-    notifications = $notifications
-    accessToken   = $accessToken
-    deviceId      = $deviceId
-    deviceName    = $deviceName
-    discoveryEnabled = $discoveryEnabled
-}
-$configuration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
+Write-ClipRelayInstallConfiguration -Path $configPath -Configuration $configuration
 
 if ($NoStartup) {
     if (Test-Path -LiteralPath $shortcutPath) {
@@ -276,7 +226,7 @@ if ($firewallRuleNeedsUpdate) {
         $firewallCommand = "Get-NetFirewallRule -DisplayName '$firewallRuleName' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue; " +
             "New-NetFirewallRule -DisplayName '$firewallRuleName' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Private | Out-Null"
         $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($firewallCommand))
-        $firewallProcess = Start-Process -FilePath $windowsPowerShell -Verb RunAs -Wait -PassThru -ArgumentList @(
+        $firewallProcess = Start-Process -FilePath $windowsPowerShell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
             "-NoProfile",
             "-EncodedCommand",
             $encodedCommand

@@ -100,6 +100,26 @@ namespace ClipRelay.Remote {
 
         public static object Read() { return ReadAt(null); }
 
+        public static bool TryAbsolutePoint(int x, int y, int left, int top, int width, int height, out System.Windows.Point point) {
+            point = new System.Windows.Point();
+            if (width <= 0 || height <= 0 || x < left || y < top || (long)x >= (long)left + width || (long)y >= (long)top + height)
+                return false;
+            point = new System.Windows.Point(x, y);
+            return true;
+        }
+
+        public static object ReadAbsolute(int x, int y) {
+            IntPtr previous = IntPtr.Zero;
+            try {
+                try { previous = SetThreadDpiAwarenessContext(new IntPtr(-4)); }
+                catch (EntryPointNotFoundException) { SetProcessDPIAware(); }
+                System.Windows.Point point;
+                if (!TryAbsolutePoint(x, y, GetSystemMetrics(76), GetSystemMetrics(77), GetSystemMetrics(78), GetSystemMetrics(79), out point))
+                    return State(false, false, "", true);
+                return ReadAt(point);
+            } finally { if (previous != IntPtr.Zero) SetThreadDpiAwarenessContext(previous); }
+        }
+
         public static object Read(double x, double y) {
             // UIA uses physical pixels. ClipRelay's default Sunshine output is
             // the primary display; use the same display, not the virtual desktop.
@@ -144,6 +164,12 @@ namespace ClipRelay.Remote {
             while ((line = Console.ReadLine()) != null) {
                 if (line.StartsWith("image:", StringComparison.Ordinal)) {
                     Console.WriteLine(json.Serialize(new { ok = PutImage(line.Substring(6)) }));
+                } else if (line.StartsWith("focus-point:", StringComparison.Ordinal)) {
+                    string[] parts = line.Split(':');
+                    int x, y;
+                    if (parts.Length != 3 || !Int32.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out x)
+                        || !Int32.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out y)) return 2;
+                    Console.WriteLine(json.Serialize(ReadAbsolute(x, y)));
                 } else if (line.StartsWith("focus:", StringComparison.Ordinal)) {
                     string[] parts = line.Split(':');
                     double x, y;

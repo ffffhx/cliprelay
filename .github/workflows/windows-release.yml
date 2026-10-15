@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: windows-release
@@ -37,7 +38,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Encrypted overlay test failed' }
       - name: Check Windows client and update flow
         run: |
-          foreach ($test in @('updates','settings-ui','settings-save-scope','preview-remote-ui','screen-share-picker-ui','screen-share-tray')) {
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','updates','settings-ui','settings-save-scope','preview-remote-ui','screen-share-picker-ui','screen-share-tray')) {
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1"
             if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
           }
@@ -62,6 +63,7 @@ jobs:
             $published = Get-Content dist/windows-update.json -Raw | ConvertFrom-Json
             if ($published.versionCode -ne $version.versionCode) { throw 'Version name already exists with a different code' }
           } else {
+            & scripts/resolve_windows_components.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'cliprelay-release-components')
             & scripts/package_windows.ps1 -OutputDirectory dist
             gh release create $tag "dist/ClipRelay-Windows-$($version.versionName).zip" dist/windows-update.json --target $env:GITHUB_SHA --latest=false --title "ClipRelay Windows $($version.versionName)" --notes-file windows/release-notes.txt
             if ($LASTEXITCODE -ne 0) { throw 'Cannot publish release' }

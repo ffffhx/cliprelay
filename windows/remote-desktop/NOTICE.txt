@@ -1,9 +1,10 @@
 ClipRelay remote desktop components
 
-The bundled Sunshine executable is unmodified upstream Sunshine, licensed under
-GPL-3.0. See COPYING. Its exact release, download hash and corresponding source
-location are recorded in engine.json. Upstream build instructions and dependency
-source references are maintained with that source:
+The bundled Sunshine executable includes ClipRelay's display, bitrate and process
+audio extensions and is licensed under GPL-3.0. See COPYING. engine.json records
+the exact upstream and ClipRelay revisions; engine-files.json pins every shipped
+engine file. The engine directory includes the patch, added headers and preparation
+script. Upstream build instructions and dependency source references are at:
 https://github.com/LizardByte/Sunshine
 
 ClipRelay's remote-service.cs uses the Windows session-launching approach from

@@ -1,12 +1,12 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Artifact, [Parameter(Mandatory=$true)][string]$Destination, [ValidateSet('viewer','network')][string]$Kind = 'viewer')
+param([Parameter(Mandatory=$true)][string]$Artifact, [Parameter(Mandatory=$true)][string]$Destination, [ValidateSet('viewer','network')][string]$Kind = 'viewer', [switch]$VerifyOnly)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $runtimeName = if ($Kind -eq 'network') { 'desktop-network' } else { 'remote-viewer' }
 $processName = if ($Kind -eq 'network') { 'cliprelay-client-network' } else { 'ClipRelayStream' }
 $source = [IO.Path]::GetFullPath($Artifact).TrimEnd('\')
 $target = [IO.Path]::GetFullPath($Destination).TrimEnd('\')
-if ($source -ieq $target) { throw 'Source and destination must differ.' }
+if (!$VerifyOnly -and $source -ieq $target) { throw 'Source and destination must differ.' }
 $parent = Split-Path $target
 if (!(Test-Path -LiteralPath $parent -PathType Container)) { throw 'Destination parent must exist.' }
 if ((Split-Path $target -Leaf) -ne $runtimeName) { throw "Destination must be a $runtimeName runtime directory." }
@@ -35,6 +35,7 @@ foreach ($file in $files) {
     $total += $item.Length
     if ($total -gt 768MB -or (Get-FileHash -LiteralPath $itemPath -Algorithm SHA256).Hash -ine $file.Value) { throw 'Viewer file checksum mismatch or package too large.' }
 }
+if ($VerifyOnly) { return }
 foreach ($process in Get-Process -Name $processName -ErrorAction SilentlyContinue) {
     if ($process.Path -and $process.Path.StartsWith($target + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Close the remote desktop window before updating the viewer.' }
 }

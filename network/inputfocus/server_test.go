@@ -58,7 +58,7 @@ func TestFocusAuthorizationAndRevocation(t *testing.T) {
 	if len(value) != 3 || value["editable"] != true || value["focusId"] != "opaque" {
 		t.Fatal(value)
 	}
-	for _, enabled := range []any{"false", false, "0"} {
+	for _, enabled := range []any{"false", false, "0", 0, 2, "invalid", nil, []any{true}} {
 		write(enabled, cert)
 		if w := request(cert, "GET", "/v1/input-focus"); w.Code != http.StatusForbidden {
 			t.Fatal("disabled client accepted")
@@ -81,7 +81,34 @@ func TestFocusAuthorizationAndRevocation(t *testing.T) {
 	if request(nil, "GET", "/v1/foreground-app").Code != 403 {
 		t.Fatal("unpaired app read")
 	}
-	if reads != 2 {
+	certificatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert}))
+	for _, record := range []map[string]any{
+		{"cert": certificatePEM}, // legacy paired identities omitted enabled
+		{"cert": certificatePEM, "enabled": 1},
+		{"cert": certificatePEM, "enabled": "1"},
+	} {
+		data, _ := json.Marshal(map[string]any{"root": map[string]any{"named_devices": []any{record}}})
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if request(cert, "GET", "/v1/input-focus").Code != 200 {
+			t.Fatal("valid legacy enabled identity was rejected")
+		}
+	}
+	for _, values := range [][2]bool{{true, false}, {false, true}, {true, true}} {
+		var records []map[string]any
+		for _, enabled := range values {
+			records = append(records, map[string]any{"cert": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert})), "enabled": enabled})
+		}
+		data, _ := json.Marshal(map[string]any{"root": map[string]any{"named_devices": records}})
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if request(cert, "GET", "/v1/input-focus").Code != 403 {
+			t.Fatal("ambiguous identity bypassed revocation")
+		}
+	}
+	if reads != 5 {
 		t.Fatal("unauthorized route reached focus provider")
 	}
 	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {

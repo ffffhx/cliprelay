@@ -1,5 +1,6 @@
 // Package inputfocus exposes focus/app metadata and explicit image clipboard writes
-// to paired clients. It never reads control values, labels, text or clipboard data.
+// to paired clients. File operations use an isolated desktop-user worker.
+// Focus probes never read control values, labels, text or clipboard data.
 package inputfocus
 
 import (
@@ -48,22 +49,45 @@ func paired(path string, certificate []byte) bool {
 	var db struct {
 		Root struct {
 			Devices []struct {
-				Cert    string `json:"cert"`
-				Enabled any    `json:"enabled"`
+				Cert    string          `json:"cert"`
+				Enabled json.RawMessage `json:"enabled"`
 			} `json:"named_devices"`
 		} `json:"root"`
 	}
 	if json.Unmarshal(b, &db) != nil {
 		return false
 	}
+	matched := false
 	for _, device := range db.Root.Devices {
-		if device.Enabled == false || device.Enabled == "false" || device.Enabled == "0" {
+		block, _ := pem.Decode([]byte(device.Cert))
+		if block == nil || block.Type != "CERTIFICATE" || !bytes.Equal(block.Bytes, certificate) {
 			continue
 		}
-		block, _ := pem.Decode([]byte(device.Cert))
-		if block != nil && block.Type == "CERTIFICATE" && bytes.Equal(block.Bytes, certificate) {
-			return true
+		if matched || !pairingEnabled(device.Enabled) {
+			return false
 		}
+		matched = true
+	}
+	return matched
+}
+
+// Missing enabled is the legacy format. Explicit malformed/null values are
+// revoked; callers must also reject duplicate certificate identities.
+func pairingEnabled(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	switch value := value.(type) {
+	case bool:
+		return value
+	case string:
+		return value == "true" || value == "1"
+	case float64:
+		return value == 1
 	}
 	return false
 }
@@ -75,9 +99,17 @@ type probe struct {
 	cmd        *exec.Cmd
 	in         io.WriteCloser
 	out        *bufio.Reader
+	maxOutput  int
+	timeout    time.Duration
 }
 
 func (p *probe) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopLocked()
+}
+
+func (p *probe) stopLocked() {
 	if p.cmd != nil {
 		p.in.Close()
 		// Let the voice helper cancel recording and restore the microphone on stdin EOF.
@@ -117,7 +149,11 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 			out.Close()
 			return nil, err
 		}
-		p.cmd, p.in, p.out = cmd, in, bufio.NewReaderSize(out, 4096)
+		bufferSize := 4096
+		if p.maxOutput > 0 {
+			bufferSize = p.maxOutput + 1
+		}
+		p.cmd, p.in, p.out = cmd, in, bufio.NewReaderSize(out, bufferSize)
 	}
 	// A hung accessibility provider cannot stall streaming or retain workers.
 	// The service Job owns this entire process tree.
@@ -128,6 +164,13 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	}
 	if strings.HasPrefix(command, "image:") {
 		timeout = 8 * time.Second
+	}
+	if p.timeout > 0 {
+		timeout = p.timeout
+	}
+	limit := 1024
+	if p.maxOutput > 0 {
+		limit = p.maxOutput
 	}
 	go func() {
 		if _, err := io.WriteString(p.in, command+"\n"); err != nil {
@@ -143,13 +186,13 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	}()
 	select {
 	case b := <-result:
-		if len(b) == 0 || len(b) > 1024 || !json.Valid(b) {
-			p.stop()
+		if len(b) == 0 || len(b) > limit || !json.Valid(b) {
+			p.stopLocked()
 			return nil, errors.New("focus unavailable")
 		}
 		return json.RawMessage(b), nil
 	case <-time.After(timeout):
-		p.stop()
+		p.stopLocked()
 		<-result
 		return nil, errors.New("focus timeout")
 	}
@@ -162,6 +205,10 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 		voiceProvider = voiceRead[0]
 	}
 	voice := &voiceHandler{read: voiceProvider, now: time.Now}
+	var files *fileHandler
+	if len(voiceRead) > 1 {
+		files = &fileHandler{read: voiceRead[1], busy: make(chan struct{}, 1)}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 || !paired(clients, r.TLS.PeerCertificates[0].Raw) {
 			http.Error(w, "unpaired", http.StatusForbidden)
@@ -169,6 +216,10 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/voice/") {
 			voice.serve(w, r, clients)
+			return
+		}
+		if r.URL.Path == "/v1/files" && files != nil {
+			files.serve(w, r, clients)
 			return
 		}
 		command := "focus"
@@ -282,6 +333,17 @@ func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read f
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "width": config.Width, "height": config.Height})
 }
 
+func controlTLSConfig(cert tls.Certificate, clients string) *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
+		ClientAuth: tls.RequireAnyClientCert,
+		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
+			if len(raw) != 1 || !paired(clients, raw[0]) {
+				return errors.New("unpaired")
+			}
+			return nil
+		}}
+}
+
 func Serve(ctx context.Context, dir, executable string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -290,28 +352,59 @@ func Serve(ctx context.Context, dir, executable string) error {
 		return err
 	}
 	clients := filepath.Join(dir, "clients.json")
+	relay := newRelayMailbox(clients)
+	relayListener, err := relayPipe(dir)
+	if err != nil {
+		return err
+	}
+	defer relayListener.Close()
+	go relay.serveLocal(ctx, relayListener)
+	go relay.maintain(ctx)
 	p := &probe{executable: executable}
 	defer p.stop()
 	voice := &probe{executable: executable, argument: "--voice-probe"}
 	defer voice.stop()
+	files := &probe{executable: executable, argument: "--file-probe", maxOutput: fileMessageLimit, timeout: 15 * time.Second}
+	defer files.stop()
+	clipboard := &probe{executable: executable, argument: "--clipboard-probe", maxOutput: clipboardMessageLimit, timeout: 10 * time.Second}
+	defer clipboard.stop()
+	privacy := &probe{executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
+	defer privacy.stop()
+	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProvider(dir), read: privacy.read, now: time.Now}
+	privacyDone := make(chan struct{})
+	go func() { defer close(privacyDone); privacyManager.maintain(ctx) }()
+	defer func() { cancel(); <-privacyDone }()
+	lockManager := &sessionLockControl{clients: clients, provider: engineDisplayProvider(dir), read: privacy.read, now: time.Now}
+	lockDone := make(chan struct{})
+	go func() { defer close(lockDone); lockManager.maintain(ctx) }()
+	defer func() { cancel(); <-lockDone }()
+	audio := &probe{executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
+	defer audio.stop()
+	audioManager := &audioMuteControl{clients: clients, provider: engineDisplayProvider(dir), read: audio.read, now: time.Now}
+	audioDone := make(chan struct{})
+	go func() { defer close(audioDone); audioManager.maintain(ctx) }()
+	defer func() { cancel(); <-audioDone }()
+	wake := &probe{executable: executable, argument: "--wake-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	defer wake.stop()
+	wakeManager := &wakeControl{clients: clients, read: wake.read, now: time.Now}
+	terminal := &probe{executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	defer terminal.stop()
+	terminalManager := &terminalControl{clients: clients, read: terminal.read}
+	terminalDone := make(chan struct{})
+	go func() { defer close(terminalDone); terminalManager.maintain(ctx) }()
+	defer func() { cancel(); <-terminalDone }()
 	// Start the user worker on host startup so an interrupted microphone switch
 	// is recovered before the next phone dictation. This does not start recording.
 	_, _ = voice.read("voice-status")
 	server := &http.Server{
-		Addr: ":48791", Handler: handler(clients, p.read, voice.read),
+		Addr: ":48791", Handler: audioManager.handler(lockManager.handler(privacyManager.handler(relay.handler(withClipboard(withBitrate(withDisplays(handler(clients, p.read, voice.read, files.read), clients, engineDisplayProvider(dir), p.read), clients, engineBitrateProvider(dir)), clients, clipboard.read))))),
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second,
 		WriteTimeout: 3 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
-		ErrorLog: log.New(io.Discard, "", 0),
-		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
-			ClientAuth: tls.RequireAnyClientCert,
-			VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
-				if len(raw) != 1 || !paired(clients, raw[0]) {
-					return errors.New("unpaired")
-				}
-				return nil
-			}},
+		ErrorLog:  log.New(io.Discard, "", 0),
+		TLSConfig: controlTLSConfig(cert, clients),
 	}
 	go func() { _ = serveLANPairing(ctx, dir, cert) }()
+	server.Handler = terminalManager.handler(wakeManager.handler(server.Handler))
 	go func() { _ = serveLANDiscovery(ctx) }()
 	go func() { <-ctx.Done(); server.Close() }()
 	return server.ListenAndServeTLS("", "")

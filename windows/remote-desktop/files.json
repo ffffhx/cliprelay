@@ -1,0 +1,12 @@
+{
+  "serviceSources": [
+    "remote-service.cs", "input-focus.cs", "voice-input.cs", "desktop-user.cs",
+    "file-transfer.cs", "clipboard-exchange.cs", "privacy-screen.cs", "session-lock.cs",
+    "audio-mute.cs", "audio-endpoints.cs", "audio-control.cs", "wake.cs", "terminal.cs",
+    "terminal-native.cs", "relay-ipc.cs"
+  ],
+  "supportFiles": [
+    "setup.ps1", "remove.ps1", "ui.ps1", "remote-client.cs", "engine.json", "engine-files.json",
+    "COPYING", "NOTICE.txt", "NETWORK-LICENSES.txt"
+  ]
+}

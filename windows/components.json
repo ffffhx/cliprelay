@@ -1,0 +1,20 @@
+{
+  "repository": "ffffhx/cliprelay",
+  "engine": {
+    "run": 38668571022,
+    "commit": "8f7a024f32cfe4027f70e26429343caacddb690d",
+    "artifact": "sunshine-cliprelay-control-windows-amd64"
+  },
+  "viewer": {
+    "run": 38688648864,
+    "commit": "9efd4f27301ef68566ca3074ed45558a2c938949",
+    "artifact": "ClipRelay-Stream-Windows",
+    "manifestSha256": "68b0294096022af04832c1c083dd1d340692f5e778ce388979bb2f08f588debb"
+  },
+  "network": {
+    "run": 38696836395,
+    "commit": "7f76bf039dd53319f1bc4b7450ef6abf618ec258",
+    "artifact": "ClipRelay-Desktop-Network-Windows",
+    "manifestSha256": "acf5e68236cf9ee4879a49a1bc6e95df071d9dfefdfe8f1e3efa3f713182fa09"
+  }
+}

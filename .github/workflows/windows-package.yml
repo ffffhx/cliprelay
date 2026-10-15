@@ -1,0 +1,64 @@
+name: Windows Complete Package
+on:
+  push:
+    branches: ['codex/windows-package-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Validate installation and feature protocols
+        run: |
+          New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets')) {
+            powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1"
+            if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
+          }
+          npm run test:electron
+          if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
+          Push-Location network
+          try {
+            go test -count=1 -timeout=120s ./inputfocus ./cmd/cliprelay-network
+            if ($LASTEXITCODE -ne 0) { throw 'Host protocol tests failed' }
+          } finally { Pop-Location }
+      - name: Build complete package from verified components
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & scripts/resolve_windows_components.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'cliprelay-components')
+          & scripts/package_windows.ps1 -OutputDirectory dist
+          $package = Get-ChildItem dist/ClipRelay-Windows-*.zip | Select-Object -First 1
+          Expand-Archive -LiteralPath $package.FullName -DestinationPath (Join-Path $env:RUNNER_TEMP 'cliprelay-install')
+          $installer = Join-Path $env:RUNNER_TEMP 'cliprelay-install/ClipRelay-Windows/install.ps1'
+          & $installer -ValidateOnly
+      - name: Install on disposable runner
+        run: |
+          if (Get-Service ClipRelayRemote -ErrorAction SilentlyContinue) { throw 'Runner must not have an existing ClipRelay service.' }
+          $installer = Join-Path $env:RUNNER_TEMP 'cliprelay-install/ClipRelay-Windows/install.ps1'
+          powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File $installer -NoStartup
+          if ($LASTEXITCODE -ne 0) { throw 'Installer failed' }
+      - name: Verify independent installed processes and pipe lifetime
+        run: |
+          & windows/tests/installed-package.ps1 -ReportPath dist/installed-package-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Windows-Complete
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
