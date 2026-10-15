@@ -194,6 +194,7 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
         report['passed']=True
     except Exception as error:
         report['error']=str(error)
+        if recovery and 'history' in locals():report['recoveryEvents']=history
         raise
     finally:
         if process and process.poll() is None:

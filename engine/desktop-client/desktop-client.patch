@@ -406,7 +406,7 @@
  void Session::clConnectionTerminated(int errorCode)
  {
 +    if (ClipRelayImport::active()) {
-+        const bool network = errorCode == ML_ERROR_NO_VIDEO_TRAFFIC || errorCode == ML_ERROR_NO_VIDEO_FRAME ||
++        const bool network = errorCode == ML_ERROR_NETWORK_LOST || errorCode == ML_ERROR_NO_VIDEO_TRAFFIC || errorCode == ML_ERROR_NO_VIDEO_FRAME ||
 +            errorCode == 10060 || errorCode == 10061 || errorCode == 10054 || errorCode == 10053 || errorCode == 10051 || errorCode == 10065 ||
 +            errorCode == 110 || errorCode == 111 || errorCode == 104 || errorCode == 103 || errorCode == 101 || errorCode == 113 ||
 +            errorCode == 60 || errorCode == 61 || errorCode == 54 || errorCode == 53 || errorCode == 51 || errorCode == 65;

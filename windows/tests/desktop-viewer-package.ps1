@@ -17,7 +17,7 @@ function Save-Fixture {
         [IO.File]::WriteAllText($file, 'Synthetic non-executable test file ' + $Version, $utf8)
         $files[$name] = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), (@{role='desktop-network';capabilities=@('pairing-bootstrap');protocol=1;platform='windows';files=$files} | ConvertTo-Json -Depth 4), $utf8)
+    [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), (@{role='desktop-network';capabilities=@('pairing-bootstrap','embedded-network','session-events-v1');protocol=1;platform='windows';files=$files} | ConvertTo-Json -Depth 4), $utf8)
 }
 function Must-Reject {
     $rejected = $false
@@ -50,6 +50,14 @@ try {
     [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), ($value | ConvertTo-Json -Depth 4), $utf8)
     Must-Reject
     $checks.Add('parent-path-escape-rejected')
+    if ($Kind -eq 'viewer') {
+        Save-Fixture 'four'
+        $value = Get-Content -LiteralPath (Join-Path $artifact 'manifest.json') -Raw | ConvertFrom-Json
+        $value.capabilities = @('embedded-network')
+        [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), ($value | ConvertTo-Json -Depth 4), $utf8)
+        Must-Reject
+        $checks.Add('old-viewer-without-lifecycle-rejected')
+    }
     if ($Kind -eq 'network') {
         Save-Fixture 'four'
         $value = Get-Content -LiteralPath (Join-Path $artifact 'manifest.json') -Raw | ConvertFrom-Json

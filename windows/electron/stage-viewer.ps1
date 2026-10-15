@@ -22,6 +22,7 @@ if ($Kind -eq 'network') {
     $required = @('runtime/cliprelay-client-network.exe','LICENSE','NETWORK-LICENSES.txt','cliprelay-network-source.tar.gz')
     if ($manifest.role -ne 'desktop-network' -or !($manifest.capabilities -ccontains 'pairing-bootstrap') -or $files.Count -ne $required.Count -or @($required | Where-Object { $files.Name -cnotcontains $_ }).Count) { throw 'Incomplete desktop network package.' }
 } elseif (!$files.Count -or $files.Count -gt 10000 -or !($files.Name -ccontains 'runtime/ClipRelayStream.exe') -or !($files.Name -ccontains 'LICENSE') -or !($files.Name -ccontains 'corresponding-source.tar.gz')) { throw 'Incomplete viewer package.' }
+if ($Kind -eq 'viewer' -and (!($manifest.capabilities -ccontains 'session-events-v1') -or !($manifest.capabilities -ccontains 'embedded-network'))) { throw 'Viewer package requires lifecycle and embedded-network support.' }
 $total = [long]0
 foreach ($file in $files) {
     if ($file.Name -cnotmatch '^[A-Za-z0-9_.+/-]+$' -or $file.Name.StartsWith('/') -or ($file.Name.Split('/') | Where-Object { $_ -in @('','..','.') }) -or $file.Value -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid viewer manifest path or hash.' }

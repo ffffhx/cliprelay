@@ -11,6 +11,36 @@
  } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
  
  // Use this function to zero the stream configuration when allocated on the stack or heap
+@@ -438,6 +442,9 @@
+ // desktop resolution and streaming resolution with HDR enabled. This value is
+ // supported on GFE 3.22+.
+ #define ML_ERROR_FRAME_CONVERSION -104
++
++// ClipRelay: distinguish transport loss from allocation/protocol errors.
++#define ML_ERROR_NETWORK_LOST -105
+ 
+ // This callback is invoked to log debug message
+ typedef void(*ConnListenerLogMessage)(const char* format, ...);
+--- a/src/ControlStream.c
++++ b/src/ControlStream.c
+@@ -1177,7 +1177,7 @@
+                         // assume the server died tragically, so go ahead and tear down.
+                         PltUnlockMutex(&enetMutex);
+                         Limelog("Disconnect event timeout expired\n");
+-                        ListenerCallbacks.connectionTerminated(-1);
++                        ListenerCallbacks.connectionTerminated(ML_ERROR_NETWORK_LOST);
+                         return;
+                     }
+                 }
+@@ -1379,7 +1379,7 @@
+         }
+         else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
+             Limelog("Control stream received unexpected disconnect event\n");
+-            ListenerCallbacks.connectionTerminated(-1);
++            ListenerCallbacks.connectionTerminated(ML_ERROR_NETWORK_LOST);
+             return;
+         }
+     }
 --- a/src/Connection.c
 +++ b/src/Connection.c
 @@ -1,4 +1,5 @@
