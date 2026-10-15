@@ -416,6 +416,8 @@ Windows / Mac 控制端已接入独立终端窗口，从已配对电脑的「终
 
 桌面终端本地 Node 与 Electron 运行时各 21 项测试通过，包括真实 ConPTY、固定证书 TLS、丢失输入回执后的去重、PowerShell、尺寸变化、路由替换、服务重启、真实 xterm 解析器和窗口权限。验证命令：先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs`。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、终端鼠标、公网与安装版 SYSTEM 路径验收。
 
+桌面终端的[三平台 CI](https://github.com/ffffhx/cliprelay/actions/runs/38727923410) 已通过：Windows 的 18 项终端测试全部通过，真实 ConPTY 验收在临时普通用户下执行；Mac 和 Linux 各通过 17 项，仅跳过 Windows 专属的 ConPTY 一项。三平台既有的 70 项桌面连接回归也全部通过。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38727924083) 已在临时测试机完成安装、独立桌面进程、SYSTEM 服务管道及后台断管退出验证；[Mac arm64 / x64 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38727931092) 均已构建通过。安装包与最终应用源码、终端第三方资源哈希和许可的一致性另行记录于 `.tools/uu-parity/desktop-terminal-artifacts.json`；没有替换开发电脑的现有安装。
+
 实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面显示器、实时码率及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
