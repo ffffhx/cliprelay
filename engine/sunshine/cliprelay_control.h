@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "cliprelay_input.h"
 
 namespace cliprelay {
   struct display_geometry {
@@ -36,6 +37,8 @@ namespace cliprelay {
     std::optional<display_geometry> capture;
     std::vector<stream_state> streams;
     std::string phase = "idle", requested, result, error;
+    std::uint64_t request_stream = 0;
+    std::uint32_t input_epoch = 0;
   };
 
   // Capture/encode callbacks and the authenticated HTTP thread share this registry.
@@ -78,16 +81,21 @@ namespace cliprelay {
 
     // Optimistic concurrency prevents a stale picker from switching a different
     // screen after hotplug/reordering. The capture thread resolves the ID AGAIN.
-    std::string request(const std::string &id, std::uint64_t revision) {
+    std::string request(const std::string &id, std::uint64_t revision, std::uint64_t stream = 0,
+                        std::uint32_t epoch = 0, std::shared_ptr<input_selection> selection = {}) {
       std::lock_guard lock(mutex_);
       if (revision != state_.revision) return "stale";
       if (!capture_running_ || streams_.empty()) return "not_streaming";
       if (state_.result == "pending") return "busy";
       if (std::find(state_.displays.begin(), state_.displays.end(), id) == state_.displays.end()) return "display_unavailable";
+      if ((stream || epoch) && !selection) return "input_not_paused";
+      if (selection && (!selection->valid.load() || !epoch || !(epoch & 1) || streams_.size() != 1 || streams_.begin()->second.id != stream)) return "input_not_exclusive";
+      selection_ = std::move(selection);
       queued_ = true;
       state_.requested = id;
       state_.result = "pending";
       state_.error.clear();
+      state_.request_stream = stream; state_.input_epoch = epoch;
       ++state_.request_id;
       ++state_.revision;
       return "accepted";
@@ -102,6 +110,7 @@ namespace cliprelay {
       std::lock_guard lock(mutex_);
       if (!queued_) return fallback;
       queued_ = false;
+      if (selection_ && !selection_->valid.load()) { fail_locked("input_unavailable"); return fallback; }
       auto found = std::find(fresh.begin(), fresh.end(), state_.requested);
       if (found == fresh.end()) {
         fail_locked("display_unavailable");
@@ -116,6 +125,7 @@ namespace cliprelay {
       ++state_.revision;
       capture_running_ = geometry.width > 0 && geometry.height > 0 && !geometry.id.empty();
       state_.capture = capture_running_ ? std::optional(geometry) : std::nullopt;
+      if (selection_ && !selection_->valid.load()) fail_locked("input_unavailable");
       if (!capture_running_) fail_locked("capture_unavailable");
       // A request may arrive while an unrelated capture is being constructed.
       // Leave queued requests alone so the capture loop can process them next.
@@ -157,6 +167,7 @@ namespace cliprelay {
     // accepting input without producing output must never announce readiness.
     void encoded(void *key, std::int64_t frame) {
       std::lock_guard lock(mutex_);
+      if (selection_ && !selection_->valid.load()) fail_locked("input_unavailable");
       auto stream = streams_.find(key);
       if (!capture_running_ || stream == streams_.end()) return;
       auto &s = stream->second;
@@ -166,6 +177,7 @@ namespace cliprelay {
       if (!queued_ && state_.result == "pending" && state_.capture && state_.capture->id == state_.requested) {
         state_.result = "applied";
         state_.error.clear();
+        selection_.reset();
       }
     }
 
@@ -219,6 +231,7 @@ namespace cliprelay {
         state_.result = "failed";
         state_.error = error;
         queued_ = false;
+        selection_.reset();
         ++state_.revision;
       }
     }
@@ -228,6 +241,7 @@ namespace cliprelay {
     std::uint64_t next_stream_ = 0;
     std::uint64_t next_audio_ = 0;
     bool queued_ = false, capture_running_ = false;
+    std::shared_ptr<input_selection> selection_;
   };
 
   inline display_control displays;

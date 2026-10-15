@@ -166,11 +166,28 @@ TEST_F(ClipRelayInputTest, MalformedCommandsAndReplayCannotResumeInput) {
   send(envelope(2,3,std::move(short_key))); drain(); EXPECT_TRUE(keys.empty());
 }
 
+TEST_F(ClipRelayInputTest, DisplaySelectionHoldsPauseUntilItsCaptureBoundary) {
+  send(envelope(1,1)); drain();
+  std::shared_ptr<cliprelay::input_selection> selection;
+  ASSERT_EQ(cliprelay::inputs.select(1,1,[&](const auto& lease) {
+    selection=lease; return std::string("accepted");
+  }),"accepted");
+  send(envelope(2,2)); send(envelope(2,3,key('A'))); drain();
+  EXPECT_EQ(gate->snapshot().epoch,1); EXPECT_EQ(gate->snapshot().acknowledged,1);
+  EXPECT_TRUE(gate->snapshot().paused); EXPECT_TRUE(keys.empty());
+  selection.reset(); // display_control releases this only on encoded frame/failure
+  send(envelope(2,2)); drain();
+  EXPECT_EQ(gate->snapshot().acknowledged,2);
+  send(envelope(2,3,key('B'))); drain();
+  ASSERT_EQ(keys.size(),1); EXPECT_EQ(keys[0].key_code,'B');
+}
+
 TEST_F(ClipRelayInputTest, EveryHeldMouseButtonIsReleasedBeforeAcknowledgment) {
   config::input.mouse = true;
   send(envelope(1,1)); drain();
   std::uint32_t epoch = 2;
   for (const unsigned button : {BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BUTTON_X1, BUTTON_X2}) {
+    SCOPED_TRACE(button);
     send(envelope(epoch,2)); drain();
     send(envelope(epoch,3,mouse(button))); drain();
     ASSERT_TRUE(platform_context->mouse->last_submitted_event().pressed);
@@ -264,6 +281,7 @@ TEST_F(ClipRelayInputTest, GamepadButtonsAxesAndTouchpadAreNeutralBeforeAcknowle
   SS_CONTROLLER_TOUCH_PACKET contact {};
   contact.eventType = LI_TOUCH_EVENT_DOWN;
   contact.pointerId = 7;
+  contact.pressure[2] = 0x80; contact.pressure[3] = 0x3f; // netfloat 1.0
   const auto contact_bytes = packet_bytes(contact,SS_CONTROLLER_TOUCH_MAGIC);
   send(contact_bytes); drain();
   ASSERT_TRUE(adapter->state().touchpad_contacts[0].active);

@@ -48,29 +48,44 @@ type displayStream struct {
 }
 
 type displayState struct {
-	Protocol   int              `json:"protocol"`
-	Instance   string           `json:"instance"`
-	Supported  bool             `json:"supported"`
-	Revision   uint64           `json:"revision"`
-	Generation uint64           `json:"generation"`
-	Phase      string           `json:"phase"`
-	Displays   []string         `json:"displays"`
-	Capture    *displayGeometry `json:"capture"`
-	Streams    []displayStream  `json:"streams"`
-	RequestID  uint64           `json:"requestId"`
-	Requested  string           `json:"requested"`
-	Result     string           `json:"result"`
-	Error      string           `json:"error"`
-	Accepted   bool             `json:"accepted"`
-	Outcome    string           `json:"outcome,omitempty"`
-	Shared     bool             `json:"shared"`
+	Protocol            int              `json:"protocol"`
+	Instance            string           `json:"instance"`
+	Supported           bool             `json:"supported"`
+	Revision            uint64           `json:"revision"`
+	Generation          uint64           `json:"generation"`
+	Phase               string           `json:"phase"`
+	Displays            []string         `json:"displays"`
+	Capture             *displayGeometry `json:"capture"`
+	Streams             []displayStream  `json:"streams"`
+	RequestID           uint64           `json:"requestId"`
+	Requested           string           `json:"requested"`
+	Result              string           `json:"result"`
+	Error               string           `json:"error"`
+	Accepted            bool             `json:"accepted"`
+	Outcome             string           `json:"outcome,omitempty"`
+	Shared              bool             `json:"shared"`
+	InputEpochSelection bool             `json:"inputEpochSelection"`
+	RequestStream       uint64           `json:"requestStream"`
+	InputEpoch          uint32           `json:"inputEpoch"`
 }
 
 type displaySelection struct {
-	Instance string `json:"instance"`
-	Display  string `json:"display"`
-	Revision uint64 `json:"revision"`
-	Stream   uint64 `json:"stream"`
+	Instance   string          `json:"instance"`
+	Display    string          `json:"display"`
+	Revision   uint64          `json:"revision"`
+	Stream     uint64          `json:"stream"`
+	InputEpoch json.RawMessage `json:"inputEpoch,omitempty"`
+}
+
+func displayInputEpoch(selection *displaySelection) (uint32, bool) {
+	if len(selection.InputEpoch) == 0 {
+		return 0, true
+	}
+	var epoch uint32
+	if json.Unmarshal(selection.InputEpoch, &epoch) != nil || epoch == 0 || epoch%2 == 0 {
+		return 0, false
+	}
+	return epoch, true
 }
 
 type displayProvider func(context.Context, bool, *displaySelection) (displayState, error)
@@ -127,11 +142,13 @@ func requestEngineDisplay(ctx context.Context, endpoint, password string, certif
 	path := "/api/cliprelay/displays"
 	var payload []byte
 	if selection != nil {
-		payload, _ = json.Marshal(struct {
-			Instance string `json:"instance"`
-			Display  string `json:"display"`
-			Revision uint64 `json:"revision"`
-		}{selection.Instance, selection.Display, selection.Revision})
+		value := map[string]any{"instance": selection.Instance, "display": selection.Display, "revision": selection.Revision}
+		if epoch, valid := displayInputEpoch(selection); !valid {
+			return state, errors.New("invalid display input epoch")
+		} else if epoch != 0 {
+			value["stream"], value["inputEpoch"] = selection.Stream, epoch
+		}
+		payload, _ = json.Marshal(value)
 	} else if refresh {
 		path += "?refresh=1"
 	}
@@ -191,6 +208,10 @@ func requestEngineJSON(ctx context.Context, endpoint, password string, certifica
 
 func validDisplayState(state displayState) bool {
 	if state.Protocol != 1 || !displayInstance.MatchString(state.Instance) || len(state.Displays) > 64 || len(state.Streams) > 64 || len(state.Requested) > 256 || len(state.Error) > 64 || len(state.Result) > 16 || len(state.Outcome) > 32 {
+		return false
+	}
+	if (state.InputEpoch == 0) != (state.RequestStream == 0) || state.RequestStream > 1<<53-1 ||
+		(state.InputEpoch != 0 && (!state.InputEpochSelection || state.InputEpoch%2 == 0 || state.RequestID == 0 || state.Result == "")) {
 		return false
 	}
 	switch state.Phase {
@@ -298,8 +319,12 @@ func withDisplays(next http.Handler, clients string, provider displayProvider, f
 			selection = new(displaySelection)
 			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 			decoder.DisallowUnknownFields()
-			if r.Header.Get("Content-Type") != "application/json" || decoder.Decode(selection) != nil || decoder.Decode(new(any)) != io.EOF || !displayInstance.MatchString(selection.Instance) || selection.Display == "" || len(selection.Display) > 256 || selection.Stream == 0 {
+			if r.Header.Get("Content-Type") != "application/json" || decoder.Decode(selection) != nil || decoder.Decode(new(any)) != io.EOF || !displayInstance.MatchString(selection.Instance) || selection.Display == "" || len(selection.Display) > 256 || selection.Stream == 0 || selection.Stream > 1<<53-1 || selection.Revision > 1<<53-1 {
 				http.Error(w, "invalid display request", 400)
+				return
+			}
+			if _, valid := displayInputEpoch(selection); !valid {
+				http.Error(w, "invalid display input epoch", 400)
 				return
 			}
 		}
@@ -319,7 +344,9 @@ func withDisplays(next http.Handler, clients string, provider displayProvider, f
 				http.Error(w, "no paired stream", 403)
 				return
 			}
-			if state.Revision != selection.Revision || state.Instance != selection.Instance {
+			if len(selection.InputEpoch) != 0 && (!state.InputEpochSelection || len(state.Streams) != 1) {
+				state.Outcome, status = "input_unavailable", http.StatusConflict
+			} else if state.Revision != selection.Revision || state.Instance != selection.Instance {
 				state.Outcome, status = "stale", http.StatusConflict
 			} else {
 				state, err = provider(r.Context(), false, selection)
