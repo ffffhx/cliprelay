@@ -148,3 +148,48 @@ revocation/direct-fallback suppression, malformed events and native startup time
 49 local Node and actual Electron cases pass; the broader desktop CI runs on
 Windows, macOS and Linux. These checks do not establish desktop UI interaction,
 external enrollment-to-video, public relay streaming or physical platform coverage.
+
+The viewer also supports the optional `presentation-events-v1` capability. The
+desktop owner negotiates it by adding `telemetry: true` to the credential envelope;
+renderer-provided launch options cannot enable it. Legacy envelopes still receive
+only the two lifecycle events. An opted-in connected session emits at most five
+`progress` records per second with received/rendered frame numbers, rendered
+dimensions and the elapsed time since either frame number advanced. No video
+pixels, keys, addresses or diagnostic strings enter this protocol.
+
+Network frame numbers travel through FFmpeg's `AV_CODEC_FLAG_COPY_OPAQUE`, rather
+than being inferred from the decode queue, which can lose alignment after decoder
+drops. Windows D3D11/DXVA2 report only successful presentation submissions; this
+does not measure the physical panel. Mac Metal uses the drawable's presentation
+callback and requires a positive presentation time. Unknown frame identities,
+failed or occluded presentation, stale callbacks, and renderers without a hook
+cannot advance the reported boundary. Older FFmpeg versions without opaque
+propagation and Metal versions before macOS 10.15.4 report no presented frame.
+
+The owner validates bounded counters and geometry, advances frame ages using its
+own monotonic clock, and rejects data from a disconnected process or obsolete
+route. Repeating a frozen frame never makes it fresh again. Progress output is
+nonblocking: if the owner stops consuming the pipe, the viewer reaches normal
+session cleanup instead of blocking its input thread behind a write. This is a
+foundation for display/bitrate confirmation; display switching still requires an
+input pause/release acknowledgment and capture-generation validation before input
+can resume. Those controls are not enabled by this telemetry capability alone.
+Frame ages include native age and time since the owner's observation; they do
+not measure an unknown backlog before the first observation. A future control
+handshake must establish a new feedback boundary before relying on freshness.
+
+[Component build 38732237555](https://github.com/ffffhx/cliprelay/actions/runs/38732237555)
+passes ten actual Qt protocol groups and builds Windows and universal Mac viewers.
+Downloaded artifacts match 292 Windows and 1845 Mac manifest files, seven extension
+files and all sixteen changed/new upstream application sources. The new Windows
+viewer, supervised by the production JavaScript owner, reports 24 progress samples
+in an isolated HEVC 720p30 session; rendered frame numbers advance from 14 to 152,
+rendering reaches 30.05 FPS, and parent EOF exits normally in 313 ms with the host
+stream released. Keyboard, mouse, gamepad and audio remain disabled in that fixture.
+
+[Desktop regression 38732557168](https://github.com/ffffhx/cliprelay/actions/runs/38732557168)
+passes 85 enrollment/ownership/viewer cases on each of Windows, Mac and Linux,
+plus the existing file, terminal and actual helper checks. Local Node and actual
+Electron runtimes each pass 60 targeted cases. These are component/runtime checks;
+the complete application packages still pin the earlier recovery viewer, and this
+revision has not been installed or accepted through the managed desktop UI.
