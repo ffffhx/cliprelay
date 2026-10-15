@@ -29,6 +29,8 @@ jobs:
         run: go test -count=1 -timeout=120s ./broker ./cmd/cliprelay-client-network ./desktopclient ./mobile ./transport
       - name: Desktop enrollment, ownership and route recovery
         run: node --test windows/tests/network-controller.test.cjs windows/tests/network-artifact.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-pairing.test.cjs windows/tests/stream-viewer.test.cjs
+      - name: Desktop live bitrate and presentation confirmation
+        run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
       - name: Build native file interoperability fixture
         if: runner.os == 'Windows'
         shell: powershell

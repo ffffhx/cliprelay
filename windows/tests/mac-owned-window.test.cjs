@@ -20,8 +20,9 @@ async function fixture(){
   Object.assign(imports,{'./network-catalog.cjs':{NetworkCatalog:class{}},'./network-controller.cjs':{NetworkController:Network},'./routed-store.cjs':{RoutedStore:class{constructor(base){return base;}}},'./client-identity.cjs':{createClientIdentity:()=>{}}});
   const fileActions=[];imports['./file-controller.cjs']={FileController:class{snapshot(){return {tasks:[]};}reconcile(){}releaseWindow(){}close(){}async action(action,data,window){fileActions.push({action,data,window});}},message:()=> 'File operation failed'};
   imports['./terminal-window.cjs']={DesktopTerminal:class{open(){}reconcile(){}close(){}}};
+  const bitrateActions=[];imports['./bitrate-controller.cjs']={BitrateController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}apply(data){bitrateActions.push(data);}},message:()=> 'Bitrate operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),require:name=>imports[name] || require(name),setTimeout:()=>0,Buffer,URLSearchParams},{filename});await ready;
-  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},controller,windows,fileActions};
+  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},controller,windows,fileActions,bitrateActions};
 }
 test('Mac pairing IPC is restricted to its owned top-level window and never returns key material',async()=>{
   const f=await fixture(),window=f.open(),event=f.event(window);
@@ -37,6 +38,9 @@ test('Mac pairing IPC is restricted to its owned top-level window and never retu
   await assert.rejects(f.request({...event,senderFrame:{}},'files-upload'),/Unknown renderer/);
   await assert.rejects(f.request(f.event(alert),'files-upload'),/Unknown action/);assert.equal(f.fileActions.length,1);
   await f.request(event,'terminal-open');await assert.rejects(f.request({...event,senderFrame:{}},'terminal-open'),/Unknown renderer/);
+  await f.request(event,'bitrate-apply',{budgetKbps:6000});assert.equal(f.bitrateActions.length,1);
+  await assert.rejects(f.request({...event,senderFrame:{}},'bitrate-apply',{}),/Unknown renderer/);
+  await assert.rejects(f.request(f.event(alert),'bitrate-apply',{}),/Unknown action/);assert.equal(f.bitrateActions.length,1);
 });
 test('Mac hotkey never falls back to enabled legacy HTTP after a paired send failure',async()=>{
   const f=await fixture();f.hotkey();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.encryptedSends,1);assert.equal(f.legacySends,0);

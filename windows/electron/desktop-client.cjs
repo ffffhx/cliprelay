@@ -11,6 +11,7 @@ const {NetworkController}=require('./mac/network-controller.cjs');
 const {RoutedStore}=require('./mac/routed-store.cjs');
 const {FileController,message:fileMessage}=require('./mac/file-controller.cjs');
 const {DesktopTerminal}=require('./mac/terminal-window.cjs');
+const {BitrateController,message:bitrateMessage}=require('./mac/bitrate-controller.cjs');
 
 class DesktopClient {
   constructor(root){
@@ -21,7 +22,8 @@ class DesktopClient {
     this.network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(root,'desktop-network'),localName,
       canPair:()=>!this.paired?.pairController,onUpdate:()=>{this.paired?.reconcileRoutes();this.viewer?.reconcile();this.files?.reconcile();this.terminal?.reconcile();}});
     const store=new RoutedStore(base,id=>this.network.route(id),id=>this.network.streamPolicy(id));
-    this.viewer=new StreamViewer({directory:path.join(root,'remote-viewer'),store});
+    this.viewer=new StreamViewer({directory:path.join(root,'remote-viewer'),store,onUpdate:()=>this.bitrate?.reconcile()});
+    this.bitrate=new BitrateController({store,viewer:this.viewer});
     this.files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
     this.terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard});
     this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);this.terminal.reconcile(this.paired?.status);}});
@@ -29,13 +31,14 @@ class DesktopClient {
     this.network.reconcile();
     ipcMain.handle('mac:request',(event,action,data)=>this.request(event,action,data));
   }
-  snapshot(){return {...this.paired.snapshot(),viewer:this.viewer.snapshot(),network:this.network.snapshot(),files:this.files.snapshot(),desktopOnly:true};}
+  snapshot(){this.bitrate.reconcile();return {...this.paired.snapshot(),viewer:this.viewer.snapshot(),network:this.network.snapshot(),files:this.files.snapshot(),bitrate:this.bitrate.snapshot(),desktopOnly:true};}
   async request(event,action,data){
     if(!this.window || event.sender!==this.window.webContents || event.senderFrame!==event.sender.mainFrame || event.senderFrame.url!==this.url+'?kind=paired')throw new Error('Unknown renderer');
     if(Buffer.byteLength(JSON.stringify(data ?? {}))>32768)throw new Error('Invalid request');
     try{
       if(action==='initial' || action==='paired-status')return this.snapshot();
       if(action==='cancel'){this.window.close();return;}
+      if(action==='bitrate-apply'){try{this.bitrate.apply(data);}catch(error){throw Object.assign(new Error(bitrateMessage(error)),{bitrateMessage:true});}return this.snapshot();}
       if(typeof action==='string' && action.startsWith('files-')){try{await this.files.action(action,data,this.window);}catch(error){throw Object.assign(new Error(fileMessage(error)),{fileMessage:true});}return this.snapshot();}
       if(action==='pair-start'){if(this.network.pairAbort)throw Object.assign(new Error(),{code:'PAIRING_BUSY'});this.paired.startPair(data);return this.snapshot();}
       if(action==='pair-cancel')this.paired.cancelPair();
@@ -53,7 +56,7 @@ class DesktopClient {
       else if(action==='paired-send'){const sent=await this.paired.sendCurrent();return {message:sent?'已加密发送':'没有可发送的内容'};}
       else throw new Error('Unknown action');
       this.network.reconcile();this.paired.reconcileRoutes();this.viewer.reconcile();this.files.reconcile();this.terminal.reconcile();return this.snapshot();
-    }catch(error){throw new Error(error.fileMessage?error.message:message(error));}
+    }catch(error){throw new Error(error.fileMessage||error.bitrateMessage?error.message:message(error));}
   }
   open(){
     if(this.window && !this.window.isDestroyed()){this.window.show();this.window.focus();return;}
@@ -62,6 +65,6 @@ class DesktopClient {
     window.once('ready-to-show',()=>window.show());window.on('closed',()=>{if(this.window===window)this.window=null;this.paired.cancelPair();this.network.cancelPair();this.files.releaseWindow();});
     window.loadFile(this.page,{query:{kind:'paired'}});
   }
-  close(){this.terminal.close();this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
+  close(){this.bitrate.close();this.terminal.close();this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
 }
 module.exports={DesktopClient};

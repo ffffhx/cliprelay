@@ -199,5 +199,10 @@ class StreamViewer{
     this.schedule();
   }
   stop(){this.finish();}
+  currentSession(){const r=this.record;return r&&this.phase==='running'&&r.connected&&!r.closing&&sameRoute(this.authorized(),r.host)?r:null;}
+  acceptBitrate(record,budget){
+    if(this.currentSession()!==record||!Number.isInteger(budget)||budget<1000||budget>100000)return false;
+    this.intent.options=Object.freeze({...this.intent.options,bitrate:budget});return true;
+  }
 }
 module.exports={StreamViewer,envelope,executable};

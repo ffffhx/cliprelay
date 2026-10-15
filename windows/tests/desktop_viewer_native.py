@@ -24,14 +24,16 @@ import urllib.request
 from engine_control_test import POWERSHELL, choose_port, powershell, prepare_client, quote
 
 
-def run(engine: Path, viewer: Path, output: Path, overlay_fixture: Path = None, recovery=False, telemetry=False):
+def run(engine: Path, viewer: Path, output: Path, overlay_fixture: Path = None, recovery=False, telemetry=False, control_fixture: Path = None):
     if recovery and not overlay_fixture:raise ValueError('Recovery acceptance requires the isolated overlay fixture')
+    if control_fixture and (overlay_fixture or not telemetry):raise ValueError('Live bitrate fixture requires direct telemetry mode')
     engine=engine.resolve(strict=True);viewer=viewer.resolve(strict=True)
     fixture=output.resolve()/secrets.token_hex(12);fixture.mkdir(parents=True,exist_ok=False)
     owner=prepare_client(fixture)
     port=choose_port();password=secrets.token_hex(32);salt=secrets.token_hex(8)
-    config=fixture/'sunshine.conf';executable=engine/'sunshine.exe';process=None;network=None;network_log=None;network_reader=None
-    (fixture/'credentials.json').write_text(json.dumps({'username':'cliprelay-test','salt':salt,'password':hashlib.sha256((password+salt).encode()).digest()[::-1].hex().upper()}))
+    config=fixture/'sunshine.conf';executable=engine/'sunshine.exe';process=None;network=None;network_log=None;network_reader=None;control=None;control_log=None
+    username='cliprelay' if control_fixture else 'cliprelay-test'
+    (fixture/'credentials.json').write_text(json.dumps({'username':username,'salt':salt,'password':hashlib.sha256((password+salt).encode()).digest()[::-1].hex().upper()}))
     (fixture/'apps.json').write_text(json.dumps({'env':{},'apps':[{'name':'Desktop','image-path':'desktop.png'}]}))
     options={'sunshine_name':'ClipRelay isolated desktop viewer','port':port,'bind_address':'127.0.0.1','address_family':'ipv4','origin_web_ui_allowed':'pc','system_tray':'disabled','upnp':'disabled','controller':'disabled','mouse':'disabled','keyboard':'disabled','stream_audio':'disabled','min_log_level':2,'dd_configuration_option':'disabled','file_apps':(fixture/'apps.json').as_posix(),'file_state':(fixture/'clients.json').as_posix(),'credentials_file':(fixture/'credentials.json').as_posix(),'pkey':(fixture/'cakey.pem').as_posix(),'cert':(fixture/'cacert.pem').as_posix(),'log_path':(fixture/'engine.log').as_posix()}
     config.write_text(''.join(f'{key} = {value}\n' for key,value in options.items()),encoding='utf-8')
@@ -96,15 +98,28 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
         context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);context.check_hostname=False;context.load_verify_locations(str(fixture/'cacert.pem'))
         opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPSHandler(context=context))
         def state():
-            request=urllib.request.Request(f'https://127.0.0.1:{port+1}/api/cliprelay/displays',headers={'Authorization':'Basic '+base64.b64encode(('cliprelay-test:'+password).encode()).decode()})
+            request=urllib.request.Request(f'https://127.0.0.1:{port+1}/api/cliprelay/displays',headers={'Authorization':'Basic '+base64.b64encode((username+':'+password).encode()).decode()})
             with opener.open(request,timeout=4) as response:return json.loads(response.read(65536))
         assert state()['phase']=='idle'
+        if control_fixture:
+            control_log=(fixture/'control.log').open('wb')
+            control=subprocess.Popen([str(control_fixture.resolve(strict=True)),'-test.run=^TestDesktopBitrateNativeFixture$','-test.timeout=100s'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=control_log,
+                env={**os.environ,'CLIPRELAY_DESKTOP_BITRATE_FIXTURE':'1'},creationflags=subprocess.CREATE_NO_WINDOW)
+            control.stdin.write(json.dumps({'directory':str(fixture),'password':password,'port':port}).encode()+b'\n');control.stdin.flush()
+            ready=queue.Queue()
+            def capture_control():
+                for line in control.stdout:
+                    control_log.write(line);control_log.flush()
+                    if line.startswith(b'{'):ready.put(json.loads(line))
+            control_reader=threading.Thread(target=capture_control,daemon=True);control_reader.start()
+            assert ready.get(timeout=10)['type']=='control-ready'
         local_port=port
         if overlay_fixture:
             local_port,messages=start_network()
             report['overlay']={'fixtureSha256':hashlib.sha256(overlay_fixture.read_bytes()).hexdigest(),'localPort':local_port,'advertisedHostPort':port,'core':'production desktopclient.Run and mobile.Node; isolated coordination and reverse host bridge'}
         value={'version':1,'address':'127.0.0.1','port':local_port,'clientId':secrets.token_hex(16),'certificate':(fixture/'client.pem').read_text(),'privateKey':(fixture/'client-key.pem').read_text(),'hostCertificate':(fixture/'cacert.pem').read_text(),'width':1280,'height':720,'fps':30,'bitrate':6000,'fullscreen':False}
         if overlay_fixture:value.update(overlay=True,overlayPort=port)
+        if control_fixture:value['bitrateTest']=True
         data=json.dumps(value).encode();env=os.environ.copy();env['TEMP']=str(fixture);env['TMP']=str(fixture)
         for key in ['ELECTRON_RUN_AS_NODE','CHROME_CRASHPAD_PIPE_NAME','QT_QPA_PLATFORM','QT_PLUGIN_PATH','QML2_IMPORT_PATH']:env.pop(key,None)
         log=(fixture/'viewer.log').open('wb')
@@ -144,6 +159,26 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
                 assert visible[-1]['renderedAgeMs']<2000,'Presentation feedback is stale'
                 report['presentation']={'reports':len(progress),'first':visible[0],'last':visible[-1],
                     'hostFirstFrame':current['streams'][0]['firstFrame'],'mode':'native successful present submission; physical panel not measured'}
+            if control_fixture:
+                def bitrate_state():
+                    return next((entry for entry in reversed(history) if entry.get('type')=='bitrate'),{})
+                report['bitrate']=[]
+                binding=(current['instance'],current['streams'][0]['id'],current['generation'])
+                for budget in [12000,2000,6000]:
+                    deadline=time.monotonic()+12
+                    while time.monotonic()<deadline and not bitrate_state().get('canApply'):time.sleep(.1)
+                    assert bitrate_state().get('canApply'),bitrate_state()
+                    started=time.monotonic();process.stdin.write(json.dumps({'action':'bitrate','budgetKbps':budget}).encode()+b'\n');process.stdin.flush()
+                    deadline=started+18
+                    while time.monotonic()<deadline:
+                        rate=bitrate_state()
+                        if rate.get('result',{} ) and rate['result'].get('budgetKbps')==budget and rate['result'].get('kind')=='applied':break
+                        if process.poll() is not None:raise RuntimeError('Bitrate owner exited')
+                        time.sleep(.05)
+                    else:raise RuntimeError('Bitrate was not confirmed: '+json.dumps(bitrate_state()))
+                    current=state();assert (current['instance'],current['streams'][0]['id'],current['generation'])==binding
+                    assert len([item for item in history if item.get('type')=='spawn'])==1,'Live rate adjustment restarted the viewer'
+                    report['bitrate'].append({'budgetKbps':budget,'videoKbps':rate['videoKbps'],'confirmationMs':round((time.monotonic()-started)*1000),'sameStream':True})
             if recovery:
                 stop_network()
                 deadline=time.monotonic()+30
@@ -222,6 +257,14 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
             if network_reader:network_reader.join(timeout=2)
             if network.stdout:network.stdout.close()
         if network_log:network_log.close()
+        if control:
+            if control.poll() is None:
+                control.stdin.close()
+                try:control.wait(timeout=5)
+                except subprocess.TimeoutExpired:control.kill();control.wait(timeout=5)
+            if 'control_reader' in locals():control_reader.join(timeout=2)
+            if control.stdout:control.stdout.close()
+        if control_log:control_log.close()
         for directory in fixture.glob('TestDesktopViewerNetworkFixture*'):
             resolved=directory.resolve()
             if directory.is_symlink() or not resolved.is_relative_to(fixture) or not directory.is_dir():
@@ -240,4 +283,5 @@ if __name__=='__main__':
     parser.add_argument('--overlay-fixture',type=Path)
     parser.add_argument('--recovery',action='store_true')
     parser.add_argument('--telemetry',action='store_true')
-    args=parser.parse_args();run(args.engine,args.viewer,args.output,args.overlay_fixture,args.recovery,args.telemetry)
+    parser.add_argument('--control-fixture',type=Path)
+    args=parser.parse_args();run(args.engine,args.viewer,args.output,args.overlay_fixture,args.recovery,args.telemetry,args.control_fixture)

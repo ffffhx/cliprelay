@@ -192,3 +192,10 @@ test('explicit stop during old-child drain prevents a new viewer on replacement 
   state.host.routeId='new-route';f.viewer.reconcile();assert.equal(f.viewer.phase,'recovering');f.viewer.stop();
   await until(()=>!f.viewer.child);await delay(60);assert.equal(f.children.length,1);assert.equal(f.viewer.phase,'idle');
 });
+
+test('only a current session can retain a confirmed live bitrate for automatic recovery',async t=>{
+  const f=manager(store());t.after(()=>f.viewer.stop());await f.viewer.open({bitrate:12000});await until(()=>f.viewer.phase==='running');
+  const original=f.viewer.currentSession();assert.equal(f.viewer.acceptBitrate({},6000),false);assert.equal(f.viewer.acceptBitrate(original,6000),true);
+  f.child.send({version:1,event:'ended',reason:'network'});await until(()=>f.children.length===2&&f.viewer.phase==='running');
+  assert.equal(f.messages[1].bitrate,6000);assert.equal(f.viewer.acceptBitrate(original,2000),false);
+});
