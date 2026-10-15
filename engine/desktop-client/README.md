@@ -389,3 +389,11 @@ and route cleanup. Its audio/capture/mask workers are simulated. The unchanged
 C# audio worker passes 26 lifecycle cases with fake endpoints. No physical output
 is muted, and the existing default-off process-capture setting remains unchanged;
 SYSTEM/cross-session and physical audio acceptance are still required.
+
+Audio-mute commit `4bdc4f1bfc7a6c77bd0fc865b859674ec3a3521a` passes all three
+platforms in run 38772563670. Windows complete run 38772572796 passes installation,
+independent process and pipe lifetime checks; all 720 archive files are verified.
+Mac complete run 38772579368 passes arm64/x64, with both downloads verified against
+the exact source, 1,847 viewer files, four network files and 163 internal links.
+The shared foreground lifecycle and all audio/privacy modules are included in
+each package. Evidence is in `.tools/uu-parity/desktop-audio-mute-artifacts.json`.
