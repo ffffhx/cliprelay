@@ -304,7 +304,11 @@ state. [Owner component build 38760732369](https://github.com/ffffhx/cliprelay/a
 also passes the 30 paired input/owner cases and builds both platforms; all 294
 Windows and 1,847 Mac files and corresponding sources have been verified.
 The full application component pins now select this viewer and guarded host
-build 38758839932. Complete-package acceptance is tracked separately.
+build 38758839932. Windows complete build 38763184608 passes disposable install,
+independent process and pipe-lifetime checks; all 704 packaged files, including
+148 host-engine files, match their manifests and expected sources. Mac complete
+build 38763191710 passes for arm64 and x64; each downloaded archive matches the
+application sources, 1,847 viewer files, four network files and 163 internal links.
 
 The final Windows Qt viewer, production StreamViewer/InputSession/DisplayController,
 paired Go handlers and isolated final host pass the input/display runtime fixture:
