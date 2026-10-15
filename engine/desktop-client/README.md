@@ -466,3 +466,37 @@ complete run 38781683718 passes arm64/x64; each download matches the application
 sources, 1,847 viewer files, four network files and 163 internal links. All four
 wake modules are included in every package. See
 `.tools/uu-parity/desktop-wake-artifacts.json`. The installed app is unchanged.
+
+A source publication audit found that the previous desktop development branch
+did not include the locally implemented Android additions or four Windows
+paired-clipboard/legacy-settings renderer and bridge changes. Earlier Android
+CI therefore did not validate those additions, and the earlier Windows package
+did not provide those four UI changes. These are now committed separately:
+Android `67bec799b4f0f7a3852beb0c710d0c576c9a9886` and Windows/configuration/test
+sources `e8174a9a5d7ab76e821786fd32f40d6c6f972e25`. The user's existing Android
+version and Orca gesture work are preserved; the main working index is unchanged.
+
+Android run 38784674666 passes. Downloaded XML contains exactly the same 260
+cases as the local run: 257 pass on Linux and only the three Windows native
+interoperability cases skip. All 260 pass locally on Windows. The downloaded
+APK signature, 17 feature class descriptors, UTF-8 JNI exports on all four ABIs
+and Termux notices are verified. A terminal replay fix now separates retained
+and live bytes at the exact response offset while keeping one VT/UTF-8 parser.
+Its four parser regressions also execute in CI. Device tests remain unexecuted.
+
+Windows run 38785791251 passes disposable installation, independent processes,
+pipe lifetime and the added clipboard/settings checks. All 734 package files,
+application sources and the embedded host's exact revision are verified. Mac
+application/build sources and native component pins have not changed since the
+verified wake packages, so those arm64/x64 archives remain applicable. The
+publication audit has zero remaining runtime-source differences in its scope.
+No installed application or production relay was replaced. Evidence is in
+`.tools/uu-parity/source-publication-artifacts.json`.
+
+The old broadcast fixture attempted to restore a delayed clipboard IDataObject
+and failed on the developer machine; original clipboard restoration could not
+be confirmed. Its default path now uses simulated clipboard text. Real clipboard
+acceptance requires `-Clipboard` and a disposable GitHub Windows runner, refuses
+non-text clipboard contents, and uses a text snapshot with bounded restoration
+retries. The local guard and the disposable-runner acceptance both pass. This
+fixture restriction does not change the application's clipboard behavior.

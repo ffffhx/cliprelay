@@ -371,7 +371,9 @@ Android 0.10.23 / Windows 0.3.5 新增侧边栏「语音输入」：先选中电
 
 Android 本地 244 项测试通过，其中 12 项终端测试包含真实 Windows Shell 的 Java 协议互通和重复命令验证；QA 包及 lint 检查通过。7 项终端设备测试已编译，覆盖输入法提交、旧输入连接失效、控制键、查询重放和 Canvas 渲染，但尚未运行。实际 Android 界面、中文输入法兼容、屏幕旋转、网络切换和安装版 SYSTEM 路径仍待验收；终端复制/粘贴面板、鼠标协议和文本选择尚未实现。现有 Orca 和 ChatGPT 交互入口保持可用。
 
-Android 终端进一步修复历史回放与新输出混在同次读取中的情况：按实际输出字节位置拆分，保留同一个 UTF-8/VT 解析器，新输出中的查询可正常回应。4 项新增解析器回归及本地完整 260 项 JVM 测试通过，无失败、错误或跳过；QA 应用、设备测试包、lint 与签名验证通过，未安装到设备。多电脑、文件传输、隐私与锁屏、助手唤醒、终端、输入工具及配对剪贴板的 Android 源码现纳入开发构建分支，保留已有版本号和 Orca 手势改动。此前桌面开发分支上的 Android CI 未包含这些本地新增源码，不能用作它们的构建验收；本次构建将单独上传 JVM 测试结果，记录见 `.tools/uu-parity/android-publication-audit.json` 和 `.tools/uu-parity/terminal-replay-artifacts.json`。
+Android 终端进一步修复历史回放与新输出混在同次读取中的情况：按实际输出字节位置拆分，保留同一个 UTF-8/VT 解析器，新输出中的查询可正常回应。4 项新增解析器回归及本地完整 260 项 JVM 测试通过，无失败、错误或跳过；QA 应用、设备测试包、lint 与签名验证通过，未安装到设备。多电脑、文件传输、隐私与锁屏、助手唤醒、终端、输入工具及配对剪贴板的 Android 源码现纳入开发构建分支，保留已有版本号和 Orca 手势改动。此前桌面开发分支上的 Android CI 未包含这些本地新增源码，不能用作它们的构建验收。
+
+完整 Android 源码提交 `67bec799` 的 [CI 构建](https://github.com/ffffhx/cliprelay/actions/runs/38784674666)现已通过。下载后的测试 XML 与本地 260 项用例清单完全一致：Linux 通过 257 项，跳过 3 项仅适用于 Windows 的文件、Shell 和网卡互操作测试；这 3 项均已在本地 Windows 通过。APK 的签名、17 个新增功能类、四个 ABI 的 UTF-8 JNI 导出及 Termux 来源/许可文件已核验。该包仅完成构建与内容验证，没有安装或执行新增设备测试。记录见 `.tools/uu-parity/android-publication-artifacts.json` 和 `.tools/uu-parity/terminal-replay-artifacts.json`。
 
 在工具栏点击「模式 → 游戏模式」，先选择《速速上菜》或《星露谷物语》，再显示相应触屏方向控制和游戏按钮；游戏模式不再单独占用工具栏按钮。取消选择保留当前模式，右上角「⋯」菜单中的「切换游戏」可重新选择，并记住上次使用的游戏。《速速上菜》的键盘预设为：
 WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停。
@@ -451,6 +453,8 @@ Windows / Mac 控制端新增「远程唤醒」，不要求打开远程画面。
 唤醒版通过 136 项相关 Electron 检查、47 组主机测试（96 个通过事件）和 15 项网卡检测测试，本地没有失败或跳过。真实双向 TLS 测试连接正式 Go 接口，验证目标离线、助手丢失回包、原请求重试和随后观察目标上线；测试使用模拟网卡与发送器，实际 UDP 用例仅发到本机回环地址，没有尝试唤醒真实电脑。证据见 `.tools/uu-parity/desktop-wake-artifacts.json`。
 
 唤醒版的 [三平台回归](https://github.com/ffffhx/cliprelay/actions/runs/38781670040)、[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38781676903)和 [Mac arm64/x64 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38781683718)均通过。下载后已核验 Windows 的 734 个文件、主机程序构建提交及应用源码；Windows 临时机器安装、独立进程与退出清理检查通过。两种 Mac 包均核验应用源码、1,847 个播放器文件、4 个网络组件文件和 163 条包内链接。
+
+源码交付核对发现，先前 Windows 开发包尚未包含本地已实现的配对接收设备编辑页和旧版兼容开关。提交 `e8174a9` 已补齐这 4 个界面/桥接文件及相关中继配置、验收脚本；[新的 Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38785791251)已通过临时安装、独立进程和后台退出检查，下载后的 734 个文件及主机程序提交版本全部核验一致。16 项相关 Electron 检查、7 组 Windows 协议/配置测试和 10 项中继配置测试通过。广播测试默认使用模拟剪贴板，真实剪贴板验收必须显式加 `-Clipboard`，且仅允许在临时 Windows CI 机器运行。Mac 应用源码、构建入口和组件版本均未改变，继续使用上方已验证的两种 Mac 包。中继配置仅补入源码，没有部署到线上。完整记录见 `.tools/uu-parity/source-publication-artifacts.json`。
 
 实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实多屏/热插拔、输入与音频、实际锁屏/解锁、睡眠或关机唤醒、显卡兼容性仍待验收。Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
