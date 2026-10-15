@@ -36,6 +36,13 @@ test('parent pipe close ends session and a truncated frame cannot hang',async()=
   assert.equal((await run.done).code,0);
   const broken=start(Buffer.from([0,0,0,100]),['--parse']);broken.child.stdin.end();assert.equal((await broken.done).code,2);
 });
+test('embedded route requires literal loopback and bounded advertised ports',async()=>{
+  assert.equal((await start({...envelope(32000),overlay:true},['--overlay']).done).code,0);
+  assert.equal((await start({...envelope(32000),overlay:true,overlayPort:48789},['--overlay']).done).code,0);
+  for(const change of [{address:'localhost'},{address:'127.0.0.2'},{address:'192.168.1.1'},{port:1028},{overlay:1},{overlayPort:65515},{overlayPort:1028},{overlayPort:'48789'},{overlay:false,overlayPort:48789}]){
+    assert.equal((await start({...envelope(32000),overlay:true,...change},['--parse']).done).code,2,JSON.stringify(change));
+  }
+});
 async function listen(server){server.listen(0,'127.0.0.1');await once(server,'listening');return server.address().port;}
 async function close(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 test('real mutual TLS uses paired identity and preserves client ID',async()=>{

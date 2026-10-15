@@ -24,6 +24,7 @@ int main(int argc, char** argv) {
     if (identity->getPrivateKey() != session.privateKey || identity->getCertificate() != session.certificate ||
         identity->getUniqueId() != session.clientId || !QSettings().allKeys().isEmpty()) return 3;
     if (app.arguments().contains("--parse")) return 0;
+    if (app.arguments().contains("--overlay")) return session.overlay && session.overlayPort == 48789 ? 0 : 7;
     if (app.arguments().contains("--lease")) {
         ClipRelayImport::watchParent();
         std::puts("ready"); std::fflush(stdout);

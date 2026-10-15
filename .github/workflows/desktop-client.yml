@@ -26,6 +26,10 @@ jobs:
           node-version: '22'
       - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev libssl-dev
       - run: python3 scripts/prepare_desktop_client.py desktop-source
+      - name: Test embedded route port bounds
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror engine/desktop-client/tests/portmap.c -o /tmp/cliprelay-portmap
+          /tmp/cliprelay-portmap
       - name: Build production protocol and identity probe
         run: |
           mkdir probe-build

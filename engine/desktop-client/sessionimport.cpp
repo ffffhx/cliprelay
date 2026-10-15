@@ -52,8 +52,10 @@ bool parse(const QByteArray& bytes, Session& result) {
     const auto doc = QJsonDocument::fromJson(bytes, &error);
     if (error.error != QJsonParseError::NoError || !doc.isObject()) return false;
     const auto o = doc.object();
-    const QSet<QString> keys{"version", "address", "port", "clientId", "certificate",
+    QSet<QString> keys{"version", "address", "port", "clientId", "certificate",
         "privateKey", "hostCertificate", "width", "height", "fps", "bitrate", "fullscreen"};
+    if (o.contains("overlay")) keys.insert("overlay");
+    if (o.contains("overlayPort")) keys.insert("overlayPort");
     const auto actualKeys = o.keys();
     if (QSet<QString>(actualKeys.cbegin(), actualKeys.cend()) != keys) return false;
     Session candidate;
@@ -72,6 +74,14 @@ bool parse(const QByteArray& bytes, Session& result) {
         (!ip.setAddress(candidate.address) && !QRegularExpression("^[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$").match(candidate.address).hasMatch())) return false;
     // Link-local scoped addresses are not supported by the stream transport.
     if (candidate.address.contains('%')) return false;
+    if (o.contains("overlay") && !o.value("overlay").isBool()) return false;
+    candidate.overlay = o.value("overlay").toBool(false);
+    if (candidate.overlay) {
+        int hostPort = 48789;
+        if (candidate.address != "127.0.0.1" || port < 1029 ||
+            (o.contains("overlayPort") && !integer(o, "overlayPort", 1029, 65514, hostPort))) return false;
+        candidate.overlayPort = static_cast<quint16>(hostPort);
+    } else if (o.contains("overlayPort")) return false;
     candidate.clientId = o.value("clientId").toString();
     if (!QRegularExpression("^[a-f0-9]{32}$").match(candidate.clientId).hasMatch()) return false;
     QByteArray hostPem;

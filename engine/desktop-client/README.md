@@ -29,3 +29,30 @@ Desktop on viewer exit. Resolution, rate and window mode are launch settings.
 Build and protocol checks do not establish working video, hardware decoding,
 input capture, macOS permissions, route handover or installed-service behavior.
 Those remain runtime acceptance requirements. No viewer binary is checked in.
+
+The desktop network helper is built separately by `Desktop Network Build` using
+`scripts/build_desktop_network.py windows|macos --output DIRECTORY`. Its source is
+`network/cmd/cliprelay-client-network` and `network/desktopclient`. It accepts one
+bounded JSON initialization line over a pipe (version, HTTPS controlUrl, broker
+hostname, one-use authKey and approved peerIP), followed only by `status` or
+`shutdown` commands. EOF closes the node even while registration is pending.
+The state-directory argument contains no enrollment credential. Private tsnet
+node state persists there; the owning app must protect and manage that directory.
+
+The helper allocates one port group on literal `127.0.0.1`: relative to the returned
+HTTP base port, HTTPS is -5, RTSP +2, paired control +21, video UDP +9, control UDP
++10 and audio UDP +11. Destination ports stay fixed at the existing host defaults.
+`ready` means the node and local forwarding sockets are ready; it does not prove
+that a remote desktop is online or that video is being presented. The helper
+does not implement broker claims, approval, enrollment renewal or UI persistence.
+
+The viewer envelope optionally accepts `overlay: true` only with literal
+`127.0.0.1` and an unprivileged local base. `overlayPort` is the advertised engine
+base (defaults to 48789). The separately pinned common streaming submodule maps
+RTSP and all three media/control ports, rejects unexpected advertised ports and
+forces 1024-byte remote packets. The encrypted RTSP session URL and exact host
+certificate remain intact. Direct-mode envelopes remain compatible.
+
+Integration into the desktop controller UI is still pending. Only component
+manifests advertising `embedded-network` support this mode. Network revocation,
+pause and host changes must close the helper and the associated stream.

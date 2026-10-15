@@ -15,6 +15,8 @@ struct Session {
     QSslCertificate hostCertificate;
     int width = 1920, height = 1080, fps = 60, bitrate = 12000;
     bool fullscreen = false;
+    bool overlay = false;
+    quint16 overlayPort = 0;
 };
 constexpr int MaxFrame = 65536;
 bool parse(const QByteArray& bytes, Session& result);

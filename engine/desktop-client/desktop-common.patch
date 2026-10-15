@@ -1,0 +1,96 @@
+--- a/src/Limelight.h
++++ b/src/Limelight.h
+@@ -100,6 +100,10 @@
+     // in /launch and /resume requests.
+     char remoteInputAesKey[16];
+     char remoteInputAesIv[16];
++
++    // ClipRelay owned loopback route. Zero/zero keeps normal direct behavior.
++    uint16_t cliprelayLocalPort;
++    uint16_t cliprelayHostPort;
+ } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
+ 
+ // Use this function to zero the stream configuration when allocated on the stack or heap
+--- a/src/Connection.c
++++ b/src/Connection.c
+@@ -1,4 +1,5 @@
+ #include "Limelight-internal.h"
++#include "cliprelay-portmap.h"
+ 
+ static int stage = STAGE_NONE;
+ static ConnListenerConnectionTerminated originalTerminationCallback;
+@@ -261,6 +262,15 @@
+     memset(&LocalAddr, 0, sizeof(LocalAddr));
+     NegotiatedVideoFormat = 0;
+     memcpy(&StreamConfig, streamConfig, sizeof(StreamConfig));
++    if (!ClipRelayRouteValid(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, serverInfo->address)) {
++        Limelog("Invalid ClipRelay embedded route\n");
++        err = -1;
++        goto Cleanup;
++    }
++    if (StreamConfig.cliprelayLocalPort) {
++        StreamConfig.streamingRemotely = STREAM_CFG_REMOTE;
++        StreamConfig.packetSize = 1024;
++    }
+     RemoteAddrString = strdup(serverInfo->address);
+ 
+     // The values in RTSP SETUP will be used to populate these.
+@@ -279,6 +289,11 @@
+         Limelog("RTSP port: %u\n", RtspPortNumber);
+     }
+ 
++    if (!ClipRelayMapPort(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, 2, &RtspPortNumber)) {
++        Limelog("ClipRelay RTSP port mismatch\n");
++        err = -1;
++        goto Cleanup;
++    }
+     alreadyTerminated = false;
+     ConnectionInterrupted = false;
+     
+--- a/src/RtspConnection.c
++++ b/src/RtspConnection.c
+@@ -1,4 +1,5 @@
+ #include "Limelight-internal.h"
++#include "cliprelay-portmap.h"
+ #include "Rtsp.h"
+ 
+ #define RTSP_CONNECT_TIMEOUT_SEC 10
+@@ -1198,6 +1199,12 @@
+         else {
+             Limelog("Audio port: %u\n", AudioPortNumber);
+         }
++        if (!ClipRelayMapPort(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, 11, &AudioPortNumber)) {
++            Limelog("ClipRelay audio port mismatch\n");
++            freeMessage(&response);
++            ret = -1;
++            goto Exit;
++        }
+ 
+         // Parse the Sunshine ping payload protocol extension if present
+         memset(&AudioPingPayload, 0, sizeof(AudioPingPayload));
+@@ -1282,6 +1289,12 @@
+         else {
+             Limelog("Video port: %u\n", VideoPortNumber);
+         }
++        if (!ClipRelayMapPort(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, 9, &VideoPortNumber)) {
++            Limelog("ClipRelay video port mismatch\n");
++            freeMessage(&response);
++            ret = -1;
++            goto Exit;
++        }
+ 
+         freeMessage(&response);
+     }
+@@ -1325,6 +1338,12 @@
+         }
+         else {
+             Limelog("Control port: %u\n", ControlPortNumber);
++        }
++        if (!ClipRelayMapPort(StreamConfig.cliprelayLocalPort, StreamConfig.cliprelayHostPort, 10, &ControlPortNumber)) {
++            Limelog("ClipRelay control port mismatch\n");
++            freeMessage(&response);
++            ret = -1;
++            goto Exit;
+         }
+ 
+         freeMessage(&response);

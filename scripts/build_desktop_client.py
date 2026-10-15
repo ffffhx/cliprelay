@@ -39,7 +39,7 @@ def build(source, platform):
         shutil.copytree(bundle,runtime/'ClipRelayStream.app',symlinks=True)
     artifact=source/'cliprelay-artifact';artifact.mkdir()
     shutil.copytree(runtime,artifact/'runtime',symlinks=True)
-    for name in ['LICENSE','upstream.json','README.md','desktop-client.patch','sessionimport.h','sessionimport.cpp']:
+    for name in ['LICENSE','upstream.json','README.md','desktop-client.patch','desktop-common.patch','portmap.h','sessionimport.h','sessionimport.cpp']:
         shutil.copyfile(extension/name,artifact/name)
     # Corresponding source includes pinned submodules and the applied extension.
     # SDK binaries and generated objects are excluded; their dependency release
@@ -52,7 +52,7 @@ def build(source, platform):
         for name in ['build_desktop_client.py','prepare_desktop_client.py']:
             archive.add(Path(__file__).with_name(name),arcname='scripts/'+name)
     hashes={str(p.relative_to(artifact)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest() for p in artifact.rglob('*') if p.is_file() and not p.is_symlink()}
-    (artifact/'manifest.json').write_text(json.dumps({'platform':platform,'protocol':1,'files':hashes},indent=2)+'\n')
+    (artifact/'manifest.json').write_text(json.dumps({'platform':platform,'protocol':1,'capabilities':['direct','embedded-network'],'files':hashes},indent=2)+'\n')
     if platform=='macos':
         # GitHub artifact transport discards executable bits and symlink types.
         # A tar container preserves both for the app and Qt frameworks.

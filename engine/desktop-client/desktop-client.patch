@@ -359,7 +359,23 @@
          m_StreamConfig.encryptionFlags = ENCFLG_ALL;
      }
      else {
-@@ -1780,7 +1781,8 @@
+@@ -1651,7 +1652,14 @@
+         hostInfo.rtspSessionUrl = rtspSessionUrlStr.data();
+     }
+ 
+-    if (m_Preferences->packetSize != 0) {
++    if (ClipRelayImport::active() && ClipRelayImport::get().overlay) {
++        m_StreamConfig.cliprelayLocalPort = ClipRelayImport::get().port;
++        m_StreamConfig.cliprelayHostPort = ClipRelayImport::get().overlayPort;
++        m_StreamConfig.streamingRemotely = STREAM_CFG_REMOTE;
++        m_StreamConfig.packetSize = 1024;
++        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay embedded network: 1024-byte remote packets");
++    }
++    else if (m_Preferences->packetSize != 0) {
+         // Override default packet size and remote streaming detection
+         // NB: Using STREAM_CFG_AUTO will cap our packet size at 1024 for remote hosts.
+         m_StreamConfig.streamingRemotely = STREAM_CFG_LOCAL;
+@@ -1780,7 +1788,8 @@
  void Session::exec()
  {
      // If the connection failed, clean up and abort the connection.
@@ -369,7 +385,7 @@
          delete m_InputHandler;
          m_InputHandler = nullptr;
          SDL_QuitSubSystem(SDL_INIT_VIDEO);
-@@ -1843,7 +1845,7 @@
+@@ -1843,7 +1852,7 @@
  #ifdef Q_OS_DARWIN
      std::string windowName = QString(m_Computer->name).toStdString();
  #else
@@ -378,7 +394,7 @@
  #endif
  
      m_Window = SDL_CreateWindow(windowName.c_str(),
-@@ -1964,6 +1966,12 @@
+@@ -1964,6 +1973,12 @@
      // because we want to suspend all Qt processing until the stream is over.
      SDL_Event event;
      for (;;) {
