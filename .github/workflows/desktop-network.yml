@@ -31,6 +31,11 @@ jobs:
         run: node --test windows/tests/network-controller.test.cjs windows/tests/network-artifact.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-pairing.test.cjs windows/tests/stream-viewer.test.cjs
       - name: Desktop live bitrate and presentation confirmation
         run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
+      - name: Desktop input ownership and presentation gating
+        run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs
+      - name: Paired display and input binding
+        working-directory: network
+        run: go test -count=1 -timeout=60s ./inputfocus -run 'TestDisplay|TestInputState'
       - name: Build native file interoperability fixture
         if: runner.os == 'Windows'
         shell: powershell

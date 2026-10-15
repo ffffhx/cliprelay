@@ -27,7 +27,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev libssl-dev libsdl2-dev
       - run: python3 scripts/prepare_desktop_client.py desktop-source
       - name: Test paired input-state observation and owner command frames
-        run: node --test windows/tests/desktop-input.test.cjs
+        run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs
       - name: Test native input epochs and stale shared batches
         run: python3 scripts/test_desktop_input.py desktop-source --output /tmp/cliprelay-input-epochs
       - name: Test held input and event-thread timers

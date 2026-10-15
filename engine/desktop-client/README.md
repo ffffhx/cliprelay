@@ -272,9 +272,15 @@ keyboard modifiers are removed from subsequent key events. Input timers execute
 on the SDL thread, preventing a delayed callback from crossing a pause. Device,
 window, decoder and quit events remain available while input is paused.
 
-The manifest does not yet advertise input epochs, and the desktop owner does not
-request them. The host metadata and presentation handshake plus desktop controls
-must be integrated and validated before exposing display switching.
+The manifest advertises `input-epochs-v1`. The desktop owner opts in only after
+the paired host confirms input-state support; older hosts retain the lease-only
+envelope. The owner starts paused and requires native submission, the exact
+exclusive host stream/epoch acknowledgment and native acknowledgment separately.
+Initial input opens only after a frame from the current capture is presented.
+Subsequent resume also rechecks the expected capture generation, dimensions and
+frame boundary after the host acknowledgment. EOF, invalid local events, revoked
+pairing, route changes and timeouts cancel the pending operation and close the
+old native lease. Display selection UI remains to be connected and validated.
 
 [Input component build 38755514829](https://github.com/ffffhx/cliprelay/actions/runs/38755514829)
 passes ten native queue scenarios, eight held-state/timer scenarios, six SDL

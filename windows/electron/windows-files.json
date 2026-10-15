@@ -26,6 +26,8 @@
   "desktop-client.cjs",
   "mac/client-identity.cjs",
   "mac/stream-viewer.cjs",
+  "mac/input-protocol.cjs",
+  "mac/input-session.cjs",
   "mac/bitrate-controller.cjs",
   "mac/bitrate-protocol.cjs",
   "mac/bitrate-ui.js",
