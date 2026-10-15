@@ -399,7 +399,7 @@ index 1b47397..bf56a8e 100644
      server.resource["^/api/apps$"]["GET"] = getApps;
      server.resource["^/api/apps$"]["POST"] = saveApp;
 diff --git a/src/input.cpp b/src/input.cpp
-index a12514d..d5d743f 100644
+index a12514d..df82f98 100644
 --- a/src/input.cpp
 +++ b/src/input.cpp
 @@ -29,6 +29,7 @@ extern "C" {
@@ -410,7 +410,17 @@ index a12514d..d5d743f 100644
  #include "globals.h"
  #include "input.h"
  #include "logging.h"
-@@ -296,7 +297,12 @@ namespace input {
+@@ -164,7 +165,8 @@ namespace input {
+ 
+   static task_pool_util::TaskPool::task_id_t key_press_repeat_id {};
+   static std::unordered_map<key_press_id_t, bool> key_press {};
+-  static std::array<std::uint8_t, 5> mouse_press {};
++  // Moonlight buttons are one-based; include the second side button (5).
++  static std::array<std::uint8_t, BUTTON_X2 + 1> mouse_press {};
+ 
+   static platf::input_t platf_input;
+ #ifdef SUNSHINE_TESTS
+@@ -296,7 +298,12 @@ namespace input {
      safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;  ///< Touch port event.
      platf::feedback_queue_t feedback_queue;  ///< Queue used to deliver controller feedback to the platform backend.
  
@@ -424,7 +434,7 @@ index a12514d..d5d743f 100644
      std::mutex input_queue_lock;  ///< Input queue lock.
  
      thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
-@@ -708,8 +714,23 @@ namespace input {
+@@ -708,8 +715,23 @@ namespace input {
    }
  
    /**
@@ -450,7 +460,7 @@ index a12514d..d5d743f 100644
     * @param input Platform input backend that receives the event.
     * @param packet Protocol packet being processed.
     */
-@@ -718,6 +739,8 @@ namespace input {
+@@ -718,6 +740,8 @@ namespace input {
        return;
      }
  
@@ -459,7 +469,7 @@ index a12514d..d5d743f 100644
      input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
      platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
    }
-@@ -905,9 +928,9 @@ namespace input {
+@@ -905,9 +929,9 @@ namespace input {
       */
      if (button == BUTTON_LEFT && release && !input->mouse_left_button_timeout) {
        auto f = [=]() {
@@ -472,7 +482,7 @@ index a12514d..d5d743f 100644
            return;
          }
          platf::button_mouse(platf_input, BUTTON_LEFT, release);
-@@ -2026,6 +2049,8 @@ namespace input {
+@@ -2026,6 +2050,8 @@ namespace input {
    void passthrough_next_message(std::shared_ptr<input_t> input) {
      // 'entry' backs the 'payload' pointer, so they must remain in scope together
      std::vector<uint8_t> entry;
@@ -481,7 +491,7 @@ index a12514d..d5d743f 100644
      PNV_INPUT_HEADER payload;
  
      // Lock the input queue while batching, but release it before sending
-@@ -2034,20 +2059,29 @@ namespace input {
+@@ -2034,20 +2060,29 @@ namespace input {
      {
        std::lock_guard<std::mutex> lg(input->input_queue_lock);
  
@@ -513,7 +523,7 @@ index a12514d..d5d743f 100644
          auto batchable_payload = (PNV_INPUT_HEADER) batchable_entry.data();
  
          auto batch_result = batch(payload, batchable_payload);
-@@ -2064,6 +2098,8 @@ namespace input {
+@@ -2064,6 +2099,8 @@ namespace input {
        }
      }
  
@@ -522,7 +532,7 @@ index a12514d..d5d743f 100644
      // Print the final input packet
      input::print((void *) payload);
  
-@@ -2121,7 +2157,9 @@ namespace input {
+@@ -2121,7 +2158,9 @@ namespace input {
     * @param input The input context pointer.
     * @param input_data The input message.
     */
@@ -533,7 +543,7 @@ index a12514d..d5d743f 100644
      NV_INPUT_HEADER header {};
      if (!validate_input_packet(input_data, &header)) {
        if (input_data.size() >= sizeof(header)) {
-@@ -2138,7 +2176,7 @@ namespace input {
+@@ -2138,7 +2177,7 @@ namespace input {
  
      {
        std::lock_guard<std::mutex> lg(input->input_queue_lock);
@@ -542,7 +552,7 @@ index a12514d..d5d743f 100644
      }
      task_pool.push(passthrough_next_message, input);
    }
-@@ -2200,6 +2238,7 @@ namespace input {
+@@ -2200,6 +2239,7 @@ namespace input {
     * @param input Retained stream input state to reset.
     */
    void reset_input_state(const std::shared_ptr<input_t> &input) {
@@ -550,7 +560,7 @@ index a12514d..d5d743f 100644
      reset_mouse_buttons();
      reset_keyboard_keys();
      reset_gamepads(input);
-@@ -2208,6 +2247,43 @@ namespace input {
+@@ -2208,6 +2248,43 @@ namespace input {
    /**
     * @brief Reset the object to its initial empty state.
     */
@@ -594,7 +604,7 @@ index a12514d..d5d743f 100644
    void reset(std::shared_ptr<input_t> &input) {
      task_pool.cancel(key_press_repeat_id);
      task_pool.cancel(input->mouse_left_button_timeout);
-@@ -2331,8 +2407,9 @@ namespace input {
+@@ -2331,8 +2408,9 @@ namespace input {
        });
      }
  
@@ -605,7 +615,7 @@ index a12514d..d5d743f 100644
        platf::move_mouse(platf_input, 1, 1);
        platf::move_mouse(platf_input, -1, -1);
      },
-@@ -2343,6 +2420,10 @@ namespace input {
+@@ -2343,6 +2421,10 @@ namespace input {
  
  #ifdef SUNSHINE_TESTS
    namespace testing {
