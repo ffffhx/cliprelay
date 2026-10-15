@@ -2,6 +2,7 @@
 const fs=require('node:fs');
 const path=require('node:path');
 const os=require('node:os');
+const crypto=require('node:crypto');
 const {execFileSync}=require('node:child_process');
 
 async function build(){
@@ -34,8 +35,26 @@ async function build(){
     const icon=path.join(staging,'ClipRelay.icns');execFileSync('/usr/bin/iconutil',['-c','icns',iconset,'-o',icon]);
     const version=JSON.parse(fs.readFileSync(path.join(windowsRoot,'version.json'),'utf8').replace(/^\uFEFF/,''));
     const output=path.resolve(repo,'.tools','mac-electron');
-    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp']}});
-    for(const bundle of built){const zip=path.join(output,`ClipRelay-macOS-${architecture}-${version.versionName}.zip`);execFileSync('/usr/bin/ditto',['-c','-k','--sequesterRsrc','--keepParent',path.join(bundle,'ClipRelay.app'),zip]);console.log(zip);}
+    // npm ci --omit=dev already created the production-only dependency tree.
+    // A second prune incorrectly resolves intentionally absent build tools.
+    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp']}});
+    for(const bundle of built){
+      if(process.env.CLIPRELAY_VIEWER_ARTIFACT){
+        const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','stream-viewer');
+        const executable=require('./mac/stream-viewer.cjs').executable(packaged,'darwin');
+        const manifest=JSON.parse(fs.readFileSync(path.join(packaged,'manifest.json'),'utf8'));
+        for(const [name,expected] of Object.entries(manifest.files)){
+          if(crypto.createHash('sha256').update(fs.readFileSync(path.join(packaged,name))).digest('hex')!==expected)throw new Error('Packaged viewer file changed: '+name);
+        }
+        const architectures=execFileSync('/usr/bin/lipo',['-archs',executable],{encoding:'utf8'}).trim().split(/\s+/);
+        if(!architectures.includes('x86_64') || !architectures.includes('arm64'))throw new Error('Expected universal desktop viewer');
+        const sourceArtifact=path.resolve(process.env.CLIPRELAY_VIEWER_ARTIFACT);let symlinks=0;
+        function verifyLinks(directory){for(const entry of fs.readdirSync(directory,{withFileTypes:true})){const item=path.join(directory,entry.name),relative=path.relative(sourceArtifact,item);if(entry.isSymbolicLink()){const copied=path.join(packaged,relative);if(!fs.lstatSync(copied).isSymbolicLink() || fs.readlinkSync(copied)!==fs.readlinkSync(item))throw new Error('Viewer framework link changed');symlinks++;}else if(entry.isDirectory())verifyLinks(item);}}
+        verifyLinks(sourceArtifact);
+        fs.writeFileSync(path.join(output,`viewer-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,viewerArchitectures:architectures,verifiedFiles:Object.keys(manifest.files).length,verifiedSymlinks:symlinks,viewerSha256:manifest.files['runtime/ClipRelayStream.app/Contents/MacOS/Moonlight']},null,2));
+      }
+      const zip=path.join(output,`ClipRelay-macOS-${architecture}-${version.versionName}.zip`);execFileSync('/usr/bin/ditto',['-c','-k','--sequesterRsrc','--keepParent',path.join(bundle,'ClipRelay.app'),zip]);console.log(zip);
+    }
   }finally{
     const resolved=path.resolve(staging);const temp=path.resolve(os.tmpdir())+path.sep;
     if(!resolved.startsWith(temp)||!path.basename(resolved).startsWith('cliprelay-electron-mac-'))throw new Error('Unexpected staging path');

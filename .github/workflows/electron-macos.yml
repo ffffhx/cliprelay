@@ -49,5 +49,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ClipRelay-macOS-${{ matrix.arch }}
-          path: .tools/mac-electron/*.zip
+          path: |
+            .tools/mac-electron/*.zip
+            .tools/mac-electron/viewer-bundle-*.json
           if-no-files-found: error
