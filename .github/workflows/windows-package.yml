@@ -43,9 +43,8 @@ jobs:
           & scripts/resolve_windows_components.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'cliprelay-components')
           & scripts/package_windows.ps1 -OutputDirectory dist
           $package = Get-ChildItem dist/ClipRelay-Windows-*.zip | Select-Object -First 1
-          Expand-Archive -LiteralPath $package.FullName -DestinationPath (Join-Path $env:RUNNER_TEMP 'cliprelay-install')
-          $installer = Join-Path $env:RUNNER_TEMP 'cliprelay-install/ClipRelay-Windows/install.ps1'
-          & $installer -ValidateOnly
+          python windows/tests/package_archive.py $package.FullName --output (Join-Path $env:RUNNER_TEMP 'cliprelay-install') --report dist/archive-report.json
+          if ($LASTEXITCODE -ne 0) { throw 'Archive preflight acceptance failed' }
       - name: Install on disposable runner
         run: |
           if (Get-Service ClipRelayRemote -ErrorAction SilentlyContinue) { throw 'Runner must not have an existing ClipRelay service.' }
