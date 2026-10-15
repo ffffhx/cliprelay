@@ -43,11 +43,14 @@ func TestDesktopBitrateNativeFixture(t *testing.T) {
 	rates := func(ctx context.Context, owner string, selection *bitrateSelection) (bitrateState, error) {
 		return requestEngineBitrate(ctx, endpoint, config.Password, host.Certificate[0], owner, selection)
 	}
+	inputs := func(ctx context.Context) (inputState, error) {
+		return requestEngineInput(ctx, endpoint, config.Password, host.Certificate[0])
+	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", config.Port+2))
 	if err != nil {
 		t.Fatal("fixture port unavailable")
 	}
-	server := &http.Server{Handler: withDisplays(withBitrate(http.NotFoundHandler(), clients, rates), clients, displays), TLSConfig: controlTLSConfig(host, clients), ReadHeaderTimeout: 3 * time.Second}
+	server := &http.Server{Handler: withInputState(withDisplays(withBitrate(http.NotFoundHandler(), clients, rates), clients, displays), clients, inputs), TLSConfig: controlTLSConfig(host, clients), ReadHeaderTimeout: 3 * time.Second}
 	finished := make(chan error, 1)
 	go func() { finished <- server.Serve(tls.NewListener(listener, server.TLSConfig)) }()
 	defer server.Close()

@@ -1,5 +1,6 @@
 import {mountFiles} from './file-ui.js';
 import {mountBitrate} from './bitrate-ui.js';
+import {mountDisplays} from './display-ui.js';
 export async function mount(root,api,close,initial){
   root.className='paired';let state=initial,closed=false,busy=false,feedbackText='',feedbackUntil=0;
   const element=(tag,text)=>{const item=document.createElement(tag);if(text)item.textContent=text;return item;};
@@ -14,6 +15,7 @@ export async function mount(root,api,close,initial){
   openRemote.onclick=()=>run(async()=>{const preset=resolution.value==='720'?{width:1280,height:720,fps:30,bitrate:6000}:resolution.value==='2160'?{width:3840,height:2160,fps:60,bitrate:35000}:{width:1920,height:1080,fps:60,bitrate:12000};state=await api.request('viewer-open',preset);render();});
   stopRemote.onclick=()=>change('viewer-stop');remote.append(openRemote,stopRemote,remoteStatus);root.append(remote);
   const bitrate=mountBitrate(remote,async(action,data)=>{state=await api.request(action,data);render();return state;});
+  const displays=mountDisplays(remote,async(action,data)=>{state=await api.request(action,data);render();return state;});
   const files=mountFiles(root,async(action,data)=>{state=await api.request(action,data);render();return state;});
   const terminalSection=element('section'),terminalOpen=element('button','打开远程终端');terminalOpen.onclick=()=>change('terminal-open');terminalSection.append(element('h2','终端'),element('p','在独立窗口中使用电脑的 PowerShell 或 CMD，支持多会话与断线续接。'),terminalOpen);root.append(terminalSection);
   const form=element('form');form.append(element('h2','添加电脑'));
@@ -34,6 +36,7 @@ export async function mount(root,api,close,initial){
   let roster='',networkRoster='';
   function render(){
     bitrate.render(state);
+    displays.render(state);
     files.render(state);
     const key=JSON.stringify(state.hosts);if(key!==roster){roster=key;list.replaceChildren();
       if(!state.hosts.length)list.append(element('p','尚无配对电脑。发起配对后，在电脑端核对验证码并确认。'));
@@ -52,7 +55,8 @@ export async function mount(root,api,close,initial){
     openRemote.disabled=busy || !current?.enabled || current?.routeReady===false || !state.viewer?.available || active;
     stopRemote.disabled=busy || !active || phase==='closing';resolution.disabled=active;
     const viewerErrors={VIEWER_RECOVERY_EXHAUSTED:'暂时无法恢复连接，请检查电脑和网络后重新打开。',UNPAIRED:'电脑已撤销配对，请重新配对。',HOST_CERT_CHANGED:'电脑身份发生变化，请核实后重新配对。',RELAY_UNPAIRED:'电脑已撤销配对，请重新配对。',KEYCHAIN_UNAVAILABLE:'无法解锁配对身份，请检查系统钥匙串。',VIEWER_DECODER_ERROR:'画面解码失败，请调整画质或更新显卡驱动后重新打开。',VIEWER_HOST_ERROR:'电脑结束了远控，请检查电脑状态后重新打开。'};
-    remoteStatus.textContent=!state.viewer?.available?'请安装包含最新桌面控制组件的 ClipRelay':phase==='error'?(viewerErrors[state.viewer?.error] || '远控已结束，请检查电脑连接和配对状态。'):({idle:'选择电脑后即可打开桌面。',starting:'正在连接远程桌面…',running:'远控已连接；关闭窗口可结束本次远控。',recovering:'连接中断，正在恢复；可随时结束远控。',closing:'正在结束远控…'})[phase];
+    const inputError=/^(INPUT_|DISPLAY_)/.test(state.viewer?.error||'')?'画面或输入状态未能确认，远控已结束；请检查电脑后重新打开。':'';
+    remoteStatus.textContent=!state.viewer?.available?'请安装包含最新桌面控制组件的 ClipRelay':phase==='error'?(viewerErrors[state.viewer?.error] || inputError || '远控已结束，请检查电脑连接和配对状态。'):({idle:'选择电脑后即可打开桌面。',starting:'正在连接远程桌面…',running:'远控已连接；关闭窗口可结束本次远控。',recovering:'连接中断，正在恢复；可随时结束远控。',closing:'正在结束远控…'})[phase];
     const network=state.network || {available:false,computers:[],pairing:{state:'idle'}},external=network.pairing;
     const networkBusy=['preparing','approval','connecting','waiting'].includes(external.state);
     const pairing=['preparing','waiting'].includes(state.pairing.state);pair.disabled=busy || pairing || networkBusy;cancelPair.disabled=!pairing;

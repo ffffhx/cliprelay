@@ -24,9 +24,10 @@ import urllib.request
 from engine_control_test import POWERSHELL, choose_port, powershell, prepare_client, quote
 
 
-def run(engine: Path, viewer: Path, output: Path, overlay_fixture: Path = None, recovery=False, telemetry=False, control_fixture: Path = None):
+def run(engine: Path, viewer: Path, output: Path, overlay_fixture: Path = None, recovery=False, telemetry=False, control_fixture: Path = None, input_epochs=False):
     if recovery and not overlay_fixture:raise ValueError('Recovery acceptance requires the isolated overlay fixture')
     if control_fixture and (overlay_fixture or not telemetry):raise ValueError('Live bitrate fixture requires direct telemetry mode')
+    if input_epochs and not control_fixture:raise ValueError('Input epochs require the paired control fixture')
     engine=engine.resolve(strict=True);viewer=viewer.resolve(strict=True)
     fixture=output.resolve()/secrets.token_hex(12);fixture.mkdir(parents=True,exist_ok=False)
     owner=prepare_client(fixture)
@@ -120,6 +121,7 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
         value={'version':1,'address':'127.0.0.1','port':local_port,'clientId':secrets.token_hex(16),'certificate':(fixture/'client.pem').read_text(),'privateKey':(fixture/'client-key.pem').read_text(),'hostCertificate':(fixture/'cacert.pem').read_text(),'width':1280,'height':720,'fps':30,'bitrate':6000,'fullscreen':False}
         if overlay_fixture:value.update(overlay=True,overlayPort=port)
         if control_fixture:value['bitrateTest']=True
+        if input_epochs:value['inputTest']=True
         data=json.dumps(value).encode();env=os.environ.copy();env['TEMP']=str(fixture);env['TMP']=str(fixture)
         for key in ['ELECTRON_RUN_AS_NODE','CHROME_CRASHPAD_PIPE_NAME','QT_QPA_PLATFORM','QT_PLUGIN_PATH','QML2_IMPORT_PATH']:env.pop(key,None)
         log=(fixture/'viewer.log').open('wb')
@@ -179,6 +181,24 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
                     current=state();assert (current['instance'],current['streams'][0]['id'],current['generation'])==binding
                     assert len([item for item in history if item.get('type')=='spawn'])==1,'Live rate adjustment restarted the viewer'
                     report['bitrate'].append({'budgetKbps':budget,'videoKbps':rate['videoKbps'],'confirmationMs':round((time.monotonic()-started)*1000),'sameStream':True})
+            if input_epochs:
+                admitted=next((item['input'] for item in reversed(history) if item.get('type')=='state'),{})
+                assert admitted.get('phase')=='active' and admitted.get('epoch')==2,admitted
+                started=time.monotonic();process.stdin.write(b'{"action":"input-switch"}\n');process.stdin.flush()
+                deadline=started+20
+                while time.monotonic()<deadline:
+                    switched=next((item for item in history if item.get('type')=='input-switch'),None)
+                    if switched:break
+                    if process.poll() is not None:raise RuntimeError('Input owner exited during guarded display selection')
+                    time.sleep(.05)
+                else:raise RuntimeError('Guarded display selection did not resume after presentation')
+                assert switched['resumedEpoch']==4 and switched['pausedEpoch']==3 and switched['generation']>switched['previousGeneration']
+                assert switched['progress']['rendered']>=switched['firstFrame']>0 and switched['progress']['rendered']>switched['afterFrame']
+                native=[(item['epoch'],item['stage']) for item in history if item.get('type')=='native' and item.get('event')=='input']
+                assert native==[(epoch,stage) for epoch in range(1,5) for stage in ['submitted','acknowledged']],native
+                assert len([item for item in history if item.get('type')=='spawn'])==1
+                report['inputEpochs']={**switched,'confirmationMs':round((time.monotonic()-started)*1000),'nativeEvents':native,
+                    'productionOwner':True,'productionPairedHandlers':True,'physicalInputInjected':False}
             if recovery:
                 stop_network()
                 deadline=time.monotonic()+30
@@ -284,4 +304,5 @@ if __name__=='__main__':
     parser.add_argument('--recovery',action='store_true')
     parser.add_argument('--telemetry',action='store_true')
     parser.add_argument('--control-fixture',type=Path)
-    args=parser.parse_args();run(args.engine,args.viewer,args.output,args.overlay_fixture,args.recovery,args.telemetry,args.control_fixture)
+    parser.add_argument('--input-epochs',action='store_true')
+    args=parser.parse_args();run(args.engine,args.viewer,args.output,args.overlay_fixture,args.recovery,args.telemetry,args.control_fixture,args.input_epochs)
