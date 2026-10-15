@@ -55,7 +55,7 @@ export async function mount(root,api,close,initial){
     const networkKey=JSON.stringify([network.computers,networkBusy,pairing,busy]);if(networkKey!==networkRoster){networkRoster=networkKey;networkList.replaceChildren();
       for(const computer of network.computers){
         const row=element('div');row.className='paired-host';const info=element('div');
-        info.append(element('strong',computer.name),element('small',({ready:computer.path==='relay'?'已连接 · 中继':'已连接',connecting:'正在连接',waiting:'等待电脑上线',paused:'外网连接已暂停',error:networkErrors[computer.error] || '连接需要处理'})[computer.phase] || '等待连接'));
+        info.append(element('strong',computer.name),element('small',({ready:computer.path==='connecting'?'等待电脑响应':computer.path==='relay'?'网络已就绪 · 中继':'网络已就绪 · 直连',connecting:'正在连接',waiting:'等待电脑上线',paused:'外网连接已暂停',error:networkErrors[computer.error] || '连接需要处理'})[computer.phase] || '等待连接'));
         const toggle=element('button',computer.enabled?'暂停外网':'恢复外网');toggle.onclick=()=>change('network-enable',{id:computer.id,enabled:!computer.enabled});row.append(info,toggle);
         if(!computer.paired){const finish=element('button','完成安全配对');finish.disabled=networkBusy || pairing || !computer.enabled;finish.onclick=()=>change('network-pair',{id:computer.id});row.append(finish);}
         const remove=element('button','移除');remove.title='移除本机记录；撤销授权请在被控电脑操作';remove.onclick=()=>change('network-remove',{id:computer.id});row.append(remove);networkList.append(row);

@@ -44,7 +44,7 @@ sockets and Unix datagrams are rejected. The owner flushes then closes the input
 handle when ending the lease.
 
 The helper allocates one port group on literal `127.0.0.1`: relative to the returned
-HTTP base port, HTTPS is -5, RTSP +21, paired control +2, video UDP +9, control UDP
+HTTP base port, HTTPS is -5, RTSP +21, paired control +2, pairing bootstrap +3, video UDP +9, control UDP
 +10 and audio UDP +11. Destination ports stay fixed at the existing host defaults.
 `ready` means the node and local forwarding sockets are ready; it does not prove
 that a remote desktop is online or that video is being presented. The helper
@@ -57,9 +57,11 @@ RTSP and all three media/control ports, rejects unexpected advertised ports and
 forces 1024-byte remote packets. The encrypted RTSP session URL and exact host
 certificate remain intact. Direct-mode envelopes remain compatible.
 
-Integration into the desktop controller UI is still pending. Only component
-manifests advertising `embedded-network` support this mode. Network revocation,
-pause and host changes must close the helper and the associated stream.
+Only viewer manifests advertising `embedded-network` support this mode. Desktop
+enrollment also requires a helper advertising `pairing-bootstrap`; earlier helpers
+cannot forward the TLS approval endpoint. Network revocation, pause and host
+changes close the helper and its associated stream. A replacement route requires
+reopening the viewer; automatic stream recovery remains pending.
 
 `windows/electron/mac/network-channel.cjs` implements the shared main-process
 helper manager. It checks the packaged helper hash, validates enrollment before
@@ -67,5 +69,30 @@ launch, bounds child replies, enforces startup and heartbeat deadlines, and wait
 for the previous child to close before another start. Its returned loopback route
 has a fresh generation for each process; do not save transient ports in the
 paired-host catalog. Lost listeners, a changed port or owner cancellation withdraw
-the route before cleanup. Broker credentials, approval/status, persistent peer
-records and desktop UI integration are separate and still pending.
+the route before cleanup.
+
+Desktop enrollment is now wired into the shared Windows/Mac pairing UI through
+`network-broker.cjs`, `network-catalog.cjs`, `network-controller.cjs` and
+`routed-store.cjs`. Enter the host's eight-digit code, confirm the six-character
+network identity on the host, then confirm the twelve-character TLS pairing
+identity. Broker HTTPS uses normal certificate verification and rejects
+redirects. The credential-derived device ID, approved broker peer ID and paired
+host certificate are bound separately. Credentials use Electron safeStorage;
+the renderer receives public status only. Saved hosts contain no transient
+loopback ports. Each computer retains independent node state, pause and removal.
+
+Route generations invalidate old clipboard transfers and viewer leases, including
+local port reuse. A temporary broker outage preserves an existing route; explicit
+revocation or identity mismatch closes it. A previously paired direct TLS address
+can remain a fallback while the external network is paused. Removing a record
+only removes local access; revoke the authorization on the controlled computer.
+
+`scripts/package_windows.ps1 -NetworkArtifact DIRECTORY` stages the verified
+helper beside `remote-viewer`; the installer preserves the complete manifest,
+license, notices and corresponding network source. The macOS build accepts
+`CLIPRELAY_NETWORK_HELPER_ARTIFACT`; its workflow can fetch a successful Desktop
+Network Build run using `desktop_network_run_id`. Both Mac app architectures
+include the universal helper. Runtime packages are development artifacts until
+the combined Windows host installation, operator approval, desktop UI, actual
+cross-network streaming and update acceptance have passed. Component tests and
+local encrypted forwarding do not establish those acceptance results.

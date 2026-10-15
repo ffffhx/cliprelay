@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -17,7 +18,11 @@ import (
 )
 
 func TestDesktopClientRealBrokerApprovalAndRevocation(t *testing.T) {
-	node, err := exec.LookPath("node")
+	runtime := os.Getenv("CLIPRELAY_DESKTOP_NODE")
+	if runtime == "" {
+		runtime = "node"
+	}
+	node, err := exec.LookPath(runtime)
 	if err != nil {
 		t.Fatal("Node is required for the desktop broker interoperability test")
 	}

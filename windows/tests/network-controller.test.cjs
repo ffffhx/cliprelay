@@ -39,13 +39,13 @@ function setup(t,options={}){
 
 test('broker uses verified HTTPS, binds replies to credential identity and never follows redirects',async()=>{
   const credential=token(),id=credentialId(credential);let mode='valid',requests=0;
-  const server=https.createServer({key:identities.host.key,cert:identities.host.cert},(req,res)=>{
+  const server=https.createServer({key:identities.broker.key,cert:identities.broker.cert},(req,res)=>{
     requests++;assert.equal(req.headers.authorization,'Bearer '+credential);
     if(mode==='redirect'){res.writeHead(302,{Location:'/capture'});res.end();return;}
     if(mode==='oversize'){res.end('x'.repeat(131073));return;}
     res.end(JSON.stringify({id:mode==='wrong-id'?'f'.repeat(24):id,name:'Desktop',state:'approved',peers:[peer],reauthorize:false}));
   });
-  const port=await listen(server),client=new BrokerClient(credential,{endpoint:'https://127.0.0.1:'+port+'/network',ca:identities.host.cert});
+  const port=await listen(server),client=new BrokerClient(credential,{endpoint:'https://127.0.0.1:'+port+'/network',ca:identities.brokerRoot.cert});
   try{
     assert.equal((await client.request('status')).peers[0].id,peer.id);
     const unknown=new BrokerClient(credential,{endpoint:'https://127.0.0.1:'+port+'/network'});
@@ -58,8 +58,8 @@ test('broker uses verified HTTPS, binds replies to credential identity and never
 });
 
 test('broker abort closes a stalled response and response bodies cannot become public errors',async()=>{
-  let stalled=true;const server=https.createServer({key:identities.host.key,cert:identities.host.cert},(req,res)=>{if(stalled)return;res.writeHead(401);res.end('{"error":"private-enrollment-provider-detail"}');});
-  const port=await listen(server),client=new BrokerClient(token(),{endpoint:'https://127.0.0.1:'+port,ca:identities.host.cert,timeout:100});
+  let stalled=true;const server=https.createServer({key:identities.broker.key,cert:identities.broker.cert},(req,res)=>{if(stalled)return;res.writeHead(401);res.end('{"error":"private-enrollment-provider-detail"}');});
+  const port=await listen(server),client=new BrokerClient(token(),{endpoint:'https://127.0.0.1:'+port,ca:identities.brokerRoot.cert,timeout:100});
   try{await assert.rejects(client.request('status'),{code:'BROKER_UNAVAILABLE'});const abort=new AbortController(),request=client.request('status',{},abort.signal);abort.abort();await assert.rejects(request,{code:'CANCELLED'});stalled=false;await assert.rejects(client.request('status'),{code:'NETWORK_REVOKED',message:'NETWORK_REVOKED'});}finally{await close(server);}
 });
 
