@@ -14,7 +14,7 @@ Object.assign(messages,{TERMINAL_MOUSE_HOST:'请更新电脑端 ClipRelay 后使
 class TerminalController{
   constructor({store,request=protocol.request,now=()=>performance.now()}){
     Object.assign(this,{store,request,now});this.phase='idle';this.view=crypto.randomBytes(16).toString('hex');this.states=new Map();this.sessions=[];this.selected='';this.instance='';this.nextOpen=0;this.pendingAction=null;this.status='';this.error='';this.notice='';this.desired={columns:100,rows:30};this.needList=true;this.retryAt=0;this.failures=0;this.retryStarted=0;
-    this.mice=new Map();this.mouseProtocol=0;this.shownOffset=0;this.shownDimensions=null;this.frameReceipt=null;this.lastRead=-Infinity;this.lastKeyboard=-Infinity;
+    this.mice=new Map();this.mouseProtocol=0;this.shownOffset=0;this.shownDimensions=null;this.frameReceipt=null;this.lastRead=-Infinity;this.lastKeyboard=-Infinity;this.nonMouse=0;this.lastInputOp='';
   }
   snapshot(){const current=this.states.get(this.selected),mouse=this.mice.get(this.selected);return {phase:this.phase,hostName:this.bound?.name || '',hostId:this.bound?.id || '',view:this.view,screen:this.screen || '',selected:this.selected,sessions:this.sessions.map(s=>({...s})),error:this.error?message({code:this.error}):'',notice:this.notice,queuedBytes:current?.queuedBytes || 0,uncertain:!!current?.pending || !!this.pendingAction,accepted:current?.snapshot.acceptedSequence || 0,written:current?.snapshot.writtenSequence || 0,busy:!!this.operation,mouse:{supported:this.mouseProtocol===1,ready:this.mouseReady(),available:mouseEnabled(current?.snapshot.mouse),revision:mouse?.revision || 0,buttons:mouse?.buttons || 0,busy:mouse?.busy() || false}};}
   mouseReady(){const s=this.states.get(this.selected)?.snapshot;return !!(this.mouseProtocol===1 && this.phase==='ready' && s?.state==='running' && mouseEnabled(s.mouse) && !this.pasteDraft && this.shownOffset>=s.mouse.offset && this.shownOffset>=(this.replayUntil || 0) && ['columns','rows'].every(key=>s[key]===this.desired[key] && s[key]===this.shownDimensions?.[key]));}
@@ -111,9 +111,10 @@ class TerminalController{
     if(reply.gap){this.mice.get(this.selected)?.stop();this.shownOffset=0;this.shownDimensions=null;this.replayUntil=reply.session.end;this.notice='较早的输出已超出电脑保留范围，已重置画面并显示现有输出。';}
     const replay=reply.offset<this.replayUntil,data=replay?reply.data.subarray(0,this.replayUntil-reply.offset):reply.data;this.offset=reply.offset+data.length;
     const frame={view:this.view,token:crypto.randomBytes(16).toString('hex'),next:this.offset,data:data.toString('base64'),gap:reply.gap,replay,columns:reply.session.columns,rows:reply.session.rows};
-    this.lastRead=this.now();this.frameReceipt={...frame,id:this.selected};delete this.frameReceipt.data;return frame;
+    this.lastRead=this.now();this.nonMouse=Math.min(2,this.nonMouse+1);this.lastInputOp='read';this.frameReceipt={...frame,id:this.selected};delete this.frameReceipt.data;return frame;
   }
-  async sendMouse(mouse,command){try{const reply=await this.call(command);mouse.acknowledge(reply);this.update(reply);}catch(error){if(mouse.rejected(error.code)){this.needList=true;this.notice=message(error);}else throw error;}}
+  async sendMouse(mouse,command){try{const reply=await this.call(command);mouse.acknowledge(reply);this.update(reply);this.nonMouse=0;this.lastInputOp='mouse';}catch(error){if(mouse.rejected(error.code)){this.needList=true;this.notice=message(error);}else throw error;}}
+  async sendKeys(state){const reply=await this.call(state.command(this.instance));state.acknowledge(reply);this.update(reply);this.lastKeyboard=this.now();this.nonMouse=Math.min(2,this.nonMouse+1);this.lastInputOp='write';}
   async poll(){
     this.reconcile();
     if(this.polling || this.operation || this.closed || ['paused','error','idle'].includes(this.phase) || this.now()<this.retryAt)return {state:this.snapshot()};
@@ -128,14 +129,17 @@ class TerminalController{
         const state=this.states.get(this.selected);if(state){
           const mouse=this.mice.get(this.selected),resizing=state.snapshot.state==='running' && this.offset>=this.replayUntil && (state.snapshot.columns!==this.desired.columns || state.snapshot.rows!==this.desired.rows);
           const cancel=mouse?.cancelWanted?mouse.command(this.instance,this.selected):null;
+          const mouseTurn=!cancel && mouse?.busy() && this.nonMouse>=2?mouse.command(this.instance,this.selected):null;
           // Cleanup has priority; live movement cannot starve output or keys.
           if(cancel)await this.sendMouse(mouse,cancel);
+          else if(mouseTurn)await this.sendMouse(mouse,mouseTurn);
+          else if(state.queuedBytes && this.lastInputOp==='read' && this.now()-this.lastKeyboard>=100)await this.sendKeys(state);
           else if(mouse?.busy() && this.now()-this.lastRead>=75)frame=await this.readFrame();
-          else if(state.queuedBytes && this.now()-this.lastKeyboard>=100){const write=state.command(this.instance),reply=await this.call(write);state.acknowledge(reply);this.update(reply);this.lastKeyboard=this.now();}
+          else if(state.queuedBytes && this.now()-this.lastKeyboard>=100)await this.sendKeys(state);
           else{
             const mouseCommand=mouse?.command(this.instance,this.selected);
             if(mouseCommand)await this.sendMouse(mouse,mouseCommand);
-            else if(state.queuedBytes){const write=state.command(this.instance),reply=await this.call(write);state.acknowledge(reply);this.update(reply);this.lastKeyboard=this.now();}
+            else if(state.queuedBytes)await this.sendKeys(state);
             else if(resizing)this.update(await this.call({op:'resize',instance:this.instance,id:this.selected,...this.desired}));
             else if(state.snapshot.state==='running' || this.offset<state.snapshot.end)frame=await this.readFrame();
           }

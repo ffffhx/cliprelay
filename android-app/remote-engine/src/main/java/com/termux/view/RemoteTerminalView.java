@@ -12,15 +12,19 @@ import com.termux.terminal.*;
 import com.limelight.terminal.TerminalClipboard;
 import com.limelight.terminal.TerminalInputBatch;
 import com.limelight.terminal.TerminalSelection;
-import com.limelight.terminal.TerminalMouseInput;
 import com.limelight.terminal.TerminalMouseGesture;
+import com.limelight.terminal.TerminalMousePointer;
+import com.limelight.terminal.TerminalMouseState;
+import com.limelight.terminal.TerminalProtocol;
 import java.nio.charset.StandardCharsets;
 
 /** Canvas and IME for a remote parser; never opens a local shell or obeys OSC clipboard requests. */
 public final class RemoteTerminalView extends View {
     public interface Listener {
         boolean input(byte[] bytes); void size(int columns,int rows);
-        default boolean mouseInput(byte[] bytes){return input(bytes);}
+        default boolean mouseEvent(TerminalMouseState.Event event){return false;}
+        default boolean mouseHeartbeat(long revision){return false;}
+        default void mouseCancelled() {} default void displayed() {}
         default void selectionChanged() {} default void mouseChanged() {} default void mouseUnavailable() {}
     }
     private final Listener listener;
@@ -30,6 +34,15 @@ public final class RemoteTerminalView extends View {
     private final TerminalSelection selection=new TerminalSelection();
     private final TerminalInputBatch batch=new TerminalInputBatch();
     private final TerminalMouseGesture mouseGesture;
+    private final TerminalMousePointer pointer;
+    private TerminalProtocol.Mouse mouseMode;
+    private long mouseRevision,parsedOffset=-1,drawnOffset=-1;
+    private int drawnColumns,drawnRows,mousePointer=-1;
+    private boolean mouseSynchronized;
+    private final Runnable heartbeat=new Runnable(){public void run(){
+        if(!mouseEnabled || !mouseReady() || !hasWindowFocus() || !isShown()){cancelPointers();return;}
+        if(pointer.buttons()!=0 && mouseMode!=null && mouseMode.mode!=9 && pointer.heartbeat())postDelayed(this,200);
+    }};
     private boolean mouseEnabled;
     private int imeEpoch;
     private final Editable composition=new SpannableStringBuilder();
@@ -41,12 +54,17 @@ public final class RemoteTerminalView extends View {
         super(context);this.listener=listener;
         renderer=new TerminalRenderer(Math.max(12,(int)(14*getResources().getDisplayMetrics().scaledDensity)),Typeface.MONOSPACE);
         mouseGesture=new TerminalMouseGesture(ViewConfiguration.get(context).getScaledTouchSlop(),renderer.mFontLineSpacing);
+        pointer=new TerminalMousePointer(new TerminalMousePointer.Sink(){
+            public boolean event(TerminalMouseState.Event event){return listener.mouseEvent(event);}
+            public void cancel(){listener.mouseCancelled();}
+            public boolean heartbeat(long revision){return listener.mouseHeartbeat(revision);}
+        });
         setFocusable(true);setFocusableInTouchMode(true);setBackgroundColor(0xff000000);
         setImportantForAutofill(IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         reset(80,24);
     }
     public void reset(int columns,int rows) {
-        mouseEnabled=false;cancelPointers();
+        mouseEnabled=false;cancelPointers();mouseMode=null;mouseSynchronized=false;parsedOffset=drawnOffset=-1;
         selection.enable(false);selectingGesture=false;invalidateIme();
         topRow=0;
         emulator=new TerminalEmulator(new TerminalOutput() {
@@ -73,28 +91,37 @@ public final class RemoteTerminalView extends View {
     }
     public void inputBlocked(boolean blocked){if(inputBlocked!=blocked){inputBlocked=blocked;if(blocked)mouseEnabled(false);invalidateIme();}}
     private boolean humanInput(){return accepting && !inputBlocked && !selecting();}
-    private void cancelPointers(){mouseGesture.cancel();historyPointer=-1;selectingGesture=false;}
-    public boolean mouseAvailable(){return emulator!=null && emulator.isMouseTrackingActive();}
+    private void cancelPointers(){mouseGesture.cancel();pointer.cancel();removeCallbacks(heartbeat);mousePointer=-1;historyPointer=-1;selectingGesture=false;}
+    public boolean mouseAvailable(){return mouseMode!=null && mouseMode.available();}
+    public boolean legacyMouseRequested(){return emulator!=null && emulator.isMouseTrackingActive();}
+    public void configureMouse(TerminalProtocol.Mouse mode,long revision,boolean synchronizedScreen){
+        boolean changed=mouseRevision!=revision || (mouseMode==null?0:mouseMode.epoch)!=(mode==null?0:mode.epoch);
+        mouseMode=mode;mouseRevision=revision;mouseSynchronized=synchronizedScreen;
+        if(changed){mousePointer=-1;removeCallbacks(heartbeat);}
+        pointer.configure(mode,revision,mouseEnabled && synchronizedScreen && humanInput());
+        if(mouseEnabled && !mouseAvailable())mouseEnabled(false);
+    }
+    public void outputApplied(long next){parsedOffset=next;invalidate();}
+    public boolean displayReady(long offset,int columns,int rows){return drawnOffset>=offset && drawnColumns==columns && drawnRows==rows;}
     public boolean mouseEnabled(){return mouseEnabled;}
     public boolean mouseEnabled(boolean enabled){
-        if(enabled && (!humanInput() || !mouseAvailable()))return false;
+        if(enabled && (!humanInput() || !mouseAvailable() || !mouseSynchronized))return false;
         cancelPointers();if(mouseEnabled==enabled)return true;mouseEnabled=enabled;
-        if(enabled)topRow=0;invalidate();listener.mouseChanged();return true;
+        if(enabled){if(topRow!=0)drawnOffset=-1;topRow=0;}
+        pointer.configure(mouseMode,mouseRevision,enabled && mouseSynchronized && humanInput());invalidate();listener.mouseChanged();return true;
     }
-    private boolean mouseReady(){return mouseEnabled && mouseAvailable() && humanInput() && topRow==0;}
+    private boolean mouseReady(){return mouseEnabled && mouseAvailable() && mouseSynchronized && humanInput() && topRow==0
+            && displayReady(mouseMode.offset,emulator.mColumns,emulator.mRows);}
     private boolean mouseCell(float x,float y){
         return Float.isFinite(x) && Float.isFinite(y) && x>=0 && y>=renderer.mFontLineSpacingAndAscent &&
                 x<Math.min(getWidth(),emulator.mColumns*renderer.mFontWidth) &&
                 y<Math.min(getHeight(),renderer.mFontLineSpacingAndAscent+emulator.mRows*renderer.mFontLineSpacing);
     }
-    private boolean sendMouse(byte[] bytes){
-        if(!mouseReady())return false;
-        if(bytes.length==0){mouseGesture.cancel();listener.mouseUnavailable();return false;}
-        boolean sent=listener.mouseInput(bytes);if(!sent)mouseGesture.cancel();return sent;
-    }
-    private void mouseWheel(float x,float y,int steps){
-        if(steps!=0)sendMouse(TerminalMouseInput.wheel(emulator,batch,touchColumn(x)+1,touchRow(y)+1,steps));
-    }
+    private int mouseX(float x){return mouseMode!=null && mouseMode.format==1016?(int)Math.floor(x)+1:touchColumn(x)+1;}
+    private int mouseY(float y){return mouseMode!=null && mouseMode.format==1016?(int)Math.floor(y-renderer.mFontLineSpacingAndAscent)+1:touchRow(y)+1;}
+    private static int mouseModifiers(MotionEvent event){int m=event.getMetaState();return ((m&KeyEvent.META_SHIFT_MASK)!=0?4:0)|((m&(KeyEvent.META_ALT_MASK|KeyEvent.META_META_MASK))!=0?8:0)|((m&KeyEvent.META_CTRL_MASK)!=0?16:0);}
+    private static int physicalButtons(MotionEvent event){int b=event.getButtonState();return ((b&MotionEvent.BUTTON_PRIMARY)!=0?1:0)|((b&MotionEvent.BUTTON_TERTIARY)!=0?2:0)|((b&MotionEvent.BUTTON_SECONDARY)!=0?4:0);}
+    private void scheduleHeartbeat(){removeCallbacks(heartbeat);if(pointer.buttons()!=0 && mouseMode!=null && mouseMode.mode!=9)postDelayed(heartbeat,200);}
     public boolean selecting(){return selection.enabled();}
     public void selecting(boolean enabled){
         if(selecting()==enabled)return;
@@ -115,18 +142,20 @@ public final class RemoteTerminalView extends View {
         replaying=replay;
         try {emulator.append(bytes,bytes.length);}
         finally {replaying=false;}
-        if(mouseEnabled && !mouseAvailable())mouseEnabled(false);
         topRow=Math.max(-emulator.getScreen().getActiveTranscriptRows(),topRow);
         invalidate();listener.mouseChanged();
     }
-    public void resize(int columns,int rows){cancelPointers();clearSelection();emulator.resize(columns,rows,(int)renderer.mFontWidth,renderer.mFontLineSpacing);topRow=0;invalidate();}
+    public void resize(int columns,int rows){cancelPointers();drawnOffset=-1;clearSelection();emulator.resize(columns,rows,(int)renderer.mFontWidth,renderer.mFontLineSpacing);topRow=0;invalidate();}
     public int columns(){return Math.max(20,Math.min(240,(int)(getWidth()/renderer.mFontWidth)));}
     public int rows(){return Math.max(5,Math.min(120,(getHeight()-renderer.mFontLineSpacingAndAscent)/renderer.mFontLineSpacing));}
-    @Override protected void onSizeChanged(int w,int h,int oldw,int oldh){super.onSizeChanged(w,h,oldw,oldh);cancelPointers();clearSelection();if(w>0 && h>0)listener.size(columns(),rows());}
+    @Override protected void onSizeChanged(int w,int h,int oldw,int oldh){super.onSizeChanged(w,h,oldw,oldh);cancelPointers();drawnOffset=-1;clearSelection();if(w>0 && h>0)listener.size(columns(),rows());}
     @Override protected void onDraw(Canvas canvas){
         super.onDraw(canvas);canvas.drawColor(emulator.mColors.mCurrentColors[TextStyle.COLOR_INDEX_BACKGROUND]);
         TerminalSelection.Range range=selection.range();
         renderer.render(emulator,canvas,topRow,range==null?-1:range.y1,range==null?-1:range.y2,range==null?-1:range.x1,range==null?-1:range.x2);
+        if(topRow==0 && (drawnOffset!=parsedOffset || drawnColumns!=emulator.mColumns || drawnRows!=emulator.mRows)){
+            drawnOffset=parsedOffset;drawnColumns=emulator.mColumns;drawnRows=emulator.mRows;listener.displayed();
+        }
     }
     private int touchColumn(float x){return (int)Math.floor(x/renderer.mFontWidth);}
     private int touchRow(float y){return topRow+Math.max(0,Math.min(emulator.mRows-1,(int)Math.floor((y-renderer.mFontLineSpacingAndAscent)/renderer.mFontLineSpacing)));}
@@ -134,17 +163,15 @@ public final class RemoteTerminalView extends View {
         if(inputBlocked)return true;
         if(mouseEnabled) {
             int action=event.getActionMasked();
-            if(!mouseReady() || event.getPointerCount()!=1 || action==MotionEvent.ACTION_CANCEL || action==MotionEvent.ACTION_POINTER_DOWN || action==MotionEvent.ACTION_POINTER_UP || !mouseCell(event.getX(),event.getY())) {cancelPointers();return true;}
-            int pointer=event.getPointerId(0);float x=event.getX(),y=event.getY();
-            if(action==MotionEvent.ACTION_DOWN) {
-                boolean physical=event.isFromSource(InputDevice.SOURCE_MOUSE) || event.getToolType(0)==MotionEvent.TOOL_TYPE_MOUSE;
-                if((physical && event.getButtonState()!=MotionEvent.BUTTON_PRIMARY) || (event.getButtonState() & ~MotionEvent.BUTTON_PRIMARY)!=0){cancelPointers();return true;}
-                requestFocus();mouseGesture.down(pointer,x,y,!physical);
-            } else if(action==MotionEvent.ACTION_MOVE)mouseWheel(x,y,mouseGesture.move(pointer,x,y));
-            else if(action==MotionEvent.ACTION_UP) {
-                if(mouseGesture.up(pointer,x,y))sendMouse(TerminalMouseInput.click(emulator,batch,touchColumn(x)+1,touchRow(y)+1));
-                performClick();
+            if(!mouseReady() || event.getPointerCount()!=1 || (event.getButtonState() & ~7)!=0 || action==MotionEvent.ACTION_CANCEL || action==MotionEvent.ACTION_POINTER_DOWN || action==MotionEvent.ACTION_POINTER_UP || !mouseCell(event.getX(),event.getY())) {cancelPointers();return true;}
+            int id=event.getPointerId(0),x=mouseX(event.getX()),y=mouseY(event.getY()),mods=mouseModifiers(event);
+            boolean physical=event.isFromSource(InputDevice.SOURCE_MOUSE) || event.getToolType(0)==MotionEvent.TOOL_TYPE_MOUSE;
+            if(action==MotionEvent.ACTION_DOWN){requestFocus();mousePointer=id;pointer.freshDown();pointer.edges(physical?physicalButtons(event):1,x,y,mods,true);}
+            else if(physical || mousePointer==id || mousePointer==-1 && action==MotionEvent.ACTION_UP){
+                if(action==MotionEvent.ACTION_MOVE)pointer.move(physical?physicalButtons(event):1,x,y,mods);
+                else if(action==MotionEvent.ACTION_UP){pointer.edges(physical?physicalButtons(event):0,x,y,mods,false);mousePointer=-1;performClick();}
             }
+            scheduleHeartbeat();
             return true;
         }
         if(selecting()) {
@@ -171,12 +198,16 @@ public final class RemoteTerminalView extends View {
         if(action==MotionEvent.ACTION_UP){historyPointer=-1;performClick();return true;}return true;
     }
     @Override public boolean onGenericMotionEvent(MotionEvent event){
+        if(mouseEnabled && event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)){
+            if(!mouseReady() || (event.getButtonState() & ~7)!=0 || !mouseCell(event.getX(),event.getY()) || event.getActionMasked()==MotionEvent.ACTION_HOVER_EXIT){cancelPointers();return true;}
+            int action=event.getActionMasked(),x=mouseX(event.getX()),y=mouseY(event.getY()),mods=mouseModifiers(event);
+            if(action==MotionEvent.ACTION_BUTTON_PRESS || action==MotionEvent.ACTION_BUTTON_RELEASE)pointer.edges(physicalButtons(event),x,y,mods,action==MotionEvent.ACTION_BUTTON_PRESS);
+            else if(action==MotionEvent.ACTION_HOVER_MOVE || action==MotionEvent.ACTION_HOVER_ENTER)pointer.move(physicalButtons(event),x,y,mods);
+            else if(action==MotionEvent.ACTION_SCROLL){pointer.wheel(event.getAxisValue(MotionEvent.AXIS_VSCROLL),false,x,y,mods);pointer.wheel(event.getAxisValue(MotionEvent.AXIS_HSCROLL),true,x,y,mods);}
+            scheduleHeartbeat();return true;
+        }
         if(event.getActionMasked()==MotionEvent.ACTION_SCROLL && event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
             if(inputBlocked || selecting())return true;
-            if(mouseEnabled) {
-                if(!mouseReady() || !mouseCell(event.getX(),event.getY())){cancelPointers();return true;}
-                mouseWheel(event.getX(),event.getY(),mouseGesture.wheel(event.getAxisValue(MotionEvent.AXIS_VSCROLL)));return true;
-            }
             historyPointer=-1;
             int lines=mouseGesture.wheel(event.getAxisValue(MotionEvent.AXIS_VSCROLL));
             topRow=Math.max(-emulator.getScreen().getActiveTranscriptRows(),Math.min(0,topRow-lines));invalidate();

@@ -7,11 +7,13 @@ import java.util.*;
 public final class TerminalSessionState {
     public final String instance, id;
     public TerminalProtocol.Session snapshot;
+    public final TerminalMouseState mouse;
     public long offset;
     private final ArrayDeque<byte[]> queued=new ArrayDeque<>();
     private int queuedBytes;
     private JSONObject pending;
-    public TerminalSessionState(String instance,TerminalProtocol.Session session){this.instance=instance;id=session.id;snapshot=session;}
+    public TerminalSessionState(String instance,TerminalProtocol.Session session){this(instance,session,()->System.nanoTime()/1000000L);}
+    public TerminalSessionState(String instance,TerminalProtocol.Session session,java.util.function.LongSupplier clock){this.instance=instance;id=session.id;snapshot=session;mouse=new TerminalMouseState(session.mouse,clock);}
     public boolean enqueue(byte[] bytes) {
         if(!snapshot.running() || bytes.length==0 || bytes.length>16384 || queuedBytes+bytes.length>32768)return false;
         for(int i=0;i<bytes.length;i+=4096)queued.add(Arrays.copyOfRange(bytes,i,Math.min(bytes.length,i+4096)));
@@ -29,12 +31,12 @@ public final class TerminalSessionState {
     }
     public void acknowledge(TerminalProtocol.Reply reply) throws JSONException {
         TerminalProtocol.require(pending!=null && reply.instance.equals(instance) && reply.session.id.equals(id) && reply.session.accepted==pending.getLong("sequence"));
-        queuedBytes-=queued.remove().length;pending=null;snapshot=reply.session;
+        refresh(reply.instance,reply.session);queuedBytes-=queued.remove().length;pending=null;
     }
     public void refresh(String actualInstance,TerminalProtocol.Session session) throws JSONException {
         TerminalProtocol.require(instance.equals(actualInstance) && id.equals(session.id) && session.accepted>=snapshot.accepted && session.written>=snapshot.written);
         if(pending!=null)TerminalProtocol.require(session.accepted==pending.getLong("sequence") || session.accepted==pending.getLong("sequence")-1);
-        snapshot=session;
+        mouse.refresh(session.mouse);snapshot=session;
     }
     /** Backgrounding discards never-sent keystrokes; retain only an uncertain request for dedup retry. */
     public boolean discardUnsent() {

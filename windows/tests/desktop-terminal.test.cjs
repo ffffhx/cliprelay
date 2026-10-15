@@ -152,6 +152,16 @@ test('continuous mouse movement still reads output and sends keyboard input',asy
   assert.equal(f.server.writes.length,1);assert.ok(f.server.calls.filter(c=>c.op==='read').length>=5);assert.ok(f.server.calls.filter(c=>c.op==='mouse' && c.action==='move').length>=5);
   assert.equal(f.server.sessions.get(f.controller.selected).mouse.buttons,1);
 });
+test('network latency and continuous keys cannot starve live mouse movements',async t=>{
+  for(const rendererDelay of [0,100]){
+  const f=await mouseFixture(t);await mousePoll(f);mouseEvent(f,'press');await mousePoll(f);
+  f.server.hook=async()=>{f.advance(120);};
+  for(let n=0;n<24;n++){input(f,'key');mouseEvent(f,'move',{column:10+n});await mousePoll(f);f.advance(rendererDelay);}
+  assert.ok(f.server.writes.length>=5);
+  assert.ok(f.server.calls.filter(c=>c.op==='read').length>=5);
+  assert.ok(f.server.calls.filter(c=>c.op==='mouse' && c.action==='move').length>=5,'mouse was starved by read/write requests');
+  }
+});
 test('real ConPTY over pinned mutual TLS confirms input deduplication and reconnects to a running shell',{skip:process.platform!=='win32',timeout:30000},async t=>{
   assert.ok(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,'Build windows/tests/terminal.ps1 and set CLIPRELAY_TERMINAL_TEST_WORKER');
   const child=spawn(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,['--terminal-probe'],{stdio:['pipe','pipe','pipe'],windowsHide:true}),reader=readline.createInterface({input:child.stdout});let pending=[],stderr='';
