@@ -38,6 +38,10 @@ hostname, one-use authKey and approved peerIP), followed only by `status` or
 `shutdown` commands. EOF closes the node even while registration is pending.
 The state-directory argument contains no enrollment credential. Private tsnet
 node state persists there; the owning app must protect and manage that directory.
+On Unix, an inherited connected Unix stream socket pair is also accepted, because
+Node uses that transport for child stdio. Regular files, terminals, Internet
+sockets and Unix datagrams are rejected. The owner flushes then closes the input
+handle when ending the lease.
 
 The helper allocates one port group on literal `127.0.0.1`: relative to the returned
 HTTP base port, HTTPS is -5, RTSP +21, paired control +2, video UDP +9, control UDP
@@ -56,3 +60,12 @@ certificate remain intact. Direct-mode envelopes remain compatible.
 Integration into the desktop controller UI is still pending. Only component
 manifests advertising `embedded-network` support this mode. Network revocation,
 pause and host changes must close the helper and the associated stream.
+
+`windows/electron/mac/network-channel.cjs` implements the shared main-process
+helper manager. It checks the packaged helper hash, validates enrollment before
+launch, bounds child replies, enforces startup and heartbeat deadlines, and waits
+for the previous child to close before another start. Its returned loopback route
+has a fresh generation for each process; do not save transient ports in the
+paired-host catalog. Lost listeners, a changed port or owner cancellation withdraw
+the route before cleanup. Broker credentials, approval/status, persistent peer
+records and desktop UI integration are separate and still pending.

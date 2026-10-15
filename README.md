@@ -398,6 +398,8 @@ Windows 隔离串流实测已完成 HEVC 720p / 30 帧接收与 D3D11VA 硬件�
 
 [更新后的组件构建](https://github.com/ffffhx/cliprelay/actions/runs/38688648864)通过 7 组 Qt 协议检查和 36 组端口边界映射；Windows 292 个、Mac 1,845 个组件文件及补丁来源已核验。Windows 通过真实加密用户态网络节点接收 HEVC 720p / 30 帧，渲染 29.95 帧/秒，关闭管道后 266 毫秒正常退出；同一组件的直连回归为 30.04 帧/秒、297 毫秒退出。测试使用本机隔离协调服务，关闭输入和音频，不代表公网穿透、真实键鼠声音、弱网或换网体验已完成验收。桌面入网及配对界面、自动恢复和完整包内嵌更新仍待接入。
 
+桌面主进程的网络组件管理也已完成本地与 CI 验证：启动前校验组件，凭据只通过标准输入传递，超时、取消或路由失效时撤下通道并关闭子进程，下一次启动等待旧进程退出。兼容 Node 在 Unix 上使用的本地 socket 管道，拒绝把普通文件当成凭据输入；写入结束后关闭实际句柄，确保原生程序收到 EOF。19 项 Go 检查、28 项相关 JavaScript 回归以及实际 Electron 运行时的 12 项进程管理用例通过；[三平台网络组件构建](https://github.com/ffffhx/cliprelay/actions/runs/38692008505)通过，Windows 和 Mac 分别使用真实原生组件完成 12 项管理测试。产物包含项目许可证、依赖声明及匹配源码；这些模块尚未接入桌面外网配对界面。
+
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
 源码构建需要 Go 1.26.7：先运行 `python scripts/build_network.py windows`，再运行
 `windows/remote-desktop/setup.ps1`；安装服务加 `-Install`（管理员）。
