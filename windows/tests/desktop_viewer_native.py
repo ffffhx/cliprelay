@@ -209,6 +209,21 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
                 assert len([item for item in history if item.get('type')=='spawn'])==1
                 report['inputEpochs']={**switched,'confirmationMs':round((time.monotonic()-started)*1000),'nativeEvents':native,
                     'productionOwner':True,'productionPairedHandlers':True,'physicalInputInjected':False}
+                process.stdin.write(b'{"action":"input-paused-recovery"}\n');process.stdin.flush();deadline=time.monotonic()+40
+                while time.monotonic()<deadline:
+                    recovered=next((item for item in history if item.get('type')=='input-paused-recovery'),None)
+                    if recovered:break
+                    if process.poll() is not None:raise RuntimeError('Paused recovery owner exited')
+                    time.sleep(.05)
+                else:raise RuntimeError('Paused recovery did not complete')
+                assert recovered['oldOwnerClosed'] and recovered['oldStream']!=recovered['newStream']
+                assert recovered['oldEpoch']==7 and recovered['pausedEpoch']==1 and recovered['resumedEpoch']==2
+                assert recovered['pausedFrame']>recovered['firstFrame'] and recovered['resumedFrame']>recovered['pausedFrame']
+                native_by_child={number:[(item['epoch'],item['stage']) for item in history if item.get('type')=='native' and item.get('event')=='input' and item['number']==number] for number in [1,2]}
+                assert native_by_child[1]==[(epoch,stage) for epoch in range(1,8) for stage in ['submitted','acknowledged']],native_by_child
+                assert native_by_child[2]==[(epoch,stage) for epoch in range(1,3) for stage in ['submitted','acknowledged']],native_by_child
+                assert len([item for item in history if item.get('type')=='spawn'])==2
+                report['pausedRecovery']={**recovered,'nativeEvents':native_by_child}
             if recovery:
                 stop_network()
                 deadline=time.monotonic()+30

@@ -65,6 +65,27 @@ lines.on('line',async line=>{
       emit({type:'input-manual',pausedEpoch:epoch,resumedEpoch:record.input.epoch,pauseMs:pausedMs,displayMs:switchedMs,resumeMs:Math.round(performance.now()-resumeStarted),
         generation:applied.generation,firstFrame:applied.stream.firstFrame,firstPausedFrame,heldFrame,resumedFrame:viewer.snapshot().progress.rendered,
         manualPausePreserved:true,sameStream:true});switching=false;
+    }else if(value.action==='input-paused-recovery'&&inputTest&&!switching){
+      switching=true;const old=viewer.currentSession(),intent=viewer.intent,signal=AbortSignal.timeout(35000);
+      const wait=async predicate=>{while(!predicate()){
+        if(!old||viewer.intent!==intent||signal.aborted)throw Error('paused recovery lost intent');
+        await new Promise(resolve=>setTimeout(resolve,25));
+      }};
+      await wait(()=>displays.snapshot().input.canPause);displays.setInput({viewId:displays.snapshot().viewId,paused:true});
+      await wait(()=>displays.snapshot().input.canResume);
+      const oldEpoch=old.input.epoch,oldStream=old.input.stream,started=performance.now();
+      state.host.routeId='paused-recovery';viewer.reconcile();
+      await wait(()=>viewer.currentSession()&&viewer.currentSession()!==old&&displays.snapshot().input.canResume);
+      const current=viewer.currentSession(),firstFrame=viewer.snapshot().progress.rendered;
+      if(!old.input.closed||current.input.epoch!==1||!viewer.inputPaused(current))throw Error('new native child did not retain pause');
+      await new Promise(resolve=>setTimeout(resolve,350));
+      if(viewer.currentSession()!==current||current.input.phase!=='paused'||current.input.epoch!==1||!viewer.inputPaused(current))throw Error('new native child automatically resumed');
+      const pausedFrame=viewer.snapshot().progress.rendered,pausedRecoveryMs=Math.round(performance.now()-started);
+      displays.setInput({viewId:displays.snapshot().viewId,paused:false});
+      await wait(()=>viewer.currentSession()===current&&current.input.phase==='active'&&!viewer.inputPaused(current));
+      emit({type:'input-paused-recovery',oldEpoch,oldStream,newStream:current.input.stream,pausedEpoch:1,resumedEpoch:current.input.epoch,
+        firstFrame,pausedFrame,resumedFrame:viewer.snapshot().progress.rendered,pausedRecoveryMs,oldOwnerClosed:old.input.closed,
+        routeGenerationReplacement:true,physicalNetworkOutage:false});switching=false;
     }else if(value.action==='input-switch'&&inputTest&&!switching){
       switching=true;
       const record=viewer.currentSession();
