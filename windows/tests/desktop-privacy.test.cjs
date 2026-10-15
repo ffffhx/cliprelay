@@ -7,7 +7,7 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(check){for(let i=0;i<300;i++){if(check())return;await delay(10);}throw Error('test deadline');}
 const instance='12345678-1234-1234-1234-123456789012';
 const off=()=>({ok:true,supported:true,active:false,expiresMs:0});
-async function fixture(t,{handler,wrongPin=false,request,renewMs=80,pollMs=20}={}){
+async function fixture(t,{handler,wrongPin=false,request,now,renewMs=80,pollMs=20}={}){
   const display={protocol:1,supported:true,instance,phase:'active',generation:2,capture:{id:'display'},streams:[{id:3,generation:2,firstFrame:10,width:1280,height:720}]};
   const calls=[];let active='',blocked=false;
   const server=https.createServer({key:identities.host.key,cert:identities.host.cert,requestCert:true,rejectUnauthorized:false},async(req,res)=>{
@@ -26,7 +26,7 @@ async function fixture(t,{handler,wrongPin=false,request,renewMs=80,pollMs=20}={
   const store={host,selected(){return this.host;},async identity(){return identities.client;}};
   const session={host:{...host},telemetry:true};
   const viewer={session,progress:{received:100,rendered:100,width:1280,height:720,receivedAgeMs:0,renderedAgeMs:0},currentSession(){return this.session;},snapshot(){return {progress:this.progress};},reconcile(code){this.stopped=code;this.session=null;}};
-  const controller=new PrivacyController({store,viewer,pollMs,renewMs,...(request?{request}: {})});
+  const controller=new PrivacyController({store,viewer,pollMs,renewMs,...(request?{request}: {}),...(now?{now}: {})});
   t.after(async()=>{await controller.close();await close(server);});controller.reconcile();
   return {display,calls,store,viewer,session,controller,host,get active(){return active;},restore(){active='';},block(){blocked=true;},
     set(enabled){return controller.setEnabled({viewId:controller.snapshot().viewId,enabled});}};
@@ -70,12 +70,17 @@ test('stop during a delayed start acknowledgment never publishes an active resul
 });
 
 test('late renew acknowledgments cannot resurrect a lease after the monotonic expiry deadline',async t=>{
-  let release;const f=await fixture(t,{pollMs:5,renewMs:5,handler:async({body,state,res})=>{
-    if(body.op==='start'){res.end(JSON.stringify({...state,expiresMs:80}));return true;}
+  let release,time=1000;const f=await fixture(t,{now:()=>time,pollMs:5,renewMs:5,handler:async({body,state,res})=>{
     if(body.op==='renew'){await new Promise(resolve=>release=resolve);res.end(JSON.stringify(state));return true;}
   }});
-  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>release);await delay(100);
-  assert.equal(f.controller.snapshot().active,false);release();await until(()=>f.controller.snapshot().canEnable);assert.equal(f.active,'');assert.equal(f.calls.filter(c=>c.op==='start').length,1);
+  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.controller.snapshot().active);
+  const previousDeadline=f.controller.record.expiresAt,confirmed=f.controller.confirmed.bind(f.controller);let revived=false;
+  f.controller.confirmed=(record,...args)=>{confirmed(record,...args);if(time>=previousDeadline)revived=true;};
+  time+=10;await until(()=>release);time=previousDeadline+1;
+  // Expire the monotonic clock while the JS timer has not fired. The new
+  // response's nominal deadline is still in the future, so it cannot mask this race.
+  assert.equal(f.controller.snapshot().active,false);release();await until(()=>f.controller.snapshot().canEnable);
+  assert.equal(revived,false);assert.equal(f.active,'');assert.equal(f.calls.filter(c=>c.op==='start').length,1);
 });
 
 test('stream replacement before a queued start and delayed key unlock cannot retarget a click',async t=>{

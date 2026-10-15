@@ -63,6 +63,9 @@ class ForegroundLeaseController{
   }
   confirmed(r,state,sentAt){
     if(!state.active||state.recovering||state.lease!==r.lease?.lease)throw this.fault('EXPIRED');
+    // A busy event loop may delay the expiry timer past the monotonic deadline.
+    // A late acknowledgment must not revive the previous foreground intent.
+    if(r.expiresAt&&this.now()>=r.expiresAt)throw this.fault('EXPIRED');
     const expiresAt=sentAt+state.expiresMs;
     if(expiresAt<=this.now())throw this.fault('EXPIRED');
     r.renewAt=sentAt+Math.min(this.renewMs,state.expiresMs/3);r.phase='active';r.error='';

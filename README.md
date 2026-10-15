@@ -450,6 +450,8 @@ Windows / Mac 桌面终端现改用独立鼠标请求，支持程序请求的左
 
 后续延迟审计复现并修复了请求调度问题：持续键盘输入时，输出读取与按键请求可能交替占用队列，让鼠标移动一直等不到发送机会。桌面与 Android 现均限制连续普通请求数，并在读取后为已等待的键盘输入保留机会。桌面本地 43 项 Node、46 项 Electron 检查通过；新增回归用受控时钟模拟每次请求 120 毫秒及额外 100 毫秒界面调度开销，检查输出、按键和鼠标均能持续推进。这是调度正确性验证，不能代替真实公网体验；此次更新的完整包另行记录于 `.tools/uu-parity/terminal-typed-mouse-artifacts.json`。
 
+本轮 CI 还发现隐私屏的短时间窗测试不稳定。改用受控单调时钟后，复现了到期定时器迟执行时，晚到续期回执可能短暂恢复已过期状态的问题。共用的前台租约控制器现直接核对先前到期时间，不依赖定时器先执行；隐私屏、静音和锁屏相关 42 项 Node / 42 项 Electron 检查通过。回归保留真实固定证书 TLS 请求，明确检查到期后没有恢复活动状态。
+
 桌面终端通过主进程的固定证书双向 TLS 访问同一后端；独立窗口启用 sandbox 和 contextIsolation，页面不能读取配对私钥、联网、打开链接或通过 OSC 52 操作本地剪贴板。旧会话按键、延迟粘贴和结束确认不能影响新会话；路由更换会丢弃未发送输入，未确认输入使用原序号核对。历史回放与新输出按准确字节边界分开，避免重复响应历史查询。输入只保存在内存，不记录命令或终端输出。输入确认仅代表后端接收或写入，不代表命令执行成功。
 
 本地验证先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER` 与 `CLIPRELAY_TERMINAL_MOUSE_FIXTURE`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs`，共 42 项。若使用完整服务验收，将 `CLIPRELAY_TERMINAL_TEST_WORKER` 改为该服务程序，鼠标 fixture 仍使用前述生成程序。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、物理鼠标、公网与安装版 SYSTEM 路径验收。
