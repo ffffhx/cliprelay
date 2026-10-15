@@ -408,6 +408,8 @@ WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停
 
 桌面文件验证命令为 `node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs`。Windows 先运行 `windows/tests/file-transfer.ps1 -TestWorkerOutput <路径>`，将生成程序的绝对路径设为 `CLIPRELAY_TEST_FILE_WORKER`；测试包含真实 C# worker 重启、固定证书双向 TLS、丢失确认后的续传、完整哈希、同名文件保护、发布中断恢复和窗口权限检查。真实桌面界面、系统文件选择器和公网文件传输仍待验收。
 
+桌面文件实现已通过本地 Node 和实际 Electron 各 24 项检查、10 项 C# 文件场景，以及[三平台检查](https://github.com/ffffhx/cliprelay/actions/runs/38722025081)。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38722025953)核验 648 个文件，并通过隔离安装、独立进程存活及管道关闭后后台退出检查。[Mac 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38722030820)的两种架构分别核验 27 个应用源码文件、1,845 个播放器文件、4 个网络组件文件和 163 个相对链接。Mac/Linux 跳过仅适用于 Windows 的 C# worker 用例，其余文件用例通过；此用例已在本地 Windows、Windows CI 和实际 Electron 运行时通过。以上为开发包验证，尚未正式发布或替换本机安装。
+
 实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面终端、显示器、实时码率及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
