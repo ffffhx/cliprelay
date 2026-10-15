@@ -59,7 +59,10 @@ class PairedStore{
   commit(next){this.write(this.directory,this.file,next);this.data=next;}
   validateHost(host){
     if(!host || !/^[a-f0-9]{64}$/.test(host.id) || typeof host.name!=='string' || !host.name || host.name.length>128 || typeof host.enabled!=='boolean' || !/^[a-f0-9]{32}$/.test(host.clientId) || typeof host.certificate!=='string' || host.certificate.length>16384)throw fault('INVALID_HOST');
-    endpoint(host.address,host.port);
+    if(host.networkId!==undefined){
+      if(!/^[a-f0-9]{32}$/.test(host.networkId) || ['address','port','overlay','overlayPort','routeId','routeReady'].some(key=>host[key]!==undefined))throw fault('INVALID_HOST');
+      if(host.directAddress!==undefined || host.directPort!==undefined)endpoint(host.directAddress,host.directPort);
+    }else endpoint(host.address,host.port);
     if(hash(new crypto.X509Certificate(host.certificate).raw).toString('hex')!==host.id)throw fault('INVALID_HOST');
   }
   async identity(){

@@ -52,7 +52,7 @@ def build(target, output):
                 archive.add(item, arcname=item.relative_to(ROOT).as_posix())
         for name in ['build_desktop_network.py', 'network_notices.py']:
             archive.add(ROOT / 'scripts' / name, arcname='scripts/' + name)
-    manifest = {'role': 'desktop-network', 'platform': target, 'protocol': 1,
+    manifest = {'role': 'desktop-network', 'platform': target, 'protocol': 1, 'capabilities': ['pairing-bootstrap'],
                 'files': {item.relative_to(output).as_posix(): hashlib.sha256(item.read_bytes()).hexdigest()
                           for item in sorted(output.rglob('*')) if item.is_file()}}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')

@@ -3,6 +3,7 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const {spawn}=require('node:child_process');
 const {endpoint,fault}=require('./paired-transport.cjs');
 const {validateIdentity}=require('./paired-store.cjs');
+const {sameRoute}=require('./routed-store.cjs');
 
 function envelope(host,identity,options={}){
   validateIdentity(identity);
@@ -45,10 +46,11 @@ class StreamViewer{
   }
   snapshot(){return {available:this.available,phase:this.phase,hostName:this.host?.name || ''};}
   changed(){this.onUpdate(this.snapshot());}
-  matches(host){const now=this.store.selected();return !this.store.data.legacySelected && now?.enabled && ['id','clientId','certificate','address','port','overlay','overlayPort','routeId'].every(key=>now[key]===host[key]);}
+  matches(host){const now=this.store.selected();return !this.store.data.legacySelected && now?.enabled && sameRoute(now,host);}
   async open(options={}){
     if(this.child || this.phase==='starting' || this.phase==='closing')throw fault('VIEWER_BUSY');
     const host=this.store.selected();if(!host?.enabled || this.store.data.legacySelected)throw fault('PAIRING_REQUIRED');
+    if(host.routeReady===false)throw fault('NETWORK_NOT_READY');
     const generation=++this.generation;this.phase='starting';this.host={...host};this.changed();
     let bytes;
     try{

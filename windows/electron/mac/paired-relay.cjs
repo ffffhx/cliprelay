@@ -1,6 +1,7 @@
 'use strict';
 const crypto=require('node:crypto');
 const {jsonRequest,fault}=require('./paired-transport.cjs');
+const {sameRoute}=require('./routed-store.cjs');
 const {hash}=require('./paired-crypto.cjs');
 function validateText(text){
   if(typeof text!=='string' || !text || text.includes('\0') || Buffer.byteLength(text)>1024*1024)throw fault('INVALID_TEXT');
@@ -75,8 +76,9 @@ class PairedReceiver{
   constructor({store,apply,onStatus=()=>{}}){this.store=store;this.apply=apply;this.onStatus=onStatus;}
   refresh(){
     this.close();const host=this.store.selected();if(!host?.enabled){this.onStatus('paused');return;}
+    if(host.routeReady===false){this.onStatus('connecting');return;}
     const controller=new AbortController();this.controller=controller;
-    const active=()=>!controller.signal.aborted && this.store.selected()?.id===host.id && this.store.selected()?.enabled===true;
+    const active=()=>!controller.signal.aborted && !this.store.data.legacySelected && sameRoute(this.store.selected(),host);
     this.task=(async()=>{
       let backoff=1000,connected=false;
       while(active()){

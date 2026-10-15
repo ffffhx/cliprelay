@@ -97,7 +97,7 @@ Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" -ErrorAction Silen
 Install-ScriptFile -Name "cliprelay.ps1" -Destination $clientPath
 Install-ScriptFile -Name "uninstall.ps1" -Destination $uninstallerPath
 Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
-foreach ($file in @('updates.ps1', 'update-client.cs', 'version.json', 'start.ps1')) {
+foreach ($file in @('updates.ps1', 'update-client.cs', 'paired-relay.cs', 'version.json', 'start.ps1')) {
     Install-ScriptFile -Name $file -Destination (Join-Path $installDirectory $file)
 }
 $screenShareDirectory = Join-Path $installDirectory 'screen-share'
@@ -131,9 +131,19 @@ if (Test-Path -LiteralPath (Join-Path $desktopSource 'ClipRelay.exe')) {
     & (Join-Path $electronDirectory 'setup.ps1') -Destination $desktopDirectory
 }
 
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'remote-viewer\manifest.json')) {
+    if ([IO.Path]::GetFullPath($PSScriptRoot) -ine [IO.Path]::GetFullPath($installDirectory)) {
+        & (Join-Path $electronDirectory 'stage-viewer.ps1') -Artifact (Join-Path $PSScriptRoot 'remote-viewer') -Destination (Join-Path $installDirectory 'remote-viewer')
+    }
+}
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'desktop-network\manifest.json')) {
+    if ([IO.Path]::GetFullPath($PSScriptRoot) -ine [IO.Path]::GetFullPath($installDirectory)) {
+        & (Join-Path $electronDirectory 'stage-viewer.ps1') -Kind network -Artifact (Join-Path $PSScriptRoot 'desktop-network') -Destination (Join-Path $installDirectory 'desktop-network')
+    }
+}
 $remoteDirectory = Join-Path $installDirectory 'remote-desktop'
 New-Item -ItemType Directory -Path $remoteDirectory -Force | Out-Null
-foreach ($file in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+foreach ($file in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','desktop-user.cs','file-transfer.cs','clipboard-exchange.cs','relay-ipc.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
     Install-ScriptFile -Name "remote-desktop/$file" -Destination (Join-Path $remoteDirectory $file)
 }
 $remoteBin = Join-Path $remoteDirectory 'bin'

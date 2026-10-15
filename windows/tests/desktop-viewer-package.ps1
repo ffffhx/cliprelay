@@ -1,7 +1,10 @@
+param([ValidateSet('viewer','network')][string]$Kind = 'viewer')
 $ErrorActionPreference = 'Stop'
 $base = Join-Path ([IO.Path]::GetTempPath()) ('cliprelay-viewer-test-' + [Guid]::NewGuid().ToString('N'))
 $artifact = Join-Path $base 'artifact'
-$target = Join-Path $base 'remote-viewer'
+$target = Join-Path $base $(if ($Kind -eq 'network') { 'desktop-network' } else { 'remote-viewer' })
+$runtimeFile = if ($Kind -eq 'network') { 'runtime/cliprelay-client-network.exe' } else { 'runtime/ClipRelayStream.exe' }
+$requiredFiles = if ($Kind -eq 'network') { @($runtimeFile,'LICENSE','NETWORK-LICENSES.txt','cliprelay-network-source.tar.gz') } else { @($runtimeFile,'LICENSE','corresponding-source.tar.gz') }
 $stage = Join-Path (Split-Path $PSScriptRoot) 'electron\stage-viewer.ps1'
 $utf8 = New-Object Text.UTF8Encoding($false)
 $checks = New-Object 'System.Collections.Generic.List[string]'
@@ -9,28 +12,28 @@ function Save-Fixture {
     param([string]$Version)
     [IO.Directory]::CreateDirectory((Join-Path $artifact 'runtime')) | Out-Null
     $files = [ordered]@{}
-    foreach ($name in @('runtime/ClipRelayStream.exe','LICENSE','corresponding-source.tar.gz')) {
+    foreach ($name in $requiredFiles) {
         $file = Join-Path $artifact $name.Replace('/','\')
         [IO.File]::WriteAllText($file, 'Synthetic non-executable test file ' + $Version, $utf8)
         $files[$name] = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), (@{protocol=1;platform='windows';files=$files} | ConvertTo-Json -Depth 4), $utf8)
+    [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), (@{role='desktop-network';capabilities=@('pairing-bootstrap');protocol=1;platform='windows';files=$files} | ConvertTo-Json -Depth 4), $utf8)
 }
 function Must-Reject {
     $rejected = $false
-    try { & $stage -Artifact $artifact -Destination $target } catch { $rejected = $true }
+    try { & $stage -Kind $Kind -Artifact $artifact -Destination $target } catch { $rejected = $true }
     if (!$rejected) { throw 'Expected staging rejection.' }
 }
 try {
     [IO.Directory]::CreateDirectory($base) | Out-Null
     Save-Fixture 'one'
     [IO.File]::WriteAllText((Join-Path $artifact 'private-unlisted.txt'),'synthetic excluded value',$utf8)
-    & $stage -Artifact $artifact -Destination $target
+    & $stage -Kind $Kind -Artifact $artifact -Destination $target
     if (Test-Path -LiteralPath (Join-Path $target 'private-unlisted.txt')) { throw 'Copied unlisted file.' }
     $checks.Add('copies-only-verified-manifest-files')
     Save-Fixture 'two'
-    & $stage -Artifact $artifact -Destination $target
-    if (!(Get-Content -LiteralPath (Join-Path $target 'runtime\ClipRelayStream.exe') -Raw).EndsWith('two')) { throw 'New runtime not published.' }
+    & $stage -Kind $Kind -Artifact $artifact -Destination $target
+    if (!(Get-Content -LiteralPath (Join-Path $target $runtimeFile) -Raw).EndsWith('two')) { throw 'New runtime not published.' }
     $checks.Add('atomic-existing-runtime-replacement')
     [IO.File]::AppendAllText((Join-Path $artifact 'LICENSE'),'changed')
     Must-Reject
@@ -47,6 +50,14 @@ try {
     [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), ($value | ConvertTo-Json -Depth 4), $utf8)
     Must-Reject
     $checks.Add('parent-path-escape-rejected')
+    if ($Kind -eq 'network') {
+        Save-Fixture 'four'
+        $value = Get-Content -LiteralPath (Join-Path $artifact 'manifest.json') -Raw | ConvertFrom-Json
+        $value.capabilities = @()
+        [IO.File]::WriteAllText((Join-Path $artifact 'manifest.json'), ($value | ConvertTo-Json -Depth 4), $utf8)
+        Must-Reject
+        $checks.Add('old-helper-without-bootstrap-rejected')
+    }
     @{checks=$checks;passed=$checks.Count} | ConvertTo-Json -Compress
 } finally {
     $resolved = [IO.Path]::GetFullPath($base)

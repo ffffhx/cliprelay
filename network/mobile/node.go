@@ -28,7 +28,7 @@ import (
 	"tailscale.com/types/logger"
 )
 
-var tcpPorts = []int{48784, 48789, 48791, 48810}
+var tcpPorts = []int{48784, 48789, 48791, 48792, 48810}
 var udpPorts = []int{48798, 48799, 48800}
 
 type Node struct {

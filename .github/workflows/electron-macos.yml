@@ -7,6 +7,10 @@ on:
         description: 'Successful Desktop Client Build run to embed (empty: clipboard-only package)'
         required: false
         type: string
+      desktop_network_run_id:
+        description: 'Successful Desktop Network Build run to embed (empty: no external pairing)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -46,6 +50,26 @@ jobs:
           artifact = (directory/'ClipRelay-Stream-macOS').resolve()
           with open(os.environ['GITHUB_ENV'],'a') as output: output.write('CLIPRELAY_VIEWER_ARTIFACT='+str(artifact)+'\n')
           PY
+      - name: Fetch verified desktop network helper
+        if: inputs.desktop_network_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NETWORK_RUN_ID: ${{ inputs.desktop_network_run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, tarfile
+          run = os.environ['NETWORK_RUN_ID']
+          if not re.fullmatch(r'[0-9]+', run): raise SystemExit('Invalid network run ID')
+          metadata = json.loads(subprocess.check_output(['gh','run','view',run,'--json','conclusion,name,headSha']))
+          if metadata['conclusion'] != 'success' or metadata['name'] != 'Desktop Network Build':
+              raise SystemExit('Network build has not completed successfully')
+          directory = pathlib.Path('.tools/network-download'); directory.mkdir(parents=True)
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-Desktop-Network-macOS','-D',str(directory)],check=True)
+          with tarfile.open(directory/'desktop-network-macos.tar.gz') as archive:
+              archive.extractall(directory,filter='data')
+          artifact = (directory/'desktop-network').resolve()
+          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('CLIPRELAY_NETWORK_HELPER_ARTIFACT='+str(artifact)+'\n')
+          PY
       - run: npm run build:mac -- ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
@@ -53,4 +77,5 @@ jobs:
           path: |
             .tools/mac-electron/*.zip
             .tools/mac-electron/viewer-bundle-*.json
+            .tools/mac-electron/network-bundle-*.json
           if-no-files-found: error

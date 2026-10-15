@@ -15,6 +15,9 @@ async function build(){
   try{
     const source=path.join(staging,'source');fs.mkdirSync(source);
     fs.cpSync(path.join(__dirname,'mac'),path.join(source,'mac'),{recursive:true});
+    if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
+      require('./network-artifact.cjs').stage(path.resolve(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT),path.join(source,'mac','network-helper'),'darwin');
+    }
     if(process.env.CLIPRELAY_VIEWER_ARTIFACT){
       const artifact=path.resolve(process.env.CLIPRELAY_VIEWER_ARTIFACT);
       require('./mac/stream-viewer.cjs').executable(artifact,'darwin');
@@ -39,6 +42,13 @@ async function build(){
     // A second prune incorrectly resolves intentionally absent build tools.
     const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp']}});
     for(const bundle of built){
+      if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
+        const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','network-helper');
+        const manifest=require('./network-artifact.cjs').verify(packaged,'darwin');
+        const architectures=execFileSync('/usr/bin/lipo',['-archs',path.join(packaged,'runtime','cliprelay-client-network')],{encoding:'utf8'}).trim().split(/\s+/);
+        if(!architectures.includes('x86_64') || !architectures.includes('arm64'))throw new Error('Expected universal desktop network helper');
+        fs.writeFileSync(path.join(output,`network-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,networkArchitectures:architectures,verifiedFiles:Object.keys(manifest.files).length,networkSha256:manifest.files['runtime/cliprelay-client-network']},null,2));
+      }
       if(process.env.CLIPRELAY_VIEWER_ARTIFACT){
         const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','stream-viewer');
         const executable=require('./mac/stream-viewer.cjs').executable(packaged,'darwin');

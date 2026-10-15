@@ -21,7 +21,7 @@ func TestDesktopPortCollisionRollsBackWholeGroup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Occupy the second UDP port. Forwarding must roll back all four TCP
+		// Occupy the second UDP port. Forwarding must roll back all five TCP
 		// listeners and the first UDP listener acquired before this conflict.
 		candidate := listener.LocalAddr().(*net.UDPAddr).Port - 10
 		if candidate < 1029 || candidate > 65514 {
@@ -32,7 +32,7 @@ func TestDesktopPortCollisionRollsBackWholeGroup(t *testing.T) {
 		// Prove all preceding binds can succeed before testing rollback.
 		available := true
 		var probes []io.Closer
-		for _, offset := range []int{-5, 0, 2, 21} {
+		for _, offset := range []int{-5, 0, 2, 3, 21} {
 			probe, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidate+offset)))
 			if err != nil {
 				available = false
@@ -72,7 +72,7 @@ func TestDesktopPortCollisionRollsBackWholeGroup(t *testing.T) {
 	if !errors.As(err, &conflict) || conflict.Addr.String() != blocker.LocalAddr().String() {
 		t.Fatal("did not reach the intended second UDP port collision", err)
 	}
-	for _, offset := range []int{-5, 0, 2, 21} {
+	for _, offset := range []int{-5, 0, 2, 3, 21} {
 		listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(base+offset)))
 		if err != nil {
 			t.Fatal("failed port allocation leaked a TCP listener", offset, err)

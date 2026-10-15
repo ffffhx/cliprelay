@@ -2,7 +2,7 @@ name: Desktop Network Build
 on:
   push:
     branches: ['codex/desktop-network-*']
-    paths: ['network/**', 'scripts/build_desktop_network.py', 'scripts/network_notices.py', 'windows/tests/desktop_network_process.py', 'windows/tests/network-channel.test.cjs', 'windows/electron/mac/network-channel.cjs', 'windows/electron/mac/paired-transport.cjs', 'LICENSE', '.github/workflows/desktop-network.yml']
+    paths: ['network/**', 'scripts/build_desktop_network.py', 'scripts/network_notices.py', 'windows/tests/**', 'windows/electron/**', 'LICENSE', '.github/workflows/desktop-network.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -17,7 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        if: runner.os != 'Linux'
         with:
           node-version: '22'
       - uses: actions/setup-go@v5
@@ -27,7 +26,15 @@ jobs:
           cache-dependency-path: network/go.sum
       - name: Ownership and transport tests
         working-directory: network
-        run: go test -count=1 -timeout=120s ./cmd/cliprelay-client-network ./desktopclient ./mobile ./transport
+        run: go test -count=1 -timeout=120s ./broker ./cmd/cliprelay-client-network ./desktopclient ./mobile ./transport
+      - name: Desktop enrollment, ownership and route recovery
+        run: node --test windows/tests/network-controller.test.cjs windows/tests/network-artifact.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-pairing.test.cjs windows/tests/stream-viewer.test.cjs
+      - name: Windows component staging
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & windows/tests/desktop-viewer-package.ps1
+          & windows/tests/desktop-network-package.ps1
       - name: Check concurrent helper lifecycle
         if: runner.os == 'Linux'
         working-directory: network

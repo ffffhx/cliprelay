@@ -46,27 +46,29 @@ func TestDesktopForwardLocalChannelsAndCleanup(t *testing.T) {
 	clientA, clientB := makeNode("desktop-client-a"), makeNode("desktop-client-b")
 	serve := func(host *Node, label string) string {
 		ip, _ := host.server.TailscaleIPs()
-		listener, err := host.server.Listen("tcp4", net.JoinHostPort(ip.String(), "48789"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { listener.Close() })
-		go func() {
-			for {
-				connection, err := listener.Accept()
-				if err != nil {
-					return
-				}
-				go func() {
-					defer connection.Close()
-					connection.SetDeadline(time.Now().Add(15 * time.Second))
-					data := make([]byte, 4)
-					if _, err := io.ReadFull(connection, data); err == nil {
-						connection.Write(append([]byte(label), data...))
-					}
-				}()
+		for _, servicePort := range []int{48789, 48792} {
+			listener, err := host.server.Listen("tcp4", net.JoinHostPort(ip.String(), strconv.Itoa(servicePort)))
+			if err != nil {
+				t.Fatal(err)
 			}
-		}()
+			t.Cleanup(func() { listener.Close() })
+			go func() {
+				for {
+					connection, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					go func() {
+						defer connection.Close()
+						connection.SetDeadline(time.Now().Add(15 * time.Second))
+						data := make([]byte, 4)
+						if _, err := io.ReadFull(connection, data); err == nil {
+							connection.Write(append([]byte(label), data...))
+						}
+					}()
+				}
+			}()
+		}
 		udp, err := host.server.ListenPacket("udp4", net.JoinHostPort(ip.String(), "48798"))
 		if err != nil {
 			t.Fatal(err)
@@ -108,6 +110,10 @@ func TestDesktopForwardLocalChannelsAndCleanup(t *testing.T) {
 	}
 	probe := func(protocol string, base int, expected string) {
 		port := base
+		if protocol == "pairing" {
+			protocol = "tcp"
+			port += 3
+		}
 		if protocol == "udp" {
 			port += 9
 		}
@@ -128,15 +134,15 @@ func TestDesktopForwardLocalChannelsAndCleanup(t *testing.T) {
 			t.Fatalf("wrong computer over %s: %q", protocol, buffer)
 		}
 	}
-	for _, protocol := range []string{"tcp", "udp"} {
+	for _, protocol := range []string{"tcp", "udp", "pairing"} {
 		probe(protocol, a, "A:ping")
 		probe(protocol, b, "B:ping")
 	}
 	clientA.Close()
-	for _, protocol := range []string{"tcp", "udp"} {
+	for _, protocol := range []string{"tcp", "udp", "pairing"} {
 		probe(protocol, b, "B:ping")
 	}
-	for _, offset := range []int{-5, 0, 2, 21} {
+	for _, offset := range []int{-5, 0, 2, 3, 21} {
 		listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(a+offset)))
 		if err != nil {
 			t.Fatal("closed client retained a TCP listener", offset, err)
@@ -150,5 +156,5 @@ func TestDesktopForwardLocalChannelsAndCleanup(t *testing.T) {
 		}
 		listener.Close()
 	}
-	t.Log("Two desktop port groups route real encrypted TCP/UDP independently; closing A releases all seven listeners and keeps B usable")
+	t.Log("Two desktop port groups route real encrypted TCP/UDP independently; closing A releases all eight listeners and keeps B usable")
 }

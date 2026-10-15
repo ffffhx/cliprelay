@@ -47,7 +47,7 @@ func DesktopVideoFixture(t *testing.T, enginePort int) (*Node, string, func(stri
 	}
 	ip, _ := host.server.TailscaleIPs()
 	oldTCP, oldUDP := tcpPorts, udpPorts
-	tcpPorts = []int{enginePort - 5, enginePort, enginePort + 2, enginePort + 21}
+	tcpPorts = []int{enginePort - 5, enginePort, enginePort + 2, enginePort + 3, enginePort + 21}
 	udpPorts = []int{enginePort + 9, enginePort + 10, enginePort + 11}
 	host.mu.Lock()
 	err := host.bindPorts(ip.String(), "127.0.0.1", true, 48789-enginePort)

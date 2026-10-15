@@ -10,24 +10,28 @@ const {sendSelection,createReceiver,discoveredPeer}=require('./relay.cjs');
 const {PairedStore}=require('./paired-store.cjs');
 const {PairedController,message:pairedMessage}=require('./paired-controller.cjs');
 const {StreamViewer}=require('./stream-viewer.cjs');
+const {NetworkCatalog}=require('./network-catalog.cjs');
+const {NetworkController}=require('./network-controller.cjs');
+const {RoutedStore}=require('./routed-store.cjs');
+const {createClientIdentity}=require('./client-identity.cjs');
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
-let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer;
+let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network;
 const windows=new Map();
 const page=path.join(__dirname,'ui.html');const pageURL=pathToFileURL(page).href;
-const pairedSnapshot=()=>({...paired.snapshot(),viewer:viewer.snapshot()});
+const pairedSnapshot=()=>({...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot()});
 if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('window-all-closed',()=>{});
   app.whenReady().then(start).catch(error=>{require('electron').dialog.showErrorBox('ClipRelay',error.code==='EADDRINUSE'?'ClipRelay 端口已被占用。请先停用 Hammerspoon 中的 ClipRelay，再重新打开。':error.message);app.quit();});
-  app.on('will-quit',()=>{scanning++;viewer?.stop();paired?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
+  app.on('will-quit',()=>{scanning++;viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
 }
 function openWindow(kind,data,options){
   const window=new BrowserWindow({frame:false,show:false,resizable:false,skipTaskbar:true,backgroundColor:'#00000000',transparent:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true},...options});
   const id=window.webContents.id;
   windows.set(id,{window,kind,data});
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
-  window.on('closed',()=>{windows.delete(id);if(kind==='paired')paired?.cancelPair();});
+  window.on('closed',()=>{windows.delete(id);if(kind==='paired'){paired?.cancelPair();network?.cancelPair();}});
   window.once('ready-to-show',()=>{if(kind==='alert')window.showInactive();else window.show();});
   window.loadFile(page,{query:{kind}});return window;
 }
@@ -101,31 +105,42 @@ async function start(){
     try{return execFileSync('/usr/sbin/scutil',['--get','ComputerName'],{encoding:'utf8'}).trim();}catch{return 'Mac';}
   }});
   const localName=Array.from(String(config.deviceName || 'Mac').replace(/[\r\n\0]/g,'')).slice(0,32).join('') || 'Mac';
-  const store=new PairedStore(path.join(app.getPath('userData'),'paired'),safeStorage,{legacySelected:config.legacyEnabled===true});
+  const directory=path.join(app.getPath('userData'),'paired');
+  const base=new PairedStore(directory,safeStorage,{legacySelected:config.legacyEnabled===true,generate:createClientIdentity});
+  network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(__dirname,'network-helper'),localName,
+    canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();if(tray)menu();}});
+  const store=new RoutedStore(base,id=>network.route(id));
   viewer=new StreamViewer({directory:path.join(__dirname,'stream-viewer'),store});
   paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile();if(tray)menu();}});
   await startReceiver();
   bonjour=new Bonjour({},error=>alert('ClipRelay 局域网声明失败：'+error.message));
   tray=new Tray(nativeImage.createEmpty());tray.setTitle('ClipRelay');menu();publish();
   paired.start();
+  network.reconcile();
   ipcMain.handle('mac:request',async(event,action,data)=>{
     const entry=windows.get(event.sender.id);
     if(!entry || event.senderFrame!==event.sender.mainFrame || !event.senderFrame.url.startsWith(pageURL+'?'))throw new Error('Unknown renderer');
+    if(Buffer.byteLength(JSON.stringify(data ?? {}))>32768)throw new Error('Invalid request');
     if(action==='initial')return entry.kind==='paired'?pairedSnapshot():entry.data;
     if(action==='cancel'){entry.window.close();return;}
     if(entry.kind==='paired'){
       try{
         if(action==='paired-status')return pairedSnapshot();
-        if(action==='pair-start'){paired.startPair(data);return pairedSnapshot();}
+        if(action==='pair-start'){if(network.pairAbort)throw Object.assign(new Error(),{code:'PAIRING_BUSY'});paired.startPair(data);return pairedSnapshot();}
         if(action==='pair-cancel')paired.cancelPair();
         else if(action==='paired-select')paired.select(data?.id);
         else if(action==='paired-enable')paired.enable(data?.id,data?.enabled);
-        else if(action==='paired-remove')paired.remove(data?.id);
+        else if(action==='paired-remove'){const host=paired.store.hosts().find(host=>host.id===data?.id);if(host?.networkId)network.remove(host.networkId);else paired.remove(data?.id);}
+        else if(action==='network-claim')network.claim(data?.code);
+        else if(action==='network-cancel')network.cancelPair();
+        else if(action==='network-pair')network.pairSaved(data?.id);
+        else if(action==='network-enable')network.enable(data?.id,data?.enabled);
+        else if(action==='network-remove')network.remove(data?.id);
         else if(action==='viewer-open')await viewer.open(data);
         else if(action==='viewer-stop')viewer.stop();
         else if(action==='paired-send'){const sent=await paired.sendCurrent();return {message:sent?'已加密发送':'没有可发送的内容'};}
         else throw new Error('Unknown action');
-        viewer.reconcile();return pairedSnapshot();
+        network.reconcile();paired.reconcileRoutes();viewer.reconcile();return pairedSnapshot();
       }catch(error){throw new Error(pairedMessage(error));}
     }
     if(action==='select' && entry.kind==='chooser'){
