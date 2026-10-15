@@ -192,7 +192,12 @@ func Run(parent context.Context, input io.Reader, output io.Writer, factory Fact
 			}
 		case frame, ok := <-frames:
 			if !ok {
-				return nil
+				select {
+				case <-readFailure:
+					return errors.New("INVALID_COMMAND")
+				default:
+					return nil
+				}
 			}
 			var command struct {
 				Action string `json:"action"`

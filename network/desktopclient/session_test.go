@@ -167,7 +167,9 @@ func TestUnknownAndOversizedCommandsCloseChannel(t *testing.T) {
 		io.WriteString(f.writer, initialization+"\n")
 		f.line(t)
 		go io.WriteString(f.writer, command+"\n")
-		f.finished(t)
+		if err := f.finished(t); err == nil || err.Error() != "INVALID_COMMAND" {
+			t.Fatal("malformed command was not reported", err)
+		}
 		select {
 		case <-f.node.closed:
 		default:

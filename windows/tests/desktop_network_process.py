@@ -30,6 +30,7 @@ def run(binary):
             # Let production tsnet enter registration; the only coordinator is a
             # deliberately closed loopback socket. EOF must interrupt this wait.
             time.sleep(.3)
+            assert process.poll() is None, 'helper exited before the owner closed its pipe'
             start = time.monotonic()
             process.stdin.close()
             process.wait(timeout=8)
