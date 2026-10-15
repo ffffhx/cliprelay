@@ -53,6 +53,11 @@ def build(source, platform):
             archive.add(Path(__file__).with_name(name),arcname='scripts/'+name)
     hashes={str(p.relative_to(artifact)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest() for p in artifact.rglob('*') if p.is_file() and not p.is_symlink()}
     (artifact/'manifest.json').write_text(json.dumps({'platform':platform,'protocol':1,'files':hashes},indent=2)+'\n')
+    if platform=='macos':
+        # GitHub artifact transport discards executable bits and symlink types.
+        # A tar container preserves both for the app and Qt frameworks.
+        with tarfile.open(source/'ClipRelay-Stream-macOS.tar.gz','w:gz') as archive:
+            archive.add(artifact,arcname='ClipRelay-Stream-macOS')
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('source',type=Path);parser.add_argument('platform',choices=['windows','macos'])

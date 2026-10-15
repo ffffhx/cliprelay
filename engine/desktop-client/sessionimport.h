@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QString>
 #include <QSslCertificate>
+#include <functional>
 
 // One ephemeral, already paired connection supplied by the owning desktop app.
 // Neither credentials nor the host are written into Moonlight's settings.
@@ -21,5 +22,5 @@ bool loadStdin();
 bool active();
 bool parentAlive();
 const Session& get();
-void watchParent();
+void watchParent(std::function<void()> onLost = {});
 }

@@ -79,5 +79,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ClipRelay-Stream-${{ runner.os }}
-          path: desktop-source/cliprelay-artifact
+          path: ${{ runner.os == 'macOS' && 'desktop-source/ClipRelay-Stream-macOS.tar.gz' || 'desktop-source/cliprelay-artifact' }}
           if-no-files-found: error

@@ -34,7 +34,7 @@
          QSettings::setDefaultFormat(QSettings::IniFormat);
          QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QDir::currentPath());
          QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, QDir::currentPath());
-@@ -803,8 +804,14 @@
+@@ -803,8 +804,19 @@
      }
  #endif
  
@@ -46,12 +46,17 @@
 +        qCritical("Invalid ClipRelay session envelope");
 +        return 2;
 +    }
-+    ClipRelayImport::watchParent();
++    ClipRelayImport::watchParent([] {
++        if (auto session = Session::get()) {
++            session->setShouldExit();
++            session->interrupt();
++        } else QCoreApplication::quit();
++    });
 +    GlobalCommandLineParser::ParseResult commandLineParserResult = GlobalCommandLineParser::StreamRequested;
      switch (commandLineParserResult) {
      case GlobalCommandLineParser::ListRequested:
          // Don't log to the console since it will jumble the command output
-@@ -995,10 +1002,27 @@
+@@ -995,10 +1007,27 @@
          {
              initialView = "qrc:/gui/CliStartStreamSegue.qml";
              StreamingPreferences* preferences = StreamingPreferences::get();
@@ -294,3 +299,26 @@
          m_StreamConfig.encryptionFlags = ENCFLG_ALL;
      }
      else {
+@@ -1780,7 +1781,8 @@
+ void Session::exec()
+ {
+     // If the connection failed, clean up and abort the connection.
+-    if (!m_AsyncConnectionSuccess) {
++    if (!m_AsyncConnectionSuccess || (ClipRelayImport::active() && !ClipRelayImport::parentAlive())) {
++        if (ClipRelayImport::active() && !ClipRelayImport::parentAlive()) setShouldExit();
+         delete m_InputHandler;
+         m_InputHandler = nullptr;
+         SDL_QuitSubSystem(SDL_INIT_VIDEO);
+@@ -1964,6 +1966,12 @@
+     // because we want to suspend all Qt processing until the stream is over.
+     SDL_Event event;
+     for (;;) {
++        // Qt timers are suspended while this thread runs SDL. Keep the parent
++        // lease active here too, and use the normal input/decoder cleanup path.
++        if (ClipRelayImport::active() && !ClipRelayImport::parentAlive()) {
++            setShouldExit();
++            goto DispatchDeferredCleanup;
++        }
+ #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
+         // SDL 2.0.18 has a proper wait event implementation that uses platform
+         // support to block on events rather than polling on Windows, macOS, X11,

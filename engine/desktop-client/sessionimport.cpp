@@ -148,11 +148,14 @@ bool parentAlive() {
     return result == 0 || (result < 0 && errno == EINTR);
 #endif
 }
-void watchParent() {
+void watchParent(std::function<void()> onLost) {
     auto timer = new QTimer(QCoreApplication::instance());
-    QObject::connect(timer, &QTimer::timeout, [] {
+    QObject::connect(timer, &QTimer::timeout, [timer, onLost] {
         // EOF or unexpected further messages terminate this one-shot session.
-        if (!parentAlive()) QCoreApplication::quit();
+        if (!parentAlive()) {
+            timer->stop();
+            if (onLost) onLost(); else QCoreApplication::quit();
+        }
     });
     timer->start(100);
 }
