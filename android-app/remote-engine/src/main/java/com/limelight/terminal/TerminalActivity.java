@@ -3,8 +3,12 @@ package com.limelight.terminal;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.text.InputType;
 import android.os.*;
 import android.view.*;
+import android.view.inputmethod.EditorInfo;
 import android.widget.*;
 import com.limelight.R;
 import com.limelight.files.TransferStorage;
@@ -26,8 +30,8 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
     private TerminalProtocol.Reply inventory;
     private TerminalSessionState session;
     private RemoteTerminalView screen;
-    private TextView status, notice;
-    private Button sessionsButton,newButton,closeButton;
+    private TextView status, notice,selectionHint;
+    private Button sessionsButton,newButton,closeButton,retryButton,selectButton,copyButton,pasteButton;
     private volatile boolean foreground;
     private volatile int epoch;
     private boolean busy,needList=true,connected,resolveRoute,halted;
@@ -51,9 +55,13 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
         sessionsButton=button(buttons,R.string.terminal_sessions,()->showSessions());
         newButton=button(buttons,R.string.terminal_new,()->showNew());
         closeButton=button(buttons,R.string.terminal_close,()->closeSession());
-        button(buttons,R.string.terminal_retry,()->{halted=false;needList=true;failures=0;resolveRoute=true;schedule(0);});
+        retryButton=button(buttons,R.string.terminal_retry,()->{halted=false;needList=true;failures=0;resolveRoute=true;update();schedule(0);});
+        selectionHint=label(getString(R.string.terminal_selection_hint),12);selectionHint.setVisibility(View.GONE);page.addView(selectionHint);
         screen=new RemoteTerminalView(this,this);page.addView(screen,new LinearLayout.LayoutParams(-1,0,1));
         HorizontalScrollView keys=new HorizontalScrollView(this);LinearLayout keyRow=new LinearLayout(this);keys.addView(keyRow);page.addView(keys);
+        selectButton=button(keyRow,R.string.terminal_select,()->{screen.selecting(!screen.selecting());update();schedule(0);});
+        copyButton=button(keyRow,R.string.terminal_copy,()->copySelection());
+        pasteButton=button(keyRow,R.string.terminal_paste,()->showPaste());
         button(keyRow,R.string.terminal_keyboard,()->screen.keyboard());
         button(keyRow,"Esc",()->screen.key(KeyEvent.KEYCODE_ESCAPE));button(keyRow,"Tab",()->screen.key(KeyEvent.KEYCODE_TAB));
         button(keyRow,"Ctrl+C",()->screen.send("\u0003"));button(keyRow,"Ctrl+D",()->screen.send("\u0004"));
@@ -81,7 +89,7 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
         NvHTTP http=transport;transport=null;if(http!=null)http.cancelTerminalRequests();
         if(task!=null)task.cancel(true);busy=false;
         if(session!=null && session.discardUnsent())notice.setText(R.string.terminal_discarded);
-        if(screen!=null)screen.accepting(false);super.onStop();
+        if(screen!=null){screen.accepting(false);screen.selecting(false);screen.inputBlocked(false);}super.onStop();
     }
     @Override protected void onDestroy(){worker.shutdownNow();super.onDestroy();}
     private void schedule(long delay){main.removeCallbacks(tick);if(foreground && !halted)main.postDelayed(tick,delay);}
@@ -91,16 +99,81 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
         schedule(0);return true;
     }
     @Override public void size(int columns,int rows){desiredColumns=columns;desiredRows=rows;schedule(0);}
+    @Override public void selectionChanged(){update();}
     private void update(){
         if(screen==null)return;screen.accepting(canInput());
-        sessionsButton.setEnabled(connected && !busy && action==null && (session==null || !session.hasInput()));
-        newButton.setEnabled(connected && !busy && action==null && inventory!=null && (session==null || !session.hasInput()));
-        closeButton.setEnabled(connected && !busy && action==null && session!=null && session.snapshot.running());
+        boolean modal=dialog!=null && dialog.isShowing(), selecting=screen.selecting();
+        screen.inputBlocked(modal);
+        boolean controls=foreground && !modal && !selecting && connected && !busy && action==null;
+        sessionsButton.setEnabled(controls && (session==null || !session.hasInput()));
+        newButton.setEnabled(controls && inventory!=null && (session==null || !session.hasInput()));
+        closeButton.setEnabled(controls && session!=null && session.snapshot.running());
+        retryButton.setEnabled(foreground && !modal && !selecting && !busy);
+        // View construction calls selectionChanged before these buttons are assigned.
+        if(selectButton!=null){
+            selectButton.setText(selecting?R.string.terminal_resume:R.string.terminal_select);
+            selectButton.setEnabled(foreground && !modal && session!=null && connected && !halted && !needList && action==null);
+            copyButton.setEnabled(foreground && !modal && selecting && !busy && screen.hasSelection());
+            pasteButton.setEnabled(controls && canInput() && !session.hasInput() && transport!=null);
+            selectionHint.setVisibility(selecting?View.VISIBLE:View.GONE);
+            selectionHint.setText(busy?R.string.terminal_selection_wait:R.string.terminal_selection_hint);
+        }
         if(connected){String detail=session==null?getString(R.string.terminal_choose):session.snapshot.shell+" · "+session.id.substring(0,6)+" · "+getString(session.snapshot.running()?R.string.terminal_running:R.string.terminal_finished);
             if(session!=null && !session.snapshot.running())detail+=" ("+session.snapshot.exitCode+")";
             status.setText(getString(R.string.terminal_title)+" · "+detail);}
     }
-    private void modal(){dialog.setOnDismissListener(d->{dialog=null;schedule(0);});}
+    private void modal(){
+        AlertDialog owned=dialog;
+        owned.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        owned.setOnDismissListener(d->{if(dialog==owned){dialog=null;update();schedule(0);}});update();
+    }
+    private void toast(int message){Toast.makeText(this,message,Toast.LENGTH_SHORT).show();}
+    private void copySelection(){
+        if(!foreground || busy || dialog!=null || !screen.selecting() || !screen.hasSelection())return;
+        String text=screen.selectedText();if(text.isEmpty())return;
+        if(text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>262144){toast(R.string.terminal_copy_limit);return;}
+        try {
+            ClipData clip=ClipData.newPlainText(getString(R.string.terminal_title),text);
+            PersistableBundle extras=new PersistableBundle();extras.putBoolean("android.content.extra.IS_SENSITIVE",true);clip.getDescription().setExtras(extras);
+            ((ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(clip);toast(R.string.terminal_copied);
+        }catch(RuntimeException e){toast(R.string.terminal_clipboard_unavailable);}
+    }
+    private void showPaste(){
+        if(dialog!=null || busy || !canInput() || session.hasInput() || screen.selecting() || transport==null)return;
+        final String initial;
+        try {
+            ClipData clip=((ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE)).getPrimaryClip();
+            // Do not coerce URIs or read providers. Only an explicit click reads a plain text item.
+            CharSequence text=clip!=null && clip.getItemCount()>0?clip.getItemAt(0).getText():null;
+            if(text==null){toast(R.string.terminal_clipboard_empty);return;}
+            initial=TerminalClipboard.prepare(text);
+        }catch(IllegalArgumentException e){toast(R.string.terminal_paste_invalid);return;}
+        catch(RuntimeException e){toast(R.string.terminal_clipboard_unavailable);return;}
+        final TerminalSessionState owner=session;final NvHTTP route=transport;final int generation=epoch;
+        LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(20),dp(8),dp(20),0);
+        TextView hint=new TextView(this);hint.setText(R.string.terminal_paste_hint);hint.setTextSize(12);content.addView(hint);
+        EditText preview=new EditText(this);preview.setTextSize(14);
+        preview.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        preview.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI|EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        preview.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        preview.setMinLines(2);preview.setMaxLines(8);preview.setText(initial);content.addView(preview);
+        final AlertDialog owned=new AlertDialog.Builder(this).setTitle(R.string.terminal_paste_title).setView(content)
+                .setPositiveButton(R.string.terminal_paste,null).setNegativeButton(android.R.string.cancel,null).create();
+        dialog=owned;owned.show();modal();
+        final boolean[] submitted={false};
+        owned.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            if(submitted[0])return;
+            if(dialog!=owned || !owned.isShowing() || epoch!=generation || session!=owner || transport!=route || !canInput() || screen.selecting()) {
+                toast(R.string.terminal_paste_stale);owned.dismiss();return;
+            }
+            try {
+                String raw=preview.getText().toString(),prepared=TerminalClipboard.prepare(raw);
+                if(!prepared.equals(raw)){preview.setText(prepared);preview.setError(getString(R.string.terminal_paste_cleaned));return;}
+                if(prepared.isEmpty()){preview.setError(getString(R.string.terminal_clipboard_empty));return;}
+                if(screen.pasteReviewed(prepared)){submitted[0]=true;owned.dismiss();}
+            }catch(IllegalArgumentException e){preview.setError(getString(R.string.terminal_paste_invalid));}
+        });
+    }
     private void showSessions(){
         if(inventory==null)return;
         String[] labels=new String[inventory.sessions.size()];
@@ -138,6 +211,8 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
             else if(action!=null)request=new JSONObject(action.toString());
             else if(session==null){update();return;}
             else if(session.hasInput())request=session.write();
+            // Finish pending writes, including replies from an in-flight read, before pausing output.
+            else if(screen.selecting()){update();return;}
             else if(session.snapshot.running() && session.offset>=replayUntil && (session.snapshot.columns!=desiredColumns || session.snapshot.rows!=desiredRows))
                 request=TerminalProtocol.request("resize",session.instance,session.id).put("columns",desiredColumns).put("rows",desiredRows);
             else if(session.snapshot.running() || session.offset<session.snapshot.end)request=session.read();
@@ -179,7 +254,7 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
                     boolean restarted=inventory!=null && !inventory.instance.equals(reply.instance);
                     inventory=reply;needList=false;
                     if(restarted){session=null;action=null;screen.reset(desiredColumns,desiredRows);notice.setText(R.string.terminal_restarted);}
-                    if(session!=null){TerminalProtocol.Session found=reply.find(session.id);if(found==null){session=null;notice.setText(R.string.terminal_missing);}else session.refresh(reply.instance,found);}
+                    if(session!=null){TerminalProtocol.Session found=reply.find(session.id);if(found==null){session=null;screen.selecting(false);notice.setText(R.string.terminal_missing);}else session.refresh(reply.instance,found);}
                     break;
                 case "open":action=null;attach(reply.session,true);needList=true;break;
                 case "write":session.acknowledge(reply);break;
@@ -194,7 +269,7 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
         }catch(JSONException e){failure(e);}
     }
     private void failure(Exception error){
-        connected=false;needList=true;screen.accepting(false);
+        connected=false;needList=true;screen.accepting(false);screen.selecting(false);
         NvHTTP http=transport;transport=null;if(http!=null)http.cancelTerminalRequests();
         String code=error.getMessage()==null?"":error.getMessage();
         if(error instanceof JSONException || code.matches("TERMINAL_(STALE|NOT_FOUND|CLOSED|OFFSET|SEQUENCE|ID_CONFLICT|INPUT_CONFLICT|INVALID_RESPONSE|BAD_REQUEST)")) {

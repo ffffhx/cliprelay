@@ -100,7 +100,7 @@ public final class TerminalRenderer {
                 final int codePoint = charIsHighsurrogate ? Character.toCodePoint(charAtIndex, line[currentCharIndex + 1]) : charAtIndex;
                 final int codePointWcWidth = WcWidth.width(codePoint);
                 final boolean insideCursor = (cursorX == column || (codePointWcWidth == 2 && cursorX == column + 1));
-                final boolean insideSelection = column >= selx1 && column <= selx2;
+                final boolean insideSelection = selx2 >= 0 && column + Math.max(1, codePointWcWidth) - 1 >= selx1 && column <= selx2;
                 final long style = lineObject.getStyle(column);
 
                 // Check if the measured text width for this code point is not the same as that expected by wcwidth().

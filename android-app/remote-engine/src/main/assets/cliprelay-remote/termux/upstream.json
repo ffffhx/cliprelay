@@ -19,6 +19,7 @@
   "changes": [
     "TerminalSessionClient reduced to parser and logging callbacks; logs suppressed by remote client.",
     "TerminalEmulator uses java.util.Base64 instead of Android Base64.",
+    "TerminalRenderer highlights a wide glyph when either of its terminal cells is selected, matching getSelectedText.",
     "No Termux native session, JNI, app, or local shell included."
   ],
   "upstreamSha256": {

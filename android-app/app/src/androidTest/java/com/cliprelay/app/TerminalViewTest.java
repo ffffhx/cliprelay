@@ -3,6 +3,7 @@ package com.cliprelay.app;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -64,4 +65,49 @@ public class TerminalViewTest {
         boolean visible=false;for(int y=0;y<Math.min(180,bitmap.getHeight());y++)for(int x=0;x<Math.min(200,bitmap.getWidth());x++)if((bitmap.getPixel(x,y)&0xffffff)!=0)visible=true;
         assertTrue("terminal glyphs were not rendered",visible);bitmap.recycle();
     });}
+    private static void touch(RemoteTerminalView view,int action,float x,float y){
+        MotionEvent event=MotionEvent.obtain(0,0,action,x,y,0);try{view.onTouchEvent(event);}finally{event.recycle();}
+    }
+    @Test public void selectionBlocksHumanInputButPreservesLiveParserReplies(){check((view,output)->{
+        InputConnection old=view.onCreateInputConnection(new EditorInfo());old.setComposingText("old",1);view.selecting(true);
+        assertFalse(old.finishComposingText());assertFalse(view.send("key"));
+        InputConnection during=view.onCreateInputConnection(new EditorInfo());assertFalse(during.commitText("key",1));
+        view.append("\u001b[6n".getBytes(StandardCharsets.UTF_8),false);
+        assertEquals("\u001b[1;1R",new String(output.toByteArray(),StandardCharsets.UTF_8));output.reset();
+        view.selecting(false);assertFalse(old.commitText("old",1));assertFalse(during.commitText("old",1));assertTrue(view.send("new"));
+        assertEquals("new",new String(output.toByteArray(),StandardCharsets.UTF_8));
+    });}
+    @Test public void changedOutputCancelsAnActiveSelectionGesture(){check((view,output)->{
+        view.layout(0,0,800,480);view.append("中文🙂".getBytes(StandardCharsets.UTF_8),false);view.selecting(true);
+        touch(view,MotionEvent.ACTION_DOWN,0,0);touch(view,MotionEvent.ACTION_MOVE,790,0);
+        assertTrue(view.hasSelection());assertEquals("中文🙂",view.selectedText());
+        view.append("new".getBytes(StandardCharsets.UTF_8),false);assertFalse(view.hasSelection());
+        touch(view,MotionEvent.ACTION_MOVE,790,0);touch(view,MotionEvent.ACTION_UP,790,0);assertFalse(view.hasSelection());
+        touch(view,MotionEvent.ACTION_DOWN,0,0);assertTrue(view.hasSelection());view.resize(40,10);assertFalse(view.hasSelection());
+        touch(view,MotionEvent.ACTION_DOWN,0,0);view.reset(80,24);assertFalse(view.selecting());assertFalse(view.hasSelection());
+    });}
+    @Test public void canceledAndMultiTouchSelectionCannotLeaveHighlightedText(){check((view,output)->{
+        view.layout(0,0,800,480);view.append("text".getBytes(StandardCharsets.UTF_8),false);view.selecting(true);
+        touch(view,MotionEvent.ACTION_DOWN,0,0);touch(view,MotionEvent.ACTION_CANCEL,0,0);assertFalse(view.hasSelection());
+        touch(view,MotionEvent.ACTION_DOWN,0,0);touch(view,MotionEvent.ACTION_POINTER_DOWN,0,0);assertFalse(view.hasSelection());
+        touch(view,MotionEvent.ACTION_UP,0,0);assertFalse(view.hasSelection());assertEquals(0,output.size());
+    });}
+    @Test public void modalPreviewBlocksOldImeButExplicitPasteIsWhole(){check((view,output)->{
+        InputConnection old=view.onCreateInputConnection(new EditorInfo());old.setComposingText("old",1);
+        view.append("\u001b[?2004h".getBytes(StandardCharsets.UTF_8),false);view.inputBlocked(true);
+        assertFalse(old.commitText("old",1));assertFalse(view.send("key"));assertTrue(view.pasteReviewed("中文\nnext"));
+        assertEquals("\u001b[200~中文\rnext\u001b[201~",new String(output.toByteArray(),StandardCharsets.UTF_8));
+        view.inputBlocked(false);assertFalse(old.commitText("old",1));view.accepting(false);assertFalse(view.pasteReviewed("late"));
+    });}
+    @Test public void rejectedPasteMakesOneCompleteInputAttempt(){
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(()->{
+            java.util.List<byte[]> attempts=new java.util.ArrayList<>();
+            RemoteTerminalView view=new RemoteTerminalView(InstrumentationRegistry.getInstrumentation().getTargetContext(),new RemoteTerminalView.Listener(){
+                public boolean input(byte[] bytes){attempts.add(bytes);return false;}
+                public void size(int columns,int rows){}
+            });view.accepting(true);view.append("\u001b[?2004h".getBytes(StandardCharsets.UTF_8),false);
+            assertFalse(view.pasteReviewed("body"));assertEquals(1,attempts.size());
+            assertArrayEquals("\u001b[200~body\u001b[201~".getBytes(StandardCharsets.UTF_8),attempts.get(0));view.accepting(false);
+        });
+    }
 }

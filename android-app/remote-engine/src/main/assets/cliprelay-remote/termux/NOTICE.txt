@@ -4,3 +4,4 @@ Source: https://github.com/termux/termux-app/tree/5b657c6adf4304e5198951ce815fe0
 The upstream repository is GPL-3.0-only with Apache-2.0 exceptions for Android Terminal Emulator code.
 See LICENSE.md, Apache-2.0.txt, ../COPYING.txt, and upstream.json. Original file notices retained.
 ClipRelay distributes this combined Android module under GPL-3.0-only. Corresponding source includes these adaptations.
+ClipRelay modified TerminalRenderer to highlight whole wide glyphs when selection intersects either cell.
