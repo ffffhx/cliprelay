@@ -1,0 +1,94 @@
+name: Sunshine macOS Host Build
+
+on:
+  push:
+    branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', '.github/workflows/sunshine-macos.yml']
+  pull_request:
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', '.github/workflows/sunshine-macos.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sunshine-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.2'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: LizardByte/Sunshine
+          ref: 63d35f702ee9e362e43263742981836ec0710384
+          submodules: recursive
+          path: sunshine-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - name: Install build dependencies
+        run: brew install cmake ninja pkgconf icu4c miniupnpc openssl@3 opus
+      - name: Apply pinned source and test platform independent controls
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare_sunshine.py sunshine-source
+          clang++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/control_test.cpp -o control-test
+          ./control-test
+          clang++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/input_test.cpp -o input-test
+          ./input-test
+          # Fail before configuration if the pinned dependency has no release tag;
+          # upstream would otherwise silently select its latest FFmpeg artifact.
+          git -C sunshine-source/third-party/build-deps fetch --tags --depth=1
+          git -C sunshine-source/third-party/build-deps describe --tags --exact-match
+      - name: Build complete engine and input integration tests
+        run: |
+          set -euo pipefail
+          cmake -S sunshine-source -B sunshine-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DBUILD_TESTS=ON \
+            -DSUNSHINE_ENABLE_TRAY=OFF -DBOOST_USE_STATIC=ON -DOPUS_USE_STATIC=OFF \
+            -DICU_ROOT="$(brew --prefix icu4c)" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DOpus_ROOT_DIR="$(brew --prefix opus)" \
+            -DSUNSHINE_PUBLISHER_NAME=ClipRelay \
+            -DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/ffffhx/cliprelay \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/ffffhx/cliprelay/issues
+          cmake --build sunshine-build --parallel 3
+          ./sunshine-build/tests/test_sunshine \
+            --gtest_filter='ClipRelayInputTest.*' \
+            --gtest_output=xml:input-tests.xml
+      - name: Package relocatable engine and verify dependencies
+        run: |
+          set -euo pipefail
+          cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component Runtime
+          python3 scripts/package_sunshine_macos.py \
+            --source sunshine-source --build sunshine-build --artifact engine-artifact \
+            --arch '${{ matrix.arch }}' --test-results input-tests.xml
+          tar -czf 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' engine-artifact
+          shasum -a 256 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' > 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz.sha256'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunshine-cliprelay-control-macos-${{ matrix.arch }}
+          path: |
+            sunshine-cliprelay-macos-*.tar.gz
+            sunshine-cliprelay-macos-*.tar.gz.sha256
+            input-tests.xml
+          if-no-files-found: error
+          retention-days: 14
