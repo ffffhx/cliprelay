@@ -3,6 +3,7 @@ const {pairHost}=require('./pairing.cjs');
 const {PairedReceiver,sendClipboard,jpegSize}=require('./paired-relay.cjs');
 const {endpoint,fault}=require('./paired-transport.cjs');
 function message(error){
+  if(error?.code==='VIEWER_UPDATE_REQUIRED')return '请更新 ClipRelay 后使用外网远控';
   return ({VIEWER_BUSY:'已有远控窗口正在运行',VIEWER_UNAVAILABLE:'桌面控制组件不可用，请安装包含此组件的 ClipRelay',VIEWER_INVALID:'桌面控制组件校验失败，请重新安装',INVALID_STREAM_TARGET:'远控目标无效，请重新配对',INVALID_STREAM_OPTIONS:'画面设置无效',INVALID_ADDRESS:'请输入电脑的 IP 或主机名',INVALID_PORT:'端口必须是 6–65532 的整数',INVALID_NAME:'设备名称无效',HOST_CERT_CHANGED:'电脑证书已改变，连接已停止；请核实电脑身份后重新配对',UNPAIRED:'电脑已撤销配对，请重新配对',RELAY_UNPAIRED:'电脑已撤销配对，请重新配对',KEYCHAIN_UNAVAILABLE:'系统钥匙串不可用，无法解锁配对身份',UPDATE_HOST:'请先更新电脑端 ClipRelay',PAIRING_CODE_MISMATCH:'两端配对标识不一致，已取消',PAIRING_SIGNATURE_INVALID:'电脑配对证明无效，已取消',PAIRING_PIN_MISMATCH:'配对校验失败，请重新发起',CANCELLED:'已取消',TIMEOUT:'连接超时，请检查电脑是否在线',PAIRING_REQUIRED:'请先选择已配对的电脑',INVALID_TEXT:'文本为空、过大或包含不支持的字符',IMAGE_TOO_LARGE:'图片过大，最多 4096 × 4096 且不超过 600 万像素',INVALID_IMAGE:'无法读取该图片',PAIRING_BUSY:'已有配对正在进行',SEND_BUSY:'正在发送，请稍后重试',TOO_MANY_HOSTS:'最多保存 16 台电脑'})[error?.code] || '操作失败，请检查连接后重试';
 }
 class PairedController{

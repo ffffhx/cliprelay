@@ -31,6 +31,17 @@ test('real child receives credentials only through a pipe and exits when owner c
     const closed=once(f.child,'close');f.viewer.stop();assert.equal((await closed)[0],0);assert.equal(f.viewer.phase,'idle');
   }finally{f.viewer.stop();}
 });
+test('only an owned loopback route can enable embedded-network framing',()=>{
+  const route={...host(),port:32000,overlay:true,overlayPort:48789,routeId:'generation-1'};
+  const bytes=envelope(route,identities.client);const value=JSON.parse(bytes.subarray(4));
+  assert.equal(value.overlay,true);assert.equal(value.overlayPort,48789);assert.equal(value.port,32000);assert.equal(value.routeId,undefined);bytes.fill(0);
+  for(const change of [{address:'localhost'},{address:'192.168.1.1'},{port:1028},{overlayPort:65515},{overlay:false}])assert.throws(()=>envelope({...route,...change},identities.client),{code:'INVALID_STREAM_TARGET'});
+  assert.throws(()=>envelope(host(),identities.client,{overlay:true}));
+});
+test('replacing a network route closes its viewer even when the local port is reused',async()=>{
+  const state=store();Object.assign(state.host,{overlay:true,overlayPort:48789,routeId:'first'});const f=manager(state);
+  try{await f.viewer.open();const closed=once(f.child,'close');state.host.routeId='second';f.viewer.reconcile();assert.equal((await closed)[0],0);assert.equal(f.viewer.phase,'idle');}finally{f.viewer.stop();}
+});
 test('selection changes while identity unlocks prevent a process from starting',async()=>{
   const state=store();let unlock;state.identity=()=>new Promise(resolve=>unlock=resolve);const f=manager(state);
   const pending=f.viewer.open();state.host.id='0'.repeat(64);unlock(identities.client);
@@ -49,7 +60,11 @@ test('missing or modified packaged executable cannot be launched',()=>{
   try{
     const relative='runtime/ClipRelayStream.exe';fs.mkdirSync(path.join(directory,'runtime'));const file=path.join(directory,relative);fs.writeFileSync(file,'fixture bytes');
     const files={[relative]:crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')};fs.writeFileSync(path.join(directory,'manifest.json'),JSON.stringify({platform:'windows',protocol:1,files}));
-    assert.equal(executable(directory,'win32'),file);fs.appendFileSync(file,'modified');assert.throws(()=>executable(directory,'win32'),{code:'VIEWER_INVALID'});
+    assert.equal(executable(directory,'win32'),file);
+    assert.throws(()=>executable(directory,'win32',true),{code:'VIEWER_UPDATE_REQUIRED'});
+    fs.writeFileSync(path.join(directory,'manifest.json'),JSON.stringify({platform:'windows',protocol:1,files,capabilities:['direct','embedded-network']}));
+    assert.equal(executable(directory,'win32',true),file);
+    fs.appendFileSync(file,'modified');assert.throws(()=>executable(directory,'win32'),{code:'VIEWER_INVALID'});
   }finally{fs.rmSync(directory,{recursive:true,force:true});}
 });
 test('OS spawn failure is contained without an unhandled child-process error',async()=>{
