@@ -359,7 +359,7 @@ runs this controller against production Go display/privacy handlers with real
 mutual TLS, including lease renewal and route cleanup. Its display source and
 mask worker are simulated, so it does not claim physical screen acceptance.
 The unchanged C# worker also passes its eight lifecycle/recovery scenarios.
-Desktop session-end lock and wake controls remain to be added.
+Desktop session-end lock and wake controls are described below.
 
 Privacy source commit `b1ff746d97e9728d45aed2de3872d23f5827403a` passes the
 three-platform run 38769236478. Complete packages Windows 38769246502 and Mac
@@ -426,3 +426,43 @@ sources, 1,847 viewer files, four network files and 163 internal links. Android
 regression run 38777341666 also passes. Evidence is recorded in
 `.tools/uu-parity/desktop-session-lock-artifacts.json`. Real GUI, installed
 SYSTEM-to-user locking and physical lock/unlock acceptance remain pending.
+
+Desktop wake works independently of the viewer. Configuration reads the online
+target's physical adapters and another paired Windows helper's inventory over
+pinned mutual TLS. Saving requires explicit same-LAN confirmation, fresh choices
+and rechecked adapter/network/route data. Matching CIDRs alone do not prove a
+shared physical LAN. The main process owns MAC, network and receipt identifiers;
+the renderer submits opaque choices and its owned view token.
+
+Private atomic storage retains certificate/client/network pairing bindings and
+the selected adapter for 30 days, without keys or transient addresses. Removed
+or replaced pairings and observed identity failures invalidate saved choices.
+Before emitting a packet, the controller checks whether the target already
+responds and verifies the helper's connected physical network. A lost send reply
+never triggers an automatic retry. An explicit retry retains the original receipt
+and exact helper route for at most 90 seconds; an uncertain send prevents a new
+receipt for 150 seconds. Helper receipt memory does not survive its restart, so
+an explicit retry after restart can emit another magic packet.
+
+Packet delivery, unknown delivery and later authenticated target response are
+separate states. Stop cancels pending work and observation, without claiming to
+undo an emitted packet. The subsequent target check lasts up to 45 seconds and
+requires the saved adapter identity. Hardware wake capability remains unverified.
+
+The 136 combined Electron cases include 23 new protocol, storage, controller and
+UI cases. Go passes 47 top-level groups and 96 events, including two production
+mutual-TLS fixtures: protocol receipt/replay boundaries and a complete controller
+flow with offline target, lost helper reply, exact replay and target response.
+Inventories and emissions are simulated; the packet-format test uses loopback
+only. The unchanged native discovery worker passes 15 cases and read-only adapter
+inventory/EOF checks. Local checks have zero failures or skips. Real GUI,
+installed SYSTEM-to-user paths and physical sleep/shutdown wake remain pending.
+
+Wake commit `2d35423552fdc31f81cfd2709366d5760a2e1a16` passes cross-platform run
+38781670040, including Linux race checks. Windows complete run 38781676903 passes
+disposable installation, independent processes and pipe lifetime checks; all 734
+archive files and the embedded host's exact build revision are verified. Mac
+complete run 38781683718 passes arm64/x64; each download matches the application
+sources, 1,847 viewer files, four network files and 163 internal links. All four
+wake modules are included in every package. See
+`.tools/uu-parity/desktop-wake-artifacts.json`. The installed app is unchanged.
