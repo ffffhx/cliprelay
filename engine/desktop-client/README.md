@@ -275,3 +275,19 @@ window, decoder and quit events remain available while input is paused.
 The manifest does not yet advertise input epochs, and the desktop owner does not
 request them. The host metadata and presentation handshake plus desktop controls
 must be integrated and validated before exposing display switching.
+
+[Input component build 38755514829](https://github.com/ffffhx/cliprelay/actions/runs/38755514829)
+passes ten native queue scenarios, eight held-state/timer scenarios, six SDL
+adapter scenarios, fourteen Qt protocol/TLS groups and seven paired JavaScript
+protocol groups. SDL tests use the production adapter with a real SDL virtual
+controller and dummy video, with UI/native transport boundaries stubbed; the
+native queue tests exercise the production core separately. The JavaScript
+groups also pass locally in Node and Electron running as Node.
+
+Windows and universal Mac components build successfully. Downloaded artifacts
+match all 294 Windows and 1,847 Mac manifest files, copied extensions and applied
+Qt/common source patches. The Windows build exposed a `max` macro collision,
+now fixed and covered by a header coexistence check. A separate regression
+ensures synthetic touch mouse releases cannot consume a physical mouse's held
+state. These verified components are not yet pinned into full application
+packages; desktop owner/control integration and managed GUI acceptance remain.
