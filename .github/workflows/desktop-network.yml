@@ -52,9 +52,12 @@ jobs:
           New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
           & windows/tests/terminal.ps1
       - name: Desktop terminal sessions, replay and window ownership
-        env:
-          CLIPRELAY_TERMINAL_TEST_WORKER: ${{ runner.os == 'Windows' && format('{0}/.tools/uu-parity/terminal-tests.exe', github.workspace) || '' }}
+        if: runner.os != 'Windows'
         run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs
+      - name: Desktop terminal under an ordinary Windows user
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& windows/tests/desktop-terminal-ci.ps1'
       - name: Check concurrent helper lifecycle
         if: runner.os == 'Linux'
         working-directory: network

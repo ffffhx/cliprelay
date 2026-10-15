@@ -27,7 +27,7 @@ function fixture(t,extra={}){
   t.after(()=>controller.close());return {server,host,store,controller,advance:(ms=1000)=>{time+=ms;}};
 }
 async function poll(f){const value=await f.controller.poll();f.advance(100);return value;}
-async function open(f,shell='cmd'){if(!f.controller.instance)await poll(f);f.controller.open(shell);for(let i=0;i<5 && f.controller.pendingAction;i++)await poll(f);assert.ok(f.controller.selected);return f.controller.selected;}
+async function open(f,shell='cmd'){if(!f.controller.instance)await poll(f);assert.equal(f.controller.phase,'ready',f.controller.error);f.controller.open(shell);for(let i=0;i<5 && f.controller.pendingAction;i++)await poll(f);assert.ok(f.controller.selected);return f.controller.selected;}
 function input(f,text){return f.controller.input({id:f.controller.selected,view:f.controller.view,text});}
 async function drain(f){for(let i=0;i<50 && (f.controller.states.get(f.controller.selected)?.queuedBytes || f.controller.pendingAction || f.controller.needList);i++)await poll(f);}
 test('multiple sessions keep independent input sequences, UTF-8 bytes and output positions',async t=>{
@@ -98,7 +98,7 @@ test('real ConPTY over pinned mutual TLS confirms input deduplication and reconn
   assert.ok(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,'Build windows/tests/terminal.ps1 and set CLIPRELAY_TERMINAL_TEST_WORKER');
   const child=spawn(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,['--terminal-probe'],{stdio:['pipe','pipe','pipe'],windowsHide:true}),reader=readline.createInterface({input:child.stdout});let pending=[],stderr='';
   reader.on('line',line=>{const next=pending.shift();if(next)next.resolve(JSON.parse(line));});child.stderr.on('data',bytes=>{stderr+=bytes;});child.on('exit',()=>{for(const next of pending.splice(0))next.reject(new Error('worker exited '+stderr));});
-  t.after(async()=>{if(child.exitCode===null){const ended=once(child,'exit');child.stdin.end();await ended;}reader.close();});
+  t.after(async()=>{if(child.exitCode===null){const ended=once(child,'exit');child.stdin.end();await ended;}reader.close();if(stderr)t.diagnostic(stderr);});
   const rpc=command=>new Promise((resolve,reject)=>{pending.push({resolve,reject});child.stdin.write(JSON.stringify(command)+'\n');});
   const owner=crypto.createHash('sha256').update(new crypto.X509Certificate(identities.client.cert).raw).digest('hex');let drop=false,chain=Promise.resolve();
   const server=https.createServer({key:identities.host.key,cert:identities.host.cert,requestCert:true,rejectUnauthorized:false},async(req,res)=>{

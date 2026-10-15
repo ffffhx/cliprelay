@@ -37,9 +37,7 @@ jobs:
           $env:CLIPRELAY_TEST_FILE_WORKER = (Resolve-Path .tools/uu-parity/file-transfer-tests.exe).Path
           node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Desktop file transfer tests failed' }
-          $env:CLIPRELAY_TERMINAL_TEST_WORKER = (Resolve-Path .tools/uu-parity/terminal-tests.exe).Path
-          node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs
-          if ($LASTEXITCODE -ne 0) { throw 'Desktop terminal tests failed' }
+          & windows/tests/desktop-terminal-ci.ps1
           Push-Location network
           try {
             go test -count=1 -timeout=120s ./inputfocus ./cmd/cliprelay-network
