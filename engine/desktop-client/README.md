@@ -397,3 +397,32 @@ Mac complete run 38772579368 passes arm64/x64, with both downloads verified agai
 the exact source, 1,847 viewer files, four network files and 163 internal links.
 The shared foreground lifecycle and all audio/privacy modules are included in
 each package. Evidence is in `.tools/uu-parity/desktop-audio-mute-artifacts.json`.
+
+Desktop session-end lock uses a host-owned one-shot arrangement, separate from
+the foreground privacy/audio leases. A confirmed arrangement survives closing
+the viewer, panel or app. The desktop sends only status, arm and explicit disarm;
+the host decides stream end and commits once after its idle grace and final
+stream check. Renderer commands contain only an owned view token and boolean.
+Fresh presented video and the host's `cancelProtected` capability are required
+to arm. Old hosts display an update requirement.
+
+Cancellation receipts are bounded and retained for two minutes, with a reserved
+slot for the active intent. Lost cancellation replies stay pending. A lost OS
+commit reply cannot be reported as successful cancellation; requested and
+historically confirmed lock are distinct. Worker restart retires the old intent.
+Tests reproduce and fix those boundaries, including a production Go/desktop
+mutual-TLS fixture with simulated workstation and stream lifetime. The 113
+combined Electron cases, 33 Go groups/72 pass events and 10 C# policy cases pass
+locally without failures or skips. No physical lock was requested.
+
+Product commit `cf90ab7ce2ccf7d36cd904bf9b0ab653b2ffd621` is followed by the
+test-only IPv4 fixture correction `3cb7768030317f9b9a99b32e584e6793a3499959`.
+Three-platform run 38777974356 includes Linux race checks. Windows complete run
+38777981669 passes disposable installation and ownership checks; all 726 archive
+files and the embedded host's final build revision are verified. Mac complete
+run 38777376973 uses the product commit; the only later change is outside the
+application, in the fixture request. Both Mac archives match final application
+sources, 1,847 viewer files, four network files and 163 internal links. Android
+regression run 38777341666 also passes. Evidence is recorded in
+`.tools/uu-parity/desktop-session-lock-artifacts.json`. Real GUI, installed
+SYSTEM-to-user locking and physical lock/unlock acceptance remain pending.

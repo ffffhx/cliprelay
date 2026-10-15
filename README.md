@@ -436,7 +436,13 @@ Windows 和 Mac 控制端现已接入显示器选择：切换前先确认播放�
 
 静音版的 [三平台回归](https://github.com/ffffhx/cliprelay/actions/runs/38772563670)、[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38772572796)及 [Mac arm64/x64 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38772579368)全部通过。下载后的 Windows 包含 720 个已核验文件，临时机器上的安装、独立进程和后台退出检查通过；两种 Mac 包已核验对应应用源码及原生组件。验收记录见 `.tools/uu-parity/desktop-audio-mute-artifacts.json`。
 
-实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实多屏/热插拔、输入与音频、显卡兼容性仍待验收。桌面结束锁屏和唤醒入口、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
+Windows / Mac 控制端新增「本次结束后锁屏」，默认关闭。开启需要当前唯一远控串流、已呈现的有效画面和新版被控端；电脑确认安排后，即使关闭远控窗口、配对窗口或控制端应用，仍由电脑判断本次串流结束并执行一次锁屏。电脑发现串流被替换、出现其他连接或引擎重启时取消旧安排。取消必须获得电脑确认；回包丢失时显示“取消尚未确认”，系统已接收锁屏请求后不再显示可取消。界面将“已安排”“系统已请求”和“系统曾确认锁屏”分开，手动解锁后不会再次锁屏。
+
+结束锁屏接口保留两分钟的取消记录，防止延迟到达的旧开启请求重新生效；工作进程重启后也作废旧安排。113 项相关 Electron 检查、33 组主机测试（72 个通过事件）和 10 项 C# 模拟锁屏策略测试通过，本地没有失败或跳过。桌面控制器通过真实双向 TLS 连接正式 Go 接口，验证了取消等待、延迟请求拒绝、主机判断结束和一次性系统确认；测试使用模拟工作站，没有调用实际锁屏。安装包验证记录见 `.tools/uu-parity/desktop-session-lock-artifacts.json`。
+
+结束锁屏版的 [三平台回归与并发检查](https://github.com/ffffhx/cliprelay/actions/runs/38777974356)、[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38777981669)和 [Mac arm64/x64 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38777376973)均通过。下载后的 Windows 包已核验 726 个文件、新主机程序的构建提交和应用源码，并通过临时机器安装、独立进程及后台退出检查；两种 Mac 包已核验应用源码、1,847 个播放器文件、4 个网络组件文件和 163 条包内链接。首次 Windows 构建暴露的是测试辅助请求误用默认地址的问题，修正后重新通过；Mac 包与最终提交的差异仅在该测试文件，产品源码一致。
+
+实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实多屏/热插拔、输入与音频、实际锁屏/解锁、显卡兼容性仍待验收。桌面唤醒入口、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
 源码构建需要 Go 1.26.7：先运行 `python scripts/build_network.py windows`，再运行
