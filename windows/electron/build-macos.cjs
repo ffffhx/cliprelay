@@ -48,10 +48,17 @@ async function build(){
         }
         const architectures=execFileSync('/usr/bin/lipo',['-archs',executable],{encoding:'utf8'}).trim().split(/\s+/);
         if(!architectures.includes('x86_64') || !architectures.includes('arm64'))throw new Error('Expected universal desktop viewer');
-        const sourceArtifact=path.resolve(process.env.CLIPRELAY_VIEWER_ARTIFACT);let symlinks=0;
-        function verifyLinks(directory){for(const entry of fs.readdirSync(directory,{withFileTypes:true})){const item=path.join(directory,entry.name),relative=path.relative(sourceArtifact,item);if(entry.isSymbolicLink()){const copied=path.join(packaged,relative);if(!fs.lstatSync(copied).isSymbolicLink() || fs.readlinkSync(copied)!==fs.readlinkSync(item))throw new Error('Viewer framework link changed');symlinks++;}else if(entry.isDirectory())verifyLinks(item);}}
-        verifyLinks(sourceArtifact);
-        fs.writeFileSync(path.join(output,`viewer-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,viewerArchitectures:architectures,verifiedFiles:Object.keys(manifest.files).length,verifiedSymlinks:symlinks,viewerSha256:manifest.files['runtime/ClipRelayStream.app/Contents/MacOS/Moonlight']},null,2));
+        const sourceArtifact=path.resolve(process.env.CLIPRELAY_VIEWER_ARTIFACT),links=[];
+        function collectLinks(directory){for(const entry of fs.readdirSync(directory,{withFileTypes:true})){const item=path.join(directory,entry.name),relative=path.relative(sourceArtifact,item);if(entry.isSymbolicLink())links.push({item,copied:path.join(packaged,relative),target:fs.readlinkSync(item)});else if(entry.isDirectory())collectLinks(item);}}
+        collectLinks(sourceArtifact);
+        // fs-extra may convert preserved links to absolute source paths. Restore
+        // the original relative graph before the temporary source is removed.
+        for(const link of links){
+          if(path.isAbsolute(link.target) || !path.resolve(path.dirname(link.item),link.target).startsWith(sourceArtifact+path.sep) || !fs.lstatSync(link.copied).isSymbolicLink())throw new Error('Invalid viewer framework link');
+          if(fs.readlinkSync(link.copied)!==link.target){fs.unlinkSync(link.copied);fs.symlinkSync(link.target,link.copied);}
+        }
+        for(const link of links){if(fs.readlinkSync(link.copied)!==link.target || !fs.realpathSync(link.copied).startsWith(packaged+path.sep))throw new Error('Viewer framework link escapes the packaged runtime');}
+        fs.writeFileSync(path.join(output,`viewer-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,viewerArchitectures:architectures,verifiedFiles:Object.keys(manifest.files).length,verifiedSymlinks:links.length,viewerSha256:manifest.files['runtime/ClipRelayStream.app/Contents/MacOS/Moonlight']},null,2));
       }
       const zip=path.join(output,`ClipRelay-macOS-${architecture}-${version.versionName}.zip`);execFileSync('/usr/bin/ditto',['-c','-k','--sequesterRsrc','--keepParent',path.join(bundle,'ClipRelay.app'),zip]);console.log(zip);
     }
