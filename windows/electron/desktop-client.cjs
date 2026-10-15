@@ -18,9 +18,9 @@ class DesktopClient {
     const localName=Array.from(os.hostname().replace(/[\r\n\0]/g,'')).slice(0,32).join('') || 'Windows';
     this.network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(root,'desktop-network'),localName,
       canPair:()=>!this.paired?.pairController,onUpdate:()=>{this.paired?.reconcileRoutes();this.viewer?.reconcile();}});
-    const store=new RoutedStore(base,id=>this.network.route(id));
+    const store=new RoutedStore(base,id=>this.network.route(id),id=>this.network.streamPolicy(id));
     this.viewer=new StreamViewer({directory:path.join(root,'remote-viewer'),store});
-    this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>this.viewer.reconcile()});
+    this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>this.viewer.reconcile(this.paired?.status)});
     this.paired.start();
     this.network.reconcile();
     ipcMain.handle('mac:request',(event,action,data)=>this.request(event,action,data));

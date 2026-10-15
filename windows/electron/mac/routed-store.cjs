@@ -1,9 +1,9 @@
 'use strict';
 const {fault}=require('./paired-transport.cjs');
-const fields=['id','clientId','certificate','enabled','address','port','overlay','overlayPort','routeId','routeReady'];
+const fields=['id','clientId','certificate','enabled','networkId','address','port','overlay','overlayPort','routeId','routeReady','routeBlocked'];
 const sameRoute=(a,b)=>!!a && !!b && fields.every(key=>a[key]===b[key]);
 class RoutedStore{
-  constructor(base,route){this.base=base;this.route=route;}
+  constructor(base,route,policy=()=>''){this.base=base;this.route=route;this.policy=policy;}
   get data(){return this.base.data;}
   identity(){return this.base.identity();}
   hosts(){return this.base.hosts().map(host=>{
@@ -11,6 +11,8 @@ class RoutedStore{
     const route=this.route(host.networkId);
     // Never fall back to a saved loopback address or persist the allocated port.
     const {address,port,overlay,overlayPort,routeId,...saved}=host;
+    const blocked=this.policy(host.networkId);
+    if(blocked)return {...saved,routeReady:false,routeBlocked:blocked};
     return route?{...saved,...route,routeReady:true}:host.directAddress?{...saved,address:host.directAddress,port:host.directPort,routeId:'direct:'+host.networkId,routeReady:true}:{...saved,routeReady:false};
   });}
   selected(){return this.hosts().find(host=>host.id===this.data.selected) || null;}

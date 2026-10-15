@@ -109,9 +109,9 @@ async function start(){
   const base=new PairedStore(directory,safeStorage,{legacySelected:config.legacyEnabled===true,generate:createClientIdentity});
   network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(__dirname,'network-helper'),localName,
     canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();if(tray)menu();}});
-  const store=new RoutedStore(base,id=>network.route(id));
+  const store=new RoutedStore(base,id=>network.route(id),id=>network.streamPolicy(id));
   viewer=new StreamViewer({directory:path.join(__dirname,'stream-viewer'),store});
-  paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile();if(tray)menu();}});
+  paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);if(tray)menu();}});
   await startReceiver();
   bonjour=new Bonjour({},error=>alert('ClipRelay 局域网声明失败：'+error.message));
   tray=new Tray(nativeImage.createEmpty());tray.setTitle('ClipRelay');menu();publish();

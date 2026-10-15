@@ -82,10 +82,14 @@ test('full approval and secure-host pairing persist no transient port and bind b
   f.manager.enable(record.id,false);assert.equal(routed.selected().routeReady,false);assert.equal(f.channels[0].closed,true);
 });
 
-test('existing direct TLS pairing remains a pinned fallback when its external route is unavailable',async t=>{
+test('direct fallback is permitted for a temporary outage but blocked after pause or revocation',async t=>{
   const f=setup(t);f.store.add({...f.host,address:'192.168.1.8',port:48789});f.manager.claim('12345678');await f.manager.pairTask;
-  const record=f.catalog.records()[0],routed=new RoutedStore(f.store,id=>f.manager.route(id));assert.equal(routed.selected().overlay,true);
-  f.manager.enable(record.id,false);assert.equal(routed.selected().address,'192.168.1.8');assert.equal(routed.selected().certificate,f.host.certificate);assert.equal(routed.selected().routeReady,true);assert.equal(routed.selected().overlay,undefined);
+  const record=f.catalog.records()[0],routed=new RoutedStore(f.store,id=>f.manager.route(id),id=>f.manager.streamPolicy(id));assert.equal(routed.selected().overlay,true);
+  const session=f.manager.sessions.get(record.id);f.manager.withdraw(session);
+  assert.equal(routed.selected().address,'192.168.1.8');assert.equal(routed.selected().certificate,f.host.certificate);assert.equal(routed.selected().routeReady,true);
+  f.manager.enable(record.id,false);assert.equal(routed.selected().routeReady,false);assert.equal(routed.selected().routeBlocked,'NETWORK_PAUSED');assert.equal(routed.selected().address,undefined);
+  f.manager.enable(record.id,true);await until(()=>f.manager.route(record.id));f.control.revoked=true;await until(()=>f.manager.sessions.get(record.id).phase==='error');
+  assert.equal(routed.selected().routeReady,false);assert.equal(routed.selected().routeBlocked,'NETWORK_REVOKED');assert.equal(routed.selected().address,undefined);
   f.store.enable(f.host.id,false);assert.equal(routed.selected().enabled,false);
 });
 

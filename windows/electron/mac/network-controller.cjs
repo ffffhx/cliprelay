@@ -25,6 +25,15 @@ class NetworkController{
       error:session?.error || '',path:session?.path || 'connecting'};
   })};}
   route(id){const record=this.catalog.get(id),session=this.sessions.get(id);return record?.enabled && session?.record.deviceId===record.deviceId && !session.abort.signal.aborted && session.route?{...session.route}:null;}
+  streamPolicy(id){
+    const record=this.catalog.get(id),session=this.sessions.get(id);
+    if(this.closed || !this.available)return 'NETWORK_UNAVAILABLE';
+    if(!record)return 'NETWORK_REVOKED';
+    if(!record.enabled || session?.abort.signal.aborted)return 'NETWORK_PAUSED';
+    if(session && (session.record.deviceId!==record.deviceId || session.record.peerId!==record.peerId))return 'NETWORK_PEER_CHANGED';
+    if(session?.terminalError || session?.phase==='error')return session.terminalError || session.error || 'NETWORK_CONNECTION_FAILED';
+    return '';
+  }
   publish(session,phase,error='',route=session.route){
     if(this.sessions.get(session.record.id)!==session || session.abort.signal.aborted || this.closed)return;
     const before=JSON.stringify([session.phase,session.error,session.route,session.path]);

@@ -32,6 +32,7 @@ function executable(directory,platform=process.platform,overlay=false){
   const file=path.join(directory,...relative.split('/'));
   const metadata=JSON.parse(fs.readFileSync(path.join(directory,'manifest.json'),'utf8'));
   if(metadata.protocol!==1 || metadata.platform!==(platform==='win32'?'windows':'macos') || !/^[a-f0-9]{64}$/.test(metadata.files?.[relative] || ''))throw fault('VIEWER_INVALID');
+  if(!metadata.capabilities?.includes('session-events-v1'))throw fault('VIEWER_UPDATE_REQUIRED');
   if(overlay && (!Array.isArray(metadata.capabilities) || !metadata.capabilities.includes('embedded-network')))throw fault('VIEWER_UPDATE_REQUIRED');
   const stat=fs.lstatSync(file);if(!stat.isFile() || stat.isSymbolicLink() || stat.size>256*1024*1024)throw fault('VIEWER_INVALID');
   if(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')!==metadata.files[relative])throw fault('VIEWER_INVALID');
@@ -40,53 +41,137 @@ function executable(directory,platform=process.platform,overlay=false){
 }
 
 class StreamViewer{
-  constructor({directory,store,onUpdate=()=>{},spawnProcess=spawn,resolveExecutable=executable}){
-    Object.assign(this,{directory,store,onUpdate,spawnProcess,resolveExecutable});this.phase='idle';this.generation=0;this.available=false;
+  constructor({directory,store,onUpdate=()=>{},spawnProcess=spawn,resolveExecutable=executable,
+    retryDelays=[500,1000,2000,5000],recoveryMs=90000,maxRetries=8,stableMs=15000,startupMs=45000,killMs=3000}){
+    Object.assign(this,{directory,store,onUpdate,spawnProcess,resolveExecutable,retryDelays,recoveryMs,maxRetries,stableMs,startupMs,killMs});
+    this.phase='idle';this.generation=0;this.available=false;this.error='';
     try{this.file=this.resolveExecutable(directory);this.available=true;}catch{}
   }
-  snapshot(){return {available:this.available,phase:this.phase,hostName:this.host?.name || ''};}
+  snapshot(){return {available:this.available,phase:this.phase,hostName:this.intent?.bound.name || '',error:this.error,retry:this.intent?.retries || 0};}
   changed(){this.onUpdate(this.snapshot());}
-  matches(host){const now=this.store.selected();return !this.store.data.legacySelected && now?.enabled && sameRoute(now,host);}
+  authorized(){
+    const now=this.store.selected(),bound=this.intent?.bound;
+    return bound && !this.store.data.legacySelected && now?.enabled && !now.routeBlocked &&
+      ['id','certificate','clientId','networkId'].every(key=>now[key]===bound[key])?now:null;
+  }
+  clearTimers(){for(const name of ['retryTimer','deadlineTimer','stableTimer']){clearTimeout(this[name]);this[name]=null;}}
+  finish(error=''){
+    ++this.generation;this.intent=null;this.launching=null;this.clearTimers();this.error=error;
+    this.phase=this.child?'closing':error?'error':'idle';this.changed();this.drain();
+  }
+  drain(){
+    const record=this.record;if(!record || record.closing)return;
+    record.closing=true;clearTimeout(record.startTimer);
+    record.child.stdin?.end(()=>record.child.stdin.destroy());
+    record.killTimer=setTimeout(()=>{if(this.record===record)record.child.kill();},this.killMs);record.killTimer.unref?.();
+  }
+  recover(){
+    if(!this.authorized()){this.finish();return;}
+    const intent=this.intent;intent.since ??= Date.now();
+    if(Date.now()-intent.since>=this.recoveryMs || intent.retries>=this.maxRetries){this.finish('VIEWER_RECOVERY_EXHAUSTED');return;}
+    ++this.generation;this.launching=null;this.clearTimers();this.phase='recovering';this.error='';
+    if(this.record)this.record.recoveryRequested=true;
+    this.deadlineTimer=setTimeout(()=>{if(this.intent===intent)this.finish('VIEWER_RECOVERY_EXHAUSTED');},Math.max(1,this.recoveryMs-(Date.now()-intent.since)));
+    this.deadlineTimer.unref?.();this.changed();this.drain();this.schedule();
+  }
+  schedule(){
+    if(!this.intent || this.child || this.launching || this.retryTimer || this.phase!=='recovering')return;
+    const intent=this.intent,delay=this.retryDelays[Math.min(intent.retries,this.retryDelays.length-1)];
+    this.retryTimer=setTimeout(()=>{
+      this.retryTimer=null;if(this.intent!==intent)return;
+      const host=this.authorized();if(!host){this.finish();return;}
+      if(host.routeReady===false){this.schedule();return;}
+      if(intent.retries>=this.maxRetries || Date.now()-intent.since>=this.recoveryMs){this.finish('VIEWER_RECOVERY_EXHAUSTED');return;}
+      intent.retries++;
+      this.launch().catch(()=>{});
+    },delay);this.retryTimer.unref?.();
+  }
   async open(options={}){
-    if(this.child || this.phase==='starting' || this.phase==='closing')throw fault('VIEWER_BUSY');
+    if(this.child || this.intent || this.launching)throw fault('VIEWER_BUSY');
     const host=this.store.selected();if(!host?.enabled || this.store.data.legacySelected)throw fault('PAIRING_REQUIRED');
+    if(host.routeBlocked)throw fault(host.routeBlocked);
     if(host.routeReady===false)throw fault('NETWORK_NOT_READY');
-    const generation=++this.generation;this.phase='starting';this.host={...host};this.changed();
+    if(!options || typeof options!=='object' || Array.isArray(options))throw fault('INVALID_STREAM_OPTIONS');
+    this.intent={bound:{...host},options:Object.freeze({...options}),retries:0,since:null};this.error='';
+    return this.launch();
+  }
+  async launch(){
+    const host=this.authorized();if(!host){this.finish();throw fault('CANCELLED');}
+    const intent=this.intent,generation=++this.generation;this.launching=generation;this.launchHost=host;
+    this.phase=intent.since===null?'starting':'recovering';this.changed();
     let bytes;
     try{
       const file=this.resolveExecutable(this.directory,process.platform,host.overlay===true);this.available=true;
       const identity=await this.store.identity();
-      if(generation!==this.generation || !this.matches(host))throw fault('CANCELLED');
-      bytes=envelope(host,identity,options);
+      if(generation!==this.generation || !sameRoute(this.authorized(),host))throw fault('CANCELLED');
+      bytes=envelope(host,identity,intent.options);
       // The host app owns this child. Its still-open stdin is the session lease;
       // normal quit and crashes close it. Credentials never enter argv/env/disk.
       const env={...process.env};
       for(const key of ['ELECTRON_RUN_AS_NODE','CHROME_CRASHPAD_PIPE_NAME','QT_PLUGIN_PATH','QML2_IMPORT_PATH','QT_QPA_PLATFORM_PLUGIN_PATH','QT_QPA_PLATFORM','QT_LOGGING_RULES'])delete env[key];
-      const child=this.spawnProcess(file,['--cliprelay-session'],{cwd:path.dirname(file),env,windowsHide:true,stdio:['pipe','ignore','ignore'],shell:false});
+      const child=this.spawnProcess(file,['--cliprelay-session'],{cwd:path.dirname(file),env,windowsHide:true,stdio:['pipe','pipe','ignore'],shell:false});
       this.child=child;
+      const record=this.record={child,host,intent,connected:false,ended:false,bytes:0,buffer:'',closing:false};
       // Failed OS process creation may return a ChildProcess without pipes.
       // Always handle its asynchronous error before inspecting stdin.
-      child.on('error',()=>{});
-      child.once('close',code=>{if(this.child!==child)return;clearTimeout(this.killTimer);this.child=null;this.host=null;this.phase=this.phase==='closing' || code===0?'idle':'error';this.changed();});
-      if(!child.stdin)throw fault('VIEWER_UNAVAILABLE');
-      child.stdin.on('error',()=>{if(this.child===child)this.stop();});
+      child.on('error',()=>{if(this.record===record && !record.closing)this.finish('VIEWER_UNAVAILABLE');});
+      child.once('close',()=>{
+        if(this.record!==record)return;
+        clearTimeout(record.killTimer);clearTimeout(record.startTimer);this.child=null;this.record=null;
+        if(this.intent===intent && record.recoveryRequested){this.schedule();return;}
+        if(this.intent===intent){this.finish('VIEWER_STOPPED');return;}
+        this.phase=this.error?'error':'idle';this.changed();
+      });
+      if(!child.stdin || !child.stdout)throw fault('VIEWER_UNAVAILABLE');
+      child.stdin.on('error',()=>{if(this.record===record && !record.closing)this.finish('VIEWER_UNAVAILABLE');});
+      child.stdout.on('data',chunk=>this.events(record,chunk));
+      child.stdout.on('error',()=>{if(this.record===record && !record.closing)this.finish('VIEWER_PROTOCOL_ERROR');});
+      record.startTimer=setTimeout(()=>{if(this.record===record && !record.connected)this.finish('VIEWER_START_TIMEOUT');},this.startupMs);record.startTimer.unref?.();
       await new Promise((resolve,reject)=>{
         child.once('error',()=>reject(fault('VIEWER_UNAVAILABLE')));
+        child.once('close',()=>reject(fault('VIEWER_UNAVAILABLE')));
         child.once('spawn',()=>child.stdin.write(bytes,error=>error?reject(fault('VIEWER_UNAVAILABLE')):resolve()));
       });
-      if(generation!==this.generation || this.child!==child || !this.matches(host))throw fault('CANCELLED');
-      this.phase='running';this.changed();return this.snapshot();
+      if(generation!==this.generation || this.child!==child || !sameRoute(this.authorized(),host))throw fault('CANCELLED');
+      return this.snapshot();
     }catch(error){
-      if(generation===this.generation){if(this.child)this.stop();else{this.phase='error';this.host=null;this.changed();}}
+      if(generation===this.generation)this.finish(error.code==='CANCELLED'?'':error.code || 'VIEWER_UNAVAILABLE');
       throw error.code?error:fault('VIEWER_UNAVAILABLE');
-    }finally{bytes?.fill(0);}
+    }finally{bytes?.fill(0);if(this.launching===generation)this.launching=null;}
   }
-  reconcile(){if(this.host && !this.matches(this.host))this.stop();}
-  stop(){
-    ++this.generation;
-    if(!this.child){this.phase='idle';this.host=null;this.changed();return;}
-    const child=this.child;this.phase='closing';this.changed();child.stdin?.end(()=>child.stdin.destroy());
-    clearTimeout(this.killTimer);this.killTimer=setTimeout(()=>{if(this.child===child)child.kill();},3000);this.killTimer.unref?.();
+  events(record,chunk){
+    if(this.record!==record || record.closing || this.intent!==record.intent)return;
+    record.bytes+=chunk.length;record.buffer+=chunk.toString('utf8');
+    if(record.bytes>4096 || record.buffer.length>2048){this.finish('VIEWER_PROTOCOL_ERROR');return;}
+    while(record.buffer.includes('\n')){
+      const index=record.buffer.indexOf('\n'),line=record.buffer.slice(0,index);record.buffer=record.buffer.slice(index+1);
+      let event;try{event=JSON.parse(line);}catch{this.finish('VIEWER_PROTOCOL_ERROR');return;}
+      const keys=event && typeof event==='object'?Object.keys(event).sort().join(','):'';
+      if(event?.version!==1 || record.ended || (event.event==='connected'?keys!=='event,version' || record.connected:
+        event.event==='ended'?keys!=='event,reason,version' || !['network','pairing','host','user','parent','decoder'].includes(event.reason):true)){
+        this.finish('VIEWER_PROTOCOL_ERROR');return;
+      }
+      if(!this.authorized()){this.finish();return;}
+      if(event.event==='connected'){
+        record.connected=true;clearTimeout(record.startTimer);clearTimeout(this.deadlineTimer);
+        this.phase='running';this.error='';this.changed();
+        this.stableTimer=setTimeout(()=>{if(this.record===record && this.intent===record.intent){this.intent.retries=0;this.intent.since=null;}},this.stableMs);this.stableTimer.unref?.();
+      }else{
+        record.ended=true;
+        if(event.reason==='network')this.recover();
+        else this.finish(({pairing:'UNPAIRED',host:'VIEWER_HOST_ERROR',decoder:'VIEWER_DECODER_ERROR',parent:'VIEWER_STOPPED'})[event.reason] || '');
+        return;
+      }
+    }
   }
+  reconcile(status){
+    if(!this.intent)return;
+    if(['HOST_CERT_CHANGED','UNPAIRED','RELAY_UNPAIRED','KEYCHAIN_UNAVAILABLE'].includes(status)){this.finish(status);return;}
+    const now=this.authorized();if(!now){this.finish();return;}
+    if(this.record && !sameRoute(now,this.record.host)){this.recover();return;}
+    if(this.launching && (!sameRoute(now,this.launchHost) || now.routeReady===false)){this.recover();return;}
+    this.schedule();
+  }
+  stop(){this.finish();}
 }
 module.exports={StreamViewer,envelope,executable};

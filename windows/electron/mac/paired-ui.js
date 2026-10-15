@@ -40,10 +40,11 @@ export async function mount(root,api,close,initial){
     const current=state.hosts.find(host=>host.selected),labels={connected:'加密连接正常',connecting:'正在连接电脑',offline:'电脑离线，正在重连',paused:'收发已暂停',HOST_CERT_CHANGED:'电脑证书已改变，已停止连接，请核实后重新配对',UNPAIRED:'电脑已撤销授权，请重新配对',RELAY_UNPAIRED:'电脑已撤销授权，请重新配对',KEYCHAIN_UNAVAILABLE:'系统钥匙串不可用'};
     if(!busy)status.textContent=Date.now()<feedbackUntil?feedbackText:(current?current.name+' · '+(labels[state.status] || '等待连接'):(state.legacySelected?'当前选择了旧版未加密目标':'请选择配对电脑'));
     send.disabled=busy || !current?.enabled || current?.routeReady===false;
-    const phase=state.viewer?.phase || 'idle',active=['starting','running','closing'].includes(phase);
+    const phase=state.viewer?.phase || 'idle',active=['starting','running','recovering','closing'].includes(phase);
     openRemote.disabled=busy || !current?.enabled || current?.routeReady===false || !state.viewer?.available || active;
     stopRemote.disabled=busy || !active || phase==='closing';resolution.disabled=active;
-    remoteStatus.textContent=!state.viewer?.available?'当前安装尚未包含桌面控制组件':({idle:'选择电脑后即可打开桌面。',starting:'正在打开远控窗口…',running:'远控窗口已打开；关闭窗口可结束本次远控。',closing:'正在结束远控…',error:'远控已结束，请检查电脑连接和配对状态。'})[phase];
+    const viewerErrors={VIEWER_RECOVERY_EXHAUSTED:'暂时无法恢复连接，请检查电脑和网络后重新打开。',UNPAIRED:'电脑已撤销配对，请重新配对。',HOST_CERT_CHANGED:'电脑身份发生变化，请核实后重新配对。',RELAY_UNPAIRED:'电脑已撤销配对，请重新配对。',KEYCHAIN_UNAVAILABLE:'无法解锁配对身份，请检查系统钥匙串。',VIEWER_DECODER_ERROR:'画面解码失败，请调整画质或更新显卡驱动后重新打开。',VIEWER_HOST_ERROR:'电脑结束了远控，请检查电脑状态后重新打开。'};
+    remoteStatus.textContent=!state.viewer?.available?'请安装包含最新桌面控制组件的 ClipRelay':phase==='error'?(viewerErrors[state.viewer?.error] || '远控已结束，请检查电脑连接和配对状态。'):({idle:'选择电脑后即可打开桌面。',starting:'正在连接远程桌面…',running:'远控已连接；关闭窗口可结束本次远控。',recovering:'连接中断，正在恢复；可随时结束远控。',closing:'正在结束远控…'})[phase];
     const network=state.network || {available:false,computers:[],pairing:{state:'idle'}},external=network.pairing;
     const networkBusy=['preparing','approval','connecting','waiting'].includes(external.state);
     const pairing=['preparing','waiting'].includes(state.pairing.state);pair.disabled=busy || pairing || networkBusy;cancelPair.disabled=!pairing;
