@@ -13,7 +13,7 @@ const fixture=`let bytes=Buffer.alloc(0),done=false;process.stdin.on('data',b=>{
 function manager(state,config={},settings={}){
   let child,args,spawnOptions;const children=[],messages=[],timeline=[];
   const viewer=new StreamViewer({directory:'.',store:state,retryDelays:[15,25],recoveryMs:2000,stableMs:1000,resolveExecutable:()=>process.execPath,...config,spawnProcess:(file,a,options)=>{
-    args=a;spawnOptions=options;child=spawn(file,['-e','const settings='+JSON.stringify(settings)+';'+fixture],{...options,stdio:['pipe','pipe','ignore','ipc']});
+    args=a;spawnOptions=options;child=spawn(file,['-e','const settings='+JSON.stringify(settings)+';'+fixture],{...options,env:{...options.env,...(process.versions.electron?{ELECTRON_RUN_AS_NODE:'1'}:{})},stdio:['pipe','pipe','ignore','ipc']});
     children.push(child);timeline.push(['spawn',child.pid]);child.on('message',value=>messages.push(value));child.on('close',()=>timeline.push(['close',child.pid]));return child;
   }});
   return {viewer,children,messages,timeline,get child(){return child},get args(){return args},get options(){return spawnOptions}};

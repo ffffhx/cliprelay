@@ -32,7 +32,7 @@ function executable(directory,platform=process.platform,overlay=false){
   const file=path.join(directory,...relative.split('/'));
   const metadata=JSON.parse(fs.readFileSync(path.join(directory,'manifest.json'),'utf8'));
   if(metadata.protocol!==1 || metadata.platform!==(platform==='win32'?'windows':'macos') || !/^[a-f0-9]{64}$/.test(metadata.files?.[relative] || ''))throw fault('VIEWER_INVALID');
-  if(!metadata.capabilities?.includes('session-events-v1'))throw fault('VIEWER_UPDATE_REQUIRED');
+  if(!Array.isArray(metadata.capabilities) || !metadata.capabilities.includes('session-events-v1'))throw fault('VIEWER_UPDATE_REQUIRED');
   if(overlay && (!Array.isArray(metadata.capabilities) || !metadata.capabilities.includes('embedded-network')))throw fault('VIEWER_UPDATE_REQUIRED');
   const stat=fs.lstatSync(file);if(!stat.isFile() || stat.isSymbolicLink() || stat.size>256*1024*1024)throw fault('VIEWER_INVALID');
   if(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')!==metadata.files[relative])throw fault('VIEWER_INVALID');

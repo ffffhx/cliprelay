@@ -6,10 +6,10 @@
     "artifact": "sunshine-cliprelay-control-windows-amd64"
   },
   "viewer": {
-    "run": 38688648864,
-    "commit": "9efd4f27301ef68566ca3074ed45558a2c938949",
+    "run": 38710965221,
+    "commit": "91be155d6fb20241674a7638b0dab41cb1004b88",
     "artifact": "ClipRelay-Stream-Windows",
-    "manifestSha256": "68b0294096022af04832c1c083dd1d340692f5e778ce388979bb2f08f588debb"
+    "manifestSha256": "f012cead66b3f6962bf959049b2c09e19b7252a019ecd514c0a078f14b63f040"
   },
   "network": {
     "run": 38696836395,
