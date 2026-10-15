@@ -61,21 +61,25 @@ Mac 主动发送文本最多 1 MiB，PNG 最多 8 MiB、4096 × 4096 且不超�
 - 左侧设备列表可直接开关每台目标，通过 `···` 编辑或移除设备；支持添加和扫描最多 16 个目标，名称、地址、端口和访问密钥独立配置；全部关闭时暂停发送，本机仍可接收；
 - 支持修改本机监听端口、接收密钥、通知和开机自启，并可并行检测所有广播设备。
 
-从完整离线包安装：解压整个 `ClipRelay-Windows-*.zip`，双击 `Install.cmd`。源码构建需要 Node.js 22.12 或更新版本，先在仓库根目录执行：
+从完整离线包安装：解压整个 `ClipRelay-Windows-*.zip`，双击 `Install.cmd`。源码构建需要 Node.js 22.12 或更新版本、Go 1.26.7，以及已登录的 GitHub CLI。在同一个系统 PowerShell 5.1 会话中运行：
 
 ```powershell
 npm run setup:electron
-powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
+& .\scripts\resolve_windows_components.ps1 -OutputDirectory .tools\windows-components
+& .\scripts\package_windows.ps1
 ```
 
-也可从已准备好内置网络组件的仓库安装（初始地址之后可由扫描结果替换）：
+`windows/components.json` 固定已验证的 Windows 播放器、桌面网络组件和修改版 Sunshine 构建。下载时核对构建成功状态、源码提交和文件摘要；构建产物过期时需重新构建、核验并更新固定版本，不会自动选取另一个版本。已有本地组件时，可向打包脚本分别传入 `-ViewerArtifact`、`-NetworkArtifact` 和 `-EngineArtifact` 目录。
+
+完整包包含桌面主控、被控服务、网络组件、许可和引擎修改源码。安装器先校验整包，再停止旧应用；缺文件或摘要不一致时不会继续安装。升级保留原配置中的设备身份、配对目标、端口、兼容开关及其他设置。可在解压目录中先运行只读校验：
 
 ```powershell
-powershell.exe -NoProfile -STA -ExecutionPolicy Bypass `
-  -File .\windows\install.ps1 -Peer 192.168.1.100
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\ClipRelay-Windows\install.ps1 -ValidateOnly
 ```
 
-完整包包含远控和内置网络组件，不支持仅下载一个 `install.ps1` 作为离线安装包。
+不支持只下载一个 `install.ps1` 或从未打包的源码目录直接安装。`Windows Complete Package` 工作流在一次性 Windows 机器上构建并验收，产生检查记录和 ZIP，不发布更新。
+
+完整包已通过 [Windows CI 实际安装验收](https://github.com/ffffhx/cliprelay/actions/runs/38703341530)：验证 SYSTEM 服务管道、安装命令退出后的 Electron/后台/监听存活、默认关闭旧版接收，以及 Electron 退出后的后台管道清理。该验收不包含真实硬件串流、用户界面操作或公网远控；尚未替换开发电脑上的正式安装。
 
 添加防火墙规则时会出现一次 UAC 确认。安装后添加配对设备，或在两端明确开启旧版兼容，正常按 `Ctrl+C` 即会同时复制
 到本机并广播；按 `Ctrl+Alt+F12` 会静默广播整个虚拟桌面的 JPEG 截图。接收的文本或
