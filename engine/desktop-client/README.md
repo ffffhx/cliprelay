@@ -32,7 +32,8 @@ viewer uses only the paired HTTPS endpoint, rejects redirects and certificate
 changes, never falls back to HTTP or silently pairs, and asks for all stream
 encryption capabilities. It opens the host's Desktop entry, preserves another
 running application, uses absolute mouse input and does not quit the host's
-Desktop on viewer exit. Resolution, rate and window mode are launch settings.
+Desktop on viewer exit. Resolution, frame rate and window mode are launch settings;
+the paired controller can also adjust bitrate during a supported active stream.
 
 Build and protocol checks do not establish working video, hardware decoding,
 input capture, macOS permissions, route handover or installed-service behavior.
@@ -191,5 +192,48 @@ stream released. Keyboard, mouse, gamepad and audio remain disabled in that fixt
 passes 85 enrollment/ownership/viewer cases on each of Windows, Mac and Linux,
 plus the existing file, terminal and actual helper checks. Local Node and actual
 Electron runtimes each pass 60 targeted cases. These are component/runtime checks;
-the complete application packages still pin the earlier recovery viewer, and this
-revision has not been installed or accepted through the managed desktop UI.
+the complete packages described below now include this presentation capability.
+Managed desktop UI acceptance remains pending.
+
+Windows and Mac now expose live bitrate adjustment in the paired desktop window.
+The main-process controller binds each operation to the current viewer process,
+route, paired certificate, engine instance and sole certificate-owned stream.
+The renderer sends only a fresh view token and a 1,000–100,000 Kbps budget; the
+controller derives the target and revision from pinned mutual-TLS metadata.
+Multiple streams, unsupported encoders, stale metadata or frozen presentation
+disable adjustment. Confirmed budgets are retained for automatic recovery.
+
+An HTTP acceptance is not a displayed-frame confirmation. The controller waits
+for the matching request and budget to be applied, then for the native rendered
+frame to reach the host's encoded-frame boundary and advance beyond the frame at
+submission. Lost replies cause read-only observation, never automatic resubmission;
+after 15 seconds the result is unconfirmed. Route or target changes invalidate the
+old operation. The UI preserves edits while polling and distinguishes rejection,
+superseding changes and uncertain results. These bitrate controls do not enable
+display switching, which still needs the input pause/release handshake above.
+
+The production JavaScript controller, paired Go handlers, packaged Windows viewer
+and isolated Sunshine encoder pass a direct HEVC 720p30 runtime check. In one
+unchanged stream, budgets of 12, 2 and 6 Mbps are confirmed after 328, 265 and 282 ms;
+the corresponding video targets are 8,908, 1,268 and 4,148 Kbps. The viewer renders
+29.89 FPS and exits normally 296 ms after parent EOF; the host releases the stream.
+These are local confirmation times and encoder targets, not WAN latency or measured
+network throughput. Input and audio were disabled; physical panel output was not
+measured. The native fixture uses production protocol handlers with temporary
+credentials passed over a pipe and does not replace the installed application.
+
+[Desktop regression 38735847276](https://github.com/ffffhx/cliprelay/actions/runs/38735847276)
+passes 86 enrollment/ownership/viewer cases and 11 bitrate protocol/UI cases on
+each of Windows, Mac and Linux, plus existing file, terminal and native helper
+checks. Local Node and Electron runtimes each pass 72 targeted cases; Electron
+runs as Node and the UI cases use a DOM fixture, so neither proves GUI acceptance.
+[Windows complete package 38735855339](https://github.com/ffffhx/cliprelay/actions/runs/38735855339)
+passes disposable installation, independent process lifetime, SYSTEM service pipe
+and backend exit-on-pipe-close checks.
+[Mac complete packages 38735862748](https://github.com/ffffhx/cliprelay/actions/runs/38735862748)
+build both architectures. Downloaded packages are checked against the tested
+application sources, pinned viewer/helper manifests and terminal vendor hashes;
+all 680 Windows package files match the archive manifest.
+Each Mac package matches 40 application sources, 1,845 viewer files, four helper
+files and 163 relative framework links. These remain development artifacts;
+managed UI, installed hardware streaming and public WAN acceptance are pending.

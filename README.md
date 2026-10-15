@@ -418,7 +418,11 @@ Windows / Mac 控制端已接入独立终端窗口，从已配对电脑的「终
 
 桌面终端的[三平台 CI](https://github.com/ffffhx/cliprelay/actions/runs/38727923410) 已通过：Windows 的 18 项终端测试全部通过，真实 ConPTY 验收在临时普通用户下执行；Mac 和 Linux 各通过 17 项，仅跳过 Windows 专属的 ConPTY 一项。三平台既有的 70 项桌面连接回归也全部通过。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38727924083) 已在临时测试机完成安装、独立桌面进程、SYSTEM 服务管道及后台断管退出验证；[Mac arm64 / x64 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38727931092) 均已构建通过。安装包与最终应用源码、终端第三方资源哈希和许可的一致性另行记录于 `.tools/uu-parity/desktop-terminal-artifacts.json`；没有替换开发电脑的现有安装。
 
-实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面显示器、实时码率及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
+Windows / Mac 控制端已加入「实时码率」，支持在兼容编码器的远程会话中调整到 1–100 Mbps，无需重新连接。只有电脑确认调整且播放器呈现对应的新画面后，才显示生效；画面停滞、连接变化、同一身份有多个串流或编码器不支持时禁用调整。请求超时会继续查询结果，不自动重复提交；15 秒仍未确认则明确提示。已确认的码率会用于后续自动恢复。
+
+隔离 Windows 实测在同一 HEVC 720p30 会话中依次调整至 12、2、6 Mbps，确认耗时分别为 328、265、282 毫秒，播放器没有重启，渲染约 29.89 帧/秒。这里测量的是本地确认时间，并非公网延迟或与 UU 的性能比较。[三平台回归](https://github.com/ffffhx/cliprelay/actions/runs/38735847276)通过既有的 86 项连接/播放器用例和新增的 11 项码率用例，本地 Node 与 Electron 运行时各通过 72 项检查。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38735855339)和 [Mac 两种架构完整包](https://github.com/ffffhx/cliprelay/actions/runs/38735862748)已包含新版播放器与码率控制；Windows 临时测试机安装、独立进程和后台清理检查通过。源码与下载包核验记录在 `.tools/uu-parity/desktop-bitrate-artifacts.json`。
+
+实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面显示器切换及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
 源码构建需要 Go 1.26.7：先运行 `python scripts/build_network.py windows`，再运行
