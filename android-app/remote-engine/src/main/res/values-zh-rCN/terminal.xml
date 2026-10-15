@@ -21,6 +21,11 @@
     <string name="terminal_paste_invalid">文字无效或过长，每次最多粘贴 4084 字节的 UTF-8 文本。</string>
     <string name="terminal_paste_cleaned">控制字符或换行格式已调整，请检查后再次点“粘贴”。</string>
     <string name="terminal_paste_stale">连接或会话已变化，请重新打开粘贴预览。</string>
+    <string name="terminal_mouse">鼠标点击/滚动</string>
+    <string name="terminal_mouse_stop">本地历史</string>
+    <string name="terminal_mouse_requires_tracking">远端程序请求鼠标输入、且终端尺寸确认后可用。</string>
+    <string name="terminal_mouse_hint">鼠标模式：轻点发送左键点击，上下滑动或使用滚轮可滚动远端程序，暂不支持按住拖拽。仅在程序请求鼠标输入时可开启。</string>
+    <string name="terminal_mouse_position_unavailable">这个位置超出了当前终端鼠标协议支持的范围。</string>
     <string name="terminal_choose">选择或新建会话</string>
     <string name="terminal_running">运行中</string>
     <string name="terminal_finished">已结束</string>

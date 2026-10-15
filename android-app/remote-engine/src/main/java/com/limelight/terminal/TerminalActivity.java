@@ -31,7 +31,7 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
     private TerminalSessionState session;
     private RemoteTerminalView screen;
     private TextView status, notice,selectionHint;
-    private Button sessionsButton,newButton,closeButton,retryButton,selectButton,copyButton,pasteButton;
+    private Button sessionsButton,newButton,closeButton,retryButton,selectButton,copyButton,pasteButton,mouseButton;
     private volatile boolean foreground;
     private volatile int epoch;
     private boolean busy,needList=true,connected,resolveRoute,halted;
@@ -62,6 +62,8 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
         selectButton=button(keyRow,R.string.terminal_select,()->{screen.selecting(!screen.selecting());update();schedule(0);});
         copyButton=button(keyRow,R.string.terminal_copy,()->copySelection());
         pasteButton=button(keyRow,R.string.terminal_paste,()->showPaste());
+        mouseButton=button(keyRow,R.string.terminal_mouse,()->{screen.mouseEnabled(!screen.mouseEnabled());update();});
+        mouseButton.setTooltipText(getString(R.string.terminal_mouse_requires_tracking));
         button(keyRow,R.string.terminal_keyboard,()->screen.keyboard());
         button(keyRow,"Esc",()->screen.key(KeyEvent.KEYCODE_ESCAPE));button(keyRow,"Tab",()->screen.key(KeyEvent.KEYCODE_TAB));
         button(keyRow,"Ctrl+C",()->screen.send("\u0003"));button(keyRow,"Ctrl+D",()->screen.send("\u0004"));
@@ -94,12 +96,20 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
     @Override protected void onDestroy(){worker.shutdownNow();super.onDestroy();}
     private void schedule(long delay){main.removeCallbacks(tick);if(foreground && !halted)main.postDelayed(tick,delay);}
     private boolean canInput(){return foreground && connected && !halted && !needList && action==null && session!=null && session.snapshot.running();}
+    private boolean canMouseInput(){return canInput() && session.offset>=replayUntil && session.snapshot.columns==desiredColumns && session.snapshot.rows==desiredRows;}
     @Override public boolean input(byte[] bytes){
         if(!canInput() || !session.enqueue(bytes)){Toast.makeText(this,R.string.terminal_input_wait,Toast.LENGTH_SHORT).show();return false;}
         schedule(0);return true;
     }
+    @Override public boolean mouseInput(byte[] bytes){
+        // A resize may already be executing remotely. Wait for its acknowledged grid before clicking.
+        if(!canMouseInput() || dialog!=null || !screen.mouseEnabled() || screen.selecting()){toast(R.string.terminal_input_wait);return false;}
+        return input(bytes);
+    }
     @Override public void size(int columns,int rows){desiredColumns=columns;desiredRows=rows;schedule(0);}
     @Override public void selectionChanged(){update();}
+    @Override public void mouseChanged(){update();}
+    @Override public void mouseUnavailable(){toast(R.string.terminal_mouse_position_unavailable);}
     private void update(){
         if(screen==null)return;screen.accepting(canInput());
         boolean modal=dialog!=null && dialog.isShowing(), selecting=screen.selecting();
@@ -115,8 +125,12 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
             selectButton.setEnabled(foreground && !modal && session!=null && connected && !halted && !needList && action==null);
             copyButton.setEnabled(foreground && !modal && selecting && !busy && screen.hasSelection());
             pasteButton.setEnabled(controls && canInput() && !session.hasInput() && transport!=null);
-            selectionHint.setVisibility(selecting?View.VISIBLE:View.GONE);
-            selectionHint.setText(busy?R.string.terminal_selection_wait:R.string.terminal_selection_hint);
+            if(mouseButton!=null){
+                mouseButton.setText(screen.mouseEnabled()?R.string.terminal_mouse_stop:R.string.terminal_mouse);
+                mouseButton.setEnabled(foreground && !modal && !selecting && (screen.mouseEnabled() || (canMouseInput() && screen.mouseAvailable())));
+            }
+            selectionHint.setVisibility(selecting || screen.mouseEnabled()?View.VISIBLE:View.GONE);
+            selectionHint.setText(selecting?(busy?R.string.terminal_selection_wait:R.string.terminal_selection_hint):R.string.terminal_mouse_hint);
         }
         if(connected){String detail=session==null?getString(R.string.terminal_choose):session.snapshot.shell+" · "+session.id.substring(0,6)+" · "+getString(session.snapshot.running()?R.string.terminal_running:R.string.terminal_finished);
             if(session!=null && !session.snapshot.running())detail+=" ("+session.snapshot.exitCode+")";

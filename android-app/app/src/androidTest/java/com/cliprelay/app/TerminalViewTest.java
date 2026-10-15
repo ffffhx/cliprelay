@@ -110,4 +110,61 @@ public class TerminalViewTest {
             assertArrayEquals("\u001b[200~body\u001b[201~".getBytes(StandardCharsets.UTF_8),attempts.get(0));view.accepting(false);
         });
     }
+    private static void mouseProgram(RemoteTerminalView view){
+        view.layout(0,0,800,480);view.append("\u001b[?1000h\u001b[?1006h".getBytes(StandardCharsets.UTF_8),false);
+    }
+    @Test public void terminalMouseRequiresExplicitModeAndOnlySendsACompleteTap(){check((view,output)->{
+        mouseProgram(view);assertTrue(view.mouseAvailable());assertFalse(view.mouseEnabled());
+        touch(view,MotionEvent.ACTION_DOWN,50,80);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+        assertTrue(view.mouseEnabled(true));touch(view,MotionEvent.ACTION_DOWN,50,80);assertEquals(0,output.size());
+        touch(view,MotionEvent.ACTION_UP,50,80);
+        String text=new String(output.toByteArray(),StandardCharsets.UTF_8);
+        assertTrue(text.matches("\u001b\\[<0;([0-9]+);([0-9]+)M\u001b\\[<0;\\1;\\2m"));
+        output.reset();touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+    });}
+    @Test public void mouseSwipeScrollsWithoutClickingAndOutsideOrMultitouchCancels(){check((view,output)->{
+        mouseProgram(view);view.mouseEnabled(true);touch(view,MotionEvent.ACTION_DOWN,50,80);
+        touch(view,MotionEvent.ACTION_MOVE,50,400);touch(view,MotionEvent.ACTION_UP,50,80);
+        String text=new String(output.toByteArray(),StandardCharsets.UTF_8);assertTrue(text.contains("[<64;"));assertFalse(text.contains("[<0;"));assertFalse(text.contains("m"));
+        output.reset();touch(view,MotionEvent.ACTION_DOWN,50,80);touch(view,MotionEvent.ACTION_MOVE,-1,80);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+        touch(view,MotionEvent.ACTION_DOWN,50,80);touch(view,MotionEvent.ACTION_POINTER_DOWN,50,80);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+    });}
+    @Test public void mouseCandidatesDoNotSurviveResizeModalBackgroundOrSelection(){check((view,output)->{
+        mouseProgram(view);view.mouseEnabled(true);touch(view,MotionEvent.ACTION_DOWN,50,80);view.resize(80,24);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+        touch(view,MotionEvent.ACTION_DOWN,50,80);view.inputBlocked(true);view.inputBlocked(false);assertFalse(view.mouseEnabled());view.mouseEnabled(true);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+        touch(view,MotionEvent.ACTION_DOWN,50,80);view.accepting(false);view.accepting(true);assertFalse(view.mouseEnabled());view.mouseEnabled(true);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+        touch(view,MotionEvent.ACTION_DOWN,50,80);view.selecting(true);assertFalse(view.mouseEnabled());assertFalse(view.mouseEnabled(true));view.selecting(false);view.mouseEnabled(true);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+    });}
+    @Test public void mouseIsDisabledWhenTheProgramStopsTrackingOrTheViewLosesFocus(){check((view,output)->{
+        mouseProgram(view);view.mouseEnabled(true);touch(view,MotionEvent.ACTION_DOWN,50,80);
+        view.append("\u001b[?1000l".getBytes(StandardCharsets.UTF_8),false);assertFalse(view.mouseAvailable());assertFalse(view.mouseEnabled());
+        view.append("\u001b[?1000h".getBytes(StandardCharsets.UTF_8),false);view.mouseEnabled(true);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+        touch(view,MotionEvent.ACTION_DOWN,50,80);view.onWindowFocusChanged(false);assertFalse(view.mouseEnabled());view.mouseEnabled(true);touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(0,output.size());
+        view.reset(80,24);assertFalse(view.mouseEnabled());assertFalse(view.mouseAvailable());
+    });}
+    private static void wheel(RemoteTerminalView view,float axis){
+        MotionEvent.PointerProperties properties=new MotionEvent.PointerProperties();properties.id=0;properties.toolType=MotionEvent.TOOL_TYPE_MOUSE;
+        MotionEvent.PointerCoords coords=new MotionEvent.PointerCoords();coords.x=50;coords.y=80;coords.setAxisValue(MotionEvent.AXIS_VSCROLL,axis);
+        MotionEvent event=MotionEvent.obtain(0,0,MotionEvent.ACTION_SCROLL,1,new MotionEvent.PointerProperties[]{properties},new MotionEvent.PointerCoords[]{coords},0,0,1,1,0,0,android.view.InputDevice.SOURCE_MOUSE,0);
+        try{assertTrue(view.onGenericMotionEvent(event));}finally{event.recycle();}
+    }
+    @Test public void physicalWheelUsesRemoteModeAndRetainsSmallFractions(){check((view,output)->{
+        mouseProgram(view);wheel(view,1);assertEquals(0,output.size());view.mouseEnabled(true);
+        wheel(view,.5f);assertEquals(0,output.size());wheel(view,.5f);assertTrue(new String(output.toByteArray(),StandardCharsets.UTF_8).contains("[<64;"));
+        output.reset();wheel(view,1000);String text=new String(output.toByteArray(),StandardCharsets.UTF_8);
+        assertEquals(8,text.split("M",-1).length-1);assertFalse(text.contains("m"));
+    });}
+    @Test public void rejectingMouseInputReceivesBothEdgesInOneAttempt(){
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(()->{
+            java.util.List<byte[]> attempts=new java.util.ArrayList<>();
+            RemoteTerminalView view=new RemoteTerminalView(InstrumentationRegistry.getInstrumentation().getTargetContext(),new RemoteTerminalView.Listener(){
+                public boolean input(byte[] bytes){fail("mouse used the unguarded keyboard path");return false;}
+                public boolean mouseInput(byte[] bytes){attempts.add(bytes);return false;}
+                public void size(int columns,int rows){}
+            });view.accepting(true);mouseProgram(view);view.mouseEnabled(true);
+            touch(view,MotionEvent.ACTION_DOWN,50,80);assertTrue(attempts.isEmpty());touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(1,attempts.size());
+            String text=new String(attempts.get(0),StandardCharsets.UTF_8);assertTrue(text.contains("M\u001b[<0;"));assertTrue(text.endsWith("m"));
+            touch(view,MotionEvent.ACTION_UP,50,80);assertEquals(1,attempts.size());view.accepting(false);
+        });
+    }
 }

@@ -21,6 +21,11 @@
     <string name="terminal_paste_invalid">Text is invalid or too large. Paste up to 4084 UTF-8 bytes at a time.</string>
     <string name="terminal_paste_cleaned">Control characters or line endings changed. Review the text and tap Paste again.</string>
     <string name="terminal_paste_stale">The connection or session changed. Open a new paste preview.</string>
+    <string name="terminal_mouse">Mouse clicks/scroll</string>
+    <string name="terminal_mouse_stop">Local history</string>
+    <string name="terminal_mouse_requires_tracking">Available when the remote program requests mouse input and its screen size is confirmed.</string>
+    <string name="terminal_mouse_hint">Mouse mode: tap for a left click; swipe vertically or use a wheel to scroll the remote program. Holding and dragging are not supported. Available when the program requests mouse input.</string>
+    <string name="terminal_mouse_position_unavailable">This position is outside the current terminal mouse protocol range.</string>
     <string name="terminal_choose">Choose or create a session</string>
     <string name="terminal_running">Running</string>
     <string name="terminal_finished">Ended</string>
