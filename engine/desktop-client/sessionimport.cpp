@@ -5,6 +5,9 @@
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QNetworkReply>
 #include <QRegularExpression>
 #include <QSet>
 #include <QThread>
@@ -20,11 +23,53 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #endif
 
 namespace ClipRelayImport {
 static Session current;
 static bool loaded = false;
+static QMutex eventMutex;
+static bool connectedEvent = false, endedEvent = false;
+
+// Two small, constant-schema messages on the owner pipe. No addresses,
+// credentials, server responses or arbitrary diagnostic text enter this stream.
+static void writeEvent(const QByteArray& bytes) {
+#ifdef Q_OS_WIN
+    HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD written = 0;
+    if (GetFileType(handle) == FILE_TYPE_PIPE) WriteFile(handle, bytes.constData(), bytes.size(), &written, nullptr);
+#else
+    ssize_t written;
+    do { written = ::write(STDOUT_FILENO, bytes.constData(), bytes.size()); } while (written < 0 && errno == EINTR);
+#endif
+}
+void reportConnected() {
+    QMutexLocker guard(&eventMutex);
+    if (!loaded || connectedEvent || endedEvent) return;
+    connectedEvent = true;
+    writeEvent("{\"version\":1,\"event\":\"connected\"}\n");
+}
+void reportEnded(EndReason reason) {
+    QMutexLocker guard(&eventMutex);
+    if (!loaded || endedEvent) return;
+    endedEvent = true;
+    const char* value = "host";
+    switch (reason) {
+    case EndReason::Network: value = "network"; break;
+    case EndReason::Pairing: value = "pairing"; break;
+    case EndReason::Host: value = "host"; break;
+    case EndReason::User: value = "user"; break;
+    case EndReason::Parent: value = "parent"; break;
+    case EndReason::Decoder: value = "decoder"; break;
+    }
+    writeEvent(QByteArray("{\"version\":1,\"event\":\"ended\",\"reason\":\"") + value + "\"}\n");
+}
+bool retryableNetworkError(int error) {
+    return error == QNetworkReply::ConnectionRefusedError || error == QNetworkReply::RemoteHostClosedError ||
+        error == QNetworkReply::HostNotFoundError || error == QNetworkReply::TimeoutError ||
+        error == QNetworkReply::TemporaryNetworkFailureError || error == QNetworkReply::NetworkSessionFailedError;
+}
 
 static bool integer(const QJsonObject& o, const char* key, int low, int high, int& out) {
     auto value = o.value(QLatin1String(key));
@@ -132,6 +177,8 @@ static bool readExact(char* out, int count, QElapsedTimer& elapsed) {
 bool loadStdin() {
     if (loaded) return false;
 #ifndef Q_OS_WIN
+    // Losing the owner must still reach decoder/input cleanup, not SIGPIPE.
+    signal(SIGPIPE, SIG_IGN);
     struct stat inputStat{};
     if (fstat(STDIN_FILENO, &inputStat) || (!S_ISFIFO(inputStat.st_mode) && !S_ISSOCK(inputStat.st_mode))) return false;
 #endif
@@ -164,6 +211,7 @@ void watchParent(std::function<void()> onLost) {
         // EOF or unexpected further messages terminate this one-shot session.
         if (!parentAlive()) {
             timer->stop();
+            reportEnded(EndReason::Parent);
             if (onLost) onLost(); else QCoreApplication::quit();
         }
     });

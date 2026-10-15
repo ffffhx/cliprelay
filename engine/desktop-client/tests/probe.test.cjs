@@ -25,6 +25,12 @@ test('bounded envelope imports existing identity without writing Qt settings',as
   const result=await start(envelope(),['--parse']).done;assert.equal(result.code,0,result.stderr);
   assert.equal(fs.existsSync(path.join(directory,'ClipRelay Probe')),false);
 });
+test('lifecycle reports one connection and the first terminal reason only',async()=>{
+  const result=await start(envelope(),['--events']).done;assert.equal(result.code,0,result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line=>JSON.parse(line)),[
+    {version:1,event:'connected'},{version:1,event:'ended',reason:'network'}]);
+  assert.equal((await start(envelope(),['--network-errors']).done).code,0);
+});
 test('invalid identity, types, limits and unknown properties fail closed',async()=>{
   for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001}]){
     const result=await start({...envelope(),...change},['--parse']).done;assert.equal(result.code,2,JSON.stringify(change));
@@ -55,7 +61,7 @@ test('real mutual TLS uses paired identity and preserves client ID',async()=>{
 });
 test('wrong pinned certificate receives zero HTTP even when trusted by the system',async()=>{
   let count=0;const server=https.createServer({key:wrong.key,cert:wrong.cert},(req,res)=>{count++;res.end('<root status_code="200"/>');});
-  try{const port=await listen(server);const result=await start(envelope(port+5),[],{CLIPRELAY_PROBE_CA:wrong.file}).done;assert.equal(result.code,6,result.stderr);assert.equal(count,0);}finally{await close(server);}
+  try{const port=await listen(server);const result=await start(envelope(port+5),[],{CLIPRELAY_PROBE_CA:wrong.file}).done;assert.equal(result.code,6,result.stderr);assert.equal(count,0);assert.equal(JSON.parse(result.stdout).reason,'pairing');}finally{await close(server);}
 });
 test('redirect is not followed and 401 does not fall back to HTTP',async()=>{
   let plain=0;const fallback=http.createServer((req,res)=>{plain++;res.end('<root status_code="200"/>');});

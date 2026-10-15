@@ -25,4 +25,8 @@ bool active();
 bool parentAlive();
 const Session& get();
 void watchParent(std::function<void()> onLost = {});
+enum class EndReason { Network, Pairing, Host, User, Parent, Decoder };
+void reportConnected();
+void reportEnded(EndReason reason);
+bool retryableNetworkError(int error);
 }

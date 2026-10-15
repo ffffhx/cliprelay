@@ -94,7 +94,7 @@
  
      // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
      // support applications that assume they can warp the cursor (which isn't possible
-@@ -803,8 +804,19 @@
+@@ -803,8 +804,22 @@
      }
  #endif
  
@@ -106,6 +106,9 @@
 +        qCritical("Invalid ClipRelay session envelope");
 +        return 2;
 +    }
++    QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
++        ClipRelayImport::reportEnded(ClipRelayImport::EndReason::User);
++    });
 +    ClipRelayImport::watchParent([] {
 +        if (auto session = Session::get()) {
 +            session->setShouldExit();
@@ -116,7 +119,7 @@
      switch (commandLineParserResult) {
      case GlobalCommandLineParser::ListRequested:
          // Don't log to the console since it will jumble the command output
-@@ -995,10 +1007,27 @@
+@@ -995,10 +1010,27 @@
          {
              initialView = "qrc:/gui/CliStartStreamSegue.qml";
              StreamingPreferences* preferences = StreamingPreferences::get();
@@ -259,7 +262,7 @@
  
      // Add our client certificate
      request.setSslConfiguration(IdentityManager::get()->getSslConfig());
-@@ -516,6 +533,16 @@
+@@ -516,6 +533,22 @@
  
      auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
      QNetworkReply* reply = m_Nam->get(request);
@@ -267,15 +270,36 @@
 +    // encrypted is emitted before request data is sent on each fresh connection.
 +    if (ClipRelayImport::active()) {
 +        connect(reply, &QNetworkReply::encrypted, reply, [reply, pin = m_ServerCert] {
-+            if (reply->sslConfiguration().peerCertificate() != pin) reply->abort();
++            if (reply->sslConfiguration().peerCertificate() != pin) {
++                reply->setProperty("cliprelayPinMismatch", true);
++                reply->abort();
++            }
 +        });
 +        connect(reply, &QNetworkReply::readyRead, reply, [reply] {
-+            if (reply->bytesAvailable() > 1024 * 1024) reply->abort();
++            if (reply->bytesAvailable() > 1024 * 1024) {
++                reply->setProperty("cliprelayInvalidResponse", true);
++                reply->abort();
++            }
 +        });
 +    }
  
      // Run the request with a timeout if requested
      QEventLoop loop;
+@@ -544,6 +577,14 @@
+ #endif
+     disconnect(sslErrorsConnection);
+ 
++    if (ClipRelayImport::active() && reply->property("cliprelayPinMismatch").toBool()) {
++        delete reply;
++        throw GfeHttpResponseException(401, "Server certificate mismatch");
++    }
++    if (ClipRelayImport::active() && reply->property("cliprelayInvalidResponse").toBool()) {
++        delete reply;
++        throw GfeHttpResponseException(502, "Invalid response");
++    }
+     // Handle error
+     if (reply->error() != QNetworkReply::NoError)
+     {
 --- a/app/cli/startstream.cpp
 +++ b/app/cli/startstream.cpp
 @@ -1,4 +1,6 @@
@@ -297,7 +321,7 @@
  
                  m_ComputerSeeker = new ComputerSeeker(m_ComputerManager, m_ComputerName, q);
                  q->connect(m_ComputerSeeker, &ComputerSeeker::computerFound,
-@@ -140,6 +147,36 @@
+@@ -140,6 +147,46 @@
          }
      }
  
@@ -325,16 +349,26 @@
 +            m_State = StateStartSession;
 +            emit q->sessionCreated(app.name, new Session(m_Computer, app, m_Preferences));
 +        }
-+        catch (const std::exception&) {
-+            m_State = StateFailure;
-+            emit q->failed(QObject::tr("Unable to open the paired desktop. Check that the computer is online, the pairing is valid, and no other application is streaming."));
++        catch (const GfeHttpResponseException& error) {
++            ClipRelayImport::reportEnded(error.getStatusCode() == 401 || error.getStatusCode() == 403 ?
++                ClipRelayImport::EndReason::Pairing : ClipRelayImport::EndReason::Host);
 +        }
++        catch (const QtNetworkReplyException& error) {
++            ClipRelayImport::reportEnded(ClipRelayImport::retryableNetworkError(error.getError()) ?
++                ClipRelayImport::EndReason::Network : ClipRelayImport::EndReason::Host);
++        }
++        catch (const std::exception&) {
++            ClipRelayImport::reportEnded(ClipRelayImport::EndReason::Host);
++        }
++        if (m_State == StateStartSession) return;
++        m_State = StateFailure;
++        emit q->failed(QObject::tr("Unable to open the paired desktop."));
 +    }
 +
      int getAppIndex() const
      {
          for (int i = 0; i < m_Computer->appList.length(); i++) {
-@@ -170,6 +207,7 @@
+@@ -170,6 +217,7 @@
          return "<UNKNOWN>";
      }
  
@@ -350,7 +384,44 @@
  #include "settings/streamingpreferences.h"
  #include "streaming/streamutils.h"
  #include "backend/richpresencemanager.h"
-@@ -684,7 +685,7 @@
+@@ -76,6 +77,16 @@
+ 
+ void Session::clStageFailed(int stage, int errorCode)
+ {
++    if (ClipRelayImport::active()) {
++        const bool transport = stage == STAGE_NAME_RESOLUTION || stage == STAGE_RTSP_HANDSHAKE ||
++            stage == STAGE_CONTROL_STREAM_START || stage == STAGE_VIDEO_STREAM_START || stage == STAGE_INPUT_STREAM_START;
++        // Unknown errors and host protocol rejection never trigger retries.
++        const bool network = errorCode == 10060 || errorCode == 10061 || errorCode == 10054 ||
++            errorCode == 110 || errorCode == 111 || errorCode == 104 || errorCode == 60 || errorCode == 61 || errorCode == 54;
++        ClipRelayImport::reportEnded(errorCode == 401 || errorCode == 403 ? ClipRelayImport::EndReason::Pairing :
++            transport && network ? ClipRelayImport::EndReason::Network : ClipRelayImport::EndReason::Host);
++        return;
++    }
+     // Perform the port test now, while we're on the async connection thread and not blocking the UI.
+     unsigned int portFlags = LiGetPortFlagsFromStage(stage);
+     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
+@@ -87,6 +98,19 @@
+ 
+ void Session::clConnectionTerminated(int errorCode)
+ {
++    if (ClipRelayImport::active()) {
++        const bool network = errorCode == ML_ERROR_NO_VIDEO_TRAFFIC || errorCode == ML_ERROR_NO_VIDEO_FRAME ||
++            errorCode == 10060 || errorCode == 10061 || errorCode == 10054 || errorCode == 10053 || errorCode == 10051 || errorCode == 10065 ||
++            errorCode == 110 || errorCode == 111 || errorCode == 104 || errorCode == 103 || errorCode == 101 || errorCode == 113 ||
++            errorCode == 60 || errorCode == 61 || errorCode == 54 || errorCode == 53 || errorCode == 51 || errorCode == 65;
++        ClipRelayImport::reportEnded(network ? ClipRelayImport::EndReason::Network :
++            errorCode == ML_ERROR_FRAME_CONVERSION ? ClipRelayImport::EndReason::Decoder : ClipRelayImport::EndReason::Host);
++        SDL_Event event{};
++        event.type = SDL_QUIT;
++        event.quit.timestamp = SDL_GetTicks();
++        SDL_PushEvent(&event);
++        return;
++    }
+     unsigned int portFlags = LiGetPortFlagsFromTerminationErrorCode(errorCode);
+     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
+ 
+@@ -684,7 +708,7 @@
  #ifndef STEAM_LINK
      // Opt-in to all encryption features if we detect that the platform
      // has AES cryptography acceleration instructions and more than 2 cores.
@@ -359,7 +430,21 @@
          m_StreamConfig.encryptionFlags = ENCFLG_ALL;
      }
      else {
-@@ -1651,7 +1652,14 @@
+@@ -1620,9 +1644,13 @@
+                       !m_Preferences->multiController,
+                       rtspSessionUrl);
+     } catch (const GfeHttpResponseException& e) {
++        if (ClipRelayImport::active()) ClipRelayImport::reportEnded(e.getStatusCode() == 401 || e.getStatusCode() == 403 ?
++            ClipRelayImport::EndReason::Pairing : ClipRelayImport::EndReason::Host);
+         emit displayLaunchError(tr("Host returned error: %1").arg(e.toQString()));
+         return false;
+     } catch (const QtNetworkReplyException& e) {
++        if (ClipRelayImport::active()) ClipRelayImport::reportEnded(ClipRelayImport::retryableNetworkError(e.getError()) ?
++            ClipRelayImport::EndReason::Network : ClipRelayImport::EndReason::Host);
+         emit displayLaunchError(e.toQString());
+         return false;
+     }
+@@ -1651,7 +1679,14 @@
          hostInfo.rtspSessionUrl = rtspSessionUrlStr.data();
      }
  
@@ -375,17 +460,25 @@
          // Override default packet size and remote streaming detection
          // NB: Using STREAM_CFG_AUTO will cap our packet size at 1024 for remote hosts.
          m_StreamConfig.streamingRemotely = STREAM_CFG_LOCAL;
-@@ -1780,7 +1788,8 @@
+@@ -1712,6 +1747,7 @@
+         return false;
+     }
+ 
++    ClipRelayImport::reportConnected();
+     emit connectionStarted();
+     return true;
+ }
+@@ -1780,7 +1816,8 @@
  void Session::exec()
  {
      // If the connection failed, clean up and abort the connection.
 -    if (!m_AsyncConnectionSuccess) {
 +    if (!m_AsyncConnectionSuccess || (ClipRelayImport::active() && !ClipRelayImport::parentAlive())) {
-+        if (ClipRelayImport::active() && !ClipRelayImport::parentAlive()) setShouldExit();
++        if (ClipRelayImport::active()) setShouldExit();
          delete m_InputHandler;
          m_InputHandler = nullptr;
          SDL_QuitSubSystem(SDL_INIT_VIDEO);
-@@ -1843,7 +1852,7 @@
+@@ -1843,7 +1880,7 @@
  #ifdef Q_OS_DARWIN
      std::string windowName = QString(m_Computer->name).toStdString();
  #else
@@ -394,16 +487,51 @@
  #endif
  
      m_Window = SDL_CreateWindow(windowName.c_str(),
-@@ -1964,6 +1973,12 @@
+@@ -1964,6 +2001,13 @@
      // because we want to suspend all Qt processing until the stream is over.
      SDL_Event event;
      for (;;) {
 +        // Qt timers are suspended while this thread runs SDL. Keep the parent
 +        // lease active here too, and use the normal input/decoder cleanup path.
 +        if (ClipRelayImport::active() && !ClipRelayImport::parentAlive()) {
++            ClipRelayImport::reportEnded(ClipRelayImport::EndReason::Parent);
 +            setShouldExit();
 +            goto DispatchDeferredCleanup;
 +        }
  #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
          // SDL 2.0.18 has a proper wait event implementation that uses platform
          // support to block on events rather than polling on Windows, macOS, X11,
+@@ -1997,6 +2041,10 @@
+ #endif
+         switch (event.type) {
+         case SDL_QUIT:
++            if (ClipRelayImport::active()) {
++                ClipRelayImport::reportEnded(ClipRelayImport::EndReason::User);
++                setShouldExit();
++            }
+             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                         "Quit event received");
+             goto DispatchDeferredCleanup;
+--- a/app/gui/CliStartStreamSegue.qml
++++ b/app/gui/CliStartStreamSegue.qml
+@@ -23,8 +23,7 @@
+     }
+ 
+     function onLaunchFailed(message) {
+-        errorDialog.text = message
+-        errorDialog.open()
++        Qt.quit()
+         console.error(message)
+     }
+ 
+--- a/app/gui/StreamSegue.qml
++++ b/app/gui/StreamSegue.qml
+@@ -73,7 +73,7 @@
+             stackView.pop()
+         }
+ 
+-        if (quitAfter && !streamSegueErrorDialog.text) {
++        if (quitAfter) {
+             // If this was a CLI launch without errors, exit now
+             Qt.quit()
+         }

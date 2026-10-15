@@ -24,6 +24,19 @@ int main(int argc, char** argv) {
     if (identity->getPrivateKey() != session.privateKey || identity->getCertificate() != session.certificate ||
         identity->getUniqueId() != session.clientId || !QSettings().allKeys().isEmpty()) return 3;
     if (app.arguments().contains("--parse")) return 0;
+    if (app.arguments().contains("--events")) {
+        ClipRelayImport::reportConnected();
+        ClipRelayImport::reportConnected();
+        ClipRelayImport::reportEnded(ClipRelayImport::EndReason::Network);
+        ClipRelayImport::reportEnded(ClipRelayImport::EndReason::User);
+        ClipRelayImport::reportConnected();
+        return 0;
+    }
+    if (app.arguments().contains("--network-errors")) {
+        for (int code : {1, 2, 3, 4, 7, 8}) if (!ClipRelayImport::retryableNetworkError(code)) return 8;
+        for (int code : {0, 5, 6, 9, 99, 201, 301}) if (ClipRelayImport::retryableNetworkError(code)) return 9;
+        return 0;
+    }
     if (app.arguments().contains("--overlay")) return session.overlay && session.overlayPort == 48789 ? 0 : 7;
     if (app.arguments().contains("--lease")) {
         ClipRelayImport::watchParent();
@@ -44,5 +57,13 @@ int main(int argc, char** argv) {
         NvHTTP http(NvAddress(session.address, session.port), session.port - 5, session.hostCertificate, true);
         http.getServerInfo(NvHTTP::NVLL_NONE);
         return 0;
+    } catch (const GfeHttpResponseException& error) {
+        ClipRelayImport::reportEnded(error.getStatusCode() == 401 || error.getStatusCode() == 403 ?
+            ClipRelayImport::EndReason::Pairing : ClipRelayImport::EndReason::Host);
+        return 6;
+    } catch (const QtNetworkReplyException& error) {
+        ClipRelayImport::reportEnded(ClipRelayImport::retryableNetworkError(error.getError()) ?
+            ClipRelayImport::EndReason::Network : ClipRelayImport::EndReason::Host);
+        return 6;
     } catch (const std::exception&) { return 6; }
 }
