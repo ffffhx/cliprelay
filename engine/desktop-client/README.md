@@ -96,3 +96,22 @@ include the universal helper. Runtime packages are development artifacts until
 the combined Windows host installation, operator approval, desktop UI, actual
 cross-network streaming and update acceptance have passed. Component tests and
 local encrypted forwarding do not establish those acceptance results.
+
+The enrollment revision `e9b59165514e49b070496603f5a02f64a15d8ec9` passes
+[Desktop Network Build 38699780231](https://github.com/ffffhx/cliprelay/actions/runs/38699780231)
+on Windows, macOS and Linux. This includes 43 desktop enrollment/ownership/route
+cases on each platform, real encrypted two-peer TCP/UDP forwarding, and 13 helper
+manager cases with the actual Windows and Mac binaries. Local Electron 44.4.3
+passes 26 manager/controller cases, actual Go-broker interoperability, and
+safeStorage identity/credential reload. A test CA chain is used for HTTPS tests;
+production certificate verification stays enabled. The owner allows eight seconds
+for shutdown because pinned tsnet cleanup can consume five seconds; route access
+is withdrawn immediately, and a delayed normal-exit regression covers this race.
+
+[Electron macOS build 38699781428](https://github.com/ffffhx/cliprelay/actions/runs/38699781428)
+packages both app architectures with the verified universal viewer and helper.
+Each downloaded archive matches 23 application sources, 1845 viewer files, four
+network component files and 163 relative framework links. Windows staging matches
+19 application sources, 292 viewer files and four network files. These checks do
+not constitute production installation, physical Mac, new UI interaction or
+end-to-end WAN streaming acceptance.
