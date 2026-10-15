@@ -13,6 +13,7 @@ export async function mount(root,api,close,initial){
   openRemote.onclick=()=>run(async()=>{const preset=resolution.value==='720'?{width:1280,height:720,fps:30,bitrate:6000}:resolution.value==='2160'?{width:3840,height:2160,fps:60,bitrate:35000}:{width:1920,height:1080,fps:60,bitrate:12000};state=await api.request('viewer-open',preset);render();});
   stopRemote.onclick=()=>change('viewer-stop');remote.append(openRemote,stopRemote,remoteStatus);root.append(remote);
   const files=mountFiles(root,async(action,data)=>{state=await api.request(action,data);render();return state;});
+  const terminalSection=element('section'),terminalOpen=element('button','打开远程终端');terminalOpen.onclick=()=>change('terminal-open');terminalSection.append(element('h2','终端'),element('p','在独立窗口中使用电脑的 PowerShell 或 CMD，支持多会话与断线续接。'),terminalOpen);root.append(terminalSection);
   const form=element('form');form.append(element('h2','添加电脑'));
   function field(title,placeholder,value=''){const label=element('label',title),input=element('input');input.placeholder=placeholder;input.value=value;label.append(input);form.append(label);return input;}
   const address=field('电脑地址','IP 或主机名');address.autocomplete='off';address.maxLength=253;
@@ -43,6 +44,7 @@ export async function mount(root,api,close,initial){
     const current=state.hosts.find(host=>host.selected),labels={connected:'加密连接正常',connecting:'正在连接电脑',offline:'电脑离线，正在重连',paused:'收发已暂停',HOST_CERT_CHANGED:'电脑证书已改变，已停止连接，请核实后重新配对',UNPAIRED:'电脑已撤销授权，请重新配对',RELAY_UNPAIRED:'电脑已撤销授权，请重新配对',KEYCHAIN_UNAVAILABLE:'系统钥匙串不可用'};
     if(!busy)status.textContent=Date.now()<feedbackUntil?feedbackText:(current?current.name+' · '+(labels[state.status] || '等待连接'):(state.legacySelected?'当前选择了旧版未加密目标':'请选择配对电脑'));
     send.disabled=busy || !current?.enabled || current?.routeReady===false;
+    terminalOpen.disabled=busy || !current?.enabled || current?.routeReady===false;
     const phase=state.viewer?.phase || 'idle',active=['starting','running','recovering','closing'].includes(phase);
     openRemote.disabled=busy || !current?.enabled || current?.routeReady===false || !state.viewer?.available || active;
     stopRemote.disabled=busy || !active || phase==='closing';resolution.disabled=active;

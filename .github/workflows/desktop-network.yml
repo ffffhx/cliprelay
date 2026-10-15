@@ -45,6 +45,16 @@ jobs:
         run: |
           & windows/tests/desktop-viewer-package.ps1
           & windows/tests/desktop-network-package.ps1
+      - name: Build native terminal interoperability fixture
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
+          & windows/tests/terminal.ps1
+      - name: Desktop terminal sessions, replay and window ownership
+        env:
+          CLIPRELAY_TERMINAL_TEST_WORKER: ${{ runner.os == 'Windows' && format('{0}/.tools/uu-parity/terminal-tests.exe', github.workspace) || '' }}
+        run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs
       - name: Check concurrent helper lifecycle
         if: runner.os == 'Linux'
         working-directory: network

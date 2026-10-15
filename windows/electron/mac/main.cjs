@@ -15,9 +15,10 @@ const {NetworkController}=require('./network-controller.cjs');
 const {RoutedStore}=require('./routed-store.cjs');
 const {createClientIdentity}=require('./client-identity.cjs');
 const {FileController,message:fileMessage}=require('./file-controller.cjs');
+const {DesktopTerminal}=require('./terminal-window.cjs');
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
-let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files;
+let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal;
 const windows=new Map();
 const page=path.join(__dirname,'ui.html');const pageURL=pathToFileURL(page).href;
 const pairedSnapshot=()=>({...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot(),files:files.snapshot()});
@@ -25,7 +26,7 @@ if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('window-all-closed',()=>{});
   app.whenReady().then(start).catch(error=>{require('electron').dialog.showErrorBox('ClipRelay',error.code==='EADDRINUSE'?'ClipRelay 端口已被占用。请先停用 Hammerspoon 中的 ClipRelay，再重新打开。':error.message);app.quit();});
-  app.on('will-quit',()=>{scanning++;files?.close();viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
+  app.on('will-quit',()=>{scanning++;terminal?.close();files?.close();viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
 }
 function openWindow(kind,data,options){
   const window=new BrowserWindow({frame:false,show:false,resizable:false,skipTaskbar:true,backgroundColor:'#00000000',transparent:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true},...options});
@@ -109,11 +110,12 @@ async function start(){
   const directory=path.join(app.getPath('userData'),'paired');
   const base=new PairedStore(directory,safeStorage,{legacySelected:config.legacyEnabled===true,generate:createClientIdentity});
   network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(__dirname,'network-helper'),localName,
-    canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();files?.reconcile();if(tray)menu();}});
+    canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();files?.reconcile();terminal?.reconcile();if(tray)menu();}});
   const store=new RoutedStore(base,id=>network.route(id),id=>network.streamPolicy(id));
   viewer=new StreamViewer({directory:path.join(__dirname,'stream-viewer'),store});
   files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
-  paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);files?.reconcile(paired?.status);if(tray)menu();}});
+  terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard});
+  paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);files?.reconcile(paired?.status);terminal?.reconcile(paired?.status);if(tray)menu();}});
   await startReceiver();
   bonjour=new Bonjour({},error=>alert('ClipRelay 局域网声明失败：'+error.message));
   tray=new Tray(nativeImage.createEmpty());tray.setTitle('ClipRelay');menu();publish();
@@ -141,9 +143,10 @@ async function start(){
         else if(action==='network-remove')network.remove(data?.id);
         else if(action==='viewer-open')await viewer.open(data);
         else if(action==='viewer-stop')viewer.stop();
+        else if(action==='terminal-open')terminal.open();
         else if(action==='paired-send'){const sent=await paired.sendCurrent();return {message:sent?'已加密发送':'没有可发送的内容'};}
         else throw new Error('Unknown action');
-        network.reconcile();paired.reconcileRoutes();viewer.reconcile();files.reconcile();return pairedSnapshot();
+        network.reconcile();paired.reconcileRoutes();viewer.reconcile();files.reconcile();terminal.reconcile();return pairedSnapshot();
       }catch(error){throw new Error(error.fileMessage?error.message:pairedMessage(error));}
     }
     if(action==='select' && entry.kind==='chooser'){

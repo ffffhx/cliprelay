@@ -410,7 +410,13 @@ WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停
 
 桌面文件实现已通过本地 Node 和实际 Electron 各 24 项检查、10 项 C# 文件场景，以及[三平台检查](https://github.com/ffffhx/cliprelay/actions/runs/38722025081)。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38722025953)核验 648 个文件，并通过隔离安装、独立进程存活及管道关闭后后台退出检查。[Mac 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38722030820)的两种架构分别核验 27 个应用源码文件、1,845 个播放器文件、4 个网络组件文件和 163 个相对链接。Mac/Linux 跳过仅适用于 Windows 的 C# worker 用例，其余文件用例通过；此用例已在本地 Windows、Windows CI 和实际 Electron 运行时通过。以上为开发包验证，尚未正式发布或替换本机安装。
 
-实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面终端、显示器、实时码率及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
+Windows / Mac 控制端已接入独立终端窗口，从已配对电脑的「终端」打开。使用固定版本 xterm.js 6.0.0 与 addon-fit 0.11.0，静态资源和 MIT 许可随包提供；来源及完整性记录在 `windows/electron/mac/vendor/terminal/manifest.json`，可用 `python scripts/vendor_terminal.py` 从官方 npm 仓库重建。支持 CMD / PowerShell 多会话、UTF-8 / VT 输出、文本选择、显式复制粘贴和终端鼠标报告；中文输入法实际兼容性仍待界面验收。失焦、最小化或页面重载会暂停输入，需要手动继续。关闭窗口保留远端会话，「结束会话」需要再次确认。会话仅运行在 Windows 被控端。
+
+桌面终端通过主进程的固定证书双向 TLS 访问同一后端；独立窗口启用 sandbox 和 contextIsolation，页面不能读取配对私钥、联网、打开链接或通过 OSC 52 操作本地剪贴板。旧会话按键、延迟粘贴和结束确认不能影响新会话；路由更换会丢弃未发送输入，未确认输入使用原序号核对。历史回放与新输出按准确字节边界分开，避免重复响应历史查询。输入只保存在内存，不记录命令或终端输出。输入确认仅代表后端接收或写入，不代表命令执行成功。
+
+桌面终端本地 Node 与 Electron 运行时各 21 项测试通过，包括真实 ConPTY、固定证书 TLS、丢失输入回执后的去重、PowerShell、尺寸变化、路由替换、服务重启、真实 xterm 解析器和窗口权限。验证命令：先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs`。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、终端鼠标、公网与安装版 SYSTEM 路径验收。
+
+实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面显示器、实时码率及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
 源码构建需要 Go 1.26.7：先运行 `python scripts/build_network.py windows`，再运行

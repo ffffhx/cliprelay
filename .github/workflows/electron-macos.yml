@@ -36,6 +36,7 @@ jobs:
       - run: npm run test:electron
       - run: node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
       - run: node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/mac-owned-window.test.cjs
+      - run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs
       - name: Fetch verified desktop viewer
         if: inputs.desktop_client_run_id != ''
         env:

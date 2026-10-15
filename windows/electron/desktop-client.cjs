@@ -10,6 +10,7 @@ const {NetworkCatalog}=require('./mac/network-catalog.cjs');
 const {NetworkController}=require('./mac/network-controller.cjs');
 const {RoutedStore}=require('./mac/routed-store.cjs');
 const {FileController,message:fileMessage}=require('./mac/file-controller.cjs');
+const {DesktopTerminal}=require('./mac/terminal-window.cjs');
 
 class DesktopClient {
   constructor(root){
@@ -18,11 +19,12 @@ class DesktopClient {
     const base=new PairedStore(directory,safeStorage,{generate:createClientIdentity});
     const localName=Array.from(os.hostname().replace(/[\r\n\0]/g,'')).slice(0,32).join('') || 'Windows';
     this.network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(root,'desktop-network'),localName,
-      canPair:()=>!this.paired?.pairController,onUpdate:()=>{this.paired?.reconcileRoutes();this.viewer?.reconcile();this.files?.reconcile();}});
+      canPair:()=>!this.paired?.pairController,onUpdate:()=>{this.paired?.reconcileRoutes();this.viewer?.reconcile();this.files?.reconcile();this.terminal?.reconcile();}});
     const store=new RoutedStore(base,id=>this.network.route(id),id=>this.network.streamPolicy(id));
     this.viewer=new StreamViewer({directory:path.join(root,'remote-viewer'),store});
     this.files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
-    this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);}});
+    this.terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard});
+    this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);this.terminal.reconcile(this.paired?.status);}});
     this.paired.start();
     this.network.reconcile();
     ipcMain.handle('mac:request',(event,action,data)=>this.request(event,action,data));
@@ -47,9 +49,10 @@ class DesktopClient {
       else if(action==='network-remove')this.network.remove(data?.id);
       else if(action==='viewer-open')await this.viewer.open(data);
       else if(action==='viewer-stop')this.viewer.stop();
+      else if(action==='terminal-open')this.terminal.open();
       else if(action==='paired-send'){const sent=await this.paired.sendCurrent();return {message:sent?'已加密发送':'没有可发送的内容'};}
       else throw new Error('Unknown action');
-      this.network.reconcile();this.paired.reconcileRoutes();this.viewer.reconcile();this.files.reconcile();return this.snapshot();
+      this.network.reconcile();this.paired.reconcileRoutes();this.viewer.reconcile();this.files.reconcile();this.terminal.reconcile();return this.snapshot();
     }catch(error){throw new Error(error.fileMessage?error.message:message(error));}
   }
   open(){
@@ -59,6 +62,6 @@ class DesktopClient {
     window.once('ready-to-show',()=>window.show());window.on('closed',()=>{if(this.window===window)this.window=null;this.paired.cancelPair();this.network.cancelPair();this.files.releaseWindow();});
     window.loadFile(this.page,{query:{kind:'paired'}});
   }
-  close(){this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
+  close(){this.terminal.close();this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
 }
 module.exports={DesktopClient};
