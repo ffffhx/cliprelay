@@ -344,7 +344,7 @@ if ($result.ReturnValue -ne 0) {{ throw 'Cannot launch isolated engine helper' }
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
 
         def call(body=None, auth=True, refresh=False, endpoint="displays"):
-            assert endpoint in ("displays", "bitrate")
+            assert endpoint in ("displays", "bitrate", "input")
             request = urllib.request.Request(f"https://127.0.0.1:{port+1}/api/cliprelay/{endpoint}" + ("?refresh=1" if refresh else ""),
                                              data=None if body is None else json.dumps(body).encode())
             if auth:

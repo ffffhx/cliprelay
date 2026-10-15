@@ -201,6 +201,51 @@ exclusion, not production microphone injection or SYSTEM-session behavior.
 SYSTEM context, physical-speaker mute, other layouts, Android playback and the
 installed pipeline remain unverified.
 
+The host input path also supports an opt-in input epoch envelope, implemented in
+`cliprelay_input.h`. It travels inside the existing encrypted GameStream input
+transport, so the stream's authenticated identity remains authoritative. Its
+16-byte header contains the normal big-endian payload length, little-endian
+magic `0x4352494e`, a big-endian nonzero 32-bit epoch, an operation byte and three
+zero reserved bytes. Operations 1/2 pause/resume; operation 3 encloses one complete
+NV input packet, with the full envelope bounded to 144 bytes. Commands contain no
+additional payload. Initial activation must be pause epoch 1; subsequent commands
+alternate resume and pause with consecutive epochs. Invalid, repeated and delayed
+commands cannot change the gate or perform another release.
+
+Admission closes as soon as a valid command arrives. The input queue retains the
+owning stream token and epoch, rechecks them before platform delivery and never
+batches across tokens or epochs. Once activated, unwrapped legacy input is rejected
+for that stream. The single input worker cancels delayed repeat/button/gamepad
+tasks, releases tracked keys and buttons, neutralizes gamepads, cancels touch/pen
+contacts and clears modifier/scroll state before acknowledging. The acknowledgment
+means the platform release calls returned; it does not independently measure the
+physical devices or override a local user's physically held keys. Old queued
+input remains invalid after resume. Stream removal closes its token, including
+queued work that still holds a shared pointer to it.
+
+The pinned backend shares keyboard/mouse state, so epoch transitions require the
+sole registered host stream at the worker boundary. A competing stream causes a
+terminal failed gate without releasing another controller's keys. Clients must
+end that stream on failure. No automatic resume is performed. Controllers should
+also stop an operation if exclusivity is lost while it is in progress.
+
+Authenticated `GET /api/cliprelay/input` reports each stream's owner, ID, epoch,
+acknowledged epoch, enabled/paused/pending/closed/failed flags and exclusivity.
+The paired service exposes read-only `/v1/input-state`, validates state consistency,
+filters streams by the current mutual-TLS certificate and rechecks revocation after
+the read. Neither HTTP endpoint can issue a native input command. Existing clients
+that never activate the extension keep the legacy input path.
+
+`input_test.cpp` exercises the packet/state/lifetime rules without platform input.
+`input_integration_test.cpp` is copied into the upstream test target and exercises
+the production queue with a fake backend and a keyboard-output sink. The optional
+`engine_control_test.py --input-epochs --stream-client <receiver>` fixture verifies
+encrypted pause/resume acknowledgments and display reconstruction while paused;
+it does not send key, mouse or gamepad data. Full desktop use still needs the
+native client's queue/pause/epoch wrapper and an owner-pipe acknowledgment, plus
+capture-generation and actual presented-frame validation before input resumes.
+The desktop display picker is not enabled by this host extension alone.
+
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers
 with any modified engine binary.
