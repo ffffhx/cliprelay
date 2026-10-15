@@ -27,6 +27,7 @@ namespace ClipRelay.Remote {
         public bool ok;
         public string code="",instance="",data="";
         public long nextOpen,offset,next;
+        public int pasteLimit;
         public bool gap;
         public TerminalSessionState session;
         public TerminalSessionState[] sessions;
@@ -67,14 +68,14 @@ namespace ClipRelay.Remote {
         static bool Match(Regex expression,string value){return value!=null && expression.IsMatch(value);}
         public static void Require(bool ok,string code){if(!ok)throw new TerminalFault(code);}
         public static TerminalRequest Parse(string text) {
-            var json=new JavaScriptSerializer {MaxJsonLength=16384,RecursionLimit=4};
+            var json=new JavaScriptSerializer {MaxJsonLength=32768,RecursionLimit=4};
             var value=json.DeserializeObject(text) as Dictionary<string,object>;
             Require(value!=null,"TERMINAL_BAD_REQUEST");
             Func<string,string> str=key=>{object result;if(!value.TryGetValue(key,out result))return "";Require(result is string,"TERMINAL_BAD_REQUEST");return (string)result;};
             Func<string,long> number=key=>{object result;if(!value.TryGetValue(key,out result))return 0;Require(result is int || result is long,"TERMINAL_BAD_REQUEST");return Convert.ToInt64(result);};
             string op=str("op");
             string fields=op=="sync"?"op,owners":op=="list"?"op,owner":op=="open"?"op,owner,instance,id,shell,columns,rows,sequence":
-                op=="read"?"op,owner,instance,id,offset":op=="write"?"op,owner,instance,id,sequence,data":
+                op=="read"?"op,owner,instance,id,offset":(op=="write" || op=="paste")?"op,owner,instance,id,sequence,data":
                 op=="resize"?"op,owner,instance,id,columns,rows":op=="close"?"op,owner,instance,id":"";
             Require(fields.Length>0 && value.Keys.All(key=>fields.Split(',').Contains(key)),"TERMINAL_BAD_REQUEST");
             var request=new TerminalRequest {op=op,owner=str("owner"),instance=str("instance"),id=str("id"),shell=str("shell"),data=str("data"),sequence=number("sequence"),offset=number("offset")};
@@ -99,7 +100,7 @@ namespace ClipRelay.Remote {
                 long next;if(!nextOpen.TryGetValue(request.owner,out next)) {
                     Require(nextOpen.Count<256,"TERMINAL_CAPACITY");next=1;nextOpen.Add(request.owner,next);
                 }
-                if(request.op=="list")return new TerminalReply {ok=true,instance=instance,nextOpen=next,sessions=sessions.Values.Where(s=>s.owner==request.owner).OrderBy(s=>s.openSequence).Select(State).ToArray()};
+                if(request.op=="list")return new TerminalReply {ok=true,instance=instance,nextOpen=next,pasteLimit=16396,sessions=sessions.Values.Where(s=>s.owner==request.owner).OrderBy(s=>s.openSequence).Select(State).ToArray()};
                 Require(request.instance==instance,"TERMINAL_STALE");
                 Require(Match(Id,request.id),"TERMINAL_BAD_REQUEST");string key=request.owner+":"+request.id;
                 Session session;sessions.TryGetValue(key,out session);
@@ -130,13 +131,16 @@ namespace ClipRelay.Remote {
                 }
                 Require(session.state=="running","TERMINAL_CLOSED");
                 if(request.op=="resize") {Require(Dimensions(request),"TERMINAL_BAD_REQUEST");session.process.Resize(request.columns,request.rows);session.columns=request.columns;session.rows=request.rows;return Reply(session);}
-                Require(request.op=="write","TERMINAL_BAD_REQUEST");
+                bool paste=request.op=="paste";
+                Require(request.op=="write" || paste,"TERMINAL_BAD_REQUEST");
                 byte[] input;try{input=Convert.FromBase64String(request.data??"");}catch{throw new TerminalFault("TERMINAL_BAD_REQUEST");}
-                Require(input.Length>0 && input.Length<=4096 && Convert.ToBase64String(input)==request.data,"TERMINAL_BAD_REQUEST");
-                string digest;using(var hash=SHA256.Create())digest=Convert.ToBase64String(hash.ComputeHash(input));
+                Require(input.Length>0 && input.Length<=(paste?16396:4096) && Convert.ToBase64String(input)==request.data,"TERMINAL_BAD_REQUEST");
+                // A retry must match both the operation and its entire payload.
+                byte[] operationInput=new byte[input.Length+1];operationInput[0]=(byte)(paste?1:0);Buffer.BlockCopy(input,0,operationInput,1,input.Length);
+                string digest;using(var hash=SHA256.Create())digest=Convert.ToBase64String(hash.ComputeHash(operationInput));
                 if(request.sequence==session.accepted){Require(session.accepted>0 && session.digest==digest,"TERMINAL_INPUT_CONFLICT");return Reply(session);}
                 Require(request.sequence==session.accepted+1 && request.sequence>0,"TERMINAL_SEQUENCE");
-                Require(session.process.Queue(input,request.sequence),"TERMINAL_BUSY");
+                Require(session.process.Queue(input,request.sequence,paste),"TERMINAL_BUSY");
                 session.accepted=request.sequence;session.digest=digest;return Reply(session);
             } catch(TerminalFault error){return new TerminalReply {code=error.Message,instance=instance};}
               catch(EntryPointNotFoundException){return new TerminalReply {code="TERMINAL_UNSUPPORTED",instance=instance};}
@@ -173,7 +177,7 @@ namespace ClipRelay.Remote {
             using(var manager=new TerminalManager(()=>clock.ElapsedMilliseconds,(shell,columns,rows,output)=>new NativeTerminalProcess(shell,columns,rows,output)))
             using(var timer=new Timer(state=>manager.Maintain(),null,1000,1000)) {
                 while(true) {
-                    var line=new StringBuilder();int c;while((c=Console.Read())!=-1 && c!='\n'){if(line.Length>=16384)return 2;line.Append((char)c);}
+                    var line=new StringBuilder();int c;while((c=Console.Read())!=-1 && c!='\n'){if(line.Length>=32768)return 2;line.Append((char)c);}
                     if(c==-1)return 0;
                     TerminalReply result;
                     try{result=manager.Handle(TerminalManager.Parse(line.ToString()));}catch{result=new TerminalReply {code="TERMINAL_BAD_REQUEST"};}

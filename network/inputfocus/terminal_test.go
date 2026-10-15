@@ -147,6 +147,52 @@ func TestTerminalRevocationDuringReadWithdrawsWorkerAuthority(t *testing.T) {
 		t.Fatal("revoked sessions not withdrawn")
 	}
 }
+func TestTerminalPasteCapabilityAndWholeRequestBounds(t *testing.T) {
+	f, h := terminalFixtureNew(t)
+	f.result.PasteLimit = 16396
+	if fileCall(h, []byte("first"), "POST", "/v1/terminal", terminalListBody()).Code != 200 {
+		t.Fatal("paste capability rejected")
+	}
+	f.result.PasteLimit = 16397
+	if fileCall(h, []byte("first"), "POST", "/v1/terminal", terminalListBody()).Code != 503 {
+		t.Fatal("unknown capability trusted")
+	}
+	f.result = terminalReply{OK: true, Instance: terminalTestInstance, Session: &terminalSession{ID: privacyTestLease, Shell: "cmd", State: "running", Columns: 80, Rows: 24, OpenSequence: 1, AcceptedSequence: 1, WrittenSequence: 1}}
+	sequence := int64(1)
+	r := terminalRequest{Op: "paste", Instance: terminalTestInstance, ID: privacyTestLease, Sequence: &sequence, Data: base64.StdEncoding.EncodeToString([]byte("\x1b[200~" + strings.Repeat("x", 16384) + "\x1b[201~"))}
+	call := func(request terminalRequest) int {
+		body, _ := json.Marshal(request)
+		return fileCall(h, []byte("first"), "POST", "/v1/terminal", string(body)).Code
+	}
+	if call(r) != 200 {
+		t.Fatal("complete 16 KB framed paste rejected by HTTP bound")
+	}
+	if f.calls[len(f.calls)-1]["data"] != r.Data || f.calls[len(f.calls)-1]["op"] != "paste" {
+		t.Fatal("worker payload changed")
+	}
+	f.result.Session.AcceptedSequence = 0
+	if call(r) != 503 {
+		t.Fatal("unconfirmed paste accepted")
+	}
+	before := len(f.calls)
+	r.Data = base64.StdEncoding.EncodeToString(make([]byte, 16397))
+	if call(r) != 400 {
+		t.Fatal("oversized paste accepted")
+	}
+	r.Op = "write"
+	r.Data = base64.StdEncoding.EncodeToString(make([]byte, 4097))
+	if call(r) != 400 {
+		t.Fatal("write limit expanded")
+	}
+	r.Op = "paste"
+	r.Data = "YQ==\n"
+	if call(r) != 400 {
+		t.Fatal("noncanonical data accepted")
+	}
+	if len(f.calls) != before {
+		t.Fatal("invalid requests reached worker")
+	}
+}
 func TestTerminalMalformedStateAndBusyFailClosed(t *testing.T) {
 	for _, kind := range []string{"instance", "sequence", "shell", "id", "offset"} {
 		t.Run(kind, func(t *testing.T) {
@@ -225,6 +271,9 @@ func TestTerminalRealTLSNativeWorkerReconnectAndRevocation(t *testing.T) {
 		return result
 	}
 	listed := call(terminalRequest{Op: "list"})
+	if listed.PasteLimit != 16396 {
+		t.Fatal("native paste capability missing")
+	}
 	sequence := listed.NextOpen
 	opened := call(terminalRequest{Op: "open", Instance: listed.Instance, ID: privacyTestLease, Shell: "cmd", Columns: 80, Rows: 24, Sequence: &sequence})
 	if opened.Session.State != "running" {
@@ -257,6 +306,24 @@ func TestTerminalRealTLSNativeWorkerReconnectAndRevocation(t *testing.T) {
 	}
 	if strings.Count(strings.ToLower(text), "tls_cmd.exe") != 1 {
 		t.Fatal("missing or repeated command result")
+	}
+	sequence = 2
+	call(terminalRequest{Op: "write", Instance: listed.Instance, ID: privacyTestLease, Sequence: &sequence, Data: base64.StdEncoding.EncodeToString([]byte("set CLIPRELAY_PASTE_COUNT=0\r"))})
+	sequence = 3
+	request = terminalRequest{Op: "paste", Instance: listed.Instance, ID: privacyTestLease, Sequence: &sequence, Data: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("rem "+strings.Repeat("x", 5000)+"\r", 3) + "set /a CLIPRELAY_PASTE_COUNT+=1\recho PASTE_COU^NT_%CLIPRELAY_PASTE_COUNT%\r"))}
+	call(request)
+	call(request)
+	text = ""
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(text, "PASTE_COUNT_1") {
+		result := call(terminalRequest{Op: "read", Instance: listed.Instance, ID: privacyTestLease, Offset: &offset})
+		data, _ := base64.StdEncoding.DecodeString(result.Data)
+		text += string(data)
+		offset = result.Next
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(text, "PASTE_COUNT_1") || strings.Contains(text, "PASTE_COUNT_2") {
+		t.Fatal("long native paste tail missing or replayed")
 	}
 	filePairing(t, clients, []byte("replacement"))
 	control.mu.Lock()

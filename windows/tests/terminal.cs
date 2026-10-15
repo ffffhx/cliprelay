@@ -11,7 +11,8 @@ public static class TerminalTests {
     sealed class Fake : ITerminalProcess {
         public bool Exited{get;set;}public int ExitCode{get{return 7;}}public long WrittenSequence{get;set;}public bool Failed{get;set;}
         public bool Busy,Stopped;public int Writes;public Action<byte[]> Output;
-        public bool Queue(byte[] data,long sequence){if(Busy)return false;Writes++;WrittenSequence=sequence;return true;}
+        public byte[] LastInput;public bool LastPaste;
+        public bool Queue(byte[] data,long sequence,bool paste=false){if(Busy)return false;Writes++;WrittenSequence=sequence;LastInput=(byte[])data.Clone();LastPaste=paste;return true;}
         public void Resize(int columns,int rows){}
         public void Dispose(){Stopped=true;}
     }
@@ -59,6 +60,19 @@ public static class TerminalTests {
             Ok(f.Open());f.Processes[0].Exited=true;f.Manager.Maintain();var session=f.List(A).sessions[0];
             Assert(session.state=="exited" && session.exitCode==7 && f.Processes[0].Stopped,"exit not retained");
         }
+        using(var f=new Fixture()) {
+            Ok(f.Open());Assert(f.List(A).pasteLimit==16396,"paste capability missing");
+            var request=f.Request("paste");request.sequence=1;request.data=Convert.ToBase64String(Encoding.UTF8.GetBytes("\u001b[200~"+new string('x',16384)+"\u001b[201~"));
+            var json=new System.Web.Script.Serialization.JavaScriptSerializer();request=TerminalManager.Parse(json.Serialize(new {op=request.op,owner=A,instance=f.Instance,id=Id,sequence=1,data=request.data}));
+            f.Processes[0].Busy=true;Error(f.Manager.Handle(request),"TERMINAL_BUSY");Assert(f.Processes[0].Writes==0 && f.List(A).sessions[0].acceptedSequence==0,"busy paste accepted a prefix");
+            f.Processes[0].Busy=false;Ok(f.Manager.Handle(request));Ok(f.Manager.Handle(request));
+            Assert(f.Processes[0].Writes==1 && f.Processes[0].LastPaste && f.Processes[0].LastInput.Length==16396,"paste split or replayed");
+            Assert(Encoding.UTF8.GetString(f.Processes[0].LastInput).EndsWith("\u001b[201~"),"paste suffix lost");
+            request.data=Convert.ToBase64String(new byte[16397]);request.sequence=2;Error(f.Manager.Handle(request),"TERMINAL_BAD_REQUEST");
+            Ok(f.Write("same",2));request.data=Convert.ToBase64String(Encoding.UTF8.GetBytes("same"));Error(f.Manager.Handle(request),"TERMINAL_INPUT_CONFLICT");
+            request.sequence=3;Ok(f.Manager.Handle(request));Error(f.Write("same",3),"TERMINAL_INPUT_CONFLICT");
+            Error(f.Write(new string('x',4097),4),"TERMINAL_BAD_REQUEST");
+        }
         var ring=new TerminalBuffer(8);ring.Append(Encoding.UTF8.GetBytes("0123456789"));long offset;bool gap;
         Assert(Encoding.UTF8.GetString(ring.Read(0,out offset,out gap))=="23456789" && offset==2 && gap,"ring gap missing");
         try{ring.Read(11,out offset,out gap);throw new Exception("future offset accepted");}catch(TerminalFault){}
@@ -72,6 +86,7 @@ public static class TerminalTests {
         var output=new StringBuilder();var gate=new object();int pid;
         using(var process=new NativeTerminalProcess("cmd",80,24,bytes=>{lock(gate)output.Append(Encoding.UTF8.GetString(bytes));})) {
             pid=process.ProcessId;
+            Assert(!process.Queue(new byte[4097],1) && !process.Queue(new byte[16397],1,true),"native size limits bypassed");
             Assert(process.Queue(Encoding.UTF8.GetBytes("echo CLIPRELAY_CONPTY_TEST\r"),1),"native input rejected");
             var clock=Stopwatch.StartNew();bool observed=false;
             while(clock.ElapsedMilliseconds<8000){lock(gate)observed=output.ToString().Contains("CLIPRELAY_CONPTY_TEST");if(observed)break;Thread.Sleep(20);}

@@ -385,7 +385,7 @@ Android 终端新增显式「鼠标点击/滚动」模式。远端程序请求�
 
 鼠标点击/滚动提交 `c100555` 的 [Android CI](https://github.com/ffffhx/cliprelay/actions/runs/38793451439)已通过，下载后的 APK、签名、功能类、四个 ABI 的 UTF-8 JNI 导出和 Termux 说明已核验。测试清单与本地 285 项完全一致，Linux 通过 282 项，仅跳过已在本地 Windows 通过的 3 项互操作测试。源码哈希及测试包中 18 项设备用例的记录见 `.tools/uu-parity/terminal-mouse-artifacts.json`；设备测试仍未执行。
 
-后续输入清理审计发现桌面终端仍有边界缺陷：暂停或路由失效时，输入队列可能保留已发送的鼠标按下、却丢弃待发松开；超过一个协议请求的括号粘贴也可能丢失结尾标记。这两类情况已使用实际 `InputState` 类在内存中复现，没有操作真实剪贴板、终端或窗口。它们尚未修复，完整拖拽还需要电脑端负责断线后的松开，不能仅依赖客户端退出回调。复现脚本及记录见 `.tools/uu-parity/terminal-desktop-cleanup-probe.cjs`、`.tools/uu-parity/terminal-desktop-cleanup-probe.json`。Android 本阶段完整点击和受限粘贴都位于一个协议请求内，避免了这里已复现的分段清理问题。
+后续输入清理审计复现了两类桌面终端边界缺陷：暂停或路由失效时，输入队列可能保留已发送的鼠标按下、却丢弃待发松开；超过一个协议请求的括号粘贴也可能丢失结尾标记。长粘贴现已改为预览后完整提交，验证情况见下方；鼠标松开仍待修复，完整拖拽需要电脑端负责断线后的松开，不能仅依赖客户端退出回调。原分段队列的复现脚本及记录保留在 `.tools/uu-parity/terminal-desktop-cleanup-probe.cjs`、`.tools/uu-parity/terminal-desktop-cleanup-probe.json`。Android 本阶段完整点击和受限粘贴都位于一个协议请求内，避免了这里已复现的分段清理问题。
 
 在工具栏点击「模式 → 游戏模式」，先选择《速速上菜》或《星露谷物语》，再显示相应触屏方向控制和游戏按钮；游戏模式不再单独占用工具栏按钮。取消选择保留当前模式，右上角「⋯」菜单中的「切换游戏」可重新选择，并记住上次使用的游戏。《速速上菜》的键盘预设为：
 WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停。
@@ -427,6 +427,10 @@ WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停
 桌面文件实现已通过本地 Node 和实际 Electron 各 24 项检查、10 项 C# 文件场景，以及[三平台检查](https://github.com/ffffhx/cliprelay/actions/runs/38722025081)。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38722025953)核验 648 个文件，并通过隔离安装、独立进程存活及管道关闭后后台退出检查。[Mac 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38722030820)的两种架构分别核验 27 个应用源码文件、1,845 个播放器文件、4 个网络组件文件和 163 个相对链接。Mac/Linux 跳过仅适用于 Windows 的 C# worker 用例，其余文件用例通过；此用例已在本地 Windows、Windows CI 和实际 Electron 运行时通过。以上为开发包验证，尚未正式发布或替换本机安装。
 
 Windows / Mac 控制端已接入独立终端窗口，从已配对电脑的「终端」打开。使用固定版本 xterm.js 6.0.0 与 addon-fit 0.11.0，静态资源和 MIT 许可随包提供；来源及完整性记录在 `windows/electron/mac/vendor/terminal/manifest.json`，可用 `python scripts/vendor_terminal.py` 从官方 npm 仓库重建。支持 CMD / PowerShell 多会话、UTF-8 / VT 输出、文本选择、显式复制粘贴和终端鼠标报告；中文输入法实际兼容性仍待界面验收。失焦、最小化或页面重载会暂停输入，需要手动继续。关闭窗口保留远端会话，「结束会话」需要再次确认。会话仅运行在 Windows 被控端。
+
+桌面粘贴新增可编辑预览：按钮、Ctrl+V / Ctrl+Shift+V、⌘V、Shift+Insert 和终端区域的原生粘贴事件均需确认后发送。换行统一，除换行与制表符外的 C0/C1 控制字符会移除，修改后的内容需要再次确认；预览绑定当前电脑和会话，暂停、断线或切换后失效。新电脑端通过 `list.pasteLimit=16396` 声明完整粘贴能力，最多 16384 字节 UTF-8 文本连同括号标记作为一项请求和原生队列项目提交；空间不足时整段拒绝，丢回执时按原序号与完整内容核对，避免发送前半段后丢失结尾。旧主机只允许装入单个 4096 字节请求的内容，长文本明确提示更新，不静默截断。电脑接收或写入终端不代表命令已执行成功。
+
+本阶段本地 24 项桌面终端检查通过，包含实际 xterm 解析器、预览取消/旧会话拒绝、队列满额、旧主机限制、完整长粘贴的暂停与重试，以及真实双向 TLS 到普通用户 ConPTY 的丢回执去重。完整 Windows 服务和网络程序已编译，正式 Go 接口与 Android 现有终端协议的互操作也已验证。预览使用模拟剪贴板测试，未读写真实系统剪贴板；实际窗口验收与新安装包验证单独记录，不以这些测试替代。记录见 `.tools/uu-parity/terminal-paste-artifacts.json`。
 
 桌面终端通过主进程的固定证书双向 TLS 访问同一后端；独立窗口启用 sandbox 和 contextIsolation，页面不能读取配对私钥、联网、打开链接或通过 OSC 52 操作本地剪贴板。旧会话按键、延迟粘贴和结束确认不能影响新会话；路由更换会丢弃未发送输入，未确认输入使用原序号核对。历史回放与新输出按准确字节边界分开，避免重复响应历史查询。输入只保存在内存，不记录命令或终端输出。输入确认仅代表后端接收或写入，不代表命令执行成功。
 

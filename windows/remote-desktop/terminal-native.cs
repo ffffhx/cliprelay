@@ -13,7 +13,7 @@ namespace ClipRelay.Remote {
     public interface ITerminalProcess : IDisposable {
         bool Exited { get; }
         int ExitCode { get; }
-        bool Queue(byte[] data,long sequence);
+        bool Queue(byte[] data,long sequence,bool paste=false);
         long WrittenSequence { get; }
         bool Failed { get; }
         void Resize(int columns,int rows);
@@ -119,8 +119,10 @@ namespace ClipRelay.Remote {
                 input.Write(item.Item1,0,item.Item1.Length);input.Flush();Interlocked.Exchange(ref written,item.Item2);lock(gate)queued-=item.Item1.Length;}}
             catch(Exception){if(disposed==0)failed=true;}
         }
-        public bool Queue(byte[] data,long sequence) {
-            lock(gate){if(disposed!=0 || failed || Exited || data.Length==0 || data.Length>4096 || queued+data.Length>32768)return false;
+        public bool Queue(byte[] data,long sequence,bool paste=false) {
+            // Complete paste framing belongs to one queue item, including when
+            // the client disconnects after acceptance. Reject capacity as a whole.
+            lock(gate){if(disposed!=0 || failed || Exited || data.Length==0 || data.Length>(paste?16396:4096) || queued+data.Length>32768)return false;
                 pending.Enqueue(Tuple.Create((byte[])data.Clone(),sequence));queued+=data.Length;Monitor.PulseAll(gate);return true;}
         }
         public void Resize(int columns,int rows){if(disposed!=0)throw new IOException("TERMINAL_CLOSED");CheckResult(ResizePseudoConsole(console,new Coord(columns,rows)));}

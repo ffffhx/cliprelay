@@ -8,11 +8,11 @@ function remote(){
   const snapshot=s=>({id:s.id,shell:s.shell,state:s.state,columns:s.columns,rows:s.rows,exitCode:s.exitCode,openSequence:s.openSequence,acceptedSequence:s.acceptedSequence,writtenSequence:s.writtenSequence,start:s.start,end:s.bytes.length,remainingMs:s.state==='running'?1800000:0});
   async function request(host,identity,c,signal){
     calls.push({...c});if(hook)await hook(c,signal);
-    if(c.op==='list')return {instance,nextOpen,sessions:[...sessions.values()].map(snapshot)};
+    if(c.op==='list')return {instance,nextOpen,pasteLimit:16396,sessions:[...sessions.values()].map(snapshot)};
     if(c.instance!==instance)throw fault('TERMINAL_STALE');let s=sessions.get(c.id);
     if(c.op==='open' && !s){assert.equal(c.sequence,nextOpen++);s={id:c.id,shell:c.shell,columns:c.columns,rows:c.rows,state:'running',exitCode:0,openSequence:c.sequence,acceptedSequence:0,writtenSequence:0,start:0,bytes:Buffer.from('ready\r\n')};sessions.set(c.id,s);}
     if(!s)throw fault('TERMINAL_NOT_FOUND');
-    if(c.op==='write'){
+    if(c.op==='write' || c.op==='paste'){
       if(c.sequence===s.acceptedSequence)assert.equal(c.data,s.lastData);else{assert.equal(c.sequence,s.acceptedSequence+1);s.acceptedSequence=c.sequence;s.writtenSequence=c.sequence;s.lastData=c.data;writes.push({id:s.id,data:Buffer.from(c.data,'base64')});s.bytes=Buffer.concat([s.bytes,Buffer.from(c.data,'base64')]);}
     }
     if(c.op==='close')s.state='closed';if(c.op==='resize'){s.columns=c.columns;s.rows=c.rows;}
@@ -94,6 +94,31 @@ test('pinned TLS rejects changed certificates before any terminal command is sen
   const host={address:'127.0.0.1',port:port-2,certificate:identities.host.cert};await assert.rejects(protocol.request(host,identities.client,{op:'list'}),/TERMINAL_USER_REQUIRED/);
   await assert.rejects(protocol.request({...host,certificate:identities.wrong.cert},identities.client,{op:'list'}),/HOST_CERT_CHANGED/);assert.equal(seen,1);
 });
+test('reviewed paste retains the entire frame through pause, uncertain acknowledgment and deduplication',async t=>{
+  const f=fixture(t);await open(f);await drain(f);let entered=false,accepted;
+  const base=f.controller.request;f.controller.request=async(...args)=>{const reply=await base(...args);if(args[2].op==='paste' && !entered){entered=true;accepted=reply;await new Promise((resolve,reject)=>args[3].addEventListener('abort',()=>reject(fault('CANCELLED')),{once:true}));}return reply;};
+  const draft=f.controller.beginPaste({view:f.controller.view,id:f.controller.selected},'文'.repeat(5000));
+  f.controller.submitPaste({...draft,bracketed:true});const pending=poll(f);while(!entered)await sleep(1);f.controller.pause();await pending;
+  const current=f.controller.states.get(f.controller.selected);assert.equal(current.queuedBytes,15012);assert.equal(f.server.writes.length,1);assert.match(f.server.writes[0].data.toString(),/^\x1b\[200~文+\x1b\[201~$/);
+  assert.equal(accepted.session.acceptedSequence,1);f.controller.resume();await drain(f);assert.equal(f.server.writes.length,1);assert.equal(current.queuedBytes,0);
+  const requests=f.server.calls.filter(c=>c.op==='paste');assert.equal(requests.length,2);assert.deepEqual(requests[0],requests[1]);
+});
+test('paste preview is editable, sanitized, single-use and bound to the active view',async t=>{
+  const f=fixture(t);await open(f);const view={view:f.controller.view,id:f.controller.selected};
+  let draft=f.controller.beginPaste(view,'echo a\r\n\x1b\x00\x9b');assert.equal(draft.text,'echo a\n');assert.equal(draft.changed,true);assert.equal(f.server.writes.length,0);
+  let result=f.controller.submitPaste({...draft,text:'new\r\n\x1b',bracketed:true});assert.equal(result.review,true);assert.equal(result.text,'new\n');assert.equal(f.controller.states.get(view.id).queuedBytes,0);
+  result=f.controller.submitPaste({...draft,text:result.text,bracketed:true});assert.equal(result.sent,true);assert.throws(()=>f.controller.submitPaste({...draft,bracketed:true}),/PASTE_CHANGED/);
+  draft=f.controller.beginPaste(view,'old');f.controller.pause();assert.throws(()=>f.controller.submitPaste({...draft,bracketed:false}),/VIEW_CHANGED/);
+  f.controller.resume();await poll(f);draft=f.controller.beginPaste({view:f.controller.view,id:view.id},'old');f.controller.failure(fault('TIMEOUT'));f.advance();await poll(f);assert.throws(()=>f.controller.submitPaste({...draft,bracketed:false}),/PASTE_CHANGED/);
+  assert.throws(()=>protocol.preparePaste('\ud800'),/BAD_REQUEST/);assert.throws(()=>protocol.preparePaste('文'.repeat(5462)),/PASTE_LIMIT/);assert.throws(()=>protocol.preparePaste('\x00'),/PASTE_EMPTY/);
+});
+test('old hosts use one bounded write and queue saturation never accepts a paste prefix',async t=>{
+  const f=fixture(t);await open(f);const view={view:f.controller.view,id:f.controller.selected};f.controller.pasteLimit=0;
+  let draft=f.controller.beginPaste(view,'x'.repeat(4085));assert.throws(()=>f.controller.submitPaste({...draft,bracketed:true}),/PASTE_HOST/);assert.equal(f.controller.states.get(view.id).queuedBytes,0);
+  f.controller.submitPaste({...draft,text:'x'.repeat(4084),bracketed:true});let current=f.controller.states.get(view.id);assert.equal(current.command(f.controller.instance).op,'write');assert.equal(current.queuedBytes,4096);
+  f.controller.pasteLimit=16396;draft=f.controller.beginPaste(view,'x'.repeat(16384));f.controller.submitPaste({...draft,bracketed:true});draft=f.controller.beginPaste(view,'x'.repeat(16384));assert.throws(()=>f.controller.submitPaste({...draft,bracketed:true}),/INPUT_FULL/);assert.equal(current.queuedBytes,20492);assert.equal(current.queue.length,2);assert.equal(f.controller.pasteDraft.token,draft.token);
+  assert.equal(protocol.validate({op:'list'},{ok:true,instance:f.controller.instance,nextOpen:1}).pasteLimit,0);assert.throws(()=>protocol.validate({op:'list'},{ok:true,instance:f.controller.instance,nextOpen:1,pasteLimit:999999}),/INVALID_RESPONSE/);
+});
 test('real ConPTY over pinned mutual TLS confirms input deduplication and reconnects to a running shell',{skip:process.platform!=='win32',timeout:30000},async t=>{
   assert.ok(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,'Build windows/tests/terminal.ps1 and set CLIPRELAY_TERMINAL_TEST_WORKER');
   const child=spawn(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,['--terminal-probe'],{stdio:['pipe','pipe','pipe'],windowsHide:true}),reader=readline.createInterface({input:child.stdout});let pending=[],stderr='';
@@ -104,13 +129,16 @@ test('real ConPTY over pinned mutual TLS confirms input deduplication and reconn
   const server=https.createServer({key:identities.host.key,cert:identities.host.cert,requestCert:true,rejectUnauthorized:false},async(req,res)=>{
     try{assert.ok(req.socket.getPeerCertificate().raw.equals(new crypto.X509Certificate(identities.client.cert).raw));const chunks=[];for await(const chunk of req)chunks.push(chunk);const command=JSON.parse(Buffer.concat(chunks));
       const job=chain.then(async()=>{assert.equal((await rpc({op:'sync',owners:[owner]})).ok,true);return rpc({...command,owner});});chain=job.catch(()=>{});const reply=await job;
-      if(command.op==='write' && drop){drop=false;req.socket.destroy();return;}res.writeHead(reply.ok?200:409);res.end(JSON.stringify(reply));
+      if(['write','paste'].includes(command.op) && drop){drop=false;req.socket.destroy();return;}res.writeHead(reply.ok?200:409);res.end(JSON.stringify(reply));
     }catch{res.writeHead(503);res.end(JSON.stringify({ok:false,code:'TERMINAL_UNAVAILABLE'}));}
   });const port=await listen(server);t.after(()=>close(server));const f=fixture(t,{request:protocol.request});f.host.port=port-2;
   const id=await open(f);input(f,'set CLIPRELAY_COUNT=0\r');await drain(f);drop=true;input(f,'set /a CLIPRELAY_COUNT+=1\r');await poll(f);await poll(f);f.advance(1000);await drain(f);
   input(f,'echo COUNT_IS_%CLIPRELAY_COUNT%\r');await drain(f);let output='';for(let i=0;i<100 && !output.includes('COUNT_IS_1');i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/COUNT_IS_1/);assert.ok(!output.includes('COUNT_IS_2'));
   f.controller.pause();f.controller.resume();await poll(f);assert.equal(f.controller.selected,id);input(f,'echo RECONNE^CTED_OK\r');await drain(f);
   output='';for(let i=0;i<100 && !output.includes('RECONNECTED_OK');i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/RECONNECTED_OK/);
+  input(f,'set CLIPRELAY_PASTE_COUNT=0\r');await drain(f);const draft=f.controller.beginPaste({view:f.controller.view,id},('rem '+'x'.repeat(5000)+'\n').repeat(3)+'set /a CLIPRELAY_PASTE_COUNT+=1\necho PASTE_COU^NT_%CLIPRELAY_PASTE_COUNT%\n');
+  drop=true;f.controller.submitPaste({...draft,bracketed:false});await poll(f);await poll(f);f.advance(1000);await drain(f);
+  output='';for(let i=0;i<150 && !output.includes('PASTE_COUNT_1');i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/PASTE_COUNT_1/);assert.ok(!output.includes('PASTE_COUNT_2'));
   f.controller.end({view:f.controller.view,id});await drain(f);assert.equal(f.controller.states.get(id).snapshot.state,'closed');
   const ps=await open(f,'powershell');input(f,"Write-Output ('POWER'+'SHELL_OK')\r");await drain(f);
   output='';for(let i=0;i<150 && !output.includes('POWERSHELL_OK');i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/POWERSHELL_OK/);

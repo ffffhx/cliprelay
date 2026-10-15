@@ -8,6 +8,7 @@ const denied=new Set(['UNPAIRED','RELAY_UNPAIRED','HOST_CERT_CHANGED','KEYCHAIN_
 const fatal=new Set(['TERMINAL_UNPAIRED','TERMINAL_UNSUPPORTED','TERMINAL_USER_REQUIRED','TERMINAL_STALE','TERMINAL_NOT_FOUND','TERMINAL_OFFSET','TERMINAL_SEQUENCE','TERMINAL_ID_CONFLICT','TERMINAL_INPUT_CONFLICT','TERMINAL_INVALID_RESPONSE','TERMINAL_BAD_REQUEST']);
 const messages={TERMINAL_BUSY:'电脑正在处理终端请求',TERMINAL_CAPACITY:'运行中的终端已达上限，请先结束一个会话',TERMINAL_UNPAIRED:'电脑已撤销终端授权，请重新配对',TERMINAL_STALE:'电脑终端服务已重启，请重新选择会话',TERMINAL_NOT_FOUND:'会话已结束或记录已过期',TERMINAL_CLOSED:'此终端已经结束',TERMINAL_OFFSET:'终端输出位置不一致，请重新连接会话',TERMINAL_SEQUENCE:'输入确认顺序不一致，已停止发送',TERMINAL_ID_CONFLICT:'终端会话身份不一致，已停止发送',TERMINAL_INPUT_CONFLICT:'未确认输入与电脑记录不一致，已停止发送',TERMINAL_USER_REQUIRED:'电脑需要有已登录的普通用户',TERMINAL_UNSUPPORTED:'电脑端暂不支持终端，请更新 ClipRelay',TERMINAL_UNAVAILABLE:'暂时无法连接电脑终端',TERMINAL_INVALID_RESPONSE:'电脑返回的终端数据无效，已停止连接',TERMINAL_BAD_REQUEST:'终端请求无效',TERMINAL_INPUT_FULL:'输入队列已满，请等待确认后继续',TERMINAL_TARGET_CHANGED:'请选择原配对电脑后继续',TERMINAL_VIEW_CHANGED:'会话已切换，旧输入已丢弃',TERMINAL_PAUSED:'终端连接已暂停',TERMINAL_RETRY_EXHAUSTED:'暂时无法恢复终端，请检查连接后手动继续'};
 function message(error){return messages[error?.code] || pairedMessage(error);}
+Object.assign(messages,{TERMINAL_PASTE_LIMIT:'一次最多粘贴 16 KB 文本，请分次确认发送',TERMINAL_PASTE_EMPTY:'没有可粘贴的文本',TERMINAL_PASTE_HOST:'这台电脑暂不支持长粘贴，请更新电脑端 ClipRelay 后重试',TERMINAL_PASTE_CHANGED:'粘贴预览已失效，请重新粘贴并确认'});
 class TerminalController{
   constructor({store,request=protocol.request,now=Date.now}){
     Object.assign(this,{store,request,now});this.phase='idle';this.view=crypto.randomBytes(16).toString('hex');this.states=new Map();this.sessions=[];this.selected='';this.instance='';this.nextOpen=0;this.pendingAction=null;this.status='';this.error='';this.notice='';this.desired={columns:100,rows:30};this.needList=true;this.retryAt=0;this.failures=0;this.retryStarted=0;
@@ -28,7 +29,7 @@ class TerminalController{
   bind(){
     requireValue(!this.bound,'TERMINAL_BUSY');this.bound=this.target();this.route={...this.bound};this.phase='connecting';return this.snapshot();
   }
-  invalidate(){this.operation?.abort.abort();this.view=crypto.randomBytes(16).toString('hex');for(const state of this.states.values())if(state.discardUnsent())this.notice='未发送的输入已丢弃；未确认的输入保留原序号等待核对。';}
+  invalidate(){this.pasteDraft=null;this.operation?.abort.abort();this.view=crypto.randomBytes(16).toString('hex');for(const state of this.states.values())if(state.discardUnsent())this.notice='未发送的输入已丢弃；未确认的输入保留原序号等待核对。';}
   pause(){this.invalidate();this.phase='paused';this.error='';}
   resume(){this.target();this.invalidate();this.error='';this.phase='connecting';this.needList=true;this.retryAt=0;this.retryStarted=0;this.failures=0;return this.snapshot();}
   reconcile(status){
@@ -49,6 +50,20 @@ class TerminalController{
     if(data.binary===true)bytes=protocol.bytes(data.data,16384);else{requireValue(typeof data.text==='string' && data.text.length<=16384,'TERMINAL_BAD_REQUEST');bytes=Buffer.from(data.text,'utf8');}
     state.enqueue(bytes);return this.snapshot();
   }
+  checkPaste(data){const state=this.checkView(data);requireValue(state.snapshot.state==='running','TERMINAL_CLOSED');return state;}
+  beginPaste(data,text){
+    this.checkPaste(data);
+    const prepared=protocol.preparePaste(text);this.pasteDraft={token:crypto.randomBytes(16).toString('hex'),view:this.view,id:this.selected};
+    return {...this.pasteDraft,...prepared,limit:16384,hostLimit:this.pasteLimit || 4096};
+  }
+  cancelPaste(data){if(data?.token===this.pasteDraft?.token)this.pasteDraft=null;}
+  submitPaste(data){
+    const state=this.checkView(data),draft=this.pasteDraft;requireValue(draft && data.token===draft.token && data.view===draft.view && data.id===draft.id,'TERMINAL_PASTE_CHANGED');
+    const prepared=protocol.preparePaste(data.text);
+    if(prepared.changed)return {...draft,...prepared,review:true};
+    state.enqueuePaste(protocol.pasteBytes(prepared.text,data.bracketed),this.pasteLimit || 0);this.pasteDraft=null;
+    return {sent:true,state:this.snapshot()};
+  }
   resize(data){this.checkView(data);this.desired=protocol.dimensions(data.columns,data.rows);return this.snapshot();}
   open(shell){
     requireValue(this.phase==='ready' && !this.pendingAction && !!this.instance,'TERMINAL_BUSY');requireValue(['cmd','powershell'].includes(shell),'TERMINAL_BAD_REQUEST');this.target();this.invalidate();
@@ -60,6 +75,7 @@ class TerminalController{
   async refresh(){
     const reply=await this.call({op:'list'}),restarted=this.instance && this.instance!==reply.instance;
     if(restarted){this.invalidate();this.screen=this.view;this.states.clear();this.selected='';this.pendingAction=null;this.notice='电脑终端服务已重启，旧输入已停止。请选择或新建会话。';}
+    if(this.pasteLimit!==(reply.pasteLimit || 0))this.pasteDraft=null;this.pasteLimit=reply.pasteLimit || 0;
     this.instance=reply.instance;this.nextOpen=reply.nextOpen;const known=new Set();
     for(const item of reply.sessions){known.add(item.id);const state=this.states.get(item.id);if(state)state.refresh(item);else this.states.set(item.id,new InputState(item));}
     for(const id of this.states.keys())if(!known.has(id)){this.states.delete(id);if(id===this.selected){this.invalidate();this.selected='';this.notice='原会话已结束或记录过期。';}}
@@ -69,7 +85,7 @@ class TerminalController{
   failure(error){
     if(error?.code==='CANCELLED')return;
     const code=error?.code || 'TERMINAL_UNAVAILABLE';this.error=messages[code] || denied.has(code) || ['NETWORK_NOT_READY','NETWORK_PAUSED','NETWORK_REVOKED','NETWORK_PEER_CHANGED','PAIRING_REQUIRED','UPDATE_HOST','TIMEOUT'].includes(code)?code:'TERMINAL_UNAVAILABLE';
-    this.needList=true;this.healthySince=0;for(const state of this.states.values())state.discardUnsent();
+    this.pasteDraft=null;this.needList=true;this.healthySince=0;for(const state of this.states.values())state.discardUnsent();
     if(code==='TERMINAL_CAPACITY'){this.pendingAction=null;this.phase='ready';return;}
     if(fatal.has(code) || denied.has(code) || ['UPDATE_HOST','TERMINAL_TARGET_CHANGED','NETWORK_REVOKED','NETWORK_PEER_CHANGED','PAIRING_REQUIRED','NETWORK_PAUSED'].includes(code)){this.phase='error';return;}
     if(!this.retryStarted)this.retryStarted=this.now();this.failures++;if(this.failures>=12 || this.now()-this.retryStarted>90000){this.phase='error';this.error='TERMINAL_RETRY_EXHAUSTED';return;}

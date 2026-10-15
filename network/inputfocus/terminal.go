@@ -42,16 +42,17 @@ type terminalSession struct {
 	RemainingMs      int64  `json:"remainingMs"`
 }
 type terminalReply struct {
-	OK       bool              `json:"ok"`
-	Code     string            `json:"code,omitempty"`
-	Instance string            `json:"instance"`
-	NextOpen int64             `json:"nextOpen,omitempty"`
-	Offset   int64             `json:"offset"`
-	Next     int64             `json:"next"`
-	Gap      bool              `json:"gap"`
-	Data     string            `json:"data,omitempty"`
-	Session  *terminalSession  `json:"session,omitempty"`
-	Sessions []terminalSession `json:"sessions,omitempty"`
+	OK         bool              `json:"ok"`
+	Code       string            `json:"code,omitempty"`
+	Instance   string            `json:"instance"`
+	NextOpen   int64             `json:"nextOpen,omitempty"`
+	PasteLimit int               `json:"pasteLimit,omitempty"`
+	Offset     int64             `json:"offset"`
+	Next       int64             `json:"next"`
+	Gap        bool              `json:"gap"`
+	Data       string            `json:"data,omitempty"`
+	Session    *terminalSession  `json:"session,omitempty"`
+	Sessions   []terminalSession `json:"sessions,omitempty"`
 }
 type terminalControl struct {
 	clients string
@@ -155,9 +156,13 @@ func validTerminalRequest(r terminalRequest) bool {
 		return (r.Shell == "cmd" || r.Shell == "powershell") && dimensions && sequence && r.Offset == nil && r.Data == ""
 	case "read":
 		return r.Shell == "" && r.Columns == 0 && r.Rows == 0 && r.Sequence == nil && r.Offset != nil && *r.Offset >= 0 && *r.Offset < 1<<53 && r.Data == ""
-	case "write":
+	case "write", "paste":
+		limit := 4096
+		if r.Op == "paste" {
+			limit = 16396
+		}
 		bytes, err := base64.StdEncoding.DecodeString(r.Data)
-		return r.Shell == "" && r.Columns == 0 && r.Rows == 0 && sequence && r.Offset == nil && err == nil && len(bytes) > 0 && len(bytes) <= 4096 && base64.StdEncoding.EncodeToString(bytes) == r.Data
+		return r.Shell == "" && r.Columns == 0 && r.Rows == 0 && sequence && r.Offset == nil && err == nil && len(bytes) > 0 && len(bytes) <= limit && base64.StdEncoding.EncodeToString(bytes) == r.Data
 	case "resize":
 		return r.Shell == "" && dimensions && r.Sequence == nil && r.Offset == nil && r.Data == ""
 	case "close":
@@ -176,7 +181,7 @@ func validTerminalReply(request terminalRequest, value terminalReply) bool {
 		return false
 	}
 	if request.Op == "list" {
-		if value.NextOpen <= 0 || value.NextOpen >= 1<<53 || value.Session != nil || len(value.Sessions) > 32 || value.Data != "" {
+		if value.NextOpen <= 0 || value.NextOpen >= 1<<53 || value.Session != nil || len(value.Sessions) > 32 || value.Data != "" || (value.PasteLimit != 0 && value.PasteLimit != 16396) {
 			return false
 		}
 		seen := make(map[string]bool)
@@ -202,7 +207,7 @@ func validTerminalReply(request terminalRequest, value terminalReply) bool {
 	if request.Op == "open" {
 		return value.Session.OpenSequence == *request.Sequence && value.Session.Shell == request.Shell
 	}
-	if request.Op == "write" {
+	if request.Op == "write" || request.Op == "paste" {
 		return value.Session.AcceptedSequence == *request.Sequence
 	}
 	return true
@@ -235,7 +240,7 @@ func (p *terminalControl) handler(next http.Handler) http.Handler {
 			fail(415, "TERMINAL_BAD_REQUEST")
 			return
 		}
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768))
 		decoder.DisallowUnknownFields()
 		var request terminalRequest
 		if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF || !validTerminalRequest(request) {

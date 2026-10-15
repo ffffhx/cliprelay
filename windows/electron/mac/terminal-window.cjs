@@ -33,7 +33,10 @@ class DesktopTerminal{
       if(action==='resume')return controller.resume();
       if(action==='refresh'){controller.needList=true;return controller.snapshot();}
       if(action==='copy'){if(typeof data?.text!=='string' || Buffer.byteLength(data.text)>1024*1024)throw new Error();this.clipboard.writeText(data.text);return;}
-      if(action==='paste'){const text=this.clipboard.readText();if(Buffer.byteLength(text)>16384)throw Object.assign(new Error(),{code:'TERMINAL_INPUT_FULL'});return {text};}
+      if(action==='paste'){controller.checkPaste(data);return controller.beginPaste(data,this.clipboard.readText());}
+      if(action==='paste-preview')return controller.beginPaste(data,data?.text);
+      if(action==='paste-submit')return controller.submitPaste(data);
+      if(action==='paste-cancel'){controller.cancelPaste(data);return;}
       if(action==='close'){window.close();return;}
       throw new Error('Unknown action');
     }catch(error){throw new Error(message(error));}
