@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#include <QQueue>
 #include <QtEndian>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
@@ -39,6 +40,10 @@ static quint64 receivedFrame = 0, renderedFrame = 0;
 static qint64 receivedAt = 0, renderedAt = 0, reportedAt = -200;
 static int renderedWidth = 0, renderedHeight = 0;
 static std::atomic<bool> outputFailed{false};
+static QMutex inputMutex;
+static QByteArray inputBytes;
+static QQueue<InputCommand> inputCommands;
+static qint64 inputPartialSince = -1;
 
 // Small, constant-schema messages on the owner pipe. No addresses,
 // credentials, server responses or arbitrary diagnostic text enter this stream.
@@ -100,6 +105,19 @@ void reportProgress() {
         {"renderedAgeMs",renderedFrame?qMin<qint64>(60000,now-renderedAt):60000}};
     writeEvent(QJsonDocument(state).toJson(QJsonDocument::Compact) + '\n');
 }
+void reportInputCommand(quint32 epoch, bool acknowledged) {
+    QMutexLocker guard(&eventMutex);
+    if (!loaded || !current.inputEpochs || !connectedEvent || endedEvent || !epoch) return;
+    const QJsonObject state{{"version",1},{"event","input"},{"epoch",qint64(epoch)},
+        {"stage",acknowledged?"acknowledged":"submitted"}};
+    writeEvent(QJsonDocument(state).toJson(QJsonDocument::Compact) + '\n');
+}
+bool takeInputCommand(InputCommand& command) {
+    QMutexLocker guard(&inputMutex);
+    if (inputCommands.isEmpty()) return false;
+    command = inputCommands.dequeue();
+    return true;
+}
 bool retryableNetworkError(int error) {
     return error == QNetworkReply::ConnectionRefusedError || error == QNetworkReply::RemoteHostClosedError ||
         error == QNetworkReply::HostNotFoundError || error == QNetworkReply::TimeoutError ||
@@ -137,6 +155,7 @@ bool parse(const QByteArray& bytes, Session& result) {
     if (o.contains("overlay")) keys.insert("overlay");
     if (o.contains("overlayPort")) keys.insert("overlayPort");
     if (o.contains("telemetry")) keys.insert("telemetry");
+    if (o.contains("inputEpochs")) keys.insert("inputEpochs");
     const auto actualKeys = o.keys();
     if (QSet<QString>(actualKeys.cbegin(), actualKeys.cend()) != keys) return false;
     Session candidate;
@@ -151,6 +170,9 @@ bool parse(const QByteArray& bytes, Session& result) {
     candidate.fullscreen = o.value("fullscreen").toBool();
     if (o.contains("telemetry") && !o.value("telemetry").isBool()) return false;
     candidate.telemetry = o.value("telemetry").toBool(false);
+    if (o.contains("inputEpochs") && !o.value("inputEpochs").isBool()) return false;
+    candidate.inputEpochs = o.value("inputEpochs").toBool(false);
+    if (candidate.inputEpochs && !candidate.telemetry) return false;
     candidate.address = o.value("address").toString();
     QHostAddress ip;
     if (candidate.address.isEmpty() || candidate.address.size() > 253 ||
@@ -246,9 +268,55 @@ bool loadStdin() {
 }
 bool active() { return loaded; }
 const Session& get() { Q_ASSERT(loaded); return current; }
+// Optional owner commands use fixed 16-byte frames: CRIC, version1, op1/2/3,
+// two reserved zeros, epoch BE32, four reserved zeros. Four commands and a
+// two-second partial-frame deadline bound both buffering and stalled writers.
+static bool readInputCommands() {
+    QMutexLocker guard(&inputMutex);
+    if (inputPartialSince >= 0 && progressClock.elapsed()-inputPartialSince > 2000) return false;
+    char bytes[65];
+    int got = 0;
+#ifdef Q_OS_WIN
+    HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD available = 0, received = 0;
+    if (!PeekNamedPipe(handle,nullptr,0,nullptr,&available,nullptr) || available > 64) return false;
+    if (available && (!ReadFile(handle,bytes,available,&received,nullptr) || !received)) return false;
+    got = static_cast<int>(received);
+#else
+    pollfd fd{STDIN_FILENO,POLLIN,0};
+    const int ready = poll(&fd,1,0);
+    if (ready < 0) return errno == EINTR;
+    if (ready > 0) {
+        if (!(fd.revents & POLLIN)) return false;
+        const ssize_t received = ::read(STDIN_FILENO,bytes,sizeof(bytes));
+        if (received < 0) return errno == EINTR || errno == EAGAIN;
+        if (received <= 0 || received > 64) return false;
+        got = static_cast<int>(received);
+    }
+#endif
+    if (!got) return true;
+    {
+        QMutexLocker eventGuard(&eventMutex);
+        if (!connectedEvent || endedEvent) return false;
+    }
+    if (inputBytes.size()+got+inputCommands.size()*16 > 64) return false;
+    if (inputBytes.isEmpty()) inputPartialSince = progressClock.elapsed();
+    inputBytes.append(bytes,got);
+    while (inputBytes.size() >= 16) {
+        const auto* data = reinterpret_cast<const unsigned char*>(inputBytes.constData());
+        const quint32 epoch = qFromBigEndian<quint32>(data+8);
+        if (inputBytes.left(4) != "CRIC" || data[4] != 1 || data[5] < 1 || data[5] > 3 ||
+            data[6] || data[7] || data[12] || data[13] || data[14] || data[15] || !epoch) return false;
+        inputCommands.enqueue({epoch,static_cast<InputOperation>(data[5])});
+        inputBytes.remove(0,16);
+    }
+    if (inputBytes.isEmpty()) inputPartialSince = -1;
+    return true;
+}
 bool parentAlive() {
     reportProgress();
     if (outputFailed.load()) return false;
+    if (loaded && current.inputEpochs) return readInputCommands();
 #ifdef Q_OS_WIN
     DWORD available = 0;
     return PeekNamedPipe(GetStdHandle(STD_INPUT_HANDLE), nullptr, 0, nullptr, &available, nullptr) && !available;

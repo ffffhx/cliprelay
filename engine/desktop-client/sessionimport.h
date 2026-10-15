@@ -17,6 +17,7 @@ struct Session {
     bool fullscreen = false;
     bool overlay = false;
     bool telemetry = false;
+    bool inputEpochs = false;
     quint16 overlayPort = 0;
 };
 constexpr int MaxFrame = 65536;
@@ -32,5 +33,9 @@ void reportEnded(EndReason reason);
 void reportReceived(quint64 frame);
 void reportRendered(quint64 frame, int width, int height);
 void reportProgress();
+enum class InputOperation { Pause = 1, Resume = 2, Acknowledge = 3 };
+struct InputCommand { quint32 epoch = 0; InputOperation operation = InputOperation::Pause; };
+bool takeInputCommand(InputCommand& command);
+void reportInputCommand(quint32 epoch, bool acknowledged);
 bool retryableNetworkError(int error);
 }

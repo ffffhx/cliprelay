@@ -92,6 +92,24 @@ int main(int argc, char** argv) {
         QTimer::singleShot(10000, &app, [&] { app.exit(4); });
         return app.exec();
     }
+    if (app.arguments().contains("--input-commands")) {
+        ClipRelayImport::reportConnected();
+        QTimer commands;
+        QObject::connect(&commands,&QTimer::timeout,[&] {
+            if (!ClipRelayImport::parentAlive()) {
+                ClipRelayImport::reportEnded(ClipRelayImport::EndReason::Parent);
+                app.quit();
+                return;
+            }
+            ClipRelayImport::InputCommand command;
+            while (ClipRelayImport::takeInputCommand(command)) {
+                ClipRelayImport::reportInputCommand(command.epoch,command.operation==ClipRelayImport::InputOperation::Acknowledge);
+            }
+        });
+        commands.start(10);
+        QTimer::singleShot(5000,&app,[&] {app.exit(4);});
+        return app.exec();
+    }
     // Also trust a different fixture root: encrypted pinning must still reject
     // its valid chain before the first HTTP request, even without sslErrors.
     if (!qEnvironmentVariableIsEmpty("CLIPRELAY_PROBE_CA")) {

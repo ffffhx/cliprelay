@@ -254,6 +254,24 @@ the real producers, queue and sender with an in-memory transport. Its ten
 scenarios cover all 20 public producers, full-queue cleanup, failed commands,
 late mouse/controller/sensor batches, recycled controllers after queue overflow,
 pen coalescing, cancellation of text waits
-and legacy compatibility. The desktop entry point does not enable this option
-yet: SDL held-state clearing, owner-pipe commands and the host/presentation
-handshake must be integrated before exposing display switching.
+and legacy compatibility.
+
+The optional session envelope now accepts `inputEpochs: true` only alongside
+presentation telemetry. The owning process sends fixed 16-byte `CRIC` frames:
+version 1, operation 1 (pause), 2 (resume) or 3 (verified host acknowledgment),
+two zero bytes, a big-endian nonzero epoch and four zero bytes. Buffering is
+limited to four commands; incomplete frames expire after two seconds. Local
+`input` events distinguish `submitted` from `acknowledged`. EOF, invalid input,
+failed native commands and output backpressure use the normal cleanup path.
+
+The SDL loop applies commands before dispatching further input. It clears held
+state and queued input events, cancels touch/gamepad timers and rechecks physical
+state before reopening admission. Keys, buttons, contacts and axes held across
+resume must be released or neutral before becoming new remote input. Blocked
+keyboard modifiers are removed from subsequent key events. Input timers execute
+on the SDL thread, preventing a delayed callback from crossing a pause. Device,
+window, decoder and quit events remain available while input is paused.
+
+The manifest does not yet advertise input epochs, and the desktop owner does not
+request them. The host metadata and presentation handshake plus desktop controls
+must be integrated and validated before exposing display switching.

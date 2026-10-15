@@ -26,6 +26,9 @@ def prepare(source: Path, check=False):
     for name in ['sessionimport.cpp', 'sessionimport.h']:
         if (source / 'app' / 'backend' / name).exists():
             raise RuntimeError('Refusing to replace existing session importer')
+    for name in ['inputstate.h', 'inputepoch.cpp']:
+        if (source / 'app/streaming/input' / name).exists():
+            raise RuntimeError('Refusing to replace existing input epoch extension')
     with tempfile.TemporaryDirectory(prefix='cliprelay-client-') as temporary:
         patch = Path(temporary) / 'desktop-client.patch'
         patch.write_bytes((extension / 'desktop-client.patch').read_bytes().replace(b'\r\n', b'\n'))
@@ -39,6 +42,8 @@ def prepare(source: Path, check=False):
             shutil.copyfile(extension / 'portmap.h', common / 'src/cliprelay-portmap.h')
             for name in ['sessionimport.cpp', 'sessionimport.h']:
                 shutil.copyfile(extension / name, source / 'app' / 'backend' / name)
+            for name in ['inputstate.h', 'inputepoch.cpp']:
+                shutil.copyfile(extension / name, source / 'app/streaming/input' / name)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)

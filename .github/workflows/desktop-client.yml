@@ -24,10 +24,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev libssl-dev
+      - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev libssl-dev libsdl2-dev
       - run: python3 scripts/prepare_desktop_client.py desktop-source
       - name: Test native input epochs and stale shared batches
         run: python3 scripts/test_desktop_input.py desktop-source --output /tmp/cliprelay-input-epochs
+      - name: Test held input and event-thread timers
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror engine/desktop-client/tests/input_state.cpp -o /tmp/cliprelay-input-state
+          /tmp/cliprelay-input-state
       - name: Test embedded route port bounds
         run: |
           cc -std=c11 -Wall -Wextra -Werror engine/desktop-client/tests/portmap.c -o /tmp/cliprelay-portmap
@@ -38,6 +42,13 @@ jobs:
           cd probe-build
           qmake6 ../engine/desktop-client/tests/probe.pro MOONLIGHT_SOURCE="$GITHUB_WORKSPACE/desktop-source"
           make -j2
+      - name: Test production SDL input adapter with virtual devices
+        run: |
+          mkdir input-sdl-build
+          cd input-sdl-build
+          qmake6 ../engine/desktop-client/tests/input_sdl.pro MOONLIGHT_SOURCE="$GITHUB_WORKSPACE/desktop-source"
+          make -j2
+          ./cliprelay-input-sdl
       - name: Test actual Qt TLS, credential import and parent lifetime
         env:
           CLIPRELAY_QT_PROBE: ${{ github.workspace }}/probe-build/cliprelay-probe

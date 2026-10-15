@@ -39,7 +39,7 @@ def build(source, platform):
         shutil.copytree(bundle,runtime/'ClipRelayStream.app',symlinks=True)
     artifact=source/'cliprelay-artifact';artifact.mkdir()
     shutil.copytree(runtime,artifact/'runtime',symlinks=True)
-    for name in ['LICENSE','upstream.json','README.md','desktop-client.patch','desktop-common.patch','portmap.h','sessionimport.h','sessionimport.cpp']:
+    for name in ['LICENSE','upstream.json','README.md','desktop-client.patch','desktop-common.patch','portmap.h','sessionimport.h','sessionimport.cpp','inputstate.h','inputepoch.cpp']:
         shutil.copyfile(extension/name,artifact/name)
     # Corresponding source includes pinned submodules and the applied extension.
     # SDK binaries and generated objects are excluded; their dependency release

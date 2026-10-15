@@ -32,10 +32,67 @@ test('lifecycle reports one connection and the first terminal reason only',async
   assert.equal((await start(envelope(),['--network-errors']).done).code,0);
 });
 test('invalid identity, types, limits and unknown properties fail closed',async()=>{
-  for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001},{telemetry:1}]){
+  for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001},{telemetry:1},{inputEpochs:true},{inputEpochs:1,telemetry:true}]){
     const result=await start({...envelope(),...change},['--parse']).done;assert.equal(result.code,2,JSON.stringify(change));
   }
   const result=await start(Buffer.from([0,2,0,0]),['--parse']).done;assert.equal(result.code,2);
+});
+
+function inputFrame(epoch,operation){
+  const bytes=Buffer.alloc(16);bytes.write('CRIC');bytes[4]=1;bytes[5]=operation;bytes.writeUInt32BE(epoch,8);return bytes;
+}
+async function startInputCommands(enabled=true){
+  const run=start({...envelope(),telemetry:true,...(enabled?{inputEpochs:true}:{})},['--input-commands']);
+  await once(run.child.stdout,'data');
+  return run;
+}
+async function untilInput(run,count){
+  let output='';
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{cleanup();reject(new Error('No input event'));},3000);
+    function cleanup(){clearTimeout(timer);run.child.stdout.off('data',read);run.child.off('close',closed);}
+    function closed(){cleanup();reject(new Error('Input probe ended early'));}
+    function read(bytes){output+=bytes;const lines=output.split('\n');output=lines.pop();for(const line of lines)if(JSON.parse(line).event==='input'&&!--count){cleanup();resolve();}}
+    run.child.stdout.on('data',read);run.child.on('close',closed);
+  });
+}
+test('opt-in owner commands accept fragmented frames and distinguish submitted from acknowledged',async()=>{
+  const run=await startInputCommands();
+  const first=inputFrame(1,1),ready=untilInput(run,1);
+  run.child.stdin.write(first.subarray(0,7));await new Promise(r=>setTimeout(r,25));run.child.stdin.write(first.subarray(7));
+  await ready;
+  const next=untilInput(run,3);
+  run.child.stdin.write(Buffer.concat([inputFrame(1,3),inputFrame(2,2),inputFrame(0xffffffff,3)]));
+  await next;run.child.stdin.end();
+  const result=await run.done;assert.equal(result.code,0,result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse).filter(e=>e.event==='input'),[
+    {version:1,event:'input',epoch:1,stage:'submitted'},
+    {version:1,event:'input',epoch:1,stage:'acknowledged'},
+    {version:1,event:'input',epoch:2,stage:'submitted'},
+    {version:1,event:'input',epoch:0xffffffff,stage:'acknowledged'}]);
+});
+test('invalid owner command headers, reserved bytes and zero epochs close the lease',async()=>{
+  const invalid=[];
+  for(const index of [0,4,5,6,7,12,15]){const bytes=inputFrame(1,1);bytes[index]=255;invalid.push(bytes);}
+  invalid.push(inputFrame(0,1));
+  for(const bytes of invalid){
+    const run=await startInputCommands();run.child.stdin.write(bytes);
+    const result=await run.done;assert.equal(result.code,0,result.stderr);
+    assert.equal(result.stdout.includes('"event":"input"'),false);
+  }
+});
+test('unnegotiated commands and bursts beyond four frames fail closed',async()=>{
+  const legacy=await startInputCommands(false);legacy.child.stdin.write(inputFrame(1,1));
+  assert.equal((await legacy.done).code,0);
+  const burst=await startInputCommands();burst.child.stdin.write(Buffer.concat(Array(5).fill(inputFrame(1,1))));
+  const result=await burst.done;assert.equal(result.code,0);assert.equal(result.stdout.includes('"event":"input"'),false);
+});
+test('partial owner commands expire while an otherwise idle command lease stays alive',async()=>{
+  const run=await startInputCommands();const started=performance.now();
+  run.child.stdin.write(inputFrame(1,1).subarray(0,5));
+  const result=await run.done;assert.equal(result.code,0);
+  assert.ok(performance.now()-started>=1900&&performance.now()-started<4000);
+  assert.equal(result.stdout.includes('"event":"input"'),false);
 });
 
 test('opt-in progress is monotonic, bounded, rate-limited and stops after the terminal event',async()=>{
