@@ -399,7 +399,7 @@ index 1b47397..bf56a8e 100644
      server.resource["^/api/apps$"]["GET"] = getApps;
      server.resource["^/api/apps$"]["POST"] = saveApp;
 diff --git a/src/input.cpp b/src/input.cpp
-index a12514d..98f1e1d 100644
+index a12514d..d5d743f 100644
 --- a/src/input.cpp
 +++ b/src/input.cpp
 @@ -29,6 +29,7 @@ extern "C" {
@@ -424,7 +424,55 @@ index a12514d..98f1e1d 100644
      std::mutex input_queue_lock;  ///< Input queue lock.
  
      thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
-@@ -2026,6 +2032,8 @@ namespace input {
+@@ -708,8 +714,23 @@ namespace input {
+   }
+ 
+   /**
+-   * @brief Forward a client input packet directly to the platform backend.
+-   *
++   * @brief Complete a pending left-button release before canceling its timer.
++   * @param input Stream whose delayed release is being flushed.
++   */
++  void flush_delayed_left_release(const std::shared_ptr<input_t> &input) {
++    if (input->mouse_left_button_timeout > DISABLE_LEFT_BUTTON_DELAY) {
++      task_pool.cancel(input->mouse_left_button_timeout);
++      input->mouse_left_button_timeout = nullptr;
++      // The UP packet already cleared mouse_press before scheduling its release.
++      // A subsequent DOWN keeps the button held; reset_mouse_buttons handles it.
++      if (!mouse_press[BUTTON_LEFT]) {
++        platf::button_mouse(platf_input, BUTTON_LEFT, true);
++      }
++    }
++  }
++
++  /**
++   * @brief Forward relative mouse movement after flushing an earlier release.
+    * @param input Platform input backend that receives the event.
+    * @param packet Protocol packet being processed.
+    */
+@@ -718,6 +739,8 @@ namespace input {
+       return;
+     }
+ 
++    // Do not lose the pending release task when changing coordinate modes.
++    flush_delayed_left_release(input);
+     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
+     platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
+   }
+@@ -905,9 +928,9 @@ namespace input {
+      */
+     if (button == BUTTON_LEFT && release && !input->mouse_left_button_timeout) {
+       auto f = [=]() {
+-        auto left_released = mouse_press[BUTTON_LEFT];
+-        if (left_released) {
+-          // Already released left button
++        input->mouse_left_button_timeout = nullptr;
++        if (mouse_press[BUTTON_LEFT]) {
++          // A newer DOWN superseded this delayed UP.
+           return;
+         }
+         platf::button_mouse(platf_input, BUTTON_LEFT, release);
+@@ -2026,6 +2049,8 @@ namespace input {
    void passthrough_next_message(std::shared_ptr<input_t> input) {
      // 'entry' backs the 'payload' pointer, so they must remain in scope together
      std::vector<uint8_t> entry;
@@ -433,7 +481,7 @@ index a12514d..98f1e1d 100644
      PNV_INPUT_HEADER payload;
  
      // Lock the input queue while batching, but release it before sending
-@@ -2034,20 +2042,29 @@ namespace input {
+@@ -2034,20 +2059,29 @@ namespace input {
      {
        std::lock_guard<std::mutex> lg(input->input_queue_lock);
  
@@ -465,7 +513,7 @@ index a12514d..98f1e1d 100644
          auto batchable_payload = (PNV_INPUT_HEADER) batchable_entry.data();
  
          auto batch_result = batch(payload, batchable_payload);
-@@ -2064,6 +2081,8 @@ namespace input {
+@@ -2064,6 +2098,8 @@ namespace input {
        }
      }
  
@@ -474,7 +522,7 @@ index a12514d..98f1e1d 100644
      // Print the final input packet
      input::print((void *) payload);
  
-@@ -2121,7 +2140,9 @@ namespace input {
+@@ -2121,7 +2157,9 @@ namespace input {
     * @param input The input context pointer.
     * @param input_data The input message.
     */
@@ -485,7 +533,7 @@ index a12514d..98f1e1d 100644
      NV_INPUT_HEADER header {};
      if (!validate_input_packet(input_data, &header)) {
        if (input_data.size() >= sizeof(header)) {
-@@ -2138,7 +2159,7 @@ namespace input {
+@@ -2138,7 +2176,7 @@ namespace input {
  
      {
        std::lock_guard<std::mutex> lg(input->input_queue_lock);
@@ -494,7 +542,15 @@ index a12514d..98f1e1d 100644
      }
      task_pool.push(passthrough_next_message, input);
    }
-@@ -2208,6 +2229,44 @@ namespace input {
+@@ -2200,6 +2238,7 @@ namespace input {
+    * @param input Retained stream input state to reset.
+    */
+   void reset_input_state(const std::shared_ptr<input_t> &input) {
++    flush_delayed_left_release(input);
+     reset_mouse_buttons();
+     reset_keyboard_keys();
+     reset_gamepads(input);
+@@ -2208,6 +2247,43 @@ namespace input {
    /**
     * @brief Reset the object to its initial empty state.
     */
@@ -519,9 +575,8 @@ index a12514d..98f1e1d 100644
 +        }
 +        task_pool.cancel(key_press_repeat_id);
 +        key_press_repeat_id = nullptr;
-+        task_pool.cancel(input->mouse_left_button_timeout);
-+        input->mouse_left_button_timeout = nullptr;
 +        reset_input_state(input);
++        input->mouse_left_button_timeout = nullptr;
 +        platf::touch_input_t touch {};
 +        touch.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
 +        platf::touch_update(input->client_context.get(), input->touch_port, touch);
@@ -539,7 +594,7 @@ index a12514d..98f1e1d 100644
    void reset(std::shared_ptr<input_t> &input) {
      task_pool.cancel(key_press_repeat_id);
      task_pool.cancel(input->mouse_left_button_timeout);
-@@ -2331,8 +2390,9 @@ namespace input {
+@@ -2331,8 +2407,9 @@ namespace input {
        });
      }
  
@@ -550,8 +605,19 @@ index a12514d..98f1e1d 100644
        platf::move_mouse(platf_input, 1, 1);
        platf::move_mouse(platf_input, -1, -1);
      },
+@@ -2343,6 +2420,10 @@ namespace input {
+ 
+ #ifdef SUNSHINE_TESTS
+   namespace testing {
++    platf::client_input_t *client_input(const std::shared_ptr<input_t> &input) {
++      return input ? input->client_context.get() : nullptr;
++    }
++
+     void set_platform_input(platf::input_t input) {
+       terminate_gamepads();
+       platf_input = std::move(input);
 diff --git a/src/input.h b/src/input.h
-index d383e42..9ab54e5 100644
+index d383e42..80ffbf2 100644
 --- a/src/input.h
 +++ b/src/input.h
 @@ -17,6 +17,8 @@
@@ -575,6 +641,16 @@ index d383e42..9ab54e5 100644
  
    /**
     * @brief Initialize global input resources and platform backends.
+@@ -86,6 +91,9 @@ namespace input {
+ 
+ #ifdef SUNSHINE_TESTS
+   namespace testing {
++    /** @brief Return the per-client backend for fake-device assertions. */
++    platf::client_input_t *client_input(const std::shared_ptr<input_t> &input);
++
+     /**
+      * @brief Replace the global platform input backend for a unit test.
+      *
 diff --git a/src/platform/common.h b/src/platform/common.h
 index 325f913..f9e144e 100644
 --- a/src/platform/common.h
