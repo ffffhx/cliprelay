@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -148,6 +149,126 @@ func TestSessionLockConfirmedEndAndOneShotCommit(t *testing.T) {
 	}
 	if f.commits != 1 {
 		t.Fatal("repeated lock")
+	}
+}
+
+func TestSessionLockCancelledTokenCannotRearm(t *testing.T) {
+	for _, initiallyArmed := range []bool{false, true} {
+		f, h := newLockFixture(t)
+		if initiallyArmed && lockCall(h, "arm") != 200 {
+			t.Fatal("initial arm")
+		}
+		if lockCall(h, "disarm") != 200 {
+			t.Fatal("disarm")
+		}
+		if lockCall(h, "arm") != 409 {
+			t.Fatalf("a delayed arm reinstated a cancelled token (initially armed=%t)", initiallyArmed)
+		}
+		f.end()
+		f.tick(1)
+		f.tick(2000)
+		if f.commits != 0 {
+			t.Fatal("cancelled intent committed")
+		}
+	}
+}
+
+func TestSessionLockWorkerRestartReportsUnboundOff(t *testing.T) {
+	f, h := newLockFixture(t)
+	if lockCall(h, "arm") != 200 {
+		t.Fatal("arm")
+	}
+	// A restarted worker has no pending intent even while the engine still
+	// reports the original stream and the host renewal deadline has not elapsed.
+	f.result = sessionLockState{OK: true, Supported: true, State: "off"}
+	response := fileCall(h, []byte("first"), "POST", "/v1/session-lock", `{"op":"status"}`)
+	var state sessionLockState
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &state) != nil || state.State != "off" || state.Lease != "" || state.Instance != "" || state.Stream != 0 {
+		t.Fatalf("off state retained stale binding: %s", response.Body.String())
+	}
+	if f.control.request.Lease != "" || lockCall(h, "arm") != 409 {
+		t.Fatal("restarted worker intent could be replayed")
+	}
+}
+
+func TestSessionLockDisarmAfterLostCommitCannotClaimOff(t *testing.T) {
+	f, h := newLockFixture(t)
+	if lockCall(h, "arm") != 200 {
+		t.Fatal("arm")
+	}
+	f.commitError = true
+	f.end()
+	f.tick(1)
+	f.tick(2000)
+	if f.control.result.State != "failed" || f.result.State != "requested" {
+		t.Fatal("lost-ack fixture")
+	}
+	read := f.control.read
+	f.control.read = func(command string) (json.RawMessage, error) {
+		if strings.Contains(command, `"op":"cancel"`) {
+			return json.RawMessage(`{"ok":false,"code":"LOCK_ALREADY_REQUESTED"}`), nil
+		}
+		return read(command)
+	}
+	if lockCall(h, "disarm") != 409 {
+		t.Fatal("an initiated OS lock was falsely reported as cancelled")
+	}
+}
+
+func TestSessionLockCancellationWaitsForWorkerConfirmation(t *testing.T) {
+	f, h := newLockFixture(t)
+	if lockCall(h, "arm") != 200 {
+		t.Fatal("arm")
+	}
+	blocked := true
+	read := f.control.read
+	f.control.read = func(command string) (json.RawMessage, error) {
+		if blocked && strings.Contains(command, `"op":"cancel"`) {
+			return nil, errors.New("lost cancel response")
+		}
+		return read(command)
+	}
+	if lockCall(h, "disarm") != 503 || !f.control.cancelling || f.control.request.Lease == "" {
+		t.Fatal("unconfirmed cancel was forgotten")
+	}
+	f.tick(4000)
+	f.tick(4000)
+	response := fileCall(h, []byte("first"), "POST", "/v1/session-lock", `{"op":"status"}`)
+	if response.Code != 503 || !strings.Contains(response.Body.String(), `"cancelProtected":true`) || f.renews != 0 || f.commits != 0 {
+		t.Fatal("pending cancellation renewed, locked or appeared off", response.Body.String())
+	}
+	blocked = false
+	f.tick(1)
+	if f.control.cancelling || f.control.request.Lease != "" || f.result.State != "off" || lockCall(h, "arm") != 409 {
+		t.Fatal("confirmed cancel did not retire the old token")
+	}
+	fresh := strings.ReplaceAll(lockBody("arm"), privacyTestLease, strings.Repeat("b", 32))
+	if fileCall(h, []byte("first"), "POST", "/v1/session-lock", fresh).Code != 200 {
+		t.Fatal("fresh explicit intent was blocked")
+	}
+}
+
+func TestSessionLockRetirementBoundAndActiveReservation(t *testing.T) {
+	f, h := newLockFixture(t)
+	for i := 0; i < 255; i++ {
+		body := strings.ReplaceAll(lockBody("disarm"), privacyTestLease, fmt.Sprintf("%032x", i))
+		if fileCall(h, []byte("first"), "POST", "/v1/session-lock", body).Code != 200 {
+			t.Fatal("bounded cancellation receipt")
+		}
+	}
+	if lockCall(h, "arm") != 200 || len(f.control.retired) != 256 {
+		t.Fatal("active intent did not reserve a receipt slot")
+	}
+	if lockCall(h, "disarm") != 200 || lockCall(h, "arm") != 409 {
+		t.Fatal("full receipt table lost active cancellation")
+	}
+	extra := strings.ReplaceAll(lockBody("disarm"), privacyTestLease, strings.Repeat("c", 32))
+	if fileCall(h, []byte("first"), "POST", "/v1/session-lock", extra).Code != 429 || len(f.control.retired) != 256 {
+		t.Fatal("receipt bound not enforced")
+	}
+	f.now = f.now.Add(2*time.Minute + time.Second)
+	if fileCall(h, []byte("first"), "POST", "/v1/session-lock", extra).Code != 200 || len(f.control.retired) != 1 {
+		t.Fatal("expired cancellation receipts retained capacity")
 	}
 }
 func TestSessionLockUncertaintyAndOtherSessionsNeverLock(t *testing.T) {

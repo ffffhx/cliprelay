@@ -13,14 +13,15 @@ import (
 )
 
 type sessionLockState struct {
-	OK        bool   `json:"ok"`
-	Supported bool   `json:"supported"`
-	State     string `json:"state"`
-	Lease     string `json:"lease,omitempty"`
-	ExpiresMs int64  `json:"expiresMs"`
-	Code      string `json:"code,omitempty"`
-	Instance  string `json:"instance,omitempty"`
-	Stream    uint64 `json:"stream,omitempty"`
+	OK              bool   `json:"ok"`
+	Supported       bool   `json:"supported"`
+	State           string `json:"state"`
+	Lease           string `json:"lease,omitempty"`
+	ExpiresMs       int64  `json:"expiresMs"`
+	Code            string `json:"code,omitempty"`
+	Instance        string `json:"instance,omitempty"`
+	Stream          uint64 `json:"stream,omitempty"`
+	CancelProtected bool   `json:"cancelProtected"`
 }
 
 type sessionLockControl struct {
@@ -34,6 +35,8 @@ type sessionLockControl struct {
 	owner                          string
 	deadline, lastRenew, idleSince time.Time
 	result                         sessionLockState
+	cancelling                     bool
+	retired                        map[string]time.Time
 }
 
 func (p *sessionLockControl) worker(op, lease string) (sessionLockState, error) {
@@ -70,16 +73,57 @@ func (p *sessionLockControl) worker(op, lease string) (sessionLockState, error) 
 	}
 	return state, nil
 }
-func (p *sessionLockControl) clear() {
-	if p.request.Lease != "" {
-		_, _ = p.worker("cancel", p.request.Lease)
+func (p *sessionLockControl) retire(owner, lease string) bool {
+	if p.retired == nil {
+		p.retired = make(map[string]time.Time)
 	}
+	now := p.now()
+	active := p.owner + ":" + p.request.Lease
+	for key, until := range p.retired {
+		if key != active && !now.Before(until) {
+			delete(p.retired, key)
+		}
+	}
+	key := owner + ":" + lease
+	if _, exists := p.retired[key]; !exists && len(p.retired) >= 256 {
+		return false
+	}
+	// An active intent reserves its slot too: unrelated cancellation receipts
+	// cannot fill the table and prevent us remembering its later cancellation.
+	p.retired[key] = now.Add(2 * time.Minute)
+	return true
+}
+
+func (p *sessionLockControl) forget() {
 	p.request = privacyRequest{}
 	p.certificate = nil
 	p.owner = ""
 	p.deadline = time.Time{}
 	p.idleSince = time.Time{}
 	p.result = sessionLockState{}
+	p.cancelling = false
+}
+
+func (p *sessionLockControl) clear() bool {
+	if p.request.Lease == "" {
+		p.forget()
+		return true
+	}
+	p.cancelling = true
+	p.retire(p.owner, p.request.Lease)
+	value, err := p.worker("cancel", p.request.Lease)
+	if err == nil && value.OK && value.State == "off" {
+		p.forget()
+		return true
+	}
+	if err == nil && value.Code == "LOCK_ALREADY_REQUESTED" {
+		// A lost commit reply can leave result=failed although the worker has
+		// already asked Windows to lock. Never turn that into a successful cancel.
+		p.cancelling = false
+		p.result = sessionLockState{OK: true, Supported: true, State: "requested", Lease: p.request.Lease, ExpiresMs: 5000}
+		p.deadline = p.now().Add(5 * time.Second)
+	}
+	return false
 }
 func (p *sessionLockControl) engine(ctx context.Context) (displayState, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -116,6 +160,10 @@ func (p *sessionLockControl) checkLocked(ctx context.Context) {
 		return
 	}
 	if !paired(p.clients, p.certificate) {
+		p.clear()
+		return
+	}
+	if p.cancelling {
 		p.clear()
 		return
 	}
@@ -206,6 +254,7 @@ func (p *sessionLockControl) handler(next http.Handler) http.Handler {
 			return
 		}
 		reply := func(status int, value sessionLockState) {
+			value.CancelProtected = true
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(status)
@@ -259,7 +308,12 @@ func (p *sessionLockControl) handler(next http.Handler) http.Handler {
 			fail(403, "LOCK_UNPAIRED")
 			return
 		}
+		p.checkLocked(r.Context())
 		if request.Op == "status" {
+			if p.cancelling {
+				fail(503, "LOCK_CANCEL_PENDING")
+				return
+			}
 			state, err := p.worker("status", "")
 			if !allowed() {
 				if p.owner == owner {
@@ -271,6 +325,12 @@ func (p *sessionLockControl) handler(next http.Handler) http.Handler {
 			if err != nil || !state.OK {
 				fail(503, "LOCK_UNAVAILABLE")
 				return
+			}
+			if state.State == "off" && p.owner == owner && p.request.Lease != "" {
+				// Worker restart or expiry is authoritative: retire the old intent
+				// instead of renewing it after telling the client it is off.
+				p.retire(owner, p.request.Lease)
+				p.forget()
 			}
 			if p.owner != owner || state.Lease != p.request.Lease {
 				reply(200, sessionLockState{OK: true, Supported: state.Supported, State: "off"})
@@ -284,21 +344,43 @@ func (p *sessionLockControl) handler(next http.Handler) http.Handler {
 		matching := p.owner == owner && request.Instance == p.request.Instance && request.Stream == p.request.Stream && request.Lease == p.request.Lease
 		if p.request.Lease != "" && !matching {
 			if p.result.State == "locked" || p.result.State == "failed" {
-				p.clear()
+				if !p.clear() {
+					fail(409, "LOCK_BUSY")
+					return
+				}
 			} else {
 				fail(409, "LOCK_BUSY")
 				return
 			}
 		}
 		if request.Op == "disarm" {
+			if !p.retire(owner, request.Lease) {
+				fail(429, "LOCK_BUSY")
+				return
+			}
 			if matching && p.result.State == "requested" {
 				fail(409, "LOCK_ALREADY_REQUESTED")
 				return
 			}
 			if matching {
-				p.clear()
+				if !p.clear() {
+					if p.result.State == "requested" {
+						fail(409, "LOCK_ALREADY_REQUESTED")
+					} else {
+						fail(503, "LOCK_CANCEL_PENDING")
+					}
+					return
+				}
 			}
 			reply(200, sessionLockState{OK: true, Supported: true, State: "off"})
+			return
+		}
+		if p.cancelling {
+			fail(503, "LOCK_CANCEL_PENDING")
+			return
+		}
+		if until, found := p.retired[owner+":"+request.Lease]; found && !matching && p.now().Before(until) {
+			fail(409, "LOCK_EXPIRED")
 			return
 		}
 		if matching && p.result.State != "armed" {
@@ -313,6 +395,9 @@ func (p *sessionLockControl) handler(next http.Handler) http.Handler {
 		op := "arm"
 		if matching {
 			op = "renew"
+		} else if !p.retire(owner, request.Lease) {
+			fail(429, "LOCK_BUSY")
+			return
 		}
 		p.request = request
 		p.owner = owner

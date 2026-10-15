@@ -22,6 +22,7 @@ function fixture(){
   imports['./mac/display-controller.cjs']={DisplayController:class{constructor(){this.actions=[];this.inputActions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}apply(data){this.actions.push(data);}setInput(data){this.inputActions.push(data);}},message:()=> 'Display operation failed'};
   imports['./mac/privacy-controller.cjs']={PrivacyController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}setEnabled(data){this.actions.push(data);}},message:()=> 'Privacy operation failed'};
   imports['./mac/audio-mute-controller.cjs']={AudioMuteController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}setEnabled(data){this.actions.push(data);}},message:()=> 'Audio mute operation failed'};
+  imports['./mac/session-lock-controller.cjs']={SessionLockController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}setEnabled(data){this.actions.push(data);}},message:()=> 'Audio mute operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),module,require:name=>imports[name] || require(name),Buffer},{filename});
   const client=new module.exports.DesktopClient('.');client.open();const event={sender:client.window.webContents,senderFrame:client.window.webContents.mainFrame};
   return {client,event,viewer,controller,network,files,handlers};
@@ -41,7 +42,9 @@ test('only the owned top-level pairing page can open a viewer or change pairings
   await f.client.request(f.event,'terminal-open');assert.equal(f.client.terminal.opened,true);
   await f.client.request(f.event,'privacy-set-enabled',{viewId:'owned',enabled:true});assert.equal(f.client.privacy.actions.length,1);
   await f.client.request(f.event,'audio-mute-set-enabled',{viewId:'owned',enabled:true});assert.equal(f.client.audioMute.actions.length,1);
+  await f.client.request(f.event,'session-lock-set-enabled',{viewId:'owned',enabled:true});assert.equal(f.client.sessionLock.actions.length,1);
   await assert.rejects(f.client.request({...f.event,senderFrame:{}},'audio-mute-set-enabled',{viewId:'owned',enabled:false}),/Unknown renderer/);assert.equal(f.client.audioMute.actions.length,1);
+  await assert.rejects(f.client.request({...f.event,senderFrame:{}},'session-lock-set-enabled',{viewId:'owned',enabled:false}),/Unknown renderer/);assert.equal(f.client.sessionLock.actions.length,1);
   await assert.rejects(f.client.request({...f.event,senderFrame:{}},'privacy-set-enabled',{viewId:'owned',enabled:false}),/Unknown renderer/);assert.equal(f.client.privacy.actions.length,1);
   await f.client.request(f.event,'bitrate-apply',{budgetKbps:6000});assert.equal(f.client.bitrate.actions.length,1);
   await assert.rejects(f.client.request({...f.event,senderFrame:{}},'bitrate-apply',{budgetKbps:6000}),/Unknown renderer/);assert.equal(f.client.bitrate.actions.length,1);
@@ -55,4 +58,5 @@ test('only the owned top-level pairing page can open a viewer or change pairings
   assert.equal(f.client.displays.closed,true);
   assert.equal(f.client.privacy.closed,true);
   assert.equal(f.client.audioMute.closed,true);
+  assert.equal(f.client.sessionLock.closed,true);
 });
