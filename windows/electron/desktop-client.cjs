@@ -16,6 +16,7 @@ const {DisplayController,message:displayMessage}=require('./mac/display-controll
 const {PrivacyController,message:privacyMessage}=require('./mac/privacy-controller.cjs');
 const {AudioMuteController,message:audioMuteMessage}=require('./mac/audio-mute-controller.cjs');
 const {SessionLockController,message:sessionLockMessage}=require('./mac/session-lock-controller.cjs');
+const {WakeController,message:wakeMessage}=require('./mac/wake-controller.cjs');
 
 class DesktopClient {
   constructor(root){
@@ -24,7 +25,7 @@ class DesktopClient {
     const base=new PairedStore(directory,safeStorage,{generate:createClientIdentity});
     const localName=Array.from(os.hostname().replace(/[\r\n\0]/g,'')).slice(0,32).join('') || 'Windows';
     this.network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(root,'desktop-network'),localName,
-      canPair:()=>!this.paired?.pairController,onUpdate:()=>{this.paired?.reconcileRoutes();this.viewer?.reconcile();this.files?.reconcile();this.terminal?.reconcile();}});
+      canPair:()=>!this.paired?.pairController,onUpdate:()=>{this.paired?.reconcileRoutes();this.viewer?.reconcile();this.files?.reconcile();this.terminal?.reconcile();this.wake?.reconcile();}});
     const store=new RoutedStore(base,id=>this.network.route(id),id=>this.network.streamPolicy(id));
     this.viewer=new StreamViewer({directory:path.join(root,'remote-viewer'),store,onUpdate:()=>{this.bitrate?.reconcile();this.displays?.reconcile();this.privacy?.reconcile();this.audioMute?.reconcile();this.sessionLock?.reconcile();}});
     this.bitrate=new BitrateController({store,viewer:this.viewer});
@@ -32,14 +33,15 @@ class DesktopClient {
     this.privacy=new PrivacyController({store,viewer:this.viewer});
     this.audioMute=new AudioMuteController({store,viewer:this.viewer});
     this.sessionLock=new SessionLockController({store,viewer:this.viewer});
+    this.wake=new WakeController({store,directory:path.join(directory,'wake')});
     this.files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
     this.terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard});
-    this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);this.terminal.reconcile(this.paired?.status);}});
+    this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);this.terminal.reconcile(this.paired?.status);this.wake?.reconcile();}});
     this.paired.start();
     this.network.reconcile();
     ipcMain.handle('mac:request',(event,action,data)=>this.request(event,action,data));
   }
-  snapshot(){this.bitrate.reconcile();this.displays.reconcile();this.privacy.reconcile();this.audioMute.reconcile();this.sessionLock.reconcile();return {...this.paired.snapshot(),viewer:this.viewer.snapshot(),network:this.network.snapshot(),files:this.files.snapshot(),bitrate:this.bitrate.snapshot(),displays:this.displays.snapshot(),privacy:this.privacy.snapshot(),audioMute:this.audioMute.snapshot(),sessionLock:this.sessionLock.snapshot(),desktopOnly:true};}
+  snapshot(){this.bitrate.reconcile();this.displays.reconcile();this.privacy.reconcile();this.audioMute.reconcile();this.sessionLock.reconcile();this.wake.reconcile();return {...this.paired.snapshot(),viewer:this.viewer.snapshot(),network:this.network.snapshot(),files:this.files.snapshot(),bitrate:this.bitrate.snapshot(),displays:this.displays.snapshot(),privacy:this.privacy.snapshot(),audioMute:this.audioMute.snapshot(),sessionLock:this.sessionLock.snapshot(),wake:this.wake.snapshot(),desktopOnly:true};}
   async request(event,action,data){
     if(!this.window || event.sender!==this.window.webContents || event.senderFrame!==event.sender.mainFrame || event.senderFrame.url!==this.url+'?kind=paired')throw new Error('Unknown renderer');
     if(Buffer.byteLength(JSON.stringify(data ?? {}))>32768)throw new Error('Invalid request');
@@ -52,6 +54,7 @@ class DesktopClient {
       if(action==='privacy-set-enabled'){try{this.privacy.setEnabled(data);}catch(error){throw Object.assign(new Error(privacyMessage(error)),{privacyMessage:true});}return this.snapshot();}
       if(action==='audio-mute-set-enabled'){try{this.audioMute.setEnabled(data);}catch(error){throw Object.assign(new Error(audioMuteMessage(error)),{audioMuteMessage:true});}return this.snapshot();}
       if(action==='session-lock-set-enabled'){try{this.sessionLock.setEnabled(data);}catch(error){throw Object.assign(new Error(sessionLockMessage(error)),{sessionLockMessage:true});}return this.snapshot();}
+      if(typeof action==='string'&&action.startsWith('wake-')){try{this.wake.action(action,data);}catch(error){throw Object.assign(new Error(wakeMessage(error)),{wakeMessage:true});}return this.snapshot();}
       if(typeof action==='string' && action.startsWith('files-')){try{await this.files.action(action,data,this.window);}catch(error){throw Object.assign(new Error(fileMessage(error)),{fileMessage:true});}return this.snapshot();}
       if(action==='pair-start'){if(this.network.pairAbort)throw Object.assign(new Error(),{code:'PAIRING_BUSY'});this.paired.startPair(data);return this.snapshot();}
       if(action==='pair-cancel')this.paired.cancelPair();
@@ -69,7 +72,7 @@ class DesktopClient {
       else if(action==='paired-send'){const sent=await this.paired.sendCurrent();return {message:sent?'已加密发送':'没有可发送的内容'};}
       else throw new Error('Unknown action');
       this.network.reconcile();this.paired.reconcileRoutes();this.viewer.reconcile();this.files.reconcile();this.terminal.reconcile();return this.snapshot();
-    }catch(error){throw new Error(error.fileMessage||error.bitrateMessage||error.displayMessage||error.privacyMessage||error.audioMuteMessage||error.sessionLockMessage?error.message:message(error));}
+    }catch(error){throw new Error(error.fileMessage||error.bitrateMessage||error.displayMessage||error.privacyMessage||error.audioMuteMessage||error.sessionLockMessage||error.wakeMessage?error.message:message(error));}
   }
   open(){
     if(this.window && !this.window.isDestroyed()){this.window.show();this.window.focus();return;}
@@ -78,6 +81,6 @@ class DesktopClient {
     window.once('ready-to-show',()=>window.show());window.on('closed',()=>{if(this.window===window)this.window=null;this.paired.cancelPair();this.network.cancelPair();this.files.releaseWindow();});
     window.loadFile(this.page,{query:{kind:'paired'}});
   }
-  close(){this.sessionLock.close();this.audioMute.close();this.privacy.close();this.displays.close();this.bitrate.close();this.terminal.close();this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
+  close(){this.wake.close();this.sessionLock.close();this.audioMute.close();this.privacy.close();this.displays.close();this.bitrate.close();this.terminal.close();this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
 }
 module.exports={DesktopClient};
