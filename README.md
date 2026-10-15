@@ -432,6 +432,8 @@ Windows / Mac 控制端已接入独立终端窗口，从已配对电脑的「终
 
 本阶段本地 24 项桌面终端检查通过，包含实际 xterm 解析器、预览取消/旧会话拒绝、队列满额、旧主机限制、完整长粘贴的暂停与重试，以及真实双向 TLS 到普通用户 ConPTY 的丢回执去重。完整 Windows 服务和网络程序已编译，正式 Go 接口与 Android 现有终端协议的互操作也已验证。预览使用模拟剪贴板测试，未读写真实系统剪贴板；实际窗口验收与新安装包验证单独记录，不以这些测试替代。记录见 `.tools/uu-parity/terminal-paste-artifacts.json`。
 
+长粘贴最终源码 `157a8c8` 的[三平台 CI](https://github.com/ffffhx/cliprelay/actions/runs/38798360020)、[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38798364756)与 [Mac 两种架构完整包](https://github.com/ffffhx/cliprelay/actions/runs/38798369812)均已通过。三平台终端用例清单与本地 24 项一致：Windows 全部通过，Mac/Linux 各仅跳过 Windows 专属 ConPTY 一项。本地 Electron 自带运行时另有 27 项相关检查通过。下载包已核对最终源码、完整性清单、终端许可资源及原生组件；Windows 在临时测试机通过安装和独立进程验收，下载包内实际服务程序也通过了长粘贴丢回执重试。实际用户窗口、中文输入法和鼠标松开仍待后续验证与修复，未替换本机现有安装。
+
 桌面终端通过主进程的固定证书双向 TLS 访问同一后端；独立窗口启用 sandbox 和 contextIsolation，页面不能读取配对私钥、联网、打开链接或通过 OSC 52 操作本地剪贴板。旧会话按键、延迟粘贴和结束确认不能影响新会话；路由更换会丢弃未发送输入，未确认输入使用原序号核对。历史回放与新输出按准确字节边界分开，避免重复响应历史查询。输入只保存在内存，不记录命令或终端输出。输入确认仅代表后端接收或写入，不代表命令执行成功。
 
 桌面终端本地 Node 与 Electron 运行时各 21 项测试通过，包括真实 ConPTY、固定证书 TLS、丢失输入回执后的去重、PowerShell、尺寸变化、路由替换、服务重启、真实 xterm 解析器和窗口权限。验证命令：先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs`。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、终端鼠标、公网与安装版 SYSTEM 路径验收。
