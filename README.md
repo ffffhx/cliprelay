@@ -438,6 +438,8 @@ Windows 终端主机新增 `list.mouseProtocol=1` 和独立的 `mouse` 请求，
 
 该能力目前仅接入电脑端协议和原生写入器，桌面与 Android 界面尚未改用新请求；现有原始字节鼠标输入不享有上述手势清理，完整拖拽问题仍需客户端接入才能解决。15 组队列/模式检查、真实双向 TLS 与 ConPTY 自动松开检查已通过，包括丢回执重试、队列满额、模式切换与调整大小交叉、写入中断和多键清理；另外 47 个输出序列与随包 xterm 的真实解析结果一致，电脑端逐字节接收时也保持一致。完整服务编译、现有 24 项 Node / 27 项 Electron 终端检查与 12 项 Android 终端协议检查通过；这不是实际桌面或手机界面验收，未修改现有安装。
 
+鼠标主机阶段最终源码 `a702acd` 的[三平台 CI](https://github.com/ffffhx/cliprelay/actions/runs/38805880911)和 [Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38805885657)已通过，Windows 普通用户环境实际执行了新鼠标接口、双向 TLS 与原生自动松开测试。下载包已核对源码、全部文件哈希、网络程序的提交号及原生组件；包内服务在本地隔离终端中再次通过丢回执去重和自动松开检查，观察到松开约需 1.58 秒。Mac 应用源码未变，沿用的两种架构完整包已与本次最终源码重新核对。记录见 `.tools/uu-parity/terminal-mouse-host-artifacts.json`；桌面与 Android 客户端接入仍待完成，未替换现有安装或执行新增设备测试。
+
 桌面终端通过主进程的固定证书双向 TLS 访问同一后端；独立窗口启用 sandbox 和 contextIsolation，页面不能读取配对私钥、联网、打开链接或通过 OSC 52 操作本地剪贴板。旧会话按键、延迟粘贴和结束确认不能影响新会话；路由更换会丢弃未发送输入，未确认输入使用原序号核对。历史回放与新输出按准确字节边界分开，避免重复响应历史查询。输入只保存在内存，不记录命令或终端输出。输入确认仅代表后端接收或写入，不代表命令执行成功。
 
 桌面终端本地 Node 与 Electron 运行时各 21 项测试通过，包括真实 ConPTY、固定证书 TLS、丢失输入回执后的去重、PowerShell、尺寸变化、路由替换、服务重启、真实 xterm 解析器和窗口权限。验证命令：先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs`。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、终端鼠标、公网与安装版 SYSTEM 路径验收。
