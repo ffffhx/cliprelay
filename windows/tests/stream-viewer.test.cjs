@@ -140,3 +140,13 @@ test('startup does not report running without a native connected event and expir
   const f=manager(store(),{startupMs:100},{silent:true});t.after(()=>f.viewer.stop());await f.viewer.open();assert.equal(f.viewer.phase,'starting');
   await until(()=>f.viewer.phase==='error');assert.equal(f.viewer.snapshot().error,'VIEWER_START_TIMEOUT');assert.equal(f.children.length,1);
 });
+test('a stable restored session earns a fresh retry budget',async t=>{
+  const f=manager(store(),{maxRetries:1,stableMs:80});t.after(()=>f.viewer.stop());await f.viewer.open();await until(()=>f.viewer.phase==='running');
+  f.child.send({version:1,event:'ended',reason:'network'});await until(()=>f.children.length===2 && f.viewer.phase==='running');
+  await delay(100);f.child.send({version:1,event:'ended',reason:'network'});await until(()=>f.children.length===3 && f.viewer.phase==='running');
+});
+test('explicit stop during old-child drain prevents a new viewer on replacement route',async t=>{
+  const state=store(),f=manager(state,{}, {closeDelay:150});t.after(()=>f.viewer.stop());await f.viewer.open();await until(()=>f.viewer.phase==='running');
+  state.host.routeId='new-route';f.viewer.reconcile();assert.equal(f.viewer.phase,'recovering');f.viewer.stop();
+  await until(()=>!f.viewer.child);await delay(60);assert.equal(f.children.length,1);assert.equal(f.viewer.phase,'idle');
+});

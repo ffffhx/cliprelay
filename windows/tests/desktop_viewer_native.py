@@ -155,6 +155,8 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
                 else:raise RuntimeError('Replacement route did not recover real video')
                 time.sleep(5)
                 report['recovery']={'newPort':local_port,'lifecycle':history,'realNetworkFailure':True}
+                ready_event=next(item for item in reversed(history) if item.get('type')=='route' and item.get('ready'))
+                report['recovery']['routeReadyToConnectedMs']=native[-1]['atMs']-ready_event['atMs']
                 process.stdin.write(b'{"action":"stop"}\n');process.stdin.flush()
             closing=time.monotonic();process.stdin.close();process.stdin=None
             code=process.wait(timeout=12)

@@ -5,7 +5,7 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const {spawn}=require('node:child_process');
 const {StreamViewer}=require('../electron/mac/stream-viewer.cjs');
 const directory=process.argv[2],logs=process.argv[3];
-const emit=value=>process.stdout.write(JSON.stringify(value)+'\n');
+const emit=value=>process.stdout.write(JSON.stringify({atMs:Math.round(performance.now()),...value})+'\n');
 let viewer,state,number=0,stopping=false;
 function stop(){stopping=true;viewer?.stop();if(!viewer?.child)process.exit(0);}
 const lines=readline.createInterface({input:process.stdin});
@@ -35,6 +35,7 @@ lines.on('line',async line=>{
       await viewer.open({width:value.width,height:value.height,fps:value.fps,bitrate:value.bitrate,fullscreen:value.fullscreen});
     }else if(value.action==='route'){
       state.host.routeReady=value.ready;if(value.ready){state.host.port=value.port;state.host.routeId=value.id;}
+      emit({type:'route',ready:value.ready});
       viewer.reconcile();
     }else if(value.action==='stop')stop();
     else throw Error('invalid command');

@@ -30,6 +30,7 @@ jobs:
           node-version: '22.12.0'
       - run: npm run setup:electron
       - run: npm run test:electron
+      - run: node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
       - name: Fetch verified desktop viewer
         if: inputs.desktop_client_run_id != ''
         env:

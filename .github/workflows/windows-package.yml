@@ -31,6 +31,8 @@ jobs:
           }
           npm run test:electron
           if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
+          node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop recovery tests failed' }
           Push-Location network
           try {
             go test -count=1 -timeout=120s ./inputfocus ./cmd/cliprelay-network
