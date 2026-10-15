@@ -422,7 +422,9 @@ Windows / Mac 控制端已加入「实时码率」，支持在兼容编码器的
 
 隔离 Windows 实测在同一 HEVC 720p30 会话中依次调整至 12、2、6 Mbps，确认耗时分别为 328、265、282 毫秒，播放器没有重启，渲染约 29.89 帧/秒。这里测量的是本地确认时间，并非公网延迟或与 UU 的性能比较。[三平台回归](https://github.com/ffffhx/cliprelay/actions/runs/38735847276)通过既有的 86 项连接/播放器用例和新增的 11 项码率用例，本地 Node 与 Electron 运行时各通过 72 项检查。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38735855339)和 [Mac 两种架构完整包](https://github.com/ffffhx/cliprelay/actions/runs/38735862748)已包含新版播放器与码率控制；Windows 临时测试机安装、独立进程和后台清理检查通过。源码与下载包核验记录在 `.tools/uu-parity/desktop-bitrate-artifacts.json`。
 
-实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面显示器切换及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
+Windows 和 Mac 控制端现已接入显示器选择：切换前先确认播放器和电脑都已暂停输入；电脑接受切换、编码新画面，且播放器实际呈现对应画面后，才恢复输入。连接、授权或画面无法确认时结束本次远控；丢失响应只查询状态，不自动重发切换。此能力需要配套的新主机和播放器组件，旧组件显示更新提示。隔离 Windows 单屏实测在同一 HEVC 会话内重建当前显示器并恢复输入耗时 703 毫秒，期间保留码率调整功能；该结果不代表物理多屏切换或公网性能。13 项控制协议用例、3 项界面状态用例以及包含输入、码率和窗口权限的 62 项 Electron 检查通过。主机和 Windows/Mac 播放器组件已构建、下载并核对对应源码；完整安装包验收进度见 `.tools/uu-parity/desktop-display-artifacts.json`。
+
+实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实多屏/热插拔、输入与音频、显卡兼容性仍待验收。桌面隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
 源码构建需要 Go 1.26.7：先运行 `python scripts/build_network.py windows`，再运行

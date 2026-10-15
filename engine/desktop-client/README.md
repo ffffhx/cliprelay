@@ -280,7 +280,12 @@ Initial input opens only after a frame from the current capture is presented.
 Subsequent resume also rechecks the expected capture generation, dimensions and
 frame boundary after the host acknowledgment. EOF, invalid local events, revoked
 pairing, route changes and timeouts cancel the pending operation and close the
-old native lease. Display selection UI remains to be connected and validated.
+old native lease. The Windows/Mac display picker now uses this owner to pause,
+submit one stream/epoch/revision-bound display selection and await matching
+capture generation, encoded frame and actual presentation before resuming.
+An uncertain POST is observed without resending; timeout or binding loss ends
+the viewer without reopening input. Renderer requests carry only a view token
+and a display from the current list, never a host address or input epoch.
 
 [Input component build 38755514829](https://github.com/ffffhx/cliprelay/actions/runs/38755514829)
 passes ten native queue scenarios, eight held-state/timer scenarios, six SDL
@@ -295,5 +300,19 @@ match all 294 Windows and 1,847 Mac manifest files, copied extensions and applie
 Qt/common source patches. The Windows build exposed a `max` macro collision,
 now fixed and covered by a header coexistence check. A separate regression
 ensures synthetic touch mouse releases cannot consume a physical mouse's held
-state. These verified components are not yet pinned into full application
-packages; desktop owner/control integration and managed GUI acceptance remain.
+state. [Owner component build 38760732369](https://github.com/ffffhx/cliprelay/actions/runs/38760732369)
+also passes the 30 paired input/owner cases and builds both platforms; all 294
+Windows and 1,847 Mac files and corresponding sources have been verified.
+The full application component pins now select this viewer and guarded host
+build 38758839932. Complete-package acceptance is tracked separately.
+
+The final Windows Qt viewer, production StreamViewer/InputSession/DisplayController,
+paired Go handlers and isolated final host pass the input/display runtime fixture:
+pause epoch 3, encoded frame 140, presented frame 142, then resume epoch 4, within
+703 ms on the same stream. Live 12/2/6 Mbps changes also pass; parent EOF closes
+the viewer in 344 ms and releases the host stream. Host physical input and audio
+are disabled in this fixture. It reconstructs the available single display,
+so physical multi-monitor, hotplug, managed GUI and WAN acceptance remain.
+Run `desktop_viewer_native.py --telemetry --control-fixture <paired Go fixture>
+--input-epochs` with the verified engine and viewer artifacts. Local control/UI
+tests are `desktop-display.test.cjs` and `desktop-display-ui.test.cjs`.

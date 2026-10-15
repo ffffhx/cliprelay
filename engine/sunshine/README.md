@@ -238,9 +238,9 @@ that never activate the extension keep the legacy input path.
 
 `input_test.cpp` exercises the packet/state/lifetime rules without platform input.
 `input_integration_test.cpp` is copied into the upstream test target and exercises
-the production queue with a fake backend and a keyboard-output sink. All eleven
-keyboard, mouse, gamepad, touch and pen cases pass in
-[build 38749719942](https://github.com/ffffhx/cliprelay/actions/runs/38749719942).
+the production queue with a fake backend and a keyboard-output sink. All twelve
+keyboard, mouse, gamepad, touch, pen and guarded selection cases pass in
+[build 38758839932](https://github.com/ffffhx/cliprelay/actions/runs/38758839932).
 They include delayed left-button release across pause, coordinate-mode changes
 and disconnect, a new press superseding a pending release, and both side buttons.
 The optional
@@ -251,9 +251,13 @@ it does not send key, mouse or gamepad data. The same final engine also passes
 epochs receive host acknowledgment in 47–141 ms and local acknowledgment in
 141–218 ms. Same-stream display reconstruction while paused takes 0.672 s.
 These are local fixture results without video decoding or presentation.
-Full desktop use still needs the desktop owner to join native acknowledgments
-with capture-generation and actual presented-frame validation before resuming.
-The desktop display picker is not enabled by this host extension alone.
+The new desktop owner and display picker now join these native acknowledgments
+with capture generation and actual presented-frame validation before resuming.
+The final guarded host passes both a complete native receiver fixture (0.406 s
+same-display reconstruction while paused) and the actual Qt desktop controller
+fixture (0.703 s through presentation and input resume). Both keep the original
+stream and disable physical input injection. Physical multi-monitor, hotplug,
+managed GUI and installed hardware acceptance remain separate.
 
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers
