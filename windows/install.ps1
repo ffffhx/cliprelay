@@ -51,8 +51,7 @@ function Install-ScriptFile {
         }
     }
     else {
-        $url = "$($BaseUrl.TrimEnd('/'))/$Name"
-        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $Destination
+        throw "Verified package file is no longer available: $Name"
     }
 }
 

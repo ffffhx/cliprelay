@@ -14,7 +14,6 @@ if ($version.versionName -cnotmatch '^\d+\.\d+\.\d+$' -or $version.versionCode -
 & python (Join-Path $PSScriptRoot 'build_network.py') windows
 if ($LASTEXITCODE -ne 0) { throw 'Embedded network build failed.' }
 & (Join-Path $source 'screen-share\setup.ps1') -Destination (Join-Path $source 'screen-share')
-& (Join-Path $source 'electron\setup.ps1')
 & (Join-Path $source 'remote-desktop\setup.ps1') -Destination (Join-Path $source 'remote-desktop') -EngineArtifact $EngineArtifact
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 [IO.Directory]::CreateDirectory($output) | Out-Null
@@ -32,7 +31,8 @@ try {
     foreach ($name in @('main.js','preload.js','package.json','share.html','share.css','share.js','bridge.ps1','setup.ps1','RESEARCH.md')) {
         Copy-Item -LiteralPath (Join-Path $source "screen-share\$name") -Destination (Join-Path $video $name)
     }
-    Copy-Item -LiteralPath (Join-Path $source 'desktop') -Destination $package -Recurse
+    # Build in the fresh package directory, never copy a previously configured app.
+    & (Join-Path $source 'electron\setup.ps1') -Destination (Join-Path $package 'desktop')
     if ($ViewerArtifact) {
         & (Join-Path $source 'electron\stage-viewer.ps1') -Artifact $ViewerArtifact -Destination (Join-Path $package 'remote-viewer')
     }

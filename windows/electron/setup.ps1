@@ -28,12 +28,11 @@ foreach ($name in @('main.js','native-host.cjs','windows.cjs','preload.js','laun
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $appDirectory -Force
 }
 $clientFiles = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-foreach ($name in $clientFiles | Where-Object { $_.StartsWith('mac/') }) {
+foreach ($name in $clientFiles | Where-Object { $_.StartsWith('mac/') -or $_.StartsWith('renderer/') }) {
     $clientTarget = Join-Path $appDirectory $name
     [IO.Directory]::CreateDirectory((Split-Path $clientTarget)) | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $clientTarget -Force
 }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'renderer') -Destination $appDirectory -Recurse -Force
 $manifest = Get-Content -LiteralPath (Join-Path $appDirectory 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $manifest.version = (Get-Content -LiteralPath (Join-Path $windowsRoot 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json).versionName
 [IO.File]::WriteAllText((Join-Path $appDirectory 'package.json'), ($manifest | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
