@@ -617,7 +617,7 @@ index 2852d437..2c64bc45 100644
          [commandBuffer presentDrawable:drawable];
          [commandBuffer commit];
 diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
-index c20d3126..d61e1c02 100644
+index c20d3126..f7dd6021 100644
 --- a/app/streaming/video/ffmpeg.cpp
 +++ b/app/streaming/video/ffmpeg.cpp
 @@ -1,3 +1,4 @@
@@ -625,23 +625,19 @@ index c20d3126..d61e1c02 100644
  #include <Limelight.h>
  #include "ffmpeg.h"
  #include "utils.h"
-@@ -2022,6 +2023,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
+@@ -542,6 +543,11 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
+     m_VideoDecoderCtx->get_format = ffGetFormat;
+     m_VideoDecoderCtx->pkt_timebase.num = 1;
+     m_VideoDecoderCtx->pkt_timebase.den = 90000;
++#ifdef AV_CODEC_FLAG_COPY_OPAQUE
++    // Preserve the network frame identity through decoder drops/reordering.
++    // Older decoders leave opaque null, so they cannot claim presentation.
++    m_VideoDecoderCtx->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
++#endif
  
-                     // Capture a frame timestamp to measuring pacing delay
-                     frame->pkt_dts = LiGetMicroseconds();
-+                    frame->opaque = nullptr; // No matching network frame means no presentation claim.
- 
-                     if (!m_FrameInfoQueue.isEmpty()) {
-                         // Data buffers in the DU are not valid here!
-@@ -2034,6 +2036,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
- 
-                         // Store the presentation time (90 kHz timebase)
-                         frame->pts = (int64_t)du.rtpTimestamp;
-+                        frame->opaque = reinterpret_cast<void*>(static_cast<quintptr>(static_cast<quint32>(du.frameNumber)));
-                     }
- 
-                     m_ActiveWndVideoStats.decodedFrames++;
-@@ -2095,6 +2098,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
+     // Allocate enough extra frames for Pacer to avoid stalling the decoder
+     m_VideoDecoderCtx->extra_hw_frames = PACER_MAX_OUTSTANDING_FRAMES;
+@@ -2095,6 +2101,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
  
  int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
  {
@@ -649,3 +645,16 @@ index c20d3126..d61e1c02 100644
      PLENTRY entry = du->bufferList;
      int err;
  
+@@ -2173,6 +2180,7 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+ 
+     m_Pkt->data = reinterpret_cast<uint8_t*>(m_DecodeBuffer.data());
+     m_Pkt->size = offset;
++    m_Pkt->opaque = reinterpret_cast<void*>(static_cast<quintptr>(static_cast<quint32>(du->frameNumber)));
+ 
+     if (du->frameType == FRAME_TYPE_IDR) {
+         m_Pkt->flags = AV_PKT_FLAG_KEY;
+@@ -2220,4 +2228,3 @@ void FFmpegVideoDecoder::renderFrameOnMainThread()
+ {
+     m_Pacer->renderOnMainThread();
+ }
+-

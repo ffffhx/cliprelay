@@ -7,6 +7,12 @@
 #include <QSettings>
 #include <QTimer>
 #include <cstdio>
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 // Only satisfies the launch URL symbol in NvHTTP; this fixture never launches
 // a stream or sends input. TLS and identity code are the production sources.
@@ -53,10 +59,26 @@ int main(int argc, char** argv) {
     }
     if (app.arguments().contains("--progress-backpressure")) {
         ClipRelayImport::reportConnected();
-        const QByteArray fill(1024*1024,'x');
-        std::fwrite(fill.constData(),1,fill.size(),stdout); std::fflush(stdout);
-        ClipRelayImport::reportProgress();
-        return ClipRelayImport::parentAlive()?8:0;
+        QTimer fill;
+        int attempts = 0;
+        QObject::connect(&fill, &QTimer::timeout, [&] {
+            // Fill with single bytes as well as blocks: a short large write
+            // can leave enough room for a progress event. Node may also read
+            // one buffer before its paused readable reaches its high-water mark.
+            const QByteArray bytes(4096,'x');
+            for (int size : {4096,1}) for (int count=0;count<8192;count++) {
+#ifdef Q_OS_WIN
+                DWORD written=0;
+                if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE),bytes.constData(),size,&written,nullptr) || !written) break;
+#else
+                if (::write(STDOUT_FILENO,bytes.constData(),size)<=0) break;
+#endif
+            }
+            if (!ClipRelayImport::parentAlive()) app.exit(0);
+            else if (++attempts==8) app.exit(8);
+        });
+        fill.start(250);
+        return app.exec();
     }
     if (app.arguments().contains("--network-errors")) {
         for (int code : {1, 2, 3, 4, 7, 8}) if (!ClipRelayImport::retryableNetworkError(code)) return 8;
