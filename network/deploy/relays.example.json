@@ -1,0 +1,16 @@
+{
+  "regions": {
+    "902": {
+      "regionid": 902,
+      "regioncode": "cliprelay-backup",
+      "regionname": "ClipRelay Backup",
+      "nodes": [{
+        "name": "902a",
+        "regionid": 902,
+        "hostname": "relay-backup.example.net",
+        "derpport": 443,
+        "stunport": 3478
+      }]
+    }
+  }
+}

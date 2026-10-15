@@ -24,6 +24,11 @@ public static class InputFocusTargetTest {
         foreach (double invalid in new[] { Double.NaN, Double.PositiveInfinity, Double.NegativeInfinity, -.1, 1.1 })
             Check(!InputFocus.TryMapTap(invalid, .5, 1920, 1080, out point), "Invalid coordinate accepted");
         Check(!InputFocus.TryMapTap(.5, .5, 0, 1080, out point), "Missing display accepted");
+        Check(InputFocus.TryAbsolutePoint(-960, -100, -1920, -200, 3840, 1280, out point) && point.X == -960 && point.Y == -100,
+            "Negative desktop coordinates were lost");
+        Check(!InputFocus.TryAbsolutePoint(-1921, 0, -1920, -200, 3840, 1280, out point), "Outside desktop accepted");
+        Check(!InputFocus.TryAbsolutePoint(1920, 0, -1920, -200, 3840, 1280, out point), "Exclusive desktop edge accepted");
+        Check(!InputFocus.TryAbsolutePoint(0, 0, 0, 0, 0, 1080, out point), "Unavailable desktop accepted");
         if (args.Length == 1 && args[0] == "--geometry-only") {
             Console.WriteLine("PASS: physical pixel mapping, display edges and invalid coordinates");
             return 0;
@@ -50,7 +55,13 @@ public static class InputFocusTargetTest {
                             Point p = Point.Empty;
                             ui(() => p = control.PointToScreen(new Point(control.Width / 2, control.Height / 2)));
                             var screen = Screen.PrimaryScreen.Bounds;
-                            return State(InputFocus.Read((double)p.X / screen.Width, (double)p.Y / screen.Height));
+                            var absolute = State(InputFocus.ReadAbsolute(p.X, p.Y));
+                            if (screen.Contains(p)) {
+                                var legacy = State(InputFocus.Read((double)p.X / screen.Width, (double)p.Y / screen.Height));
+                                Check((bool)absolute["supported"] == (bool)legacy["supported"] &&
+                                    (bool)absolute["editable"] == (bool)legacy["editable"], "Absolute/legacy primary probe disagree");
+                            }
+                            return absolute;
                         };
                         Action<Control, bool, string> expect = (control, editable, label) => {
                             var value = at(control);
@@ -66,6 +77,12 @@ public static class InputFocusTargetTest {
                         Thread.Sleep(150);
                         expect(session, false, "New session autofocus must not open keyboard");
                         expect(input, true, "Explicit tap on newly focused input should open keyboard");
+                        foreach (var display in Screen.AllScreens) {
+                            ui(() => form.Location = new Point(display.WorkingArea.Left + 20, display.WorkingArea.Top + 20));
+                            Thread.Sleep(150);
+                            expect(input, true, "Absolute input on " + display.DeviceName);
+                            expect(session, false, "Absolute sidebar on " + display.DeviceName);
+                        }
                         // A non-focusable overlay leaves the editor focused but covers its pixels.
                         ui(() => { var cover = new Label { Bounds = input.Bounds, BackColor = Color.Gray }; form.Controls.Add(cover); cover.BringToFront(); });
                         expect(input, false, "Occluded input should not open keyboard");
@@ -77,7 +94,7 @@ public static class InputFocusTargetTest {
             if (lostFocus && failure == null) failure = new Exception("Test cancelled after losing foreground focus");
         }
         if (failure != null) { Console.Error.WriteLine(failure); return 1; }
-        Console.WriteLine("PASS: tap mapping, sticky focus, session autofocus, readonly and occluded input");
+        Console.WriteLine("PASS: absolute/legacy mapping, " + Screen.AllScreens.Length + " display(s), sticky focus, session autofocus, readonly and occluded input");
         return 0;
     }
 }

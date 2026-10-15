@@ -1,0 +1,31 @@
+# Install only on a separate relay host, with a reviewed relay.env and a
+# checksum-verified build of tailscale.com/cmd/derper at network/go.mod's version.
+[Unit]
+Description=ClipRelay additional encrypted relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cliprelay-relay
+Group=cliprelay-relay
+EnvironmentFile=/etc/cliprelay-relay/relay.env
+ExecStartPre=/usr/bin/python3 /usr/local/lib/cliprelay-relay/relay_preflight.py
+ExecStart=/usr/local/lib/cliprelay-relay/derper -a :443 -hostname ${DERP_HOSTNAME} -certmode letsencrypt -certdir /var/lib/cliprelay-relay/certs -c /var/lib/cliprelay-relay/derper.key -verify-client-url ${DERP_VERIFY_URL} -verify-client-url-fail-open=false
+Restart=on-failure
+RestartSec=5
+StateDirectory=cliprelay-relay
+StateDirectoryMode=0700
+UMask=0077
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cliprelay-relay
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=384M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

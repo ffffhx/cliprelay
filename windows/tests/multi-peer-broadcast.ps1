@@ -1,8 +1,11 @@
-[CmdletBinding()]
-param()
+﻿[CmdletBinding()]
+param([switch]$Clipboard)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
+if ($Clipboard -and ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows')) {
+    throw 'Real clipboard acceptance requires a disposable Windows CI runner.'
+}
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -171,6 +174,7 @@ function New-TestTarget {
     $target.Uri = "http://127.0.0.1:$Port"
     $target.HostHeader = ""
     $target.AccessToken = $Token
+    $target.LegacyAllowed = $true
     return $target
 }
 
@@ -294,8 +298,8 @@ foreach ($direction in @("previous", "next")) {
     } finally { $remote.Dispose() }
 }
 
-# Exercise the Ctrl+C fallback through the production clipboard reader and
-# broadcaster, with a loopback receiver instead of the user's saved devices.
+# The default fixture never changes the desktop clipboard. Actual native reads
+# and writes are explicit and restricted to a disposable CI runner.
 foreach ($functionName in @("Get-ClipboardTextWithRetry", "Send-CopiedClipboard")) {
     $functionAst = $ast.Find({
         param($node)
@@ -314,23 +318,47 @@ function Send-ClipboardTextUnlessDuplicate {
 }
 function Set-LastTransferStatus { throw "Unexpected fallback failure" }
 $script:Notifications = $false
+$script:fallbackMarkdown = "# Clipboard fallback`n`n**Keep Markdown** and ``inline code``."
+if (-not $Clipboard) {
+    function Get-ClipboardTextWithRetry { return $script:fallbackMarkdown }
+}
+$savedText = $null
+$hadText = $false
+if ($Clipboard) {
+    $hadText = [System.Windows.Forms.Clipboard]::ContainsText()
+    if ($hadText) { $savedText = [System.Windows.Forms.Clipboard]::GetText() }
+    else {
+        $existing = [System.Windows.Forms.Clipboard]::GetDataObject()
+        if ($null -ne $existing -and $existing.GetFormats().Length -gt 0) {
+            throw 'Refusing to replace non-text clipboard contents on the runner.'
+        }
+    }
+}
+function Set-TestClipboard([string]$Text, [bool]$Clear) {
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        try {
+            if ($Clear) { [System.Windows.Forms.Clipboard]::Clear() }
+            else { [System.Windows.Forms.Clipboard]::SetText($Text) }
+            return
+        } catch {
+            if ($attempt -eq 9) { throw }
+            Start-Sleep -Milliseconds 30
+        }
+    }
+}
 $fallbackServer = New-Object ClipRelayTests.OneShotHttpServer(200, 0)
-$savedClipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
 try {
     $script:fallbackTargets = @((New-TestTarget -Name "fallback" -Port $fallbackServer.Port -Token ""))
-    $markdown = "# Clipboard fallback`n`n**Keep Markdown** and ``inline code``."
-    [System.Windows.Forms.Clipboard]::SetText($markdown)
+    if ($Clipboard) { Set-TestClipboard -Text $script:fallbackMarkdown -Clear $false }
     Send-CopiedClipboard -PreviousSequence ([ClipRelay.NativeMethods]::GetClipboardSequenceNumber())
     $received = [Text.Encoding]::UTF8.GetString($fallbackServer.Body) | ConvertFrom-Json
-    if ($fallbackServer.Path -ne "/push" -or $received.text -cne $markdown) {
+    if ($fallbackServer.Path -ne "/push" -or $received.text -cne $script:fallbackMarkdown) {
         throw "Fallback did not deliver unchanged Markdown to /push"
     }
 }
 finally {
     $fallbackServer.Dispose()
-    if ($null -ne $savedClipboard) {
-        [System.Windows.Forms.Clipboard]::SetDataObject($savedClipboard, $true)
-    } else { [System.Windows.Forms.Clipboard]::Clear() }
+    if ($Clipboard) { Set-TestClipboard -Text $savedText -Clear (-not $hadText) }
 }
 
-Write-Output "PASS: parallel authenticated broadcasts, partial delivery, and unchanged clipboard Markdown over HTTP."
+Write-Output "PASS: parallel authenticated broadcasts, partial delivery, and fallback Markdown over HTTP; real clipboard=$Clipboard."

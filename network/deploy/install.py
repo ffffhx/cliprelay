@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from relays import load_map, render_map
 
 stage = Path(__file__).resolve().parent
 assert os.geteuid() == 0, 'Run with sudo.'
@@ -82,11 +83,18 @@ for p in (bin_dir, config_dir, state_dir):
     p.mkdir(parents=True, exist_ok=True)
 os.chmod(state_dir, 0o700)
 os.chown(state_dir, user.pw_uid, user.pw_gid)
-for name in ('headscale', 'cliprelay-pairing', 'rotate-key.py'):
+for name in ('headscale', 'cliprelay-pairing', 'rotate-key.py', 'relays.py'):
     atomic(bin_dir / name, (stage / name).read_bytes(), 0o755)
+# Preserve operator-added regions on upgrades. Reject an invalid map before it
+# can become a Headscale startup dependency.
+relay_map = config_dir / 'relays.json'
+relay_data = load_map(relay_map if relay_map.exists() else stage / 'relays.json')
+if not relay_map.exists():
+    atomic(relay_map, (stage / 'relays.json').read_bytes(), 0o640, user)
+atomic(config_dir / 'relays.yaml', render_map(relay_data).encode('utf-8'), 0o640, user)
 for name in ('headscale.yaml', 'policy.json'):
     atomic(config_dir / name, (stage / name).read_bytes(), 0o640, user)
-for name in ('cliprelay-headscale.service', 'cliprelay-pairing.service', 'cliprelay-network-key.service', 'cliprelay-network-key.timer'):
+for name in ('cliprelay-headscale.service', 'cliprelay-pairing.service', 'cliprelay-network-key.service', 'cliprelay-network-key.timer', 'cliprelay-relay-health.service', 'cliprelay-relay-health.timer'):
     atomic(Path('/etc/systemd/system') / name, (stage / name).read_bytes())
 route = Path('/etc/caddy/cliprelay-network.caddy')
 old_route = route.read_bytes() if route.exists() else None
@@ -108,6 +116,7 @@ if not key_path.exists():
 run('systemctl', 'enable', '--now', 'cliprelay-pairing')
 healthy('http://127.0.0.1:18081/health')
 run('systemctl', 'enable', '--now', 'cliprelay-network-key.timer')
+run('systemctl', 'enable', '--now', 'cliprelay-relay-health.timer')
 try:
     assert config.read_bytes() == original, 'Caddy changed during staging.'
     atomic(config, candidate)

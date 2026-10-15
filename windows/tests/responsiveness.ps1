@@ -1,6 +1,7 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 Set-StrictMode -Version 2.0
+$script:LegacyReceiverEnabled = $true
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -18,7 +19,7 @@ if ($errors.Count) { throw $errors[0] }
 foreach ($name in @('Get-PropertyValue','Copy-RelayPeers','Get-EnabledRelayPeers','Get-RelayPeerRouteSignature',
     'New-RelayBroadcastTargets','Get-RelayDeliveryFailureText','Get-RelayDeliverySummary','Get-RelayFailedIndexes',
     'Add-RelayTransfer','Start-RelayTransferTask','Complete-RelayTransfer','Update-RelayTransfers',
-    'Read-HttpRequest','Send-HttpResponse','Handle-Client','Initialize-RelayRequestReaders',
+    'Test-IsLegacyLanAddress','Read-HttpRequest','Send-HttpResponse','Handle-Client','Initialize-RelayRequestReaders',
     'Start-RelayRequestRead','Update-RelayRequestReads','Stop-RelayRequestReaders','Process-WindowsMessages',
     'Get-NormalizedPeerAddress','Get-LocalRelayAddresses','Test-IsLocalRelayPeer','Remove-LocalRelayPeers',
     'Merge-DiscoveredRelayDevices','Get-RelayRecoveryPlan')) {
@@ -72,7 +73,7 @@ function Wait-Until([scriptblock]$Condition, [int]$Milliseconds = 8000) {
     }
 }
 function Set-TestPeer([int]$Port) {
-    $script:Peers = @([pscustomobject]@{id='test';name='test';address='127.0.0.1';port=$Port;accessToken='';enabled=$true})
+    $script:Peers = @([pscustomobject]@{id='test';name='test';address='127.0.0.1';port=$Port;accessToken='';enabled=$true;legacyAllowed=$true})
 }
 function Connect-Reader([string]$Request) {
     $sender = New-Object Net.Sockets.TcpClient
@@ -148,7 +149,7 @@ try {
     function Save-PeerConfiguration { param($Peers,$Notifications) $script:Peers = @(Copy-RelayPeers $Peers) }
     $script:Port = 47632; $script:DeviceId = 'this-pc'; $script:DiscoveryEnabled = $true
     $script:Peers = @(foreach ($id in @('phone','tablet')) {
-        [pscustomobject]@{id=$id;name=$id;address="192.0.2.$(if($id -eq 'phone'){1}else{2})";port=47632;accessToken='key';enabled=$true}
+        [pscustomobject]@{id=$id;name=$id;address="192.0.2.$(if($id -eq 'phone'){1}else{2})";port=47632;accessToken='key';enabled=$true;legacyAllowed=$true}
     })
     $initial = New-Object 'System.Threading.Tasks.TaskCompletionSource[ClipRelay.RelayDeliveryResult[]]'
     $retry = New-Object 'System.Threading.Tasks.TaskCompletionSource[ClipRelay.RelayDeliveryResult[]]'

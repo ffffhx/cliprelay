@@ -55,13 +55,15 @@ function Get-ElectronSnapshot {
     return @{
         revision=$script:desktopRevision
         runtime=(Get-RelayRuntimeSnapshot); addresses=@(Get-LocalShareableAddresses)
-        config=@{peers=@($script:Peers);port=$script:Port;deviceId=$script:DeviceId;deviceName=$script:DeviceName;notifications=$script:Notifications;accessToken=$script:AccessToken;discoveryEnabled=$script:DiscoveryEnabled;startupEnabled=(Test-StartupRegistration)}
+        config=@{peers=@($script:Peers);port=$script:Port;deviceId=$script:DeviceId;deviceName=$script:DeviceName;notifications=$script:Notifications;accessToken=$script:AccessToken;discoveryEnabled=$script:DiscoveryEnabled;legacyReceiverEnabled=$script:LegacyReceiverEnabled;startupEnabled=(Test-StartupRegistration)}
         sharing=(Get-ScreenSharingView); update=(Get-RelayUpdateSnapshot)
     }
 }
 
 function Save-ElectronConfiguration($Config) {
-    $null = Save-PeerConfiguration -PeerAddress '' -Peers @($Config.peers) -ListenPort ([int]$Config.port) -Notifications ([bool]$Config.notifications) -AccessToken ([string]$Config.accessToken) -StartupEnabled ([bool]$Config.startupEnabled) -DiscoveryEnabled ([bool]$Config.discoveryEnabled) -DeviceName ([string]$Config.deviceName)
+    $legacy = Get-PropertyValue -Object $Config -Name 'legacyReceiverEnabled'
+    if ($null -ne $legacy -and $legacy -isnot [bool]) { throw 'Invalid compatibility setting.' }
+    $null = Save-PeerConfiguration -PeerAddress '' -Peers @($Config.peers) -ListenPort ([int]$Config.port) -Notifications ([bool]$Config.notifications) -AccessToken ([string]$Config.accessToken) -StartupEnabled ([bool]$Config.startupEnabled) -DiscoveryEnabled ([bool]$Config.discoveryEnabled) -DeviceName ([string]$Config.deviceName) -LegacyReceiverEnabled:([bool]$legacy)
     $script:desktopRevision++
 }
 
@@ -80,7 +82,7 @@ function Invoke-ElectronRequest([string]$Json) {
                 if ($null -ne $data.PSObject.Properties['expectedRevision'] -and [int]$data.expectedRevision -ne $script:desktopRevision) { throw '设备列表已改变，请重试。' }
                 foreach ($property in $data.PSObject.Properties) {
                     if ($property.Name -eq 'expectedRevision') { continue }
-                    if ($property.Name -notin @('peers','port','deviceName','notifications','accessToken','discoveryEnabled','startupEnabled')) { throw 'Invalid setting.' }
+                    if ($property.Name -notin @('peers','port','deviceName','notifications','accessToken','discoveryEnabled','legacyReceiverEnabled','startupEnabled')) { throw 'Invalid setting.' }
                     $config[$property.Name] = $property.Value
                 }
                 Save-ElectronConfiguration ([pscustomobject]$config)
@@ -90,6 +92,7 @@ function Invoke-ElectronRequest([string]$Json) {
             'discover' { $task = Start-ClipRelayDeviceDiscovery }
             'merge' { $result = Merge-DiscoveredRelayDevices -Peers @($data.peers) -DiscoveredDevices @($data.devices) -DefaultPort $script:Port -DefaultAccessToken '' -LocalDeviceId $script:DeviceId -ExistingOnly:(-not [bool]$data.addNew) }
             'probe' { $task = Start-RelayPeersConnectivityTest -Peers @($data.peers) }
+            'paired-peers' { $task = [ClipRelay.PairedRelayPublisher]::GetPeersAsync() }
             'summary' { $result = Get-RelayDeliverySummary -Results @($data.results) -Kind '检测' }
             'copy' { Set-ClipboardTextWithRetry -Text ([string]$data.text) }
             'share' { $result = Invoke-ScreenShareCommand -Command @{action='start';peer=$data.peer;localPort=$script:Port;localName=$script:DeviceName} }

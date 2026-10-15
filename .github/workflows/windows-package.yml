@@ -25,12 +25,16 @@ jobs:
       - name: Validate installation and feature protocols
         run: |
           New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
-          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets')) {
-            powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1"
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','authentication-protocol','image-protocol','multi-peer-broadcast')) {
+            $testOptions = @()
+            if ($test -eq 'multi-peer-broadcast') { $testOptions = @('-Clipboard') }
+            powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1" @testOptions
             if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
           }
           npm run test:electron
           if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
+          node --test windows/tests/paired-renderer-routing.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Paired clipboard renderer routing tests failed' }
           node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Desktop recovery tests failed' }
           node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs

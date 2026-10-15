@@ -24,8 +24,10 @@ derp:
     automatically_add_embedded_derp_region: true
     ipv4: 124.221.36.36
   urls: []
-  paths: []
-  auto_update_enabled: false
+  paths:
+    - /etc/cliprelay-network/relays.yaml
+  auto_update_enabled: true
+  update_frequency: 1m
 disable_check_updates: true
 node:
   expiry: 180d
