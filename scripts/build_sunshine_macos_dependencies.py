@@ -83,6 +83,7 @@ def build(directory):
             run('make','install',cwd=output)
         elif name == 'boost':
             cmake(source,name,'-DBUILD_TESTING=OFF','-DBOOST_ENABLE_CMAKE=ON',
+                  '-DCMAKE_CXX_STANDARD=23','-DCMAKE_CXX_STANDARD_REQUIRED=ON',
                   '-DBOOST_INCLUDE_LIBRARIES=filesystem;log;program_options;system;locale;asio;crc;format;process;property_tree',
                   '-DICU_ROOT='+str(prefix))
         notices = [p for p in source.iterdir() if p.is_file()
