@@ -1,0 +1,83 @@
+name: Desktop Client Build
+on:
+  push:
+    branches: ['codex/desktop-client-*']
+    paths: ['engine/desktop-client/**', 'scripts/*desktop_client*', '.github/workflows/desktop-client.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-client-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: moonlight-stream/moonlight-qt
+          ref: de2467e433821664cdd2224aad8c89a625be1ad9
+          submodules: recursive
+          path: desktop-source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev libssl-dev
+      - run: python3 scripts/prepare_desktop_client.py desktop-source
+      - name: Build production protocol and identity probe
+        run: |
+          mkdir probe-build
+          cd probe-build
+          qmake6 ../engine/desktop-client/tests/probe.pro MOONLIGHT_SOURCE="$GITHUB_WORKSPACE/desktop-source"
+          make -j2
+      - name: Test actual Qt TLS, credential import and parent lifetime
+        env:
+          CLIPRELAY_QT_PROBE: ${{ github.workspace }}/probe-build/cliprelay-probe
+        run: node --test engine/desktop-client/tests/probe.test.cjs
+  build:
+    needs: protocol
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            qt: '6.12.0'
+          - os: macos-26
+            qt: '6.11.2'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: moonlight-stream/moonlight-qt
+          ref: de2467e433821664cdd2224aad8c89a625be1ad9
+          submodules: recursive
+          path: desktop-source
+      - name: Apply pinned client patch
+        run: python scripts/prepare_desktop_client.py desktop-source
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          cache: true
+          tools: ${{ runner.os == 'Windows' && 'tools_qtcreator_gui' || '' }}
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@073e34d7c2ab4ae6961ed7cca690b3abd5ba5a7e'
+      - name: Build Windows viewer
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $source = (Resolve-Path desktop-source).Path
+          if (-not $source.StartsWith($env:GITHUB_WORKSPACE + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected build root' }
+          if (Test-Path -LiteralPath (Join-Path $source 'build')) { throw 'Build root must be fresh' }
+          python scripts/build_desktop_client.py $source windows
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed' }
+      - name: Build universal macOS viewer
+        if: runner.os == 'macOS'
+        run: python3 scripts/build_desktop_client.py desktop-source macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipRelay-Stream-${{ runner.os }}
+          path: desktop-source/cliprelay-artifact
+          if-no-files-found: error

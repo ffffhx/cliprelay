@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+#include <QByteArray>
+#include <QString>
+#include <QSslCertificate>
+
+// One ephemeral, already paired connection supplied by the owning desktop app.
+// Neither credentials nor the host are written into Moonlight's settings.
+namespace ClipRelayImport {
+struct Session {
+    QString address, clientId;
+    quint16 port = 0;
+    QByteArray certificate, privateKey;
+    QSslCertificate hostCertificate;
+    int width = 1920, height = 1080, fps = 60, bitrate = 12000;
+    bool fullscreen = false;
+};
+constexpr int MaxFrame = 65536;
+bool parse(const QByteArray& bytes, Session& result);
+bool loadStdin();
+bool active();
+const Session& get();
+void watchParent();
+}
