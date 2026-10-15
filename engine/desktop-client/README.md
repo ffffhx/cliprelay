@@ -320,3 +320,20 @@ so physical multi-monitor, hotplug, managed GUI and WAN acceptance remain.
 Run `desktop_viewer_native.py --telemetry --control-fixture <paired Go fixture>
 --input-epochs` with the verified engine and viewer artifacts. Local control/UI
 tests are `desktop-display.test.cjs` and `desktop-display-ui.test.cjs`.
+
+Manual input pause is now an explicit main-process intent. The owned UI sends
+only its current view token and a boolean. Pausing can proceed while video is
+stale; explicit resume requires fresh metadata and a newly presented frame.
+Display switching preserves this intent, including a manual pause requested
+while an automatic switch is already waiting for its new picture. A paused
+switch confirms presentation without issuing a native resume command.
+
+The intent survives route recovery. A new native child starts at paused epoch 1
+and cannot use a legacy input fallback. Only a fully acknowledged explicit resume
+clears the intent; cancellation cannot clear it for a replacement child. Ending
+the remote session discards the intent. The combined Electron checks now pass
+71 cases; the three-platform run is 38766017479. The complete native runtime
+fixture verifies frames advancing while manually paused, same-stream display
+reconstruction, old-child cleanup, a new stream remaining paused and explicit
+resume of that new stream. This is an owned loopback route replacement, not a
+real physical network outage. No physical input is injected.
