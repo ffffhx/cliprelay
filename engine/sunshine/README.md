@@ -259,6 +259,32 @@ fixture (0.703 s through presentation and input resume). Both keep the original
 stream and disable physical input injection. Physical multi-monitor, hotplug,
 managed GUI and installed hardware acceptance remain separate.
 
+## macOS host overlay
+
+The macOS host workflow applies `prepare_sunshine.py --macos-host` to the pinned
+Sunshine source and its pinned libvirtualhid gitlink. This adds the display
+catalog, actual capture identity and logical desktop geometry. Capture pixels
+remain separate from CoreGraphics logical points, including negative desktop
+origins and Retina scaling. Windows builds keep the original preparation path.
+
+Every native mouse move, button edge and scroll carries the current capture
+target. Input becomes active only after a real captured frame has been encoded.
+Target versions distinguish preparation, active capture and cancellation; an old
+target cannot be reactivated. Switching targets or closing the native mouse
+releases its owned buttons at the previous target before accepting new input.
+The overlay preserves fractional absolute coordinates and rejects non-finite
+coordinates, invalid bounds and events without a target once targeting begins.
+
+`macos_mouse_test.cpp` adds fourteen cases using the production CoreGraphics
+backend with posting, cursor and display boundaries replaced. It also exercises
+the production capture registry, video input transform and libvirtualhid adapter.
+These tests do not inject system input or start capture. The workflow requires
+all fourteen cases plus the existing twelve input integration cases to pass.
+Native CI validation of this overlay is pending; these source changes do not
+establish hotplug recovery, screen-capture permission, physical monitor behavior
+or a complete Mac hosting application. Host lifecycle and permission UI remain
+separate work.
+
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers
 with any modified engine binary.

@@ -55,7 +55,7 @@ jobs:
       - name: Apply pinned source and test platform independent controls
         run: |
           set -euo pipefail
-          python3 scripts/prepare_sunshine.py sunshine-source
+          python3 scripts/prepare_sunshine.py sunshine-source --macos-host
           clang++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/control_test.cpp -o control-test
           ./control-test
           clang++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/input_test.cpp -o input-test
@@ -82,7 +82,7 @@ jobs:
             -DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/ffffhx/cliprelay/issues
           cmake --build sunshine-build --parallel 3 2>&1 | tee engine-build.log
           ./sunshine-build/tests/test_sunshine \
-            --gtest_filter='ClipRelayInputTest.*' \
+            --gtest_filter='ClipRelayInputTest.*:ClipRelayMacMouseTest.*' \
             --gtest_output=xml:input-tests.xml
       - name: Package relocatable engine and verify dependencies
         run: |

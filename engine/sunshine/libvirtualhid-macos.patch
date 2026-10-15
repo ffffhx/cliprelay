@@ -1,0 +1,226 @@
+diff --git a/README.md b/README.md
+index 531a5cc..ea43cbd 100644
+--- a/README.md
++++ b/README.md
+@@ -119,6 +119,16 @@ macOS currently provides a limited CoreGraphics synthetic-input backend for
+ keyboard and mouse only. It is not a virtual-HID backend and does not yet
+ support gamepads; native macOS virtual-HID gamepad support is planned.
+ 
++The ClipRelay macOS host overlay adds `MouseEvent::target` for capture-bound
++CoreGraphics input. Its viewport uses logical desktop points; absolute event
++coordinates retain their capture-pixel extent and fractional precision. Every
++event must carry a target after the mouse has been bound. A newer target version
++releases held buttons at the old target before routing new input. An inactive
++version releases held buttons and cannot be reactivated; use a larger version
++for a new active capture. Closing the mouse also releases only buttons it owns.
++This overlay is applied only to the macOS host build. Other backends do not
++implement capture targets; untargeted macOS callers retain primary-screen mapping.
++
+ The library is designed around gamepad use first because remote streaming hosts
+ are the first consumer class. Non-gamepad device types are available through the
+ same API where the backend exposes them.
+diff --git a/src/include/libvirtualhid/types.hpp b/src/include/libvirtualhid/types.hpp
+index 7f3bc1c..a36281d 100644
+--- a/src/include/libvirtualhid/types.hpp
++++ b/src/include/libvirtualhid/types.hpp
+@@ -785,6 +785,19 @@ namespace lvh {
+     std::int32_t height = 0;
+   };
+ 
++  /**
++   * @brief Explicit pointer target owned by a remote capture session.
++   *
++   * The viewport uses the backend's native desktop coordinate units. For
++   * CoreGraphics these are logical points, independent of captured pixels.
++   * An inactive target releases held input and prevents new pointer actions.
++   */
++  struct PointerTarget {
++    std::uint64_t generation = 0;  ///< Monotonically increasing capture version.
++    bool active = false;  ///< Whether this capture may accept pointer input.
++    PointerViewport viewport;  ///< Target rectangle in native desktop coordinates.
++  };
++
+   /**
+    * @brief Pointer state transition requested for contact-capable devices.
+    */
+@@ -875,6 +888,16 @@ namespace lvh {
+      * @brief High-resolution scroll distance.
+      */
+     std::int32_t high_resolution_scroll = 0;
++
++    /**
++     * @brief Optional capture target for native pointer routing.
++     *
++     * The CoreGraphics backend supports explicit capture targets. Once a
++     * mouse is explicitly targeted there, subsequent events must carry a
++     * target. A generation cannot change its rectangle or reactivate after
++     * becoming inactive. A newer generation releases old held buttons first.
++     */
++    std::optional<PointerTarget> target;
+   };
+ 
+   /**
+diff --git a/src/platform/macos/macos_backend.cpp b/src/platform/macos/macos_backend.cpp
+index c67ca89..c62369a 100644
+--- a/src/platform/macos/macos_backend.cpp
++++ b/src/platform/macos/macos_backend.cpp
+@@ -9,6 +9,7 @@
+ #include <chrono>
+ #include <cmath>
+ #include <cstdint>
++#include <limits>
+ #include <memory>
+ #include <mutex>
+ #include <optional>
+@@ -646,6 +647,22 @@ namespace lvh::detail {
+           return OperationStatus::failure(ErrorCode::backend_failure, "macOS mouse event source is unavailable");
+         }
+ 
++        if (event.kind == absolute_motion && (event.width <= 0 || event.height <= 0 || (event.has_fractional_absolute_coordinates && (!std::isfinite(event.absolute_x) || !std::isfinite(event.absolute_y))))) {
++          return OperationStatus::failure(ErrorCode::invalid_argument, "invalid absolute pointer coordinates");
++        }
++        const auto routing = prepare_target(event.target);
++        if (!routing.ok()) {
++          return routing;
++        }
++        if (target_ && !target_->active) {
++          // Cancellation already released everything this mouse owns. Allow
++          // the caller's redundant cleanup, but never resume through it.
++          if (event.kind == button && !event.pressed) {
++            return OperationStatus::success();
++          }
++          return OperationStatus::failure(ErrorCode::backend_failure, "pointer capture is inactive");
++        }
++
+         switch (event.kind) {
+           case relative_motion:
+             return submit_relative_motion(event.x, event.y);
+@@ -664,15 +681,79 @@ namespace lvh::detail {
+ 
+       OperationStatus close() override {
+         std::lock_guard lock {mutex_};
++        if (open_) {
++          release_buttons();
++        }
+         open_ = false;
+         return OperationStatus::success();
+       }
+ 
+     private:
++      /**
++       * @brief Return the explicit target bounds or the legacy main display.
++       * @return Native desktop bounds used for this mouse event.
++       */
++      CGRect bounds() const {
++        if (target_) {
++          const auto &v = target_->viewport;
++          return {{static_cast<CGFloat>(v.offset_x), static_cast<CGFloat>(v.offset_y)}, {static_cast<CGFloat>(v.width), static_cast<CGFloat>(v.height)}};
++        }
++        return CGDisplayBounds(state_->display);
++      }
++
++      /**
++       * @brief Release every button owned by this mouse at its previous target.
++       */
++      void release_buttons() {
++        constexpr std::array buttons {MouseButton::left, MouseButton::right, MouseButton::middle};
++        for (std::size_t index = 0; index < mouse_down_.size(); ++index) {
++          if (!mouse_down_[index]) {
++            continue;
++          }
++          mouse_down_[index] = false;
++          const auto button = macos_mouse_button(buttons[index]);
++          const auto position = current_location();
++          if (button) {
++            static_cast<void>(post_mouse(button->button, button->up_event, position, position, 1));
++          }
++        }
++        last_mouse_event_ = {};
++      }
++
++      /**
++       * @brief Apply a monotonic pointer target before delivering an event.
++       * @param incoming Host-owned capture target carried by the event.
++       * @return Failure for stale, malformed, or reactivated capture targets.
++       */
++      OperationStatus prepare_target(const std::optional<PointerTarget> &incoming) {
++        if (!incoming) {
++          return target_ ? OperationStatus::failure(ErrorCode::invalid_argument, "pointer target required") : OperationStatus::success();
++        }
++        const auto &v = incoming->viewport;
++        if (incoming->active && (!incoming->generation || v.width <= 0 || v.height <= 0 || static_cast<std::int64_t>(v.offset_x) + v.width > std::numeric_limits<std::int32_t>::max() || static_cast<std::int64_t>(v.offset_y) + v.height > std::numeric_limits<std::int32_t>::max())) {
++          return OperationStatus::failure(ErrorCode::invalid_argument, "invalid pointer target");
++        }
++        if (target_) {
++          if (incoming->generation < target_->generation) {
++            return OperationStatus::failure(ErrorCode::invalid_argument, "stale pointer target");
++          }
++          if (incoming->generation == target_->generation && incoming->active) {
++            const auto &old = target_->viewport;
++            if (!target_->active || v.offset_x != old.offset_x || v.offset_y != old.offset_y || v.width != old.width || v.height != old.height) {
++              return OperationStatus::failure(ErrorCode::invalid_argument, "pointer target changed within generation");
++            }
++            return OperationStatus::success();
++          }
++        }
++        release_buttons();
++        target_ = incoming;
++        return OperationStatus::success();
++      }
++
+       CGPoint current_location() const {
+         const auto snapshot_event = CGEventCreate(state_->source);
+         if (!snapshot_event) {
+-          const auto display_bounds = CGDisplayBounds(state_->display);
++          const auto display_bounds = bounds();
+           return display_bounds.origin;
+         }
+ 
+@@ -688,7 +769,7 @@ namespace lvh::detail {
+         CGPoint previous_location,
+         int click_count
+       ) const {
+-        const auto display_bounds = CGDisplayBounds(state_->display);
++        const auto display_bounds = bounds();
+         const auto location = CGPoint {
+           std::clamp(raw_location.x, display_bounds.origin.x, display_bounds.origin.x + display_bounds.size.width - 1),
+           std::clamp(raw_location.y, display_bounds.origin.y, display_bounds.origin.y + display_bounds.size.height - 1)
+@@ -720,7 +801,7 @@ namespace lvh::detail {
+       }
+ 
+       OperationStatus submit_absolute_motion(const MouseEvent &event) {
+-        const auto display_bounds = CGDisplayBounds(state_->display);
++        const auto display_bounds = bounds();
+         const auto location = absolute_mouse_location(event, display_bounds);
+         const auto motion = macos_mouse_motion(mouse_down_);
+         return post_mouse(motion.button, motion.event_type, location, current_location(), 0);
+@@ -734,6 +815,10 @@ namespace lvh::detail {
+           return OperationStatus::failure(unsupported_profile, "macOS mouse backend supports only left, middle, and right buttons");
+         }
+ 
++        if (target_ && !event.pressed && !mouse_down_[button->index]) {
++          return OperationStatus::success();
++        }
++
+         mouse_down_[button->index] = event.pressed;
+         const auto now = std::chrono::steady_clock::now();
+         const auto release_index = event.pressed ? 0U : 1U;
+@@ -759,12 +844,18 @@ namespace lvh::detail {
+         }
+ 
+         CGEventSetIntegerValueField(event, kCGScrollWheelEventIsContinuous, 1);
++        if (target_) {
++          const auto area = bounds();
++          const auto position = current_location();
++          CGEventSetLocation(event, {std::clamp(position.x, area.origin.x, area.origin.x + area.size.width - 1), std::clamp(position.y, area.origin.y, area.origin.y + area.size.height - 1)});
++        }
+         CGEventPost(kCGHIDEventTap, event);
+         CFRelease(event);
+         return OperationStatus::success();
+       }
+ 
+       std::shared_ptr<MacosInputState> state_;
++      std::optional<PointerTarget> target_;  ///< Last explicit target and cancellation barrier.
+       std::array<bool, 3> mouse_down_ {};
+       std::array<std::array<std::chrono::steady_clock::time_point, 2>, 3> last_mouse_event_ {};
+       std::mutex mutex_;

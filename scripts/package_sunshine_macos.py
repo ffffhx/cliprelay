@@ -67,16 +67,20 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     source, build, artifact = (p.resolve(strict=True) for p in (source, build, artifact))
     pinned = json.loads((root / 'engine/sunshine/upstream.json').read_text())
     dependency_pins = json.loads((root / 'engine/sunshine/macos-dependencies.json').read_text())
-    target = tuple(map(int, dependency_pins['deploymentTarget'].split('.'))) + (0,)
+    deployment_target = tuple(map(int, dependency_pins['deploymentTarget'].split('.'))) + (0,)
     if 'built for newer' in build_log.read_text(errors='replace'):
         raise RuntimeError('Linker found an object or library newer than the deployment target')
     if command('git', '-C', str(source), 'rev-parse', 'HEAD') != pinned['commit']:
         raise RuntimeError('Unexpected upstream source revision')
     suites = ET.parse(test_results).getroot()
     cases = suites.findall('.//testcase')
-    expected = re.findall(r'TEST_F\(ClipRelayInputTest,\s*(\w+)\)',
-                          (root / 'engine/sunshine/input_integration_test.cpp').read_text())
-    if (sorted(case.attrib['name'] for case in cases) != sorted(expected)
+    expected_cases = []
+    for suite, filename in [('ClipRelayInputTest', 'input_integration_test.cpp'),
+                            ('ClipRelayMacMouseTest', 'macos_mouse_test.cpp')]:
+        expected_cases.extend((suite, name) for name in re.findall(r'TEST_F\('+suite+r',\s*(\w+)\)',
+                              (root / 'engine/sunshine' / filename).read_text()))
+    expected = [name for _, name in expected_cases]
+    if (sorted((case.attrib['classname'], case.attrib['name']) for case in cases) != sorted(expected_cases)
             or any(case.find('failure') is not None or case.find('skipped') is not None
                    or case.attrib.get('status') != 'run' for case in cases)):
         raise RuntimeError('Input integration case inventory did not pass exactly')
@@ -116,30 +120,31 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         architectures = command('/usr/bin/lipo', '-archs', str(path)).split()
         if architectures != [arch]:
             raise RuntimeError(f'Unexpected native architectures: {path}: {architectures}')
-        minimum_versions[path.relative_to(artifact).as_posix()] = check_deployment(path.read_bytes(), target)
-        dependencies = []
+        minimum_versions[path.relative_to(artifact).as_posix()] = check_deployment(path.read_bytes(), deployment_target)
+        linked_libraries = []
         for line in command('/usr/bin/otool', '-L', str(path)).splitlines()[1:]:
             name = line.strip().split(' (compatibility version', 1)[0]
             if name.startswith(('/usr/lib/', '/System/Library/')):
-                dependencies.append(name)
+                linked_libraries.append(name)
                 continue
             if name.startswith('@executable_path/'):
-                target = binary.parent / name.removeprefix('@executable_path/')
+                linked_path = binary.parent / name.removeprefix('@executable_path/')
             elif name.startswith('@loader_path/'):
-                target = path.parent / name.removeprefix('@loader_path/')
+                linked_path = path.parent / name.removeprefix('@loader_path/')
             else:
                 # BundleUtilities rewrites dependencies to executable-relative
                 # paths. Reject unresolved rpaths and build/Homebrew locations.
                 raise RuntimeError(f'Non-relocatable native dependency: {path}: {name}')
-            inside(target, app)
-            dependencies.append(name)
-        native[path.relative_to(artifact).as_posix()] = dependencies
+            inside(linked_path, app)
+            linked_libraries.append(name)
+        native[path.relative_to(artifact).as_posix()] = linked_libraries
     if binary.relative_to(artifact).as_posix() not in native:
         raise RuntimeError('Missing executable from native dependency inventory')
 
     tracked = ['engine/sunshine/' + name for name in [
         'upstream.json', 'control.patch', 'cliprelay_control.h', 'cliprelay_audio.h',
-        'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md']]
+        'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md',
+        'macos-control.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp']]
     tracked += ['engine/sunshine/macos-dependencies.json', 'scripts/prepare_sunshine.py',
                 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py',
                 '.github/workflows/sunshine-macos.yml']
@@ -150,6 +155,7 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         shutil.copyfile(root / name, dest)
         source_hashes[name] = hashlib.sha256(dest.read_bytes()).hexdigest()
     shutil.copyfile(source / 'LICENSE', artifact / 'SUNSHINE-LICENSE')
+    shutil.copyfile(source / 'third-party/libvirtualhid/LICENSE', artifact / 'LIBVIRTUALHID-LICENSE')
     shutil.copyfile(test_results, artifact / 'input-tests.xml')
     dependency_receipt = json.loads((dependencies / 'build.json').read_text())
     if (dependency_receipt['identity']['arch'] != arch
@@ -163,6 +169,7 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'protocol': 1, 'platform': 'darwin', 'arch': arch,
         'sourceCommit': command('git', '-C', str(root), 'rev-parse', 'HEAD'),
         'upstreamCommit': pinned['commit'],
+        'libvirtualhidCommit': command('git', '-C', str(source / 'third-party/libvirtualhid'), 'rev-parse', 'HEAD'),
         'buildDependenciesCommit': command('git', '-C', str(source / 'third-party/build-deps'), 'rev-parse', 'HEAD'),
         'buildDependenciesTag': command('git', '-C', str(source / 'third-party/build-deps'), 'describe', '--tags', '--exact-match'),
         'executable': binary.relative_to(artifact).as_posix(), 'sourceHashes': source_hashes,

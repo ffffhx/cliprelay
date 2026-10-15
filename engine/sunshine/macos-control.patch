@@ -1,0 +1,219 @@
+diff --git a/src/confighttp.cpp b/src/confighttp.cpp
+index c364049..8471aef 100644
+--- a/src/confighttp.cpp
++++ b/src/confighttp.cpp
+@@ -2346,11 +2346,15 @@ namespace confighttp {
+ 
+   void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
+     if (!authenticate(response, request)) return;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(__APPLE__)
+     // EnumOutputs filters detached/non-capturable devices in the same way as
+     // the capture thread. Revalidate by ID there before applying a selection.
+     if (request->query_string == "refresh=1") {
++  #ifdef __APPLE__
++      cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::videotoolbox));
++  #else
+       cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::dxgi));
++  #endif
+     } else if (!request->query_string.empty()) {
+       bad_request(response, request, "Invalid display query"); return;
+     }
+diff --git a/src/platform/common.h b/src/platform/common.h
+index f9e144e..9caefb1 100644
+--- a/src/platform/common.h
++++ b/src/platform/common.h
+@@ -784,6 +784,9 @@ namespace platf {
+     std::string cliprelay_display_id;
+     int cliprelay_desktop_x {0}, cliprelay_desktop_y {0};
+     std::uint64_t cliprelay_generation {0};
++    int cliprelay_capture_x {0}, cliprelay_capture_y {0};  ///< macOS capture origin in logical desktop points.
++    int cliprelay_capture_width {0}, cliprelay_capture_height {0};  ///< macOS capture extent in logical points, separate from video pixels.
++    int cliprelay_desktop_width {0}, cliprelay_desktop_height {0};  ///< macOS active desktop extent in logical points.
+ 
+     // Offsets for when streaming a specific monitor. By default, they are 0.
+     int offset_x {0};  ///< Horizontal capture offset in physical pixels.
+diff --git a/src/platform/macos/display.mm b/src/platform/macos/display.mm
+index d5fe3d0..660c558 100644
+--- a/src/platform/macos/display.mm
++++ b/src/platform/macos/display.mm
+@@ -10,6 +10,7 @@
+ #include <string_view>
+ 
+ // local includes
++#include "src/cliprelay_macos.h"
+ #include "src/config.h"
+ #include "src/display_device.h"
+ #include "src/logging.h"
+@@ -32,6 +33,33 @@ namespace platf {
+   using namespace std::literals;
+ 
+   namespace {
++    /**
++     * @brief Read the captured display and active desktop in native logical points.
++     * @param id Actual display selected for AVFoundation capture.
++     * @return Geometry only when the selected display is active and representable.
++     */
++    std::optional<cliprelay::display_geometry> capture_geometry(CGDirectDisplayID id) {
++      uint32_t count = 0;
++      if (!CGDisplayIsActive(id) || CGGetActiveDisplayList(0, nullptr, &count) != kCGErrorSuccess || count == 0 || count > 1024) {
++        return std::nullopt;
++      }
++      std::vector<CGDirectDisplayID> active(count);
++      if (CGGetActiveDisplayList(count, active.data(), &count) != kCGErrorSuccess || count == 0) {
++        return std::nullopt;
++      }
++      auto desktop = CGRectNull;
++      bool found = false;
++      for (uint32_t index = 0; index < count; ++index) {
++        found |= active[index] == id;
++        desktop = CGRectUnion(desktop, CGDisplayBounds(active[index]));
++      }
++      if (!found) {
++        return std::nullopt;
++      }
++      const auto selected = CGDisplayBounds(id);
++      return cliprelay::macos::geometry(std::to_string(id), {selected.origin.x, selected.origin.y, selected.size.width, selected.size.height}, {desktop.origin.x, desktop.origin.y, desktop.size.width, desktop.size.height});
++    }
++
+     std::optional<CGDirectDisplayID> parse_display_id(std::string_view display_name) {
+       if (display_name.empty()) {
+         return std::nullopt;
+@@ -240,10 +268,24 @@ namespace platf {
+     if (const auto configured_display_id {parse_display_id(display_name)}) {
+       display->display_id = *configured_display_id;
+     } else if (!display_name.empty()) {
+-      BOOST_LOG(warning) << "Configured display ["sv << display_name
+-                         << "] is not a valid macOS capture display id. Falling back to main display ["sv
+-                         << display->display_id << "]."sv;
++      BOOST_LOG(error) << "Configured display is not a valid macOS capture display id: "sv << display_name;
++      return nullptr;
++    }
++
++    const auto geometry = capture_geometry(display->display_id);
++    if (!geometry) {
++      BOOST_LOG(error) << "Selected display is inactive or has unavailable logical geometry."sv;
++      return nullptr;
+     }
++    display->cliprelay_display_id = geometry->id;
++    display->cliprelay_capture_x = geometry->x;
++    display->cliprelay_capture_y = geometry->y;
++    display->cliprelay_capture_width = geometry->width;
++    display->cliprelay_capture_height = geometry->height;
++    display->cliprelay_desktop_x = geometry->desktop_x;
++    display->cliprelay_desktop_y = geometry->desktop_y;
++    display->cliprelay_desktop_width = geometry->desktop_width;
++    display->cliprelay_desktop_height = geometry->desktop_height;
+ 
+     // Print all displays available with their names and ids
+     BOOST_LOG(debug) << "Detecting displays"sv;
+diff --git a/src/platform/virtualhid_input.cpp b/src/platform/virtualhid_input.cpp
+index 362f50a..ee3dcc5 100644
+--- a/src/platform/virtualhid_input.cpp
++++ b/src/platform/virtualhid_input.cpp
+@@ -19,6 +19,7 @@
+ #include <utility>
+ 
+ // local includes
++#include "src/cliprelay_macos.h"
+ #include "src/config.h"
+ #include "src/logging.h"
+ #include "virtualhid_input.h"
+@@ -793,9 +794,19 @@ namespace platf::virtualhid {
+     log_failure("submit libvirtualhid gamepad battery"sv, gamepad->adapter->set_battery(value));
+   }
+ 
++  /**
++   * @brief Attach the host's actual capture and cancellation version to an event.
++   * @param event Portable mouse action before native routing.
++   * @return Event bound to the current capture; inactive captures reject new input.
++   */
++  lvh::MouseEvent cliprelay_mouse(lvh::MouseEvent event) {
++    event.target = cliprelay::macos::pointer_target(cliprelay::displays.snapshot());
++    return event;
++  }
++
+   void move_mouse(input_context_t &context, int delta_x, int delta_y) {
+     if (context.mouse) {
+-      log_failure("submit libvirtualhid mouse movement"sv, context.mouse->move_relative(delta_x, delta_y));
++      log_failure("submit libvirtualhid mouse movement"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::relative_motion, .x = delta_x, .y = delta_y})));
+     }
+   }
+ 
+@@ -803,12 +814,7 @@ namespace platf::virtualhid {
+     if (context.mouse) {
+       log_failure(
+         "submit libvirtualhid absolute mouse movement"sv,
+-        context.mouse->move_absolute(
+-          static_cast<std::int32_t>(std::lround(x)),
+-          static_cast<std::int32_t>(std::lround(y)),
+-          touch_port.width,
+-          touch_port.height
+-        )
++        context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::absolute_motion, .absolute_x = x, .absolute_y = y, .has_fractional_absolute_coordinates = true, .width = touch_port.width, .height = touch_port.height}))
+       );
+     }
+   }
+@@ -820,19 +826,19 @@ namespace platf::virtualhid {
+         return;
+       }
+ 
+-      log_failure("submit libvirtualhid mouse button"sv, context.mouse->button(*converted, !release));
++      log_failure("submit libvirtualhid mouse button"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::button, .button = *converted, .pressed = !release})));
+     }
+   }
+ 
+   void scroll(input_context_t &context, int high_res_distance) {
+     if (context.mouse) {
+-      log_failure("submit libvirtualhid vertical scroll"sv, context.mouse->vertical_scroll(high_res_distance));
++      log_failure("submit libvirtualhid vertical scroll"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::vertical_scroll, .high_resolution_scroll = high_res_distance})));
+     }
+   }
+ 
+   void hscroll(input_context_t &context, int high_res_distance) {
+     if (context.mouse) {
+-      log_failure("submit libvirtualhid horizontal scroll"sv, context.mouse->horizontal_scroll(high_res_distance));
++      log_failure("submit libvirtualhid horizontal scroll"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::horizontal_scroll, .high_resolution_scroll = high_res_distance})));
+     }
+   }
+ 
+diff --git a/src/video.cpp b/src/video.cpp
+index f6b081e..0e9b758 100644
+--- a/src/video.cpp
++++ b/src/video.cpp
+@@ -1548,6 +1548,9 @@ namespace video {
+    * @param config Configuration values to apply.
+    */
+   void cliprelay_begin_capture(platf::display_t &display) {
++#ifdef __APPLE__
++    display.cliprelay_generation = cliprelay::displays.begin_capture({display.cliprelay_display_id, display.cliprelay_capture_x, display.cliprelay_capture_y, display.cliprelay_capture_width, display.cliprelay_capture_height, display.cliprelay_desktop_x, display.cliprelay_desktop_y, display.cliprelay_desktop_width, display.cliprelay_desktop_height});
++#else
+     display.cliprelay_generation = cliprelay::displays.begin_capture({
+       display.cliprelay_display_id,
+       display.offset_x + display.cliprelay_desktop_x,
+@@ -1556,6 +1559,7 @@ namespace video {
+       display.cliprelay_desktop_x, display.cliprelay_desktop_y,
+       display.env_width, display.env_height
+     });
++#endif
+   }
+ 
+   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 85b5aca..d71b1c4 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -184,6 +184,13 @@ add_executable(${PROJECT_NAME}
+         ${TEST_SOURCES}
+         ${SUNSHINE_SOURCES})
+ 
++if(APPLE)
++    # The ClipRelay native fixture includes the production backend with only
++    # CoreGraphics posting/cursor/display boundaries replaced.
++    target_include_directories(${PROJECT_NAME} PRIVATE
++            "${CMAKE_SOURCE_DIR}/third-party/libvirtualhid/src")
++endif()
++
+ # Copy files needed for config consistency tests to build directory
+ # This ensures both CLI and CLion can access the same files relative to the test executable
+ # Using configure_file ensures files are copied when they change between builds
