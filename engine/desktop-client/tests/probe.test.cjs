@@ -32,10 +32,25 @@ test('lifecycle reports one connection and the first terminal reason only',async
   assert.equal((await start(envelope(),['--network-errors']).done).code,0);
 });
 test('invalid identity, types, limits and unknown properties fail closed',async()=>{
-  for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001}]){
+  for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001},{telemetry:1}]){
     const result=await start({...envelope(),...change},['--parse']).done;assert.equal(result.code,2,JSON.stringify(change));
   }
   const result=await start(Buffer.from([0,2,0,0]),['--parse']).done;assert.equal(result.code,2);
+});
+
+test('opt-in progress is monotonic, bounded, rate-limited and stops after the terminal event',async()=>{
+  const result=await start({...envelope(),telemetry:true},['--progress']).done;assert.equal(result.code,0,result.stderr);
+  const events=result.stdout.trim().split('\n').map(line=>JSON.parse(line));assert.deepEqual(events.map(e=>e.event),['connected','progress','progress','ended']);
+  assert.deepEqual(events.filter(e=>e.event==='progress').map(({received,rendered,width,height})=>({received,rendered,width,height})),[
+    {received:10,rendered:9,width:1280,height:720},{received:20,rendered:19,width:1920,height:1080}]);
+  for(const e of events.filter(e=>e.event==='progress'))for(const key of ['receivedAgeMs','renderedAgeMs'])assert.ok(Number.isInteger(e[key])&&e[key]>=0&&e[key]<=60000);
+  const legacy=await start(envelope(),['--progress']).done;assert.equal(legacy.code,0);assert.deepEqual(legacy.stdout.trim().split('\n').map(line=>JSON.parse(line).event),['connected','ended']);
+});
+
+test('a blocked output pipe cannot hold the viewer alive or block its cleanup',async()=>{
+  const child=spawn(process.env.CLIPRELAY_QT_PROBE,['--progress-backpressure'],{stdio:['pipe','pipe','pipe'],env:{...process.env,CLIPRELAY_PROBE_SETTINGS:directory}});
+  const ended=once(child,'exit'),timer=setTimeout(()=>child.kill(),3000);child.stdin.on('error',()=>{});child.stdin.write(frame({...envelope(),telemetry:true}));
+  try{assert.equal((await ended)[0],0);}finally{clearTimeout(timer);child.stdout.resume();child.stderr.resume();child.stdin.destroy();}
 });
 test('parent pipe close ends session and a truncated frame cannot hang',async()=>{
   const run=start(envelope(),['--lease']);await once(run.child.stdout,'data');run.child.stdin.end();

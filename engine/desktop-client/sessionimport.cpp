@@ -15,6 +15,7 @@
 #include <QtEndian>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <atomic>
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -24,6 +25,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <fcntl.h>
 #endif
 
 namespace ClipRelayImport {
@@ -31,17 +33,25 @@ static Session current;
 static bool loaded = false;
 static QMutex eventMutex;
 static bool connectedEvent = false, endedEvent = false;
+static QMutex progressMutex;
+static QElapsedTimer progressClock;
+static quint64 receivedFrame = 0, renderedFrame = 0;
+static qint64 receivedAt = 0, renderedAt = 0, reportedAt = -200;
+static int renderedWidth = 0, renderedHeight = 0;
+static std::atomic<bool> outputFailed{false};
 
-// Two small, constant-schema messages on the owner pipe. No addresses,
+// Small, constant-schema messages on the owner pipe. No addresses,
 // credentials, server responses or arbitrary diagnostic text enter this stream.
 static void writeEvent(const QByteArray& bytes) {
+    if (outputFailed.load()) return;
 #ifdef Q_OS_WIN
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD written = 0;
-    if (GetFileType(handle) == FILE_TYPE_PIPE) WriteFile(handle, bytes.constData(), bytes.size(), &written, nullptr);
+    if (GetFileType(handle) != FILE_TYPE_PIPE || !WriteFile(handle, bytes.constData(), bytes.size(), &written, nullptr) || written != static_cast<DWORD>(bytes.size())) outputFailed.store(true);
 #else
     ssize_t written;
     do { written = ::write(STDOUT_FILENO, bytes.constData(), bytes.size()); } while (written < 0 && errno == EINTR);
+    if (written != bytes.size()) outputFailed.store(true);
 #endif
 }
 void reportConnected() {
@@ -64,6 +74,31 @@ void reportEnded(EndReason reason) {
     case EndReason::Decoder: value = "decoder"; break;
     }
     writeEvent(QByteArray("{\"version\":1,\"event\":\"ended\",\"reason\":\"") + value + "\"}\n");
+}
+void reportReceived(quint64 frame) {
+    if (!loaded || !current.telemetry || !frame || frame > 0xffffffffULL) return;
+    QMutexLocker guard(&progressMutex);
+    if (frame > receivedFrame) { receivedFrame = frame; receivedAt = progressClock.elapsed(); }
+}
+void reportRendered(quint64 frame, int width, int height) {
+    if (!loaded || !current.telemetry || !frame || width < 1 || width > 65536 || height < 1 || height > 65536) return;
+    QMutexLocker guard(&progressMutex);
+    if (frame <= renderedFrame || frame > receivedFrame) return;
+    renderedFrame = frame; renderedWidth = width; renderedHeight = height; renderedAt = progressClock.elapsed();
+}
+void reportProgress() {
+    if (!loaded || !current.telemetry) return;
+    QMutexLocker eventGuard(&eventMutex);
+    if (!connectedEvent || endedEvent) return;
+    QMutexLocker guard(&progressMutex);
+    const auto now = progressClock.elapsed();
+    if (now - reportedAt < 200) return;
+    reportedAt = now;
+    const QJsonObject state{{"version",1},{"event","progress"},{"received",qint64(receivedFrame)},
+        {"rendered",qint64(renderedFrame)},{"width",renderedWidth},{"height",renderedHeight},
+        {"receivedAgeMs",receivedFrame?qMin<qint64>(60000,now-receivedAt):60000},
+        {"renderedAgeMs",renderedFrame?qMin<qint64>(60000,now-renderedAt):60000}};
+    writeEvent(QJsonDocument(state).toJson(QJsonDocument::Compact) + '\n');
 }
 bool retryableNetworkError(int error) {
     return error == QNetworkReply::ConnectionRefusedError || error == QNetworkReply::RemoteHostClosedError ||
@@ -101,6 +136,7 @@ bool parse(const QByteArray& bytes, Session& result) {
         "privateKey", "hostCertificate", "width", "height", "fps", "bitrate", "fullscreen"};
     if (o.contains("overlay")) keys.insert("overlay");
     if (o.contains("overlayPort")) keys.insert("overlayPort");
+    if (o.contains("telemetry")) keys.insert("telemetry");
     const auto actualKeys = o.keys();
     if (QSet<QString>(actualKeys.cbegin(), actualKeys.cend()) != keys) return false;
     Session candidate;
@@ -113,6 +149,8 @@ bool parse(const QByteArray& bytes, Session& result) {
         !o.value("fullscreen").isBool()) return false;
     candidate.port = static_cast<quint16>(port);
     candidate.fullscreen = o.value("fullscreen").toBool();
+    if (o.contains("telemetry") && !o.value("telemetry").isBool()) return false;
+    candidate.telemetry = o.value("telemetry").toBool(false);
     candidate.address = o.value("address").toString();
     QHostAddress ip;
     if (candidate.address.isEmpty() || candidate.address.size() > 253 ||
@@ -190,12 +228,27 @@ bool loadStdin() {
     QByteArray bytes(static_cast<int>(length), '\0');
     if (!readExact(bytes.data(), bytes.size(), elapsed)) return false;
     loaded = parse(bytes, current);
+    if (loaded && current.telemetry) {
+        // A stalled owner must not block SDL/input cleanup behind progress output.
+#ifdef Q_OS_WIN
+        DWORD mode = PIPE_NOWAIT;
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (GetFileType(output) != FILE_TYPE_PIPE || !SetNamedPipeHandleState(output, &mode, nullptr, nullptr)) loaded = false;
+#else
+        struct stat outputStat{};
+        const int flags = fcntl(STDOUT_FILENO, F_GETFL);
+        if (fstat(STDOUT_FILENO, &outputStat) || (!S_ISFIFO(outputStat.st_mode) && !S_ISSOCK(outputStat.st_mode)) || flags < 0 || fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK) < 0) loaded = false;
+#endif
+    }
+    if (loaded) progressClock.start();
     bytes.fill('\0');
     return loaded;
 }
 bool active() { return loaded; }
 const Session& get() { Q_ASSERT(loaded); return current; }
 bool parentAlive() {
+    reportProgress();
+    if (outputFailed.load()) return false;
 #ifdef Q_OS_WIN
     DWORD available = 0;
     return PeekNamedPipe(GetStdHandle(STD_INPUT_HANDLE), nullptr, 0, nullptr, &available, nullptr) && !available;

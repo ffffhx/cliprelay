@@ -52,7 +52,7 @@ def build(source, platform):
         for name in ['build_desktop_client.py','prepare_desktop_client.py']:
             archive.add(Path(__file__).with_name(name),arcname='scripts/'+name)
     hashes={str(p.relative_to(artifact)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest() for p in artifact.rglob('*') if p.is_file() and not p.is_symlink()}
-    (artifact/'manifest.json').write_text(json.dumps({'platform':platform,'protocol':1,'capabilities':['direct','embedded-network','session-events-v1'],'files':hashes},indent=2)+'\n')
+    (artifact/'manifest.json').write_text(json.dumps({'platform':platform,'protocol':1,'capabilities':['direct','embedded-network','session-events-v1','presentation-events-v1'],'files':hashes},indent=2)+'\n')
     if platform=='macos':
         # GitHub artifact transport discards executable bits and symlink types.
         # A tar container preserves both for the app and Qt frameworks.

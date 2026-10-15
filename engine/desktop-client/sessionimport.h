@@ -16,6 +16,7 @@ struct Session {
     int width = 1920, height = 1080, fps = 60, bitrate = 12000;
     bool fullscreen = false;
     bool overlay = false;
+    bool telemetry = false;
     quint16 overlayPort = 0;
 };
 constexpr int MaxFrame = 65536;
@@ -28,5 +29,8 @@ void watchParent(std::function<void()> onLost = {});
 enum class EndReason { Network, Pairing, Host, User, Parent, Decoder };
 void reportConnected();
 void reportEnded(EndReason reason);
+void reportReceived(quint64 frame);
+void reportRendered(quint64 frame, int width, int height);
+void reportProgress();
 bool retryableNetworkError(int error);
 }

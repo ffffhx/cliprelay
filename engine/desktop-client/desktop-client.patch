@@ -1,12 +1,5 @@
---- a/app/app.pro
-+++ b/app/app.pro
-@@ -1,4 +1,6 @@
- QT += core quick network quickcontrols2 svg
-+SOURCES += backend/sessionimport.cpp
-+HEADERS += backend/sessionimport.h
- CONFIG += c++17
- 
- unix:!macx {
+diff --git a/app/Info.plist b/app/Info.plist
+index 24980b77..425851cb 100644
 --- a/app/Info.plist
 +++ b/app/Info.plist
 @@ -13,7 +13,7 @@
@@ -38,119 +31,47 @@
 +	<string>public.app-category.utilities</string>
  </dict>
  </plist>
---- a/app/main.cpp
-+++ b/app/main.cpp
-@@ -39,6 +39,7 @@
- #include <openssl/ssl.h>
- #endif
+diff --git a/app/app.pro b/app/app.pro
+index 1c0661b3..0048e43a 100644
+--- a/app/app.pro
++++ b/app/app.pro
+@@ -1,4 +1,6 @@
+ QT += core quick network quickcontrols2 svg
++SOURCES += backend/sessionimport.cpp
++HEADERS += backend/sessionimport.h
+ CONFIG += c++17
  
-+#include "backend/sessionimport.h"
- #include "cli/listapps.h"
- #include "cli/quitstream.h"
- #include "cli/startstream.h"
-@@ -428,11 +429,11 @@
-     // Set these here to allow us to use the default QSettings constructor.
-     // These also ensure that our cache directory is named correctly. As such,
-     // it is critical that these be called before Path::initialize().
--    QCoreApplication::setOrganizationName("Moonlight Game Streaming Project");
--    QCoreApplication::setOrganizationDomain("moonlight-stream.com");
--    QCoreApplication::setApplicationName("Moonlight");
--
--    if (QFile(QDir::currentPath() + "/portable.dat").exists()) {
-+    QCoreApplication::setOrganizationName("ClipRelay");
-+    QCoreApplication::setOrganizationDomain("cliprelay.local");
-+    QCoreApplication::setApplicationName("ClipRelay Stream");
-+
-+    if (false) { // ClipRelay never imports portable Moonlight settings.
-         QSettings::setDefaultFormat(QSettings::IniFormat);
-         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QDir::currentPath());
-         QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, QDir::currentPath());
-@@ -464,7 +465,7 @@
-     if (IS_UNSPECIFIED_HANDLE(oldConErr))
- #endif
-     {
--        s_LoggerFile = new QFile(tempDir.filePath(QString("Moonlight-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
-+        s_LoggerFile = new QFile(tempDir.filePath(QString("ClipRelayStream-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
-         if (s_LoggerFile->open(QIODevice::WriteOnly | QIODevice::Text)) {
-             QTextStream(stderr) << "Redirecting log output to " << s_LoggerFile->fileName() << Qt::endl;
-             s_LoggerStream.setDevice(s_LoggerFile);
-@@ -497,7 +498,7 @@
- 
- #ifdef LOG_TO_FILE
-     // Prune the oldest existing logs if there are more than 10
--    QStringList existingLogNames = tempDir.entryList(QStringList("Moonlight-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
-+    QStringList existingLogNames = tempDir.entryList(QStringList("ClipRelayStream-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
-     for (int i = 10; i < existingLogNames.size(); i++) {
-         qInfo() << "Removing old log file:" << existingLogNames.at(i);
-         QFile(tempDir.filePath(existingLogNames.at(i))).remove();
-@@ -715,8 +716,8 @@
-     // Set our app name for SDL to use with PulseAudio and PipeWire. This matches what we
-     // provide as our app name to libsoundio too. On SDL 2.0.18+, SDL_APP_NAME is also used
-     // for screensaver inhibitor reporting.
--    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Moonlight");
--    SDL_SetHint(SDL_HINT_APP_NAME, "Moonlight");
-+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "ClipRelay Stream");
-+    SDL_SetHint(SDL_HINT_APP_NAME, "ClipRelay Stream");
- 
-     // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
-     // support applications that assume they can warp the cursor (which isn't possible
-@@ -803,8 +804,22 @@
+ unix:!macx {
+diff --git a/app/backend/computermanager.cpp b/app/backend/computermanager.cpp
+index 96177da7..27626000 100644
+--- a/app/backend/computermanager.cpp
++++ b/app/backend/computermanager.cpp
+@@ -1,4 +1,5 @@
+ #include "computermanager.h"
++#include "sessionimport.h"
+ #include "boxartmanager.h"
+ #include "nvhttp.h"
+ #include "nvpairingmanager.h"
+@@ -176,6 +177,8 @@ ComputerManager::ComputerManager(StreamingPreferences* prefs)
+         hosts = settings.beginReadArray(SER_HOSTS);
      }
- #endif
  
--    GlobalCommandLineParser parser;
--    GlobalCommandLineParser::ParseResult commandLineParserResult = parser.parse(app.arguments());
-+    // This build only accepts an ephemeral paired session from the desktop app.
-+    if (app.arguments().size() != 2 || app.arguments().at(1) != "--cliprelay-session" ||
-+        !ClipRelayImport::loadStdin()) {
-+        qCritical("Invalid ClipRelay session envelope");
-+        return 2;
-+    }
-+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
-+        ClipRelayImport::reportEnded(ClipRelayImport::EndReason::User);
-+    });
-+    ClipRelayImport::watchParent([] {
-+        if (auto session = Session::get()) {
-+            session->setShouldExit();
-+            session->interrupt();
-+        } else QCoreApplication::quit();
-+    });
-+    GlobalCommandLineParser::ParseResult commandLineParserResult = GlobalCommandLineParser::StreamRequested;
-     switch (commandLineParserResult) {
-     case GlobalCommandLineParser::ListRequested:
-         // Don't log to the console since it will jumble the command output
-@@ -995,10 +1010,27 @@
-         {
-             initialView = "qrc:/gui/CliStartStreamSegue.qml";
-             StreamingPreferences* preferences = StreamingPreferences::get();
--            StreamCommandLineParser streamParser;
--            streamParser.parse(app.arguments(), preferences);
--            QString host    = streamParser.getHost();
--            QString appName = streamParser.getAppName();
-+            const auto& input = ClipRelayImport::get();
-+            preferences->width = input.width;
-+            preferences->height = input.height;
-+            preferences->fps = input.fps;
-+            preferences->bitrateKbps = input.bitrate;
-+            preferences->windowMode = input.fullscreen ? StreamingPreferences::WM_FULLSCREEN_DESKTOP : StreamingPreferences::WM_WINDOWED;
-+            preferences->videoCodecConfig = StreamingPreferences::VCC_AUTO;
-+            preferences->audioConfig = StreamingPreferences::AC_STEREO;
-+            preferences->enableMdns = false;
-+            preferences->quitAppAfter = false;
-+            preferences->gameOptimizations = false;
-+            preferences->richPresence = false;
-+            preferences->absoluteMouseMode = true;
-+            preferences->backgroundGamepad = false;
-+            preferences->gamepadMouse = false;
-+            preferences->playAudioOnHost = true;
-+            preferences->enableHdr = false;
-+            preferences->enableYUV444 = false;
-+            preferences->detectNetworkBlocking = false;
-+            QString host = input.address;
-+            QString appName = "Desktop";
-             auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app);
-             engine.rootContext()->setContextProperty("launcher", launcher);
-             break;
++    if (ClipRelayImport::active()) hosts = 0;
++
+     // Inflate our hosts from QSettings
+     for (int i = 0; i < hosts; i++) {
+         settings.setArrayIndex(i);
+@@ -186,7 +189,7 @@ ComputerManager::ComputerManager(StreamingPreferences* prefs)
+     settings.endArray();
+ 
+     // Fetch latest compatibility data asynchronously
+-    m_CompatFetcher.start();
++    if (!ClipRelayImport::active()) m_CompatFetcher.start();
+ 
+     // Start the delayed flush thread to handle saveHosts() calls
+     m_DelayedFlushThread = new DelayedFlushThread(this);
+diff --git a/app/backend/identitymanager.cpp b/app/backend/identitymanager.cpp
+index 943a88e7..2d11ec71 100644
 --- a/app/backend/identitymanager.cpp
 +++ b/app/backend/identitymanager.cpp
 @@ -1,4 +1,5 @@
@@ -159,7 +80,7 @@
  #include "utils.h"
  
  #include <QDebug>
-@@ -108,6 +109,14 @@
+@@ -108,6 +109,14 @@ void IdentityManager::createCredentials(QSettings& settings)
  
  IdentityManager::IdentityManager()
  {
@@ -174,7 +95,7 @@
      QSettings settings;
  
      m_CachedPemCert = settings.value(SER_CERT).toByteArray();
-@@ -198,6 +207,7 @@
+@@ -198,6 +207,7 @@ QSslConfiguration
  IdentityManager::getSslConfig()
  {
      QSslConfiguration sslConfig(QSslConfiguration::defaultConfiguration());
@@ -182,32 +103,8 @@
      sslConfig.setLocalCertificate(getSslCertificate());
      sslConfig.setPrivateKey(getSslKey());
      return sslConfig;
---- a/app/backend/computermanager.cpp
-+++ b/app/backend/computermanager.cpp
-@@ -1,4 +1,5 @@
- #include "computermanager.h"
-+#include "sessionimport.h"
- #include "boxartmanager.h"
- #include "nvhttp.h"
- #include "nvpairingmanager.h"
-@@ -176,6 +177,8 @@
-         hosts = settings.beginReadArray(SER_HOSTS);
-     }
- 
-+    if (ClipRelayImport::active()) hosts = 0;
-+
-     // Inflate our hosts from QSettings
-     for (int i = 0; i < hosts; i++) {
-         settings.setArrayIndex(i);
-@@ -186,7 +189,7 @@
-     settings.endArray();
- 
-     // Fetch latest compatibility data asynchronously
--    m_CompatFetcher.start();
-+    if (!ClipRelayImport::active()) m_CompatFetcher.start();
- 
-     // Start the delayed flush thread to handle saveHosts() calls
-     m_DelayedFlushThread = new DelayedFlushThread(this);
+diff --git a/app/backend/nvhttp.cpp b/app/backend/nvhttp.cpp
+index f447b4ff..896f2f78 100644
 --- a/app/backend/nvhttp.cpp
 +++ b/app/backend/nvhttp.cpp
 @@ -1,4 +1,5 @@
@@ -216,7 +113,7 @@
  #include <Limelight.h>
  
  #include <QDebug>
-@@ -134,6 +135,12 @@
+@@ -134,6 +135,12 @@ QString
  NvHTTP::getServerInfo(NvLogLevel logLevel, bool fastFail)
  {
      QString serverInfo;
@@ -229,7 +126,7 @@
  
      // Check if we have a pinned cert and HTTPS port for this host yet
      if (!m_ServerCert.isNull() && httpsPort() != 0)
-@@ -237,7 +244,7 @@
+@@ -237,7 +244,7 @@ NvHTTP::startApp(QString verb,
                                     LiGetLaunchUrlQueryParameters(),
                                     LAUNCH_TIMEOUT_MS);
  
@@ -238,7 +135,7 @@
  
      // Throws if the request failed
      verifyResponseStatus(response);
-@@ -485,6 +492,15 @@
+@@ -485,6 +492,15 @@ NvHTTP::openConnection(QUrl baseUrl,
                         int timeoutMs,
                         NvLogLevel logLevel)
  {
@@ -254,7 +151,7 @@
      // Port must be set
      Q_ASSERT(baseUrl.port(0) != 0);
  
-@@ -498,6 +514,7 @@
+@@ -498,6 +514,7 @@ NvHTTP::openConnection(QUrl baseUrl,
                   ((arguments != nullptr) ? ("&" + arguments) : ""));
  
      QNetworkRequest request(url);
@@ -262,7 +159,7 @@
  
      // Add our client certificate
      request.setSslConfiguration(IdentityManager::get()->getSslConfig());
-@@ -516,6 +533,22 @@
+@@ -516,6 +533,22 @@ NvHTTP::openConnection(QUrl baseUrl,
  
      auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
      QNetworkReply* reply = m_Nam->get(request);
@@ -285,7 +182,7 @@
  
      // Run the request with a timeout if requested
      QEventLoop loop;
-@@ -544,6 +577,14 @@
+@@ -544,6 +577,14 @@ NvHTTP::openConnection(QUrl baseUrl,
  #endif
      disconnect(sslErrorsConnection);
  
@@ -300,6 +197,8 @@
      // Handle error
      if (reply->error() != QNetworkReply::NoError)
      {
+diff --git a/app/cli/startstream.cpp b/app/cli/startstream.cpp
+index 5f79b555..24070a98 100644
 --- a/app/cli/startstream.cpp
 +++ b/app/cli/startstream.cpp
 @@ -1,4 +1,6 @@
@@ -309,7 +208,7 @@
  #include "backend/computermanager.h"
  #include "backend/computerseeker.h"
  #include "streaming/session.h"
-@@ -60,6 +62,11 @@
+@@ -60,6 +62,11 @@ public:
              if (m_State == StateInit) {
                  m_State = StateSeekComputer;
                  m_ComputerManager = event.computerManager;
@@ -321,7 +220,7 @@
  
                  m_ComputerSeeker = new ComputerSeeker(m_ComputerManager, m_ComputerName, q);
                  q->connect(m_ComputerSeeker, &ComputerSeeker::computerFound,
-@@ -140,6 +147,46 @@
+@@ -140,6 +147,46 @@ public:
          }
      }
  
@@ -368,7 +267,7 @@
      int getAppIndex() const
      {
          for (int i = 0; i < m_Computer->appList.length(); i++) {
-@@ -170,6 +217,7 @@
+@@ -170,6 +217,7 @@ public:
          return "<UNKNOWN>";
      }
  
@@ -376,6 +275,149 @@
      Launcher *q_ptr;
      QString m_ComputerName;
      QString m_AppName;
+diff --git a/app/gui/CliStartStreamSegue.qml b/app/gui/CliStartStreamSegue.qml
+index cc1be12a..1620b712 100644
+--- a/app/gui/CliStartStreamSegue.qml
++++ b/app/gui/CliStartStreamSegue.qml
+@@ -23,8 +23,7 @@ Item {
+     }
+ 
+     function onLaunchFailed(message) {
+-        errorDialog.text = message
+-        errorDialog.open()
++        Qt.quit()
+         console.error(message)
+     }
+ 
+diff --git a/app/gui/StreamSegue.qml b/app/gui/StreamSegue.qml
+index d7c0c5d1..a831917f 100644
+--- a/app/gui/StreamSegue.qml
++++ b/app/gui/StreamSegue.qml
+@@ -73,7 +73,7 @@ Item {
+             stackView.pop()
+         }
+ 
+-        if (quitAfter && !streamSegueErrorDialog.text) {
++        if (quitAfter) {
+             // If this was a CLI launch without errors, exit now
+             Qt.quit()
+         }
+diff --git a/app/main.cpp b/app/main.cpp
+index 2b701d71..22f9047f 100644
+--- a/app/main.cpp
++++ b/app/main.cpp
+@@ -39,6 +39,7 @@
+ #include <openssl/ssl.h>
+ #endif
+ 
++#include "backend/sessionimport.h"
+ #include "cli/listapps.h"
+ #include "cli/quitstream.h"
+ #include "cli/startstream.h"
+@@ -428,11 +429,11 @@ int main(int argc, char *argv[])
+     // Set these here to allow us to use the default QSettings constructor.
+     // These also ensure that our cache directory is named correctly. As such,
+     // it is critical that these be called before Path::initialize().
+-    QCoreApplication::setOrganizationName("Moonlight Game Streaming Project");
+-    QCoreApplication::setOrganizationDomain("moonlight-stream.com");
+-    QCoreApplication::setApplicationName("Moonlight");
++    QCoreApplication::setOrganizationName("ClipRelay");
++    QCoreApplication::setOrganizationDomain("cliprelay.local");
++    QCoreApplication::setApplicationName("ClipRelay Stream");
+ 
+-    if (QFile(QDir::currentPath() + "/portable.dat").exists()) {
++    if (false) { // ClipRelay never imports portable Moonlight settings.
+         QSettings::setDefaultFormat(QSettings::IniFormat);
+         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QDir::currentPath());
+         QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, QDir::currentPath());
+@@ -464,7 +465,7 @@ int main(int argc, char *argv[])
+     if (IS_UNSPECIFIED_HANDLE(oldConErr))
+ #endif
+     {
+-        s_LoggerFile = new QFile(tempDir.filePath(QString("Moonlight-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
++        s_LoggerFile = new QFile(tempDir.filePath(QString("ClipRelayStream-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
+         if (s_LoggerFile->open(QIODevice::WriteOnly | QIODevice::Text)) {
+             QTextStream(stderr) << "Redirecting log output to " << s_LoggerFile->fileName() << Qt::endl;
+             s_LoggerStream.setDevice(s_LoggerFile);
+@@ -497,7 +498,7 @@ int main(int argc, char *argv[])
+ 
+ #ifdef LOG_TO_FILE
+     // Prune the oldest existing logs if there are more than 10
+-    QStringList existingLogNames = tempDir.entryList(QStringList("Moonlight-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
++    QStringList existingLogNames = tempDir.entryList(QStringList("ClipRelayStream-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
+     for (int i = 10; i < existingLogNames.size(); i++) {
+         qInfo() << "Removing old log file:" << existingLogNames.at(i);
+         QFile(tempDir.filePath(existingLogNames.at(i))).remove();
+@@ -715,8 +716,8 @@ int main(int argc, char *argv[])
+     // Set our app name for SDL to use with PulseAudio and PipeWire. This matches what we
+     // provide as our app name to libsoundio too. On SDL 2.0.18+, SDL_APP_NAME is also used
+     // for screensaver inhibitor reporting.
+-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Moonlight");
+-    SDL_SetHint(SDL_HINT_APP_NAME, "Moonlight");
++    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "ClipRelay Stream");
++    SDL_SetHint(SDL_HINT_APP_NAME, "ClipRelay Stream");
+ 
+     // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
+     // support applications that assume they can warp the cursor (which isn't possible
+@@ -803,8 +804,22 @@ int main(int argc, char *argv[])
+     }
+ #endif
+ 
+-    GlobalCommandLineParser parser;
+-    GlobalCommandLineParser::ParseResult commandLineParserResult = parser.parse(app.arguments());
++    // This build only accepts an ephemeral paired session from the desktop app.
++    if (app.arguments().size() != 2 || app.arguments().at(1) != "--cliprelay-session" ||
++        !ClipRelayImport::loadStdin()) {
++        qCritical("Invalid ClipRelay session envelope");
++        return 2;
++    }
++    QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
++        ClipRelayImport::reportEnded(ClipRelayImport::EndReason::User);
++    });
++    ClipRelayImport::watchParent([] {
++        if (auto session = Session::get()) {
++            session->setShouldExit();
++            session->interrupt();
++        } else QCoreApplication::quit();
++    });
++    GlobalCommandLineParser::ParseResult commandLineParserResult = GlobalCommandLineParser::StreamRequested;
+     switch (commandLineParserResult) {
+     case GlobalCommandLineParser::ListRequested:
+         // Don't log to the console since it will jumble the command output
+@@ -995,10 +1010,27 @@ int main(int argc, char *argv[])
+         {
+             initialView = "qrc:/gui/CliStartStreamSegue.qml";
+             StreamingPreferences* preferences = StreamingPreferences::get();
+-            StreamCommandLineParser streamParser;
+-            streamParser.parse(app.arguments(), preferences);
+-            QString host    = streamParser.getHost();
+-            QString appName = streamParser.getAppName();
++            const auto& input = ClipRelayImport::get();
++            preferences->width = input.width;
++            preferences->height = input.height;
++            preferences->fps = input.fps;
++            preferences->bitrateKbps = input.bitrate;
++            preferences->windowMode = input.fullscreen ? StreamingPreferences::WM_FULLSCREEN_DESKTOP : StreamingPreferences::WM_WINDOWED;
++            preferences->videoCodecConfig = StreamingPreferences::VCC_AUTO;
++            preferences->audioConfig = StreamingPreferences::AC_STEREO;
++            preferences->enableMdns = false;
++            preferences->quitAppAfter = false;
++            preferences->gameOptimizations = false;
++            preferences->richPresence = false;
++            preferences->absoluteMouseMode = true;
++            preferences->backgroundGamepad = false;
++            preferences->gamepadMouse = false;
++            preferences->playAudioOnHost = true;
++            preferences->enableHdr = false;
++            preferences->enableYUV444 = false;
++            preferences->detectNetworkBlocking = false;
++            QString host = input.address;
++            QString appName = "Desktop";
+             auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app);
+             engine.rootContext()->setContextProperty("launcher", launcher);
+             break;
+diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
+index 40c1e59c..09f9440c 100644
 --- a/app/streaming/session.cpp
 +++ b/app/streaming/session.cpp
 @@ -1,4 +1,5 @@
@@ -384,7 +426,7 @@
  #include "settings/streamingpreferences.h"
  #include "streaming/streamutils.h"
  #include "backend/richpresencemanager.h"
-@@ -76,6 +77,16 @@
+@@ -76,6 +77,16 @@ void Session::clStageStarting(int stage)
  
  void Session::clStageFailed(int stage, int errorCode)
  {
@@ -401,7 +443,7 @@
      // Perform the port test now, while we're on the async connection thread and not blocking the UI.
      unsigned int portFlags = LiGetPortFlagsFromStage(stage);
      s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
-@@ -87,6 +98,19 @@
+@@ -87,6 +98,19 @@ void Session::clStageFailed(int stage, int errorCode)
  
  void Session::clConnectionTerminated(int errorCode)
  {
@@ -421,7 +463,7 @@
      unsigned int portFlags = LiGetPortFlagsFromTerminationErrorCode(errorCode);
      s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
  
-@@ -684,7 +708,7 @@
+@@ -684,7 +708,7 @@ bool Session::initialize(QQuickWindow* qtWindow)
  #ifndef STEAM_LINK
      // Opt-in to all encryption features if we detect that the platform
      // has AES cryptography acceleration instructions and more than 2 cores.
@@ -430,7 +472,7 @@
          m_StreamConfig.encryptionFlags = ENCFLG_ALL;
      }
      else {
-@@ -1620,9 +1644,13 @@
+@@ -1620,9 +1644,13 @@ bool Session::startConnectionAsync()
                        !m_Preferences->multiController,
                        rtspSessionUrl);
      } catch (const GfeHttpResponseException& e) {
@@ -444,7 +486,7 @@
          emit displayLaunchError(e.toQString());
          return false;
      }
-@@ -1651,7 +1679,14 @@
+@@ -1651,7 +1679,14 @@ bool Session::startConnectionAsync()
          hostInfo.rtspSessionUrl = rtspSessionUrlStr.data();
      }
  
@@ -460,7 +502,7 @@
          // Override default packet size and remote streaming detection
          // NB: Using STREAM_CFG_AUTO will cap our packet size at 1024 for remote hosts.
          m_StreamConfig.streamingRemotely = STREAM_CFG_LOCAL;
-@@ -1712,6 +1747,7 @@
+@@ -1712,6 +1747,7 @@ bool Session::startConnectionAsync()
          return false;
      }
  
@@ -468,7 +510,7 @@
      emit connectionStarted();
      return true;
  }
-@@ -1780,7 +1816,8 @@
+@@ -1780,7 +1816,8 @@ void Session::interrupt()
  void Session::exec()
  {
      // If the connection failed, clean up and abort the connection.
@@ -478,7 +520,7 @@
          delete m_InputHandler;
          m_InputHandler = nullptr;
          SDL_QuitSubSystem(SDL_INIT_VIDEO);
-@@ -1843,7 +1880,7 @@
+@@ -1843,7 +1880,7 @@ void Session::exec()
  #ifdef Q_OS_DARWIN
      std::string windowName = QString(m_Computer->name).toStdString();
  #else
@@ -487,7 +529,7 @@
  #endif
  
      m_Window = SDL_CreateWindow(windowName.c_str(),
-@@ -1964,6 +2001,13 @@
+@@ -1964,6 +2001,13 @@ void Session::exec()
      // because we want to suspend all Qt processing until the stream is over.
      SDL_Event event;
      for (;;) {
@@ -501,7 +543,7 @@
  #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
          // SDL 2.0.18 has a proper wait event implementation that uses platform
          // support to block on events rather than polling on Windows, macOS, X11,
-@@ -1997,6 +2041,10 @@
+@@ -1997,6 +2041,10 @@ void Session::exec()
  #endif
          switch (event.type) {
          case SDL_QUIT:
@@ -512,26 +554,98 @@
              SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                          "Quit event received");
              goto DispatchDeferredCleanup;
---- a/app/gui/CliStartStreamSegue.qml
-+++ b/app/gui/CliStartStreamSegue.qml
-@@ -23,8 +23,7 @@
-     }
+diff --git a/app/streaming/video/ffmpeg-renderers/d3d11va.cpp b/app/streaming/video/ffmpeg-renderers/d3d11va.cpp
+index fed027f1..4a8b16f9 100644
+--- a/app/streaming/video/ffmpeg-renderers/d3d11va.cpp
++++ b/app/streaming/video/ffmpeg-renderers/d3d11va.cpp
+@@ -1,3 +1,4 @@
++#include "backend/sessionimport.h"
+ // For D3D11_DECODER_PROFILE values
+ #include <initguid.h>
  
-     function onLaunchFailed(message) {
--        errorDialog.text = message
--        errorDialog.open()
-+        Qt.quit()
-         console.error(message)
-     }
+@@ -825,6 +826,8 @@ void D3D11VARenderer::renderFrame(AVFrame* frame)
  
---- a/app/gui/StreamSegue.qml
-+++ b/app/gui/StreamSegue.qml
-@@ -73,7 +73,7 @@
-             stackView.pop()
+     // Present according to the decoder parameters
+     hr = m_SwapChain->Present(0, flags);
++    // Occlusion and failed/device-lost presents do not advance the displayed boundary.
++    if (hr == S_OK) ClipRelayImport::reportRendered(reinterpret_cast<quintptr>(frame->opaque), frame->width, frame->height);
+ 
+     if (m_DecodeDevice == m_RenderDevice) {
+         // Release the context lock
+diff --git a/app/streaming/video/ffmpeg-renderers/dxva2.cpp b/app/streaming/video/ffmpeg-renderers/dxva2.cpp
+index e4386157..65c3f08d 100644
+--- a/app/streaming/video/ffmpeg-renderers/dxva2.cpp
++++ b/app/streaming/video/ffmpeg-renderers/dxva2.cpp
+@@ -1,3 +1,4 @@
++#include "backend/sessionimport.h"
+ // minwindef.h defines min() and max() macros that conflict with
+ // std::numeric_limits, which Qt uses in some of its headers.
+ #define NOMINMAX
+@@ -1018,6 +1019,7 @@ void DXVA2Renderer::renderFrame(AVFrame *frame)
+             SDL_Delay(1);
          }
+     } while (hr == D3DERR_WASSTILLDRAWING);
++    if (hr == S_OK) ClipRelayImport::reportRendered(reinterpret_cast<quintptr>(frame->opaque), frame->width, frame->height);
+     if (FAILED(hr)) {
+         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                      "PresentEx() failed: %x",
+diff --git a/app/streaming/video/ffmpeg-renderers/vt_metal.mm b/app/streaming/video/ffmpeg-renderers/vt_metal.mm
+index 2852d437..2c64bc45 100644
+--- a/app/streaming/video/ffmpeg-renderers/vt_metal.mm
++++ b/app/streaming/video/ffmpeg-renderers/vt_metal.mm
+@@ -10,6 +10,7 @@
+ #include "streaming/session.h"
+ #include "streaming/streamutils.h"
+ #include "path.h"
++#include "backend/sessionimport.h"
  
--        if (quitAfter && !streamSegueErrorDialog.text) {
-+        if (quitAfter) {
-             // If this was a CLI launch without errors, exit now
-             Qt.quit()
-         }
+ #import <Cocoa/Cocoa.h>
+ #import <VideoToolbox/VideoToolbox.h>
+@@ -564,6 +565,14 @@ public:
+ 
+         [renderEncoder endEncoding];
+ 
++        // Capture scalar metadata: the frame may be freed before presentation.
++        const quint64 cliprelayFrame = reinterpret_cast<quintptr>(frame->opaque);
++        const int cliprelayWidth = frame->width, cliprelayHeight = frame->height;
++        if (@available(macOS 10.15.4, *)) {
++            [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
++                if (presented.presentedTime > 0) ClipRelayImport::reportRendered(cliprelayFrame, cliprelayWidth, cliprelayHeight);
++            }];
++        }
+         // Flip to the newly rendered buffer
+         [commandBuffer presentDrawable:drawable];
+         [commandBuffer commit];
+diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
+index c20d3126..d61e1c02 100644
+--- a/app/streaming/video/ffmpeg.cpp
++++ b/app/streaming/video/ffmpeg.cpp
+@@ -1,3 +1,4 @@
++#include "backend/sessionimport.h"
+ #include <Limelight.h>
+ #include "ffmpeg.h"
+ #include "utils.h"
+@@ -2022,6 +2023,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
+ 
+                     // Capture a frame timestamp to measuring pacing delay
+                     frame->pkt_dts = LiGetMicroseconds();
++                    frame->opaque = nullptr; // No matching network frame means no presentation claim.
+ 
+                     if (!m_FrameInfoQueue.isEmpty()) {
+                         // Data buffers in the DU are not valid here!
+@@ -2034,6 +2036,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
+ 
+                         // Store the presentation time (90 kHz timebase)
+                         frame->pts = (int64_t)du.rtpTimestamp;
++                        frame->opaque = reinterpret_cast<void*>(static_cast<quintptr>(static_cast<quint32>(du.frameNumber)));
+                     }
+ 
+                     m_ActiveWndVideoStats.decodedFrames++;
+@@ -2095,6 +2098,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
+ 
+ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+ {
++    ClipRelayImport::reportReceived(static_cast<quint32>(du->frameNumber));
+     PLENTRY entry = du->bufferList;
+     int err;
+ 

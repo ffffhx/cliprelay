@@ -26,6 +26,34 @@ test('frame contains bounded validated identity with explicit stream options',()
   assert.throws(()=>envelope(host(),{...identities.client,key:identities.wrong.key}));
   bytes.fill(0);
 });
+
+const progress=(frame=10,extra={})=>({version:1,event:'progress',received:frame,rendered:frame,width:1280,height:720,receivedAgeMs:0,renderedAgeMs:0,...extra});
+test('native presentation telemetry is opt-in and renderer options cannot enable it',()=>{
+  assert.equal(JSON.parse(envelope(host(),identities.client,{},true).subarray(4)).telemetry,true);
+  assert.equal(JSON.parse(envelope(host(),identities.client).subarray(4)).telemetry,undefined);
+  assert.throws(()=>envelope(host(),identities.client,{telemetry:true}),{code:'INVALID_STREAM_OPTIONS'});
+});
+
+test('long-running progress stays bounded and repeated frame reports cannot make a frozen picture fresh',async t=>{
+  let time=1000;const f=manager(store(),{resolveTelemetry:()=>true,now:()=>time});t.after(()=>f.viewer.stop());await f.viewer.open();await until(()=>f.viewer.phase==='running');
+  for(let frame=1;frame<=40;frame++){time+=250;f.child.send(progress(frame));await until(()=>f.viewer.snapshot().progress?.rendered===frame);}
+  assert.equal(f.viewer.phase,'running');time+=3000;assert.equal(f.viewer.snapshot().progress.renderedAgeMs,3000);
+  let changes=0;f.viewer.onUpdate=()=>changes++;f.child.send(progress(40));await until(()=>changes>0);assert.equal(f.viewer.snapshot().progress.renderedAgeMs,3000);
+  f.viewer.stop();assert.equal(f.viewer.snapshot().progress,null);
+});
+
+test('presentation counters, geometry, age and unknown schema fields fail closed',async t=>{
+  for(const change of [{received:9},{rendered:9},{width:0},{renderedAgeMs:-1},{receivedAgeMs:60001},{unexpected:1},{width:1920}])await t.test(JSON.stringify(change),async t=>{
+    const f=manager(store(),{resolveTelemetry:()=>true});t.after(()=>f.viewer.stop());await f.viewer.open();await until(()=>f.viewer.phase==='running');
+    f.child.send(progress());await until(()=>f.viewer.snapshot().progress);f.child.send(progress(10,change));await until(()=>f.viewer.phase==='error');assert.equal(f.viewer.error,'VIEWER_PROTOCOL_ERROR');
+  });
+});
+
+test('progress from an old native process cannot describe a replacement route',async t=>{
+  const state=store(),f=manager(state,{resolveTelemetry:()=>true});t.after(()=>f.viewer.stop());await f.viewer.open();await until(()=>f.viewer.phase==='running');
+  f.child.send(progress());await until(()=>f.viewer.snapshot().progress);const old=f.viewer.record;state.host.routeId='replacement';f.viewer.reconcile();assert.equal(f.viewer.snapshot().progress,null);
+  await until(()=>f.children.length===2&&f.viewer.phase==='running');f.viewer.events(old,Buffer.from(JSON.stringify(progress(99))+'\n'));assert.equal(f.viewer.snapshot().progress,null);
+});
 test('real child receives credentials only through a pipe and exits when owner closes it',async()=>{
   const f=manager(store());try{
     const pending=f.viewer.open();await new Promise(resolve=>setImmediate(resolve));

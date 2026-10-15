@@ -5,7 +5,7 @@ const {endpoint,fault}=require('./paired-transport.cjs');
 const {validateIdentity}=require('./paired-store.cjs');
 const {sameRoute}=require('./routed-store.cjs');
 
-function envelope(host,identity,options={}){
+function envelope(host,identity,options={},telemetry=false){
   validateIdentity(identity);
   const target=endpoint(host.address,host.port);
   if(target.port>65514 || target.address.includes('%'))throw fault('INVALID_STREAM_TARGET');
@@ -13,6 +13,7 @@ function envelope(host,identity,options={}){
   if(crypto.createHash('sha256').update(certificate.raw).digest('hex')!==host.id || !/^[a-f0-9]{32}$/.test(host.clientId))throw fault('INVALID_STREAM_TARGET');
   if(!options || typeof options!=='object' || Array.isArray(options) || Object.keys(options).some(k=>!['width','height','fps','bitrate','fullscreen'].includes(k)))throw fault('INVALID_STREAM_OPTIONS');
   const value={version:1,...target,clientId:host.clientId,certificate:identity.cert,privateKey:identity.key,hostCertificate:host.certificate,width:1920,height:1080,fps:60,bitrate:12000,fullscreen:false,...options};
+  if(telemetry===true)value.telemetry=true;
   if(host.overlay!==undefined && typeof host.overlay!=='boolean')throw fault('INVALID_STREAM_TARGET');
   if(host.overlay){
     const remote=host.overlayPort ?? 48789;
@@ -24,6 +25,10 @@ function envelope(host,identity,options={}){
   for(const key of ['certificate','privateKey','hostCertificate'])if(typeof value[key]!=='string' || Buffer.byteLength(value[key])>16384)throw fault('INVALID_STREAM_TARGET');
   const body=Buffer.from(JSON.stringify(value));if(body.length>65536)throw fault('INVALID_STREAM_TARGET');
   const header=Buffer.alloc(4);header.writeUInt32BE(body.length);return Buffer.concat([header,body]);
+}
+
+function telemetryCapability(directory){
+  try{return JSON.parse(fs.readFileSync(path.join(directory,'manifest.json'),'utf8')).capabilities?.includes('presentation-events-v1')===true;}catch{return false;}
 }
 
 function executable(directory,platform=process.platform,overlay=false){
@@ -41,13 +46,17 @@ function executable(directory,platform=process.platform,overlay=false){
 }
 
 class StreamViewer{
-  constructor({directory,store,onUpdate=()=>{},spawnProcess=spawn,resolveExecutable=executable,
+  constructor({directory,store,onUpdate=()=>{},spawnProcess=spawn,resolveExecutable=executable,resolveTelemetry=telemetryCapability,now=()=>performance.now(),
     retryDelays=[500,1000,2000,5000],recoveryMs=90000,maxRetries=8,stableMs=15000,startupMs=45000,killMs=3000}){
-    Object.assign(this,{directory,store,onUpdate,spawnProcess,resolveExecutable,retryDelays,recoveryMs,maxRetries,stableMs,startupMs,killMs});
+    Object.assign(this,{directory,store,onUpdate,spawnProcess,resolveExecutable,resolveTelemetry,now,retryDelays,recoveryMs,maxRetries,stableMs,startupMs,killMs});
     this.phase='idle';this.generation=0;this.available=false;this.error='';
     try{this.file=this.resolveExecutable(directory);this.available=true;}catch{}
   }
-  snapshot(){return {available:this.available,phase:this.phase,hostName:this.intent?.bound.name || '',error:this.error,retry:this.intent?.retries || 0};}
+  snapshot(){
+    const record=this.record,p=record?.progress;
+    const progress=p && !record.closing && this.phase==='running'?{...p,receivedAgeMs:Math.min(60000,Math.ceil(Math.max(0,this.now()-record.receivedAt))),renderedAgeMs:Math.min(60000,Math.ceil(Math.max(0,this.now()-record.renderedAt)))}:null;
+    return {available:this.available,phase:this.phase,hostName:this.intent?.bound.name || '',error:this.error,retry:this.intent?.retries || 0,telemetry:!!record?.telemetry,progress};
+  }
   changed(){this.onUpdate(this.snapshot());}
   authorized(){
     const now=this.store.selected(),bound=this.intent?.bound;
@@ -104,14 +113,14 @@ class StreamViewer{
       const file=this.resolveExecutable(this.directory,process.platform,host.overlay===true);this.available=true;
       const identity=await this.store.identity();
       if(generation!==this.generation || !sameRoute(this.authorized(),host))throw fault('CANCELLED');
-      bytes=envelope(host,identity,intent.options);
+      const telemetry=this.resolveTelemetry(this.directory);bytes=envelope(host,identity,intent.options,telemetry);
       // The host app owns this child. Its still-open stdin is the session lease;
       // normal quit and crashes close it. Credentials never enter argv/env/disk.
       const env={...process.env};
       for(const key of ['ELECTRON_RUN_AS_NODE','CHROME_CRASHPAD_PIPE_NAME','QT_PLUGIN_PATH','QML2_IMPORT_PATH','QT_QPA_PLATFORM_PLUGIN_PATH','QT_QPA_PLATFORM','QT_LOGGING_RULES'])delete env[key];
       const child=this.spawnProcess(file,['--cliprelay-session'],{cwd:path.dirname(file),env,windowsHide:true,stdio:['pipe','pipe','ignore'],shell:false});
       this.child=child;
-      const record=this.record={child,host,intent,connected:false,ended:false,bytes:0,buffer:'',closing:false};
+      const record=this.record={child,host,intent,connected:false,ended:false,bytes:0,buffer:'',closing:false,telemetry,budgetAt:this.now()};
       // Failed OS process creation may return a ChildProcess without pipes.
       // Always handle its asynchronous error before inspecting stdin.
       child.on('error',()=>{if(this.record===record && !record.closing)this.finish('VIEWER_UNAVAILABLE');});
@@ -141,18 +150,32 @@ class StreamViewer{
   }
   events(record,chunk){
     if(this.record!==record || record.closing || this.intent!==record.intent)return;
+    if(record.telemetry && this.now()-record.budgetAt>=1000){record.bytes=0;record.budgetAt=this.now();}
     record.bytes+=chunk.length;record.buffer+=chunk.toString('utf8');
-    if(record.bytes>4096 || record.buffer.length>2048){this.finish('VIEWER_PROTOCOL_ERROR');return;}
+    if(record.bytes>(record.telemetry?32768:4096)){this.finish('VIEWER_PROTOCOL_ERROR');return;}
     while(record.buffer.includes('\n')){
       const index=record.buffer.indexOf('\n'),line=record.buffer.slice(0,index);record.buffer=record.buffer.slice(index+1);
+      if(line.length>1024){this.finish('VIEWER_PROTOCOL_ERROR');return;}
       let event;try{event=JSON.parse(line);}catch{this.finish('VIEWER_PROTOCOL_ERROR');return;}
       const keys=event && typeof event==='object'?Object.keys(event).sort().join(','):'';
       if(event?.version!==1 || record.ended || (event.event==='connected'?keys!=='event,version' || record.connected:
-        event.event==='ended'?keys!=='event,reason,version' || !['network','pairing','host','user','parent','decoder'].includes(event.reason):true)){
+        event.event==='ended'?keys!=='event,reason,version' || !['network','pairing','host','user','parent','decoder'].includes(event.reason):
+        event.event==='progress'?!record.telemetry || !record.connected || keys!=='event,height,received,receivedAgeMs,rendered,renderedAgeMs,version,width':true)){
         this.finish('VIEWER_PROTOCOL_ERROR');return;
       }
       if(!this.authorized()){this.finish();return;}
-      if(event.event==='connected'){
+      if(event.event==='progress'){
+        const integer=(v,min,max)=>Number.isSafeInteger(v)&&v>=min&&v<=max,p=record.progress;
+        if(!integer(event.received,0,0xffffffff)||!integer(event.rendered,0,event.received)||!integer(event.width,event.rendered?1:0,event.rendered?65536:0)||!integer(event.height,event.rendered?1:0,event.rendered?65536:0)||
+          !integer(event.receivedAgeMs,0,60000)||!integer(event.renderedAgeMs,0,60000)||(!event.received&&event.receivedAgeMs!==60000)||(!event.rendered&&event.renderedAgeMs!==60000)||
+          (p&&(event.received<p.received||event.rendered<p.rendered||(event.rendered===p.rendered&&(event.width!==p.width||event.height!==p.height||event.renderedAgeMs<p.renderedAgeMs))||(event.received===p.received&&event.receivedAgeMs<p.receivedAgeMs)))){
+          this.finish('VIEWER_PROTOCOL_ERROR');return;
+        }
+        const now=this.now(),receivedAt=now-event.receivedAgeMs,renderedAt=now-event.renderedAgeMs;
+        record.receivedAt=p&&p.received===event.received?Math.min(record.receivedAt,receivedAt):receivedAt;
+        record.renderedAt=p&&p.rendered===event.rendered?Math.min(record.renderedAt,renderedAt):renderedAt;
+        record.progress={received:event.received,rendered:event.rendered,width:event.width,height:event.height,receivedAgeMs:event.receivedAgeMs,renderedAgeMs:event.renderedAgeMs};this.changed();
+      }else if(event.event==='connected'){
         record.connected=true;clearTimeout(record.startTimer);clearTimeout(this.deadlineTimer);
         this.phase='running';this.error='';this.changed();
         this.stableTimer=setTimeout(()=>{if(this.record===record && this.intent===record.intent){this.intent.retries=0;this.intent.since=null;}},this.stableMs);this.stableTimer.unref?.();
@@ -163,6 +186,7 @@ class StreamViewer{
         return;
       }
     }
+    if(record.buffer.length>1024)this.finish('VIEWER_PROTOCOL_ERROR');
   }
   reconcile(status){
     if(!this.intent)return;
