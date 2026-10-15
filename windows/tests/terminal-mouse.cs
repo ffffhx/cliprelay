@@ -18,7 +18,7 @@ public static class TerminalMouseTests {
         try{
             Console.OutputEncoding=new UTF8Encoding(false);Console.Write("\u001b[?1002;1006hMOUSE_READY\r\n");Console.Out.Flush();
             new Thread(()=>{try{var stream=Console.OpenStandardInput();byte[] buffer=new byte[256];int count;while((count=stream.Read(buffer,0,buffer.Length))>0)lock(gate)bytes.Write(buffer,0,count);}catch{}}){IsBackground=true}.Start();
-            bool release=false;while(clock.ElapsedMilliseconds<8000){lock(gate)release=Encoding.UTF8.GetString(bytes.ToArray()).Contains("m");if(release)break;Thread.Sleep(10);}
+            bool release=false,movement=false;while(clock.ElapsedMilliseconds<8000){string text;lock(gate)text=Encoding.UTF8.GetString(bytes.ToArray());release=text.Contains("m");if(!movement && System.Text.RegularExpressions.Regex.IsMatch(text,@"\x1b\[<(3[2-9]|[45][0-9]|6[0-3]);")){movement=true;Console.Write("MOUSE_MOVE_SEEN\r\n");Console.Out.Flush();}if(release)break;Thread.Sleep(10);}
             byte[] captured;lock(gate)captured=bytes.ToArray();Console.Write("\u001b[?1002;1006l\r\nMOUSE_CAPTURE:"+Convert.ToBase64String(captured)+"\r\n");Console.Out.Flush();return release?0:2;
         }finally{SetConsoleMode(input,original);}
     }

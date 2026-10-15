@@ -52,7 +52,7 @@ try {
         ('$env:CLIPRELAY_PAIRING_TEST_FIXTURE = ' + (Quote-Literal $pairingFixture)),
         ('$env:CLIPRELAY_TERMINAL_TEST_WORKER = ' + (Quote-Literal (Join-Path $repository '.tools/uu-parity/terminal-tests.exe'))),
         '$env:CLIPRELAY_TERMINAL_MOUSE_FIXTURE = $env:CLIPRELAY_TERMINAL_TEST_WORKER',
-        ('& ' + (Quote-Literal $node) + ' --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs'),
+        ('& ' + (Quote-Literal $node) + ' --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs'),
         '$testExit = $LASTEXITCODE',
         ('if ($testExit -eq 0) { & ' + (Quote-Literal $hostTests) + ' ''-test.run=^TestTerminal'' ''-test.timeout=90s'' ''-test.v''; $testExit = $LASTEXITCODE }'),
         '[IO.File]::WriteAllText((Join-Path $env:TEMP ''terminal-exit.txt''), [string]$testExit)',

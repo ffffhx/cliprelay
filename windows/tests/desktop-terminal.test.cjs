@@ -4,14 +4,20 @@ const protocol=require('../electron/mac/terminal-protocol.cjs'),{TerminalControl
 const {identities,listen,close}=require('./mac-pairing-fixture.cjs');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function remote(){
-  let instance='1'.repeat(32),nextOpen=1,hook;const sessions=new Map(),calls=[],writes=[];
-  const snapshot=s=>({id:s.id,shell:s.shell,state:s.state,columns:s.columns,rows:s.rows,exitCode:s.exitCode,openSequence:s.openSequence,acceptedSequence:s.acceptedSequence,writtenSequence:s.writtenSequence,start:s.start,end:s.bytes.length,remainingMs:s.state==='running'?1800000:0});
+  let instance='1'.repeat(32),nextOpen=1,hook,mouseProtocol=0;const sessions=new Map(),calls=[],writes=[];
+  const snapshot=s=>({id:s.id,shell:s.shell,state:s.state,columns:s.columns,rows:s.rows,exitCode:s.exitCode,openSequence:s.openSequence,acceptedSequence:s.acceptedSequence,writtenSequence:s.writtenSequence,start:s.start,end:s.bytes.length,remainingMs:s.state==='running'?1800000:0,...(s.mouse?{mouse:{...s.mouse}}:{})});
   async function request(host,identity,c,signal){
     calls.push({...c});if(hook)await hook(c,signal);
-    if(c.op==='list')return {instance,nextOpen,pasteLimit:16396,sessions:[...sessions.values()].map(snapshot)};
+    if(c.op==='list')return {instance,nextOpen,pasteLimit:16396,mouseProtocol,sessions:[...sessions.values()].map(snapshot)};
     if(c.instance!==instance)throw fault('TERMINAL_STALE');let s=sessions.get(c.id);
     if(c.op==='open' && !s){assert.equal(c.sequence,nextOpen++);s={id:c.id,shell:c.shell,columns:c.columns,rows:c.rows,state:'running',exitCode:0,openSequence:c.sequence,acceptedSequence:0,writtenSequence:0,start:0,bytes:Buffer.from('ready\r\n')};sessions.set(c.id,s);}
     if(!s)throw fault('TERMINAL_NOT_FOUND');
+    if(c.op==='mouse'){
+      const m=s.mouse;assert.equal(c.sequence,m.acceptedSequence+1);assert.equal(c.epoch,m.epoch);m.acceptedSequence=c.sequence;m.writtenSequence=c.sequence;m.outcome='written';
+      if(c.action==='press'){m.gesture=c.gesture;m.nextGesture=c.gesture+1;m.buttons|=1<<c.button;}
+      if(c.action==='release')m.buttons&=~(1<<c.button);if(c.action==='cancel')m.buttons=0;
+      m.remainingMs=m.buttons?1500:0;m.phase=m.buttons?'held':c.action==='cancel'?'cancelled':'idle';
+    }
     if(c.op==='write' || c.op==='paste'){
       if(c.sequence===s.acceptedSequence)assert.equal(c.data,s.lastData);else{assert.equal(c.sequence,s.acceptedSequence+1);s.acceptedSequence=c.sequence;s.writtenSequence=c.sequence;s.lastData=c.data;writes.push({id:s.id,data:Buffer.from(c.data,'base64')});s.bytes=Buffer.concat([s.bytes,Buffer.from(c.data,'base64')]);}
     }
@@ -19,7 +25,7 @@ function remote(){
     if(c.op==='read'){const offset=Math.max(c.offset,s.start),data=s.bytes.subarray(offset,offset+32768);return {instance,session:snapshot(s),offset,next:offset+data.length,gap:offset!==c.offset,data};}
     return {instance,session:snapshot(s)};
   }
-  return {sessions,calls,writes,request,get instance(){return instance;},restart(){instance='2'.repeat(32);sessions.clear();nextOpen=1;},set hook(value){hook=value;}};
+  return {sessions,calls,writes,request,get instance(){return instance;},restart(){instance='2'.repeat(32);sessions.clear();nextOpen=1;},set hook(value){hook=value;},enableMouse(){mouseProtocol=1;for(const s of sessions.values())s.mouse={mode:1002,format:1006,epoch:1,offset:0,buttons:0,remainingMs:0,gesture:0,nextGesture:1,acceptedSequence:0,writtenSequence:0,phase:'idle',outcome:'none'};}};
 }
 function fixture(t,extra={}){
   const server=remote(),host={id:crypto.createHash('sha256').update(new crypto.X509Certificate(identities.host.cert).raw).digest('hex'),certificate:identities.host.cert,clientId:'a'.repeat(32),name:'Test PC',address:'127.0.0.1',port:48789,enabled:true};let time=100000;
@@ -119,6 +125,33 @@ test('old hosts use one bounded write and queue saturation never accepts a paste
   f.controller.pasteLimit=16396;draft=f.controller.beginPaste(view,'x'.repeat(16384));f.controller.submitPaste({...draft,bracketed:true});draft=f.controller.beginPaste(view,'x'.repeat(16384));assert.throws(()=>f.controller.submitPaste({...draft,bracketed:true}),/INPUT_FULL/);assert.equal(current.queuedBytes,20492);assert.equal(current.queue.length,2);assert.equal(f.controller.pasteDraft.token,draft.token);
   assert.equal(protocol.validate({op:'list'},{ok:true,instance:f.controller.instance,nextOpen:1}).pasteLimit,0);assert.throws(()=>protocol.validate({op:'list'},{ok:true,instance:f.controller.instance,nextOpen:1,pasteLimit:999999}),/INVALID_RESPONSE/);
 });
+async function mouseFixture(t){const f=fixture(t);await open(f);await drain(f);f.server.enableMouse();f.controller.needList=true;await f.controller.poll();return f;}
+function mouseEvent(f,action,extra={}){const c=f.controller,s=c.states.get(c.selected).snapshot;return c.mouse({view:c.view,id:c.selected,epoch:s.mouse.epoch,revision:c.snapshot().mouse.revision,action,column:5,row:7,button:0,modifiers:0,...extra});}
+async function mousePoll(f){const result=await f.controller.poll();f.advance(16);if(result.frame)f.controller.parsed({view:result.frame.view,id:result.state.selected,token:result.frame.token});return result;}
+test('mouse input waits for the renderer receipt and stale frame or gesture tokens cannot target a new view',async t=>{
+  const f=await mouseFixture(t);assert.throws(()=>mouseEvent(f,'press'),/MOUSE_WAIT/);await mousePoll(f);assert.equal(f.controller.snapshot().mouse.ready,true);
+  const old={view:f.controller.view,id:f.controller.selected,epoch:1,revision:f.controller.snapshot().mouse.revision,action:'press',column:5,row:7,button:0,modifiers:0};
+  mouseEvent(f,'press');await mousePoll(f);assert.equal(f.server.sessions.get(f.controller.selected).mouse.buttons,1);
+  mouseEvent(f,'cancel');assert.throws(()=>f.controller.mouse(old),/MOUSE_GESTURE/);for(let n=0;n<5;n++)await mousePoll(f);assert.equal(f.server.sessions.get(f.controller.selected).mouse.buttons,0);
+  f.controller.resize({view:f.controller.view,id:f.controller.selected,columns:110,rows:35});assert.equal(f.controller.snapshot().mouse.ready,false);assert.throws(()=>mouseEvent(f,'press'),/MOUSE_WAIT/);
+  for(let n=0;n<5;n++)await mousePoll(f);assert.equal(f.controller.snapshot().mouse.ready,true);
+  const frame=await f.controller.poll();f.controller.select(f.controller.selected);assert.throws(()=>f.controller.parsed({view:frame.frame.view,id:f.controller.selected,token:frame.frame.token}),/VIEW_CHANGED/);
+});
+test('lost accepted or unaccepted mouse receipts stop the gesture without retransmitting its press',async t=>{
+  for(const accepted of [false,true]){
+    const f=await mouseFixture(t);await mousePoll(f);const base=f.controller.request;let lost=false;
+    f.controller.request=async(...args)=>{if(args[2].op==='mouse' && args[2].action==='press' && !lost){lost=true;if(accepted)await base(...args);throw fault('TIMEOUT');}return base(...args);};
+    mouseEvent(f,'press');await mousePoll(f);assert.equal(f.controller.phase,'recovering');f.advance(1000);
+    for(let n=0;n<12;n++)await mousePoll(f);
+    assert.equal(f.server.calls.filter(c=>c.op==='mouse' && c.action==='press').length,accepted?1:0);assert.equal(f.server.sessions.get(f.controller.selected).mouse.buttons,0);assert.equal(f.controller.snapshot().mouse.buttons,0);
+  }
+});
+test('continuous mouse movement still reads output and sends keyboard input',async t=>{
+  const f=await mouseFixture(t);await mousePoll(f);mouseEvent(f,'press');await mousePoll(f);input(f,'key');
+  for(let n=0;n<40;n++){mouseEvent(f,'move',{column:10+n});await mousePoll(f);}
+  assert.equal(f.server.writes.length,1);assert.ok(f.server.calls.filter(c=>c.op==='read').length>=5);assert.ok(f.server.calls.filter(c=>c.op==='mouse' && c.action==='move').length>=5);
+  assert.equal(f.server.sessions.get(f.controller.selected).mouse.buttons,1);
+});
 test('real ConPTY over pinned mutual TLS confirms input deduplication and reconnects to a running shell',{skip:process.platform!=='win32',timeout:30000},async t=>{
   assert.ok(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,'Build windows/tests/terminal.ps1 and set CLIPRELAY_TERMINAL_TEST_WORKER');
   const child=spawn(process.env.CLIPRELAY_TERMINAL_TEST_WORKER,['--terminal-probe'],{stdio:['pipe','pipe','pipe'],windowsHide:true}),reader=readline.createInterface({input:child.stdout});let pending=[],stderr='';
@@ -144,4 +177,18 @@ test('real ConPTY over pinned mutual TLS confirms input deduplication and reconn
   output='';for(let i=0;i<150 && !output.includes('POWERSHELL_OK');i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/POWERSHELL_OK/);
   f.controller.resize({view:f.controller.view,id:ps,columns:110,rows:35});for(let i=0;i<5 && f.controller.states.get(ps).snapshot.columns!==110;i++)await poll(f);assert.equal(f.controller.states.get(ps).snapshot.columns,110);assert.equal(f.controller.states.get(ps).snapshot.rows,35);
   f.controller.end({view:f.controller.view,id:ps});await drain(f);assert.equal(f.controller.states.get(ps).snapshot.state,'closed');
+  const mouseFixture=process.env.CLIPRELAY_TERMINAL_MOUSE_FIXTURE || require('node:path').join(__dirname,'../../.tools/uu-parity/terminal-tests.exe');assert.ok(require('node:fs').existsSync(mouseFixture));
+  const mouseId=await open(f);input(f,'"'+mouseFixture+'" --mouse-echo\r');await drain(f);
+  const terminal=new (require('../electron/mac/vendor/terminal/xterm.js').Terminal)();t.after(()=>terminal.dispose());output='';
+  const pump=async()=>{const result=await f.controller.poll();f.advance(16);if(result.frame){const frame=result.frame,data=Buffer.from(frame.data,'base64');output+=data.toString();await new Promise(resolve=>terminal.write(data,resolve));f.controller.parsed({view:frame.view,id:mouseId,token:frame.token});}assert.notEqual(f.controller.phase,'error',f.controller.error);};
+  for(let n=0;n<100 && (!f.controller.snapshot().mouse.ready || terminal.modes.mouseTrackingMode!=='drag');n++){await pump();await sleep(20);}assert.equal(f.controller.snapshot().mouse.ready,true);assert.equal(terminal.modes.mouseTrackingMode,'drag');
+  mouseEvent(f,'press');for(let n=0;n<20 && f.controller.states.get(mouseId).snapshot.mouse.acceptedSequence<1;n++)await pump();
+  mouseEvent(f,'move',{column:6,row:8,modifiers:16});const heldUntil=Date.now()+1800;let nextHeartbeat=0;
+  while(Date.now()<heldUntil){if(Date.now()>=nextHeartbeat){mouseEvent(f,'heartbeat');nextHeartbeat=Date.now()+200;}await pump();await sleep(20);}
+  assert.match(output,/MOUSE_MOVE_SEEN/);assert.ok(!output.includes('MOUSE_CAPTURE:'));assert.equal(f.controller.states.get(mouseId).snapshot.mouse.buttons,1);assert.ok(f.controller.states.get(mouseId).snapshot.mouse.acceptedSequence>2);
+  f.controller.pause();await sleep(1750);f.advance(1750);f.controller.resume();
+  for(let n=0;n<100 && !output.includes('MOUSE_CAPTURE:');n++){await pump();await sleep(20);}
+  const captured=/MOUSE_CAPTURE:([A-Za-z0-9+/=]+)/.exec(output);assert.ok(captured,'paused gesture did not release in native program');assert.equal(Buffer.from(captured[1],'base64').toString(),'\x1b[<0;5;7M\x1b[<48;6;8M\x1b[<16;6;8m');
+  assert.equal(f.controller.states.get(mouseId).snapshot.mouse.buttons,0);assert.equal(f.controller.states.get(mouseId).snapshot.mouse.writtenSequence,2);
+  f.controller.end({view:f.controller.view,id:mouseId});await drain(f);
 });

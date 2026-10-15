@@ -1,7 +1,7 @@
 'use strict';
 const {jsonRequest,endpoint,fault}=require('./paired-transport.cjs');
 const MAX=Number.MAX_SAFE_INTEGER;
-const codes=new Set('BUSY CAPACITY UNPAIRED STALE NOT_FOUND CLOSED OFFSET SEQUENCE ID_CONFLICT INPUT_CONFLICT USER_REQUIRED UNSUPPORTED UNAVAILABLE INVALID_RESPONSE BAD_REQUEST'.split(' ').map(value=>'TERMINAL_'+value));
+const codes=new Set('BUSY CAPACITY UNPAIRED STALE NOT_FOUND CLOSED OFFSET SEQUENCE ID_CONFLICT INPUT_CONFLICT MOUSE_MODE MOUSE_GESTURE MOUSE_SEQUENCE MOUSE_CONFLICT USER_REQUIRED UNSUPPORTED UNAVAILABLE INVALID_RESPONSE BAD_REQUEST'.split(' ').map(value=>'TERMINAL_'+value));
 const id=value=>typeof value==='string' && /^[a-f0-9]{32}$/.test(value);
 const number=(value,min=0,max=MAX)=>Number.isSafeInteger(value) && value>=min && value<=max;
 function requireValue(value,code='TERMINAL_INVALID_RESPONSE'){if(!value)throw fault(code);}
@@ -16,10 +16,18 @@ function preparePaste(value){
   return {text,changed:text!==value};
 }
 function pasteBytes(text,bracketed){requireValue(typeof bracketed==='boolean','TERMINAL_BAD_REQUEST');return Buffer.from((bracketed?'\x1b[200~':'')+text.replace(/\n/g,'\r')+(bracketed?'\x1b[201~':''),'utf8');}
+function mouse(value,end){
+  if(value===undefined || value===null)return null;
+  requireValue(value && [-1,0,9,1000,1001,1002,1003].includes(value.mode) && [-1,0,1005,1006,1015,1016].includes(value.format));
+  requireValue(number(value.epoch,1) && number(value.offset,0,end) && number(value.buttons,0,7) && number(value.remainingMs,0,1500) && number(value.gesture) && number(value.nextGesture,value.gesture+1) && number(value.acceptedSequence) && number(value.writtenSequence,0,value.acceptedSequence));
+  requireValue(['idle','pending','held','expired','cancelled','mode-changed','closed'].includes(value.phase) && ['none','queued','written','renewed','cancelled','expired','mode-changed'].includes(value.outcome));
+  requireValue(value.phase!=='closed' || value.buttons===0 && value.remainingMs===0);
+  return Object.fromEntries(['mode','format','epoch','offset','buttons','remainingMs','gesture','nextGesture','acceptedSequence','writtenSequence','phase','outcome'].map(key=>[key,value[key]]));
+}
 function session(value){
   requireValue(value && id(value.id) && ['cmd','powershell'].includes(value.shell) && ['running','closed','exited','expired','revoked','failed'].includes(value.state));
   requireValue(number(value.columns,20,240) && number(value.rows,5,120) && number(value.exitCode,-2147483648,2147483647) && number(value.openSequence,1) && number(value.acceptedSequence) && number(value.writtenSequence,0,value.acceptedSequence) && number(value.start) && number(value.end,value.start) && value.end-value.start<=1048576 && number(value.remainingMs,0,1800000));
-  return Object.fromEntries(['id','shell','state','columns','rows','exitCode','openSequence','acceptedSequence','writtenSequence','start','end','remainingMs'].map(key=>[key,value[key]]));
+  return {...Object.fromEntries(['id','shell','state','columns','rows','exitCode','openSequence','acceptedSequence','writtenSequence','start','end','remainingMs'].map(key=>[key,value[key]])),mouse:mouse(value.mouse,value.end)};
 }
 function validate(command,value){
   requireValue(value && typeof value==='object' && !Array.isArray(value) && typeof value.ok==='boolean');
@@ -28,11 +36,14 @@ function validate(command,value){
     requireValue(number(value.nextOpen,1) && (!value.sessions || Array.isArray(value.sessions) && value.sessions.length<=32) && !value.session && !value.data);
     const ids=new Set(),sequences=new Set(),sessions=(value.sessions || []).map(item=>{
       const s=session(item);requireValue(!ids.has(s.id) && !sequences.has(s.openSequence) && s.openSequence<value.nextOpen);ids.add(s.id);sequences.add(s.openSequence);return s;
-    });requireValue(value.pasteLimit===undefined || value.pasteLimit===0 || value.pasteLimit===16396);return {instance:value.instance,nextOpen:value.nextOpen,pasteLimit:value.pasteLimit || 0,sessions};
+    });requireValue(value.pasteLimit===undefined || value.pasteLimit===0 || value.pasteLimit===16396);
+    requireValue(value.mouseProtocol===undefined || value.mouseProtocol===0 || value.mouseProtocol===1);requireValue(value.mouseProtocol!==1 || sessions.every(s=>s.mouse));
+    return {instance:value.instance,nextOpen:value.nextOpen,pasteLimit:value.pasteLimit || 0,mouseProtocol:value.mouseProtocol || 0,sessions};
   }
   requireValue(value.instance===command.instance && !value.sessions?.length);const current=session(value.session);requireValue(current.id===command.id);
   if(command.op==='open')requireValue(current.openSequence===command.sequence && current.shell===command.shell);
   if(command.op==='write' || command.op==='paste')requireValue(current.acceptedSequence===command.sequence);
+  if(command.op==='mouse')requireValue(current.mouse && current.mouse.acceptedSequence===command.sequence);
   if(command.op==='resize')requireValue(current.columns===command.columns && current.rows===command.rows);
   const result={instance:value.instance,session:current};
   if(command.op==='read'){

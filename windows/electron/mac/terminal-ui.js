@@ -3,8 +3,13 @@ const term=new window.Terminal({cols:100,rows:30,fontSize:14,fontFamily:'Consola
 const fit=new window.FitAddon.FitAddon();term.loadAddon(fit);term.open($('terminal'));
 // Remote escape sequences cannot read/write the local clipboard or open URLs.
 term.parser.registerOscHandler(52,()=>true);
-let state,closed=false,polling=false,renderingReplay=false,parsing=false,screen='',catalog='',feedback='',timer,resizeTimer,endTarget,pasteTarget,pasteOpening=false,pasteSending=false;
+let state,closed=false,polling=false,renderingReplay=false,parsing=false,screen='',catalog='',feedback='',timer,resizeTimer,endTarget,pasteTarget,pasteOpening=false,pasteSending=false,geometryPending=false;
 const running=()=>state?.sessions.find(session=>session.id===state.selected)?.state==='running';
+const mouseUI=new window.ClipRelayTerminalMouse({window,document,element:$('terminal'),term,
+  getState:()=>{const mouse=state?.sessions.find(s=>s.id===state.selected)?.mouse;return {view:state?.view,id:state?.selected,epoch:mouse?.epoch,mode:mouse?.mode || 0,format:mouse?.format || 0,...state?.mouse,parsing,blocked:state?.phase!=='ready' || renderingReplay || !!pasteTarget || pasteOpening || geometryPending};},
+  send:async data=>{const result=await action('mouse',data);clearTimeout(timer);if(!closed)void poll();return result;},
+  changed:()=>{$('selection-mode').textContent=mouseUI.selectionMode?'操作程序':'选择文字';$('selection-mode').setAttribute('aria-pressed',String(mouseUI.selectionMode));$('mouse-status').textContent=mouseUI.description();},
+  problem:text=>{feedback=feedback || text;render(state);}});
 function render(next){
   if(!next)return;state=next;host.textContent=(state.hostName || '远程电脑')+' · 终端';
   if(pasteTarget && (state.phase!=='ready' || !running() || state.view!==pasteTarget.view || state.selected!==pasteTarget.id))dismissPaste();
@@ -22,8 +27,10 @@ function render(next){
   $('new').disabled=state.phase!=='ready' || state.uncertain || parsing;$('refresh').disabled=['connecting','recovering'].includes(state.phase);$('end').disabled=state.phase!=='ready' || !running() || parsing;$('paste').disabled=term.options.disableStdin;
   $('pause').disabled=['paused','idle'].includes(state.phase);$('resume').disabled=!['paused','error','recovering'].includes(state.phase);sessions.disabled=state.phase!=='ready' || state.uncertain || parsing;
   $('input-status').textContent=state.uncertain?'输入结果待确认':state.queuedBytes?'待发送 '+state.queuedBytes+' 字节':state.accepted>state.written?'电脑已接收，等待写入终端':'输入已确认';
+  if(state.mouse?.busy)$('input-status').textContent+=' · 鼠标操作中';
+  mouseUI.sync();
 }
-async function action(name,data){const view=state?.view;try{feedback='';const next=await api.request(name,data);if(next?.phase && (state?.view===view || next.view===state?.view))render(next);return next;}catch(error){if(state?.view===view){feedback=error.message;render(state);}return null;}}
+async function action(name,data){const view=state?.view;try{if(name!=='parsed' && (name!=='mouse' || data?.action==='press'))feedback='';const next=await api.request(name,data);if(next?.phase && (state?.view===view || next.view===state?.view))render(next);return next;}catch(error){if(state?.view===view){feedback=error.message;render(state);}return null;}}
 function send(value,binary=false){if(!state || state.phase!=='ready' || !running() || renderingReplay || (pasteTarget || pasteOpening) && !parsing)return;const data={view:state.view,id:state.selected};if(binary){data.binary=true;data.data=btoa(value);}else data.text=value;void action('input',data);}
 term.onData(text=>send(text));term.onBinary(data=>send(data,true));
 term.onSelectionChange(()=>{$('copy').disabled=!term.hasSelection();});
@@ -61,20 +68,21 @@ term.attachCustomKeyEventHandler(event=>{
 });
 $('paste-cancel').onclick=()=>{if(pasteSending)return;dismissPaste();render(state);term.focus();};$('paste-dialog').addEventListener('cancel',event=>{event.preventDefault();if(pasteSending)return;dismissPaste();render(state);});$('paste-confirm').onclick=confirmPaste;
 $('copy').onclick=copy;$('paste').onclick=paste;
+$('selection-mode').onclick=()=>{mouseUI.toggle();term.focus();};
 $('new').onclick=()=>{if(!parsing)void action('open',{shell:$('shell').value});};$('refresh').onclick=()=>action('refresh');$('pause').onclick=()=>action('pause');$('resume').onclick=()=>action('resume');
 sessions.onchange=()=>{if(sessions.value && !parsing)void action('select',{id:sessions.value});};
 $('end').onclick=()=>{if(parsing)return;endTarget={view:state.view,id:state.selected};$('end-dialog').showModal();};$('end-cancel').onclick=()=>$('end-dialog').close();$('end-confirm').onclick=()=>{const data=endTarget;$('end-dialog').close();void action('end',data);};
-function size(){if(closed || !state)return;fit.fit();const columns=Math.max(20,Math.min(240,term.cols)),rows=Math.max(5,Math.min(120,term.rows));if(term.cols!==columns || term.rows!==rows)term.resize(columns,rows);if(state.phase==='ready' && running())void action('resize',{view:state.view,id:state.selected,columns,rows});}
-new ResizeObserver(()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(size,150);}).observe($('terminal'));
+async function size(){if(closed || !state)return;fit.fit();const columns=Math.max(20,Math.min(240,term.cols)),rows=Math.max(5,Math.min(120,term.rows));if(term.cols!==columns || term.rows!==rows)term.resize(columns,rows);if(state.phase==='ready' && running())await action('resize',{view:state.view,id:state.selected,columns,rows});geometryPending=false;render(state);}
+new ResizeObserver(()=>{geometryPending=true;mouseUI.cancel(true,state?.mouse?.supported && state?.phase==='ready' && running());clearTimeout(resizeTimer);resizeTimer=setTimeout(size,150);}).observe($('terminal'));
 async function poll(){
   if(closed || polling)return;polling=true;
   try{
     const before=state?.view,result=await api.request('poll');if(state?.view!==before && result.state.view!==state?.view)return;render(result.state);if(result.frame && result.frame.view===state.view){
       const frame=result.frame;if(frame.gap)term.reset();if(term.cols!==frame.columns || term.rows!==frame.rows)term.resize(frame.columns,frame.rows);
       parsing=true;renderingReplay=frame.replay;render(state);
-      const bytes=Uint8Array.from(atob(frame.data),value=>value.charCodeAt(0));await new Promise(resolve=>term.write(bytes,resolve));renderingReplay=false;parsing=false;render(state);
+      const id=state.selected,bytes=Uint8Array.from(atob(frame.data),value=>value.charCodeAt(0));await new Promise(resolve=>term.write(bytes,resolve));renderingReplay=false;parsing=false;if(frame.token)await action('parsed',{view:frame.view,id,token:frame.token});render(state);
     }
-  }catch(error){feedback=error.message;render(state);}finally{polling=false;if(!closed)timer=setTimeout(poll,75);}
+  }catch(error){feedback=error.message;render(state);}finally{polling=false;if(!closed)timer=setTimeout(poll,state?.mouse?.busy || mouseUI.held?16:75);}
 }
-window.addEventListener('beforeunload',()=>{closed=true;clearTimeout(timer);clearTimeout(resizeTimer);term.dispose();},{once:true});
+window.addEventListener('beforeunload',()=>{closed=true;clearTimeout(timer);clearTimeout(resizeTimer);mouseUI.dispose();term.dispose();},{once:true});
 render(await api.request('initial'));size();void poll();

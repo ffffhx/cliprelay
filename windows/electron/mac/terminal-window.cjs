@@ -25,6 +25,8 @@ class DesktopTerminal{
       if(action==='initial')return controller.initializeView();
       if(action==='poll')return await controller.poll();
       if(action==='input')return controller.input(data);
+      if(action==='mouse')return controller.mouse(data);
+      if(action==='parsed')return controller.parsed(data);
       if(action==='resize')return controller.resize(data);
       if(action==='select')return controller.select(data?.id);
       if(action==='open')return controller.open(data?.shell);

@@ -40,7 +40,7 @@ jobs:
       - run: node --test windows/tests/desktop-audio-mute.test.cjs windows/tests/desktop-audio-mute-ui.test.cjs windows/tests/desktop-session-lock.test.cjs windows/tests/desktop-session-lock-ui.test.cjs windows/tests/desktop-wake-protocol.test.cjs windows/tests/desktop-wake-store.test.cjs windows/tests/desktop-wake.test.cjs windows/tests/desktop-wake-ui.test.cjs
       - run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs windows/tests/desktop-input-ui.test.cjs windows/tests/desktop-display.test.cjs windows/tests/desktop-display-ui.test.cjs
       - run: node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/mac-owned-window.test.cjs
-      - run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs
+      - run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs
       - name: Fetch verified desktop viewer
         if: inputs.desktop_client_run_id != ''
         env:

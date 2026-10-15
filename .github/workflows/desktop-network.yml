@@ -66,7 +66,7 @@ jobs:
           & windows/tests/terminal.ps1
       - name: Desktop terminal sessions, replay and window ownership
         if: runner.os != 'Windows'
-        run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs
+        run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs
       - name: Desktop terminal under an ordinary Windows user
         if: runner.os == 'Windows'
         shell: powershell
