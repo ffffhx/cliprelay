@@ -404,7 +404,7 @@ func Serve(ctx context.Context, dir, executable string) error {
 		TLSConfig: controlTLSConfig(cert, clients),
 	}
 	go func() { _ = serveLANPairing(ctx, dir, cert) }()
-	server.Handler = terminalManager.handler(wakeManager.handler(server.Handler))
+	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProvider(dir))
 	go func() { _ = serveLANDiscovery(ctx) }()
 	go func() { <-ctx.Done(); server.Close() }()
 	return server.ListenAndServeTLS("", "")
