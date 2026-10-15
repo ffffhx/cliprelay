@@ -1,5 +1,5 @@
 'use strict';
-const {app,Tray,Menu,nativeImage,globalShortcut,clipboard,Notification,BrowserWindow,ipcMain,screen,systemPreferences,safeStorage}=require('electron');
+const {app,Tray,Menu,nativeImage,globalShortcut,clipboard,Notification,BrowserWindow,ipcMain,screen,systemPreferences,safeStorage,dialog,shell}=require('electron');
 const {Bonjour}=require('bonjour-service');
 const path=require('node:path');
 const {pathToFileURL}=require('node:url');
@@ -14,24 +14,25 @@ const {NetworkCatalog}=require('./network-catalog.cjs');
 const {NetworkController}=require('./network-controller.cjs');
 const {RoutedStore}=require('./routed-store.cjs');
 const {createClientIdentity}=require('./client-identity.cjs');
+const {FileController,message:fileMessage}=require('./file-controller.cjs');
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
-let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network;
+let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files;
 const windows=new Map();
 const page=path.join(__dirname,'ui.html');const pageURL=pathToFileURL(page).href;
-const pairedSnapshot=()=>({...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot()});
+const pairedSnapshot=()=>({...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot(),files:files.snapshot()});
 if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('window-all-closed',()=>{});
   app.whenReady().then(start).catch(error=>{require('electron').dialog.showErrorBox('ClipRelay',error.code==='EADDRINUSE'?'ClipRelay 端口已被占用。请先停用 Hammerspoon 中的 ClipRelay，再重新打开。':error.message);app.quit();});
-  app.on('will-quit',()=>{scanning++;viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
+  app.on('will-quit',()=>{scanning++;files?.close();viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
 }
 function openWindow(kind,data,options){
   const window=new BrowserWindow({frame:false,show:false,resizable:false,skipTaskbar:true,backgroundColor:'#00000000',transparent:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true},...options});
   const id=window.webContents.id;
   windows.set(id,{window,kind,data});
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
-  window.on('closed',()=>{windows.delete(id);if(kind==='paired'){paired?.cancelPair();network?.cancelPair();}});
+  window.on('closed',()=>{windows.delete(id);if(kind==='paired'){paired?.cancelPair();network?.cancelPair();files?.releaseWindow();}});
   window.once('ready-to-show',()=>{if(kind==='alert')window.showInactive();else window.show();});
   window.loadFile(page,{query:{kind}});return window;
 }
@@ -108,10 +109,11 @@ async function start(){
   const directory=path.join(app.getPath('userData'),'paired');
   const base=new PairedStore(directory,safeStorage,{legacySelected:config.legacyEnabled===true,generate:createClientIdentity});
   network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(__dirname,'network-helper'),localName,
-    canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();if(tray)menu();}});
+    canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();files?.reconcile();if(tray)menu();}});
   const store=new RoutedStore(base,id=>network.route(id),id=>network.streamPolicy(id));
   viewer=new StreamViewer({directory:path.join(__dirname,'stream-viewer'),store});
-  paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);if(tray)menu();}});
+  files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
+  paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);files?.reconcile(paired?.status);if(tray)menu();}});
   await startReceiver();
   bonjour=new Bonjour({},error=>alert('ClipRelay 局域网声明失败：'+error.message));
   tray=new Tray(nativeImage.createEmpty());tray.setTitle('ClipRelay');menu();publish();
@@ -126,6 +128,7 @@ async function start(){
     if(entry.kind==='paired'){
       try{
         if(action==='paired-status')return pairedSnapshot();
+        if(typeof action==='string' && action.startsWith('files-')){try{await files.action(action,data,entry.window);}catch(error){throw Object.assign(new Error(fileMessage(error)),{fileMessage:true});}return pairedSnapshot();}
         if(action==='pair-start'){if(network.pairAbort)throw Object.assign(new Error(),{code:'PAIRING_BUSY'});paired.startPair(data);return pairedSnapshot();}
         if(action==='pair-cancel')paired.cancelPair();
         else if(action==='paired-select')paired.select(data?.id);
@@ -140,8 +143,8 @@ async function start(){
         else if(action==='viewer-stop')viewer.stop();
         else if(action==='paired-send'){const sent=await paired.sendCurrent();return {message:sent?'已加密发送':'没有可发送的内容'};}
         else throw new Error('Unknown action');
-        network.reconcile();paired.reconcileRoutes();viewer.reconcile();return pairedSnapshot();
-      }catch(error){throw new Error(pairedMessage(error));}
+        network.reconcile();paired.reconcileRoutes();viewer.reconcile();files.reconcile();return pairedSnapshot();
+      }catch(error){throw new Error(error.fileMessage?error.message:pairedMessage(error));}
     }
     if(action==='select' && entry.kind==='chooser'){
       const peer=entry.data.peers.find(value=>value.id===data.id);if(!peer)throw new Error('Unknown device');

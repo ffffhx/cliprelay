@@ -1,3 +1,4 @@
+import {mountFiles} from './file-ui.js';
 export async function mount(root,api,close,initial){
   root.className='paired';let state=initial,closed=false,busy=false,feedbackText='',feedbackUntil=0;
   const element=(tag,text)=>{const item=document.createElement(tag);if(text)item.textContent=text;return item;};
@@ -11,6 +12,7 @@ export async function mount(root,api,close,initial){
   const openRemote=element('button','打开远程桌面'),stopRemote=element('button','结束远控'),remoteStatus=element('p');
   openRemote.onclick=()=>run(async()=>{const preset=resolution.value==='720'?{width:1280,height:720,fps:30,bitrate:6000}:resolution.value==='2160'?{width:3840,height:2160,fps:60,bitrate:35000}:{width:1920,height:1080,fps:60,bitrate:12000};state=await api.request('viewer-open',preset);render();});
   stopRemote.onclick=()=>change('viewer-stop');remote.append(openRemote,stopRemote,remoteStatus);root.append(remote);
+  const files=mountFiles(root,async(action,data)=>{state=await api.request(action,data);render();return state;});
   const form=element('form');form.append(element('h2','添加电脑'));
   function field(title,placeholder,value=''){const label=element('label',title),input=element('input');input.placeholder=placeholder;input.value=value;label.append(input);form.append(label);return input;}
   const address=field('电脑地址','IP 或主机名');address.autocomplete='off';address.maxLength=253;
@@ -28,6 +30,7 @@ export async function mount(root,api,close,initial){
   const footer=element('div');footer.className='actions';const done=element('button','关闭');done.onclick=close;footer.append(done);root.append(footer);
   let roster='',networkRoster='';
   function render(){
+    files.render(state);
     const key=JSON.stringify(state.hosts);if(key!==roster){roster=key;list.replaceChildren();
       if(!state.hosts.length)list.append(element('p','尚无配对电脑。发起配对后，在电脑端核对验证码并确认。'));
       for(const host of state.hosts){

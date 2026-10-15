@@ -18,8 +18,9 @@ async function fixture(){
   const filename=path.resolve(__dirname,'../electron/mac/main.cjs');
   const imports={'./stream-viewer.cjs':{StreamViewer:class{snapshot(){return {available:false,phase:'idle'};}reconcile(){}stop(){}async open(){throw new Error('VIEWER_UNAVAILABLE');}}},electron,'bonjour-service':{Bonjour},'./config.cjs':{loadConfig:()=>({peer:'legacy.local',peerPort:47632,legacyEnabled:true,deviceName:'Mac',discoveryEnabled:false}),saveConfig(){}},'./relay.cjs':{sendSelection:async()=>{legacySends++;},createReceiver:()=>receiver,discoveredPeer(){}},'./paired-store.cjs':{PairedStore:Store},'./paired-controller.cjs':{PairedController:Controller,message:()=> 'fixture connection failed'},'node:child_process':{execFile(){},execFileSync:()=> 'Mac'}};
   Object.assign(imports,{'./network-catalog.cjs':{NetworkCatalog:class{}},'./network-controller.cjs':{NetworkController:Network},'./routed-store.cjs':{RoutedStore:class{constructor(base){return base;}}},'./client-identity.cjs':{createClientIdentity:()=>{}}});
+  const fileActions=[];imports['./file-controller.cjs']={FileController:class{snapshot(){return {tasks:[]};}reconcile(){}releaseWindow(){}close(){}async action(action,data,window){fileActions.push({action,data,window});}},message:()=> 'File operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),require:name=>imports[name] || require(name),setTimeout:()=>0,Buffer,URLSearchParams},{filename});await ready;
-  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},controller,windows};
+  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},controller,windows,fileActions};
 }
 test('Mac pairing IPC is restricted to its owned top-level window and never returns key material',async()=>{
   const f=await fixture(),window=f.open(),event=f.event(window);
@@ -31,6 +32,9 @@ test('Mac pairing IPC is restricted to its owned top-level window and never retu
   await assert.rejects(f.request(event,'network-claim',{code:'x'.repeat(33000)}),/Invalid request/);
   const alert=f.windows.find(candidate=>candidate.webContents.mainFrame.url.includes('kind=alert'));
   await assert.rejects(f.request(f.event(alert),'pair-start',{}),/Unknown action/);assert.equal(f.controller.started,1);
+  await f.request(event,'files-download',{names:['test']});assert.equal(f.fileActions.length,1);assert.equal(f.fileActions[0].window,window);
+  await assert.rejects(f.request({...event,senderFrame:{}},'files-upload'),/Unknown renderer/);
+  await assert.rejects(f.request(f.event(alert),'files-upload'),/Unknown action/);assert.equal(f.fileActions.length,1);
 });
 test('Mac hotkey never falls back to enabled legacy HTTP after a paired send failure',async()=>{
   const f=await fixture();f.hotkey();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.encryptedSends,1);assert.equal(f.legacySends,0);

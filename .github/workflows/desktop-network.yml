@@ -29,6 +29,16 @@ jobs:
         run: go test -count=1 -timeout=120s ./broker ./cmd/cliprelay-client-network ./desktopclient ./mobile ./transport
       - name: Desktop enrollment, ownership and route recovery
         run: node --test windows/tests/network-controller.test.cjs windows/tests/network-artifact.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-pairing.test.cjs windows/tests/stream-viewer.test.cjs
+      - name: Build native file interoperability fixture
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path .tools -Force | Out-Null
+          & windows/tests/file-transfer.ps1 -TestWorkerOutput .tools/file-transfer-tests.exe
+      - name: Desktop file transfer, restart and destination boundaries
+        env:
+          CLIPRELAY_TEST_FILE_WORKER: ${{ runner.os == 'Windows' && format('{0}/.tools/file-transfer-tests.exe', github.workspace) || '' }}
+        run: node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs
       - name: Windows component staging
         if: runner.os == 'Windows'
         shell: powershell

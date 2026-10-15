@@ -33,6 +33,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
           node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Desktop recovery tests failed' }
+          & windows/tests/file-transfer.ps1 -TestWorkerOutput .tools/uu-parity/file-transfer-tests.exe
+          $env:CLIPRELAY_TEST_FILE_WORKER = (Resolve-Path .tools/uu-parity/file-transfer-tests.exe).Path
+          node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop file transfer tests failed' }
           Push-Location network
           try {
             go test -count=1 -timeout=120s ./inputfocus ./cmd/cliprelay-network
