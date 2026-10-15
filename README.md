@@ -387,6 +387,8 @@ Android 终端提供显式「鼠标操作」模式。远端程序请求鼠标输
 
 Android 独立鼠标请求阶段，本地 299 项 JVM 测试全部通过，新增 14 项覆盖能力与回执校验、连续点击、实时移动合并、前台续期、未知回执、取消、重复硬件事件和调度公平性。真实 Windows 终端互操作验证了 Java 客户端发送的移动在抬起前到达，持续续期超过 1.5 秒仍保持按下，停止续期后收到对应松开。QA 应用、测试包、lint、两包签名、四个 ABI 及终端资源核验通过，21 项设备用例已编译但未执行，其中包括 Canvas 绘制回执、从历史返回实时画面、触摸拖拽、外接鼠标与失焦清理。记录见 `.tools/uu-parity/terminal-typed-mouse-artifacts.json`；这些结果不代表实际 Android 窗口、触屏或外接鼠标已经验收，旧 18 项测试的授权请求和冻结包保持独立。
 
+该 Android 源码 `5450f3b` 的 [CI 与 APK](https://github.com/ffffhx/cliprelay/actions/runs/38816353781)已通过。下载 APK 已核对签名、功能类、四个 ABI 的原生资源和许可；299 项用例清单与本地一致，Linux 执行 295 项，四项 Windows 原生互操作用例仅在本地 Windows 执行并通过。下方桌面最终源码 `88036b5` 的 Android 子目录与此版本相同。当前设备测试仍未执行，APK 构建成功不能替代设备验收。
+
 输入清理审计曾复现两类桌面终端边界缺陷：暂停或路由失效时，输入队列可能保留已发送的鼠标按下、却丢弃待发松开；超过一个协议请求的括号粘贴也可能丢失结尾标记。桌面长粘贴现已改为预览后完整提交，鼠标改用独立请求，由电脑端负责过期后的松开，验证情况见下方。原分段队列的复现脚本及记录保留在 `.tools/uu-parity/terminal-desktop-cleanup-probe.cjs`、`.tools/uu-parity/terminal-desktop-cleanup-probe.json`。Android 实时拖拽也已接入新鼠标协议；粘贴仍限制在单个完整请求内，实际设备行为待验收。
 
 在工具栏点击「模式 → 游戏模式」，先选择《速速上菜》或《星露谷物语》，再显示相应触屏方向控制和游戏按钮；游戏模式不再单独占用工具栏按钮。取消选择保留当前模式，右上角「⋯」菜单中的「切换游戏」可重新选择，并记住上次使用的游戏。《速速上菜》的键盘预设为：
@@ -452,9 +454,11 @@ Windows / Mac 桌面终端现改用独立鼠标请求，支持程序请求的左
 
 本轮 CI 还发现隐私屏的短时间窗测试不稳定。改用受控单调时钟后，复现了到期定时器迟执行时，晚到续期回执可能短暂恢复已过期状态的问题。共用的前台租约控制器现直接核对先前到期时间，不依赖定时器先执行；隐私屏、静音和锁屏相关 42 项 Node / 42 项 Electron 检查通过。回归保留真实固定证书 TLS 请求，明确检查到期后没有恢复活动状态。
 
+最终源码 `88036b5` 的[三平台 CI](https://github.com/ffffhx/cliprelay/actions/runs/38817160358)、[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38817167081)和 [Mac 两种架构完整包](https://github.com/ffffhx/cliprelay/actions/runs/38817174091)均已通过，包括上述过期续期回归。三平台 43 项终端用例清单相同：Windows 全部通过，Mac/Linux 各仅跳过 Windows 专属 ConPTY 一项。下载的三个包均核对最终源码、原生组件和资源；Windows 包核验 739 个文件，在临时 CI 机器通过安装、独立进程存活和后台断管退出检查。包内实际服务与同版本桌面控制器再次通过真实双向 TLS / ConPTY 的实时移动、按住续期、暂停后松开，以及长粘贴和输入去重检查。完整记录见 `.tools/uu-parity/terminal-typed-mouse-artifacts.json`；实际桌面窗口、设备、公网与安装版 SYSTEM 路径仍待验收，开发包尚未正式发布。
+
 桌面终端通过主进程的固定证书双向 TLS 访问同一后端；独立窗口启用 sandbox 和 contextIsolation，页面不能读取配对私钥、联网、打开链接或通过 OSC 52 操作本地剪贴板。旧会话按键、延迟粘贴和结束确认不能影响新会话；路由更换会丢弃未发送输入，未确认输入使用原序号核对。历史回放与新输出按准确字节边界分开，避免重复响应历史查询。输入只保存在内存，不记录命令或终端输出。输入确认仅代表后端接收或写入，不代表命令执行成功。
 
-本地验证先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER` 与 `CLIPRELAY_TERMINAL_MOUSE_FIXTURE`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs`，共 42 项。若使用完整服务验收，将 `CLIPRELAY_TERMINAL_TEST_WORKER` 改为该服务程序，鼠标 fixture 仍使用前述生成程序。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、物理鼠标、公网与安装版 SYSTEM 路径验收。
+本地验证先运行 `windows/tests/terminal.ps1 -Native`，将生成程序绝对路径设为 `CLIPRELAY_TERMINAL_TEST_WORKER` 与 `CLIPRELAY_TERMINAL_MOUSE_FIXTURE`，再运行 `node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs`，共 43 项。若使用完整服务验收，将 `CLIPRELAY_TERMINAL_TEST_WORKER` 改为该服务程序，鼠标 fixture 仍使用前述生成程序。非 Windows 平台跳过真实 Windows ConPTY 一项，其余测试仍执行。这些测试不替代真实 Chromium 窗口、输入法、物理鼠标、公网与安装版 SYSTEM 路径验收。
 
 桌面终端的[三平台 CI](https://github.com/ffffhx/cliprelay/actions/runs/38727923410) 已通过：Windows 的 18 项终端测试全部通过，真实 ConPTY 验收在临时普通用户下执行；Mac 和 Linux 各通过 17 项，仅跳过 Windows 专属的 ConPTY 一项。三平台既有的 70 项桌面连接回归也全部通过。[Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38727924083) 已在临时测试机完成安装、独立桌面进程、SYSTEM 服务管道及后台断管退出验证；[Mac arm64 / x64 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38727931092) 均已构建通过。安装包与最终应用源码、终端第三方资源哈希和许可的一致性另行记录于 `.tools/uu-parity/desktop-terminal-artifacts.json`；没有替换开发电脑的现有安装。
 
