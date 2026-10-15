@@ -12,8 +12,221 @@ index 94fbb14..a5fcb30 100644
          target_include_directories(${target_name} BEFORE PRIVATE "${sdk_include_dir}")
          target_compile_definitions(${target_name} PRIVATE
                  NVENC_FACTORY_SUFFIX=${sdk_version}
+diff --git a/cmake/targets/windows.cmake b/cmake/targets/windows.cmake
+index d5807aa..fdc0ebd 100644
+--- a/cmake/targets/windows.cmake
++++ b/cmake/targets/windows.cmake
+@@ -6,4 +6,5 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
+         $<TARGET_OBJECTS:sunshine_rc_object>
+         Windowsapp.lib
+         Wtsapi32.lib
++        mmdevapi.lib
+         version.lib)
+diff --git a/src/audio.cpp b/src/audio.cpp
+index 28a3d81..f1a2a96 100644
+--- a/src/audio.cpp
++++ b/src/audio.cpp
+@@ -10,6 +10,7 @@
+ 
+ // local includes
+ #include "audio.h"
++#include "cliprelay_control.h"
+ #include "config.h"
+ #include "globals.h"
+ #include "logging.h"
+@@ -26,7 +27,13 @@ namespace audio {
+   /**
+    * @brief Shared queue carrying captured PCM sample buffers to the encoder thread.
+    */
+-  using sample_queue_t = std::shared_ptr<safe::queue_t<std::vector<float>>>;
++  struct captured_samples {
++    std::vector<float> pcm;
++    std::uint64_t generation = 0;
++    bool healthy = false;
++    std::int64_t captured_ms = 0;
++  };
++  using sample_queue_t = std::shared_ptr<safe::queue_t<captured_samples>>;
+ 
+   static int start_audio_control(audio_ctx_t &ctx);
+   static void stop_audio_control(audio_ctx_t &);
+@@ -138,7 +145,7 @@ namespace audio {
+     while (auto sample = samples->pop()) {
+       buffer_t packet {1400};
+ 
+-      int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), (opus_int32) packet.size());
++      int bytes = opus_multistream_encode_float(opus.get(), sample->pcm.data(), frame_size, std::begin(packet), (opus_int32) packet.size());
+       if (bytes < 0) {
+         BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);
+         packets->stop();
+@@ -148,6 +155,9 @@ namespace audio {
+ 
+       packet.fake_resize(bytes);
+       packets->raise(channel_data, std::move(packet));
++      auto now = cliprelay::display_control::monotonic_ms();
++      cliprelay::displays.encoded_audio(channel_data, sample->generation,
++        sample->healthy && now >= sample->captured_ms && now - sample->captured_ms < 1000, now);
+     }
+   }
+ 
+@@ -183,46 +193,51 @@ namespace audio {
+       return;
+     }
+ 
+-    // Order of priority:
+-    // 1. Virtual sink
+-    // 2. Audio sink
+-    // 3. Host
+-    std::string *sink = &ref->sink.host;
+-    if (!config::audio.sink.empty()) {
+-      sink = &config::audio.sink;
+-    }
++    auto frame_size = config.packetDuration * stream.sampleRate / 1000;
++    bool host_audio = config.flags[config_t::HOST_AUDIO];
++    bool continuous_audio = config.flags[config_t::CONTINUOUS_AUDIO];
++    auto mic = config::audio.process_audio ? control->independent_microphone(stream.channelCount, stream.sampleRate, continuous_audio) : nullptr;
++    const bool independent = static_cast<bool>(mic);
++
++    if (!independent) {
++      // Order of priority:
++      // 1. Virtual sink
++      // 2. Audio sink
++      // 3. Host
++      std::string *sink = &ref->sink.host;
++      if (!config::audio.sink.empty()) {
++        sink = &config::audio.sink;
++      }
+ 
+-    // Prefer the virtual sink if host playback is disabled or there's no other sink
+-    if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
+-      auto &null = *ref->sink.null;
+-      switch (stream.channelCount) {
+-        case 2:
+-          sink = &null.stereo;
+-          break;
+-        case 6:
+-          sink = &null.surround51;
+-          break;
+-        case 8:
+-          sink = &null.surround71;
+-          break;
++      // Prefer the virtual sink if host playback is disabled or there's no other sink
++      if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
++        auto &null = *ref->sink.null;
++        switch (stream.channelCount) {
++          case 2:
++            sink = &null.stereo;
++            break;
++          case 6:
++            sink = &null.surround51;
++            break;
++          case 8:
++            sink = &null.surround71;
++            break;
++        }
+       }
+-    }
+ 
+-    // Only the first to start a session may change the default sink
+-    if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
+-      // If the selected sink is different than the current one, change sinks.
+-      ref->restore_sink = ref->sink.host != *sink;
+-      if (ref->restore_sink) {
+-        if (control->set_sink(*sink)) {
+-          return;
++      // Only the first to start a session may change the default sink
++      if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
++        // If the selected sink is different than the current one, change sinks.
++        ref->restore_sink = ref->sink.host != *sink;
++        if (ref->restore_sink) {
++          if (control->set_sink(*sink)) {
++            return;
++          }
+         }
+       }
+-    }
+ 
+-    auto frame_size = config.packetDuration * stream.sampleRate / 1000;
+-    bool host_audio = config.flags[config_t::HOST_AUDIO];
+-    bool continuous_audio = config.flags[config_t::CONTINUOUS_AUDIO];
+-    auto mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
++      mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
++    }
+     if (!mic) {
+       return;
+     }
+@@ -235,8 +250,10 @@ namespace audio {
+ 
+     auto samples = std::make_shared<sample_queue_t::element_type>(30);
+     std::jthread thread {encodeThread, samples, config, channel_data};
++    std::uint64_t audio_generation = cliprelay::displays.begin_audio(channel_data, independent);
+ 
+     auto fg = util::fail_guard([&]() {
++      cliprelay::displays.end_audio(channel_data, audio_generation);
+       samples->stop();
+       thread.join();
+ 
+@@ -257,9 +274,14 @@ namespace audio {
+           continue;
+         case platf::capture_e::reinit:
+           BOOST_LOG(info) << "Reinitializing audio capture"sv;
++          cliprelay::displays.end_audio(channel_data, audio_generation);
++          audio_generation = 0;
+           mic.reset();
+           do {
+-            mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
++            // Never fall back to endpoint audio inside a mute-capable stream:
++            // the host could still be muted until its lease observes this reset.
++            mic = independent ? control->independent_microphone(stream.channelCount, stream.sampleRate, continuous_audio)
++              : control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
+             if (!mic) {
+               BOOST_LOG(warning) << "Couldn't re-initialize audio input"sv;
+             }
+@@ -269,7 +291,10 @@ namespace audio {
+           return;
+       }
+ 
+-      samples->raise(std::move(sample_buffer));
++      // Audio and video start concurrently. Registration may not have happened
++      // at audio initialization, so retry only until this capture owns an epoch.
++      if (!audio_generation) audio_generation = cliprelay::displays.begin_audio(channel_data, independent);
++      samples->raise(captured_samples {std::move(sample_buffer), audio_generation, mic->host_mute_safe(), cliprelay::display_control::monotonic_ms()});
+     }
+   }
+ 
+diff --git a/src/config.cpp b/src/config.cpp
+index e0e8647..a1d4c1e 100644
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -806,6 +806,7 @@ namespace config {
+     {},  // virtual_sink
+     true,  // stream audio
+     true,  // install_steam_drivers
++    false,  // cliprelay_process_audio (enable only with the matching host controls)
+   };
+ 
+   /**
+@@ -1738,6 +1739,7 @@ namespace config {
+ 
+     string_f(vars, "audio_sink", audio.sink);
+     string_f(vars, "virtual_sink", audio.virtual_sink);
++    bool_f(vars, "cliprelay_process_audio", audio.process_audio);
+     bool_f(vars, "stream_audio", audio.stream);
+     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
+ 
+diff --git a/src/config.h b/src/config.h
+index 7861538..731282b 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -229,6 +229,7 @@ namespace config {
+     std::string virtual_sink;  ///< Virtual audio sink for audio routing
+     bool stream;  ///< Enable audio streaming to clients
+     bool install_steam_drivers;  ///< Install Steam audio drivers for enhanced compatibility
++    bool process_audio;  ///< ClipRelay opt-in mute-independent process capture on Windows
+   };
+ 
+   /**
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index 1b47397..5a70c85 100644
+index 1b47397..882e433 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -37,6 +37,7 @@
@@ -24,7 +237,7 @@ index 1b47397..5a70c85 100644
  #include "confighttp.h"
  #include "crypto.h"
  #include "display_device.h"
-@@ -2310,6 +2311,129 @@ namespace confighttp {
+@@ -2310,6 +2311,130 @@ namespace confighttp {
    /**
     * @brief Start the HTTPS configuration server.
     */
@@ -53,7 +266,8 @@ index 1b47397..5a70c85 100644
 +    }
 +    for (const auto &s : state.streams) {
 +      result["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"generation", s.generation},
-+        {"width", s.width}, {"height", s.height}, {"firstFrame", s.first_frame}});
++        {"width", s.width}, {"height", s.height}, {"firstFrame", s.first_frame},
++        {"audio", {{"capture", s.audio_capture}, {"generation", s.audio_generation}, {"ready", s.audio_ready}}}});
 +    }
 +    return result;
 +  }
@@ -154,7 +368,7 @@ index 1b47397..5a70c85 100644
    void start() {
      platf::set_thread_name("confighttp");
      const auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-@@ -2354,6 +2478,10 @@ namespace confighttp {
+@@ -2354,6 +2479,10 @@ namespace confighttp {
      server.resource["^/welcome/?$"]["GET"] = page_handler("welcome.html", false, true);
  
      // rest api
@@ -166,7 +380,7 @@ index 1b47397..5a70c85 100644
      server.resource["^/api/apps$"]["GET"] = getApps;
      server.resource["^/api/apps$"]["POST"] = saveApp;
 diff --git a/src/platform/common.h b/src/platform/common.h
-index 325f913..0115771 100644
+index 325f913..f9e144e 100644
 --- a/src/platform/common.h
 +++ b/src/platform/common.h
 @@ -780,6 +780,11 @@ namespace platf {
@@ -181,6 +395,90 @@ index 325f913..0115771 100644
      // Offsets for when streaming a specific monitor. By default, they are 0.
      int offset_x {0};  ///< Horizontal capture offset in physical pixels.
      int offset_y {0};  ///< Vertical capture offset in physical pixels.
+@@ -809,6 +814,7 @@ namespace platf {
+      * @return Capture status reported to the streaming pipeline.
+      */
+     virtual capture_e sample(std::vector<float> &frame_buffer) = 0;
++    virtual bool host_mute_safe() const { return false; }
+ 
+     virtual ~mic_t() = default;
+   };
+@@ -838,6 +844,7 @@ namespace platf {
+      * @return Microphone capture object for the requested audio layout.
+      */
+     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, [[maybe_unused]] bool host_audio_enabled) = 0;
++    virtual std::unique_ptr<mic_t> independent_microphone(int, std::uint32_t, bool) { return nullptr; }
+ 
+     /**
+      * @brief Check if the audio sink is available in the system.
+diff --git a/src/platform/windows/audio.cpp b/src/platform/windows/audio.cpp
+index 9ace2a6..3994e25 100644
+--- a/src/platform/windows/audio.cpp
++++ b/src/platform/windows/audio.cpp
+@@ -18,6 +18,7 @@
+ 
+ // local includes
+ #include "src/config.h"
++#include "src/cliprelay_audio.h"
+ #include "src/logging.h"
+ #include "src/platform/common.h"
+ #include "utf_utils.h"
+@@ -560,6 +561,18 @@ namespace platf::audio {
+   /**
+    * @brief WASAPI microphone capture stream and endpoint notification state.
+    */
++  class mic_process_t: public mic_t {
++  public:
++    cliprelay::process_audio capture;
++    capture_e sample(std::vector<float> &output) override {
++      auto status = capture.read(output);
++      if (status == S_OK) return capture_e::ok;
++      if (status == S_FALSE) return capture_e::timeout;
++      return capture_e::reinit;
++    }
++    bool host_mute_safe() const override { return capture.healthy(); }
++  };
++
+   class mic_wasapi_t: public mic_t {
+   public:
+     /**
+@@ -1021,6 +1034,18 @@ namespace platf::audio {
+       return mic;
+     }
+ 
++    std::unique_ptr<mic_t> independent_microphone(int channels, std::uint32_t sample_rate, bool continuous) override {
++      auto mic = std::make_unique<mic_process_t>();
++      // The ClipRelay Desktop app launches no child audio applications. Capture
++      // other desktop processes while excluding the engine and its children.
++      auto status = mic->capture.init(GetCurrentProcessId(), false, sample_rate, channels, continuous);
++      if (FAILED(status)) {
++        BOOST_LOG(warning) << "Process audio unavailable [0x" << util::hex(status).to_string_view() << ']';
++        return nullptr;
++      }
++      return mic;
++    }
++
+     /**
+      * If the requested sink is a virtual sink, meaning no speakers attached to
+      * the host, then we can seamlessly set the format to stereo and surround sound.
+@@ -1542,7 +1567,7 @@ namespace platf {
+ 
+     // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
+     // the sink information returned includes the new Steam Streaming Speakers device.
+-    if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
++    if (!config::audio.process_audio && config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
+       // This is best effort. Don't fail if it doesn't work.
+       control->install_steam_audio_drivers();
+     }
+@@ -1561,7 +1586,7 @@ namespace platf {
+     // If Steam Streaming Speakers are currently the default audio device,
+     // change the default to something else (if another device is available).
+     audio::audio_control_t audio_ctrl;
+-    if (audio_ctrl.init() == 0) {
++    if (!config::audio.process_audio && audio_ctrl.init() == 0) {
+       audio_ctrl.reset_default_device();
+     }
+ 
 diff --git a/src/platform/windows/display_base.cpp b/src/platform/windows/display_base.cpp
 index 151b8a6..68d5802 100644
 --- a/src/platform/windows/display_base.cpp

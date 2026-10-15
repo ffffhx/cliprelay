@@ -94,8 +94,9 @@ jobs:
           # Ship the reviewed patch, not a build-directory diff of the whole tree.
           cp engine/sunshine/control.patch engine-artifact/cliprelay-source.patch
           cp engine/sunshine/cliprelay_control.h engine-artifact/
+          cp engine/sunshine/cliprelay_audio.h engine-artifact/
           mkdir -p engine-artifact/engine/sunshine
-          cp engine/sunshine/{upstream.json,control.patch,cliprelay_control.h,control_test.cpp,README.md} engine-artifact/engine/sunshine/
+          cp engine/sunshine/{upstream.json,control.patch,cliprelay_control.h,cliprelay_audio.h,control_test.cpp,README.md} engine-artifact/engine/sunshine/
           cp scripts/prepare_sunshine.py engine-artifact/scripts/
           sha256sum engine-artifact/sunshine.exe > engine-artifact/SHA256SUMS
           ccache --show-stats

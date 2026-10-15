@@ -209,5 +209,47 @@ int main() {
     assert(cliprelay::video_bitrate(10000, 81, 192, 0) == 9308);
     assert(cliprelay::video_bitrate(10000, 20, 512, 4000) == 4000);
   }
-  std::cout << "8 display and 4 live bitrate control scenarios passed\n";
+  {
+    display_control d; start(d);
+    assert(d.begin_audio(nullptr, true) == 0);
+    auto legacy = d.begin_audio(&client_a, false);
+    d.encoded_audio(&client_a, legacy, true, 100);
+    assert(!d.snapshot(100).streams[0].audio_ready);
+    auto process = d.begin_audio(&client_a, true);
+    assert(!d.snapshot(100).streams[0].audio_ready);
+    d.encoded_audio(&client_a, process, true, 100);
+    assert(d.snapshot(2099).streams[0].audio_ready);
+    assert(!d.snapshot(2100).streams[0].audio_ready);
+    d.encoded_audio(&client_a, process, false, 2200);
+    assert(!d.snapshot(2200).streams[0].audio_ready);
+  }
+  {
+    display_control d; start(d);
+    auto first = d.begin_audio(&client_a, true);
+    auto second = d.begin_audio(&client_a, true);
+    d.encoded_audio(&client_a, first, true, 100);
+    d.end_audio(&client_a, first);
+    assert(!d.snapshot(100).streams[0].audio_ready);
+    assert(d.snapshot().streams[0].audio_generation == second);
+    d.encoded_audio(&client_a, second, true, 100);
+    assert(d.snapshot(100).streams[0].audio_ready);
+    d.end_audio(&client_a, second);
+    d.encoded_audio(&client_a, second, true, 101);
+    assert(!d.snapshot(101).streams[0].audio_ready);
+  }
+  {
+    display_control d; start(d);
+    auto old = d.begin_audio(&client_a, true);
+    d.remove_stream(&client_a);
+    d.add_stream(&client_a, owner, 1280, 720);
+    auto fresh = d.begin_audio(&client_a, true);
+    assert(fresh != old);
+    d.encoded_audio(&client_a, old, true, 100);
+    assert(!d.snapshot(100).streams[0].audio_ready);
+    d.encoded_audio(&client_a, fresh, true, 100);
+    d.add_stream(&client_b, std::string(64, 'b'), 1280, 720);
+    auto streams = d.snapshot(100).streams;
+    for (const auto &s : streams) assert(s.audio_ready == (s.owner == owner));
+  }
+  std::cout << "8 display, 4 live bitrate and 3 audio readiness scenarios passed\n";
 }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -23,6 +24,10 @@ namespace cliprelay {
     int width = 0, height = 0;
     std::int64_t first_frame = 0;
     std::int64_t minimum_frame = 0;
+    std::string audio_capture;
+    std::uint64_t audio_generation = 0;
+    std::int64_t audio_encoded_ms = 0;
+    bool audio_ready = false;
   };
 
   struct display_snapshot {
@@ -38,6 +43,9 @@ namespace cliprelay {
   // complete it; dummy frames, delayed packets and stale display instances cannot.
   class display_control {
   public:
+    static std::int64_t monotonic_ms() {
+      return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
     void catalog(std::vector<std::string> names) {
       names.erase(std::remove(names.begin(), names.end(), ""), names.end());
       std::lock_guard lock(mutex_);
@@ -50,7 +58,10 @@ namespace cliprelay {
     std::uint64_t add_stream(void *key, std::string owner, int width, int height) {
       if (!key || owner.size() != 64 || width <= 0 || height <= 0) return 0;
       std::lock_guard lock(mutex_);
-      streams_[key] = {std::move(owner), ++next_stream_, 0, width, height, 0, 0};
+      stream_state stream;
+      stream.owner = std::move(owner); stream.id = ++next_stream_;
+      stream.width = width; stream.height = height;
+      streams_[key] = std::move(stream);
       ++state_.revision;
       return next_stream_;
     }
@@ -158,12 +169,44 @@ namespace cliprelay {
       }
     }
 
-    display_snapshot snapshot() const {
+    std::uint64_t begin_audio(void *key, bool independent) {
+      std::lock_guard lock(mutex_);
+      auto stream = streams_.find(key);
+      if (stream == streams_.end()) return 0;
+      auto &s = stream->second;
+      s.audio_capture = independent ? "process" : "endpoint";
+      s.audio_generation = ++next_audio_;
+      s.audio_encoded_ms = 0;
+      return s.audio_generation;
+    }
+
+    // A queued PCM buffer carries its capture generation through encoding.
+    // Old buffers cannot make a restarted or stopped capture ready again.
+    void encoded_audio(void *key, std::uint64_t generation, bool healthy, std::int64_t now = monotonic_ms()) {
+      std::lock_guard lock(mutex_);
+      auto stream = streams_.find(key);
+      if (stream == streams_.end() || generation == 0 || generation != stream->second.audio_generation) return;
+      stream->second.audio_encoded_ms = healthy ? now : 0;
+    }
+
+    void end_audio(void *key, std::uint64_t generation) {
+      std::lock_guard lock(mutex_);
+      auto stream = streams_.find(key);
+      if (stream == streams_.end() || generation == 0 || generation != stream->second.audio_generation) return;
+      stream->second.audio_capture.clear();
+      stream->second.audio_generation = 0;
+      stream->second.audio_encoded_ms = 0;
+    }
+
+    display_snapshot snapshot(std::int64_t now = monotonic_ms()) const {
       std::lock_guard lock(mutex_);
       auto copy = state_;
       bool ready = false;
       for (auto const &[key, stream] : streams_) {
         copy.streams.push_back(stream);
+        auto &audio = copy.streams.back();
+        audio.audio_ready = audio.audio_capture == "process" && audio.audio_generation != 0 && audio.audio_encoded_ms > 0 &&
+          now >= audio.audio_encoded_ms && now - audio.audio_encoded_ms < 2000;
         ready |= capture_running_ && stream.generation == state_.generation && stream.first_frame > 0;
       }
       copy.phase = state_.result == "pending" ? "switching" : (ready ? "active" : (streams_.empty() ? "idle" : "starting"));
@@ -183,6 +226,7 @@ namespace cliprelay {
     display_snapshot state_;
     std::map<void *, stream_state> streams_;
     std::uint64_t next_stream_ = 0;
+    std::uint64_t next_audio_ = 0;
     bool queued_ = false, capture_running_ = false;
   };
 

@@ -19,9 +19,9 @@ def prepare(source: Path, check: bool = False) -> None:
         raise RuntimeError("Sunshine checkout does not match the pinned commit")
     if git("diff", "HEAD", "--", "src", "cmake", "tools"):
         raise RuntimeError("Refusing to patch an already modified Sunshine source tree")
-    header = source / "src" / "cliprelay_control.h"
-    if header.exists():
-        raise RuntimeError("Refusing to replace an existing control header")
+    headers = ["cliprelay_control.h", "cliprelay_audio.h"]
+    if any((source / "src" / name).exists() for name in headers):
+        raise RuntimeError("Refusing to replace an existing ClipRelay header")
     patch = extension / "control.patch"
     # A Windows archive/checkout may carry CRLF even when the upstream tree is LF.
     # Normalize the patch syntax without changing the caller's source files.
@@ -31,7 +31,8 @@ def prepare(source: Path, check: bool = False) -> None:
         git("apply", "--check", str(normalized))
         if not check:
             git("apply", str(normalized))
-            shutil.copyfile(extension / "cliprelay_control.h", header)
+            for name in headers:
+                shutil.copyfile(extension / name, source / "src" / name)
 
 
 if __name__ == "__main__":

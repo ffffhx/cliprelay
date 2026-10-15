@@ -78,16 +78,30 @@ TLS, validates ownership before forwarding and filters other clients' state.
 Android uses that endpoint and waits for the applied frame to be presented;
 unsupported hosts/encoders use the existing reconnect path. Runtime validation
 of Android presentation, other codecs/GPUs and injected driver failures remains
-pending. Network-type changes still use reconnect recovery.
+pending.
+
+Android now observes the actual default network handle, including Wi-Fi-to-Wi-Fi
+changes. A healthy stream keeps its connection. Network loss immediately releases
+held input; two seconds without a newly received, presented frame also pauses
+input. Recovery requires both a fresh presented frame and display metadata
+requested after the pause, so a buffered picture cannot re-enable input. Display
+and network pauses are independent. After six paused seconds the client attempts
+authenticated route recovery, with a 20-second route-selection deadline and at
+most two automatic recoveries per minute. Lifecycle pauses reset the observation
+window. These policies have JVM coverage; actual Android handover, background/PiP
+and input-release behavior still require device validation.
 
 An isolated encrypted loopback test on Intel Quick Sync H.264 changed budgets
 12 → 2 → 6 Mbps on the same connection, with capture generation unchanged.
-Synthetic motion produced video payloads of 8.845 → 1.388 → 4.207 Mbps; confirmation
-frame receipt took 94, 141 and 78 ms. The largest received-frame gap was 47 ms.
+Synthetic motion produced video payloads of 8.847 → 1.419 → 4.243 Mbps; confirmation
+frame receipt took 31, 125 and 109 ms. The largest received-frame gap was 47 ms.
 These are one-machine receipt measurements at 1280×720/30 fps, not Android
 presentation or Internet measurements. The final 6 Mbps setting also survived
-display reconstruction. Use the native receiver's `--bitrate-test` fixture option
-to repeat this test; it briefly displays a non-activating synthetic motion window.
+display reconstruction. Use `windows/tests/engine_control_test.py` with both
+`--stream-client <engine-stream-client.exe>` and `--bitrate-test` to repeat this
+test; it briefly displays a non-activating synthetic motion window. State-file
+publication and reads tolerate brief Windows sharing conflicts without treating
+them as a lost stream.
 
 Queued keyframes own their parameter-set replacement bytes so encoder teardown
 cannot leave the sender referring to the old encoder's storage.
@@ -129,10 +143,37 @@ installed service. Receipt tests do not verify Android decoding or presentation.
 The full engine build and six real HTTP checks passed on Windows. An isolated
 encrypted loopback stream on Intel Quick Sync preserved its connection and stream
 ID across rebuilding the one attached display, receiving a new keyframe after
-0.703 seconds in that single test. This does not validate physical multi-monitor
+0.547 seconds in the latest test. This does not validate physical multi-monitor
 switching, hotplug, Android presentation or Internet latency. Source bundles keep
 the `engine/sunshine` and `scripts` layout so their prepare script can be used directly.
 
+The development option `cliprelay_process_audio = enabled` attempts Windows
+process-loopback capture for 48 kHz stereo. It is off by default while the host
+mute controls are being integrated. On Windows build 20348 or later, it captures
+rendering processes except the engine and its children, independently of endpoint
+mute and master gain. ClipRelay's Desktop launch has no child audio applications;
+custom Sunshine applications launched as engine children are excluded. The new
+path does not change endpoint routing, volume or format and skips Steam driver
+installation/default-sink resetting. Unsupported systems/layouts use the existing
+endpoint backend. After process capture starts, reinitialization retries that
+same backend rather than falling back while a host might still be muted.
+
+Each stream's optional `audio` object contains `capture` (`process`, `endpoint`,
+or empty), `generation`, and `ready`. Readiness requires a fresh native capture
+packet and an encoded Opus packet from that generation. It expires after two
+seconds without such packets; old queued PCM, retired captures and disconnected
+streams cannot renew it. The paired service validates and filters this state by
+certificate owner. A future mute lease must require the sole current stream,
+bind its audio generation, and restore on loss of readiness. This metadata alone
+does not implement a mute API or Android toggle.
+
+`windows/tests/audio_loopback.py --process` now uses the same `cliprelay_audio.h`
+capture code as the engine, restricted to its own generated tone on an existing
+non-default Steam virtual speaker. Native PCM amplitude was 0.005 before, during
+and after endpoint mute, with settings restored. It is not evidence of complete
+encoded-stream audio, SYSTEM context, physical-speaker mute, other layouts or
+Android playback. Full engine build/runtime validation is pending for this change.
+
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
-engine. Distribute the pinned upstream source reference, patch and added header
+engine. Distribute the pinned upstream source reference, patch and added headers
 with any modified engine binary.
