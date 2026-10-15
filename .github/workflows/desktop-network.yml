@@ -1,0 +1,50 @@
+name: Desktop Network Build
+on:
+  push:
+    branches: ['codex/desktop-network-*']
+    paths: ['network/**', 'scripts/build_desktop_network.py', 'scripts/network_notices.py', 'windows/tests/desktop_network_process.py', '.github/workflows/desktop-network.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache: true
+          cache-dependency-path: network/go.sum
+      - name: Ownership and transport tests
+        working-directory: network
+        run: go test -count=1 -timeout=120s ./desktopclient ./mobile ./transport
+      - name: Real encrypted desktop TCP and UDP channels
+        working-directory: network
+        run: go test -tags=integration -count=1 -timeout=120s -run '^TestDesktopForwardLocalChannelsAndCleanup$' -v ./mobile
+      - name: Build Windows helper
+        if: runner.os == 'Windows'
+        run: python scripts/build_desktop_network.py windows --output .tools/desktop-network
+      - name: Build universal Mac helper
+        if: runner.os == 'macOS'
+        run: python3 scripts/build_desktop_network.py macos --output .tools/desktop-network
+      - name: Verify Windows process ownership
+        if: runner.os == 'Windows'
+        run: python windows/tests/desktop_network_process.py .tools/desktop-network/runtime/cliprelay-client-network.exe --report .tools/desktop-network/process-report.json
+      - name: Verify Mac process ownership
+        if: runner.os == 'macOS'
+        run: python3 windows/tests/desktop_network_process.py .tools/desktop-network/runtime/cliprelay-client-network --report .tools/desktop-network/process-report.json
+      - name: Preserve Mac executable mode
+        if: runner.os == 'macOS'
+        run: tar -czf .tools/desktop-network-macos.tar.gz -C .tools desktop-network
+      - uses: actions/upload-artifact@v4
+        if: runner.os != 'Linux'
+        with:
+          name: ClipRelay-Desktop-Network-${{ runner.os }}
+          path: ${{ runner.os == 'macOS' && '.tools/desktop-network-macos.tar.gz' || '.tools/desktop-network' }}
+          if-no-files-found: error

@@ -5,10 +5,12 @@ package mobile
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/netip"
 	"net/url"
@@ -35,6 +37,8 @@ type Node struct {
 	cancel             context.CancelFunc
 	mu                 sync.Mutex
 	closed             bool
+	closeDone          chan struct{}
+	closeErr           error
 	started            bool
 	exposed            bool
 	forwards           map[string]bool
@@ -49,6 +53,15 @@ type Node struct {
 // Tailscale account service. The one-use auth key comes from ClipRelay's broker.
 // dataDir must be app-private, excluded from backups, and persistent across runs.
 func New(dataDir, hostname, controlURL, authKey string) (*Node, error) {
+	return NewWithPort(dataDir, hostname, controlURL, authKey, 47633)
+}
+
+// NewWithPort gives each independently paired computer its own UDP socket.
+// Both IP families retain the same preferred port, including on Android.
+func NewWithPort(dataDir, hostname, controlURL, authKey string, port int) (*Node, error) {
+	if port < 1024 || port > 65535 {
+		return nil, errors.New("invalid preferred UDP port")
+	}
 	u, err := url.Parse(controlURL)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return nil, errors.New("coordination URL must be an HTTPS origin")
@@ -73,8 +86,8 @@ func New(dataDir, hostname, controlURL, authKey string) (*Node, error) {
 		// A common preferred port keeps IPv4/IPv6 endpoints consistent. With
 		// Port=0 upstream binds each family independently, but advertises local
 		// IPv6 addresses with the IPv4 port, which breaks IPv6 hole punching.
-		server: &tsnet.Server{Dir: dataDir, Hostname: hostname, ControlURL: controlURL, AuthKey: authKey, Port: 47633, Logf: logger.Discard, UserLogf: logger.Discard},
-		ctx:    ctx, cancel: cancel, forwards: make(map[string]bool),
+		server: &tsnet.Server{Dir: dataDir, Hostname: hostname, ControlURL: controlURL, AuthKey: authKey, Port: uint16(port), Logf: logger.Discard, UserLogf: logger.Discard},
+		ctx:    ctx, cancel: cancel, forwards: make(map[string]bool), closeDone: make(chan struct{}),
 	}
 	empty := map[netip.Addr]bool{}
 	n.peers.Store(&empty)
@@ -290,8 +303,46 @@ func (n *Node) Forward(peerIP, bindIP string) error {
 	return nil
 }
 
+// ForwardLocal allocates a private desktop-controller endpoint without requiring
+// loopback aliases on macOS or colliding with an installed Windows host. The
+// returned HTTP base port keeps the host's relative HTTPS/RTSP/control offsets.
+// Native viewers must explicitly remap the negotiated media ports and use remote
+// packet sizing. This does not expose arbitrary destination ports or addresses.
+func (n *Node) ForwardLocal(peerIP string) (int, error) {
+	peer, err := tailnetIP(peerIP)
+	if err != nil || !(*n.peers.Load())[peer] {
+		return 0, errors.New("computer is not paired")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed || !n.started {
+		return 0, errors.New("network node is not running")
+	}
+	for attempt := 0; attempt < 64; attempt++ {
+		value, err := rand.Int(rand.Reader, big.NewInt(40000))
+		if err != nil {
+			return 0, err
+		}
+		base := 20000 + int(value.Int64())
+		key := fmt.Sprintf("127.0.0.1:%d", base)
+		if n.forwards[key] {
+			continue
+		}
+		if err := n.bindPorts("127.0.0.1", peerIP, false, base-48789); err != nil {
+			continue // All sockets acquired by this attempt have been rolled back.
+		}
+		n.forwards[key] = true
+		return base, nil
+	}
+	return 0, errors.New("no local desktop port group available")
+}
+
 // Caller holds mu. All ports bind before any worker starts; failure rolls back.
 func (n *Node) bind(bindIP, targetIP string, expose bool) (err error) {
+	return n.bindPorts(bindIP, targetIP, expose, 0)
+}
+
+func (n *Node) bindPorts(bindIP, targetIP string, expose bool, localOffset int) (err error) {
 	var closers []io.Closer
 	var jobs []func()
 	defer func() {
@@ -308,7 +359,7 @@ func (n *Node) bind(bindIP, targetIP string, expose bool) (err error) {
 		allow = n.allowPeer
 	}
 	for _, port := range tcpPorts {
-		addr := net.JoinHostPort(bindIP, fmt.Sprint(port))
+		addr := net.JoinHostPort(bindIP, fmt.Sprint(port+localOffset))
 		target := net.JoinHostPort(targetIP, fmt.Sprint(port))
 		var ln net.Listener
 		if expose {
@@ -323,7 +374,7 @@ func (n *Node) bind(bindIP, targetIP string, expose bool) (err error) {
 		jobs = append(jobs, func() { transport.TCP(n.ctx, ln, dial, target, allow) })
 	}
 	for _, port := range udpPorts {
-		addr := net.JoinHostPort(bindIP, fmt.Sprint(port))
+		addr := net.JoinHostPort(bindIP, fmt.Sprint(port+localOffset))
 		target := net.JoinHostPort(targetIP, fmt.Sprint(port))
 		listen := func() (net.PacketConn, error) {
 			if expose {
@@ -369,7 +420,8 @@ func (n *Node) Close() error {
 	n.mu.Lock()
 	if n.closed {
 		n.mu.Unlock()
-		return nil
+		<-n.closeDone
+		return n.closeErr
 	}
 	n.closed = true
 	n.cancel()
@@ -380,5 +432,7 @@ func (n *Node) Close() error {
 		err = n.server.Close()
 	}
 	n.workers.Wait()
+	n.closeErr = err
+	close(n.closeDone)
 	return err
 }
