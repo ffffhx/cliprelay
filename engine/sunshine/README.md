@@ -150,9 +150,14 @@ the `engine/sunshine` and `scripts` layout so their prepare script can be used d
 The development option `cliprelay_process_audio = enabled` attempts Windows
 process-loopback capture for 48 kHz stereo. It is off by default while the host
 mute controls are being integrated. On Windows build 20348 or later, it captures
-rendering processes except the engine and its children, independently of endpoint
-mute and master gain. ClipRelay's Desktop launch has no child audio applications;
-custom Sunshine applications launched as engine children are excluded. The new
+rendering processes except the configured host process tree, independently of
+endpoint mute and master gain. `cliprelay_audio_exclude_pid` defaults to 0 (the
+engine itself); the ClipRelay service writes its own PID so its voice-injection
+workers are excluded too. The engine requires a live ancestor, checks creation
+times against reused parent PIDs, and holds the root handle while capturing.
+Root exit invalidates readiness and capture. Invalid configuration never silently
+becomes engine-only process capture. Custom applications launched under the
+excluded tree are also excluded; ClipRelay's Desktop launches none. The new
 path does not change endpoint routing, volume or format and skips Steam driver
 installation/default-sink resetting. Unsupported systems/layouts use the existing
 endpoint backend. After process capture starts, reinitialization retries that
@@ -163,16 +168,29 @@ or empty), `generation`, and `ready`. Readiness requires a fresh native capture
 packet and an encoded Opus packet from that generation. It expires after two
 seconds without such packets; old queued PCM, retired captures and disconnected
 streams cannot renew it. The paired service validates and filters this state by
-certificate owner. A future mute lease must require the sole current stream,
-bind its audio generation, and restore on loss of readiness. This metadata alone
-does not implement a mute API or Android toggle.
+certificate owner. The host's `/v1/audio-mute` lease now requires the sole current
+stream, binds its audio generation, and restores on loss of readiness. It uses
+the desktop-user worker, independent expiry and durable recovery, with bounded
+retry protection for canceled leases. The Android toggle is still pending.
 
 `windows/tests/audio_loopback.py --process` now uses the same `cliprelay_audio.h`
 capture code as the engine, restricted to its own generated tone on an existing
 non-default Steam virtual speaker. Native PCM amplitude was 0.005 before, during
-and after endpoint mute, with settings restored. It is not evidence of complete
-encoded-stream audio, SYSTEM context, physical-speaker mute, other layouts or
-Android playback. Full engine build/runtime validation is pending for this change.
+and after endpoint mute, with settings restored. The complete engine build at
+`c0db423f9642eb5a6f4e1123057966cf1214e2b1` also passed encrypted stream acceptance:
+the receiver decoded Opus in memory and measured 0.005032555 in all three phases,
+with the same stream and audio generation. No raw audio was saved. Run
+`windows/tests/engine_control_test.py <engine-directory> --stream-client <receiver>
+--audio-test <audio-loopback.exe>` to reproduce. The tone helper allows only its
+own session and the exact fixture engine's capture session on the non-default
+Steam speaker; unrelated sessions abort the experiment and restore mute.
+
+This remains a development option. Native process-ancestry/lifetime tests pass
+for default/self, a live parent, an unrelated process, an already exited parent
+and exit of the held parent. Complete-engine rebuilding and runtime audio
+exclusion acceptance are pending for the new host-ancestor configuration.
+SYSTEM context, physical-speaker mute, other layouts, Android playback and the
+installed pipeline remain unverified.
 
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers

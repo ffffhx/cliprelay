@@ -74,6 +74,8 @@ jobs:
           ccache --max-size=600M
           g++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/control_test.cpp -o control-test.exe
           ./control-test.exe
+          g++ -std=c++23 -Wall -Wextra -Werror engine/sunshine/audio_test.cpp -lole32 -luuid -lmmdevapi -o audio-test.exe
+          ./audio-test.exe --self
           cmake -S sunshine-source -B sunshine-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DBUILD_TESTS=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \

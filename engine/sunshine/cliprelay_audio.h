@@ -2,6 +2,7 @@
 // Windows process loopback. No endpoint volume, mute, routing or format writes.
 #pragma once
 #include <windows.h>
+#include <tlhelp32.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <wrl/client.h>
@@ -10,10 +11,19 @@
 #include <chrono>
 #include <cstdint>
 #include <vector>
+#include <unordered_map>
 
 namespace cliprelay {
   namespace process_audio_detail {
     using Microsoft::WRL::ComPtr;
+    struct process_handle {
+      HANDLE value = nullptr;
+      explicit process_handle(HANDLE handle = nullptr): value(handle) {}
+      process_handle(const process_handle &) = delete;
+      process_handle &operator=(const process_handle &) = delete;
+      ~process_handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+      HANDLE release() { HANDLE result = value; value = nullptr; return result; }
+    };
     // Public AUDIOCLIENT_ACTIVATION_PARAMS ABI, unavailable in some MinGW SDKs.
     // https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_activation_params
     struct parameters { UINT32 activation = 1; DWORD pid = 0; UINT32 mode = 0; };
@@ -74,6 +84,54 @@ namespace cliprelay {
       return callback->status;
     }
   }
+
+  // The host service is the common ancestor of the engine and voice-injection
+  // workers. Only a live ancestor supplied by trusted host configuration can be
+  // excluded. Creation-time checks reject parent PIDs reused after an exit.
+  class audio_exclusion_root {
+    process_audio_detail::process_handle root_;
+    DWORD pid_ = 0;
+    static bool created(HANDLE process, FILETIME &time) {
+      FILETIME exit {}, kernel {}, user {};
+      return process && WaitForSingleObject(process, 0) == WAIT_TIMEOUT &&
+        GetProcessTimes(process, &time, &exit, &kernel, &user);
+    }
+  public:
+    HRESULT open(DWORD configured) {
+      if (root_.value) return E_UNEXPECTED;
+      DWORD target = configured ? configured : GetCurrentProcessId();
+      process_audio_detail::process_handle selected(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, target));
+      FILETIME target_time {}, child_time {};
+      if (!created(selected.value, target_time) || !created(GetCurrentProcess(), child_time)) return E_ACCESSDENIED;
+      if (target != GetCurrentProcessId()) {
+        process_audio_detail::process_handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+        if (snapshot.value == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
+        PROCESSENTRY32W entry {}; entry.dwSize = sizeof(entry);
+        std::unordered_map<DWORD, DWORD> parents;
+        if (!Process32FirstW(snapshot.value, &entry)) return E_FAIL;
+        do {
+          if (parents.size() >= 16384) return E_FAIL;
+          parents[entry.th32ProcessID] = entry.th32ParentProcessID;
+        } while (Process32NextW(snapshot.value, &entry));
+        DWORD current = GetCurrentProcessId();
+        for (int depth = 0; current != target && depth < 64; ++depth) {
+          auto found = parents.find(current);
+          if (found == parents.end() || !found->second || found->second == current) return E_ACCESSDENIED;
+          current = found->second;
+          process_audio_detail::process_handle parent(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, current));
+          FILETIME parent_time {};
+          if (!created(parent.value, parent_time) || CompareFileTime(&parent_time, &child_time) > 0) return E_ACCESSDENIED;
+          child_time = parent_time;
+        }
+        if (current != target || CompareFileTime(&target_time, &child_time) != 0) return E_ACCESSDENIED;
+      }
+      if (WaitForSingleObject(selected.value, 0) != WAIT_TIMEOUT) return E_ACCESSDENIED;
+      pid_ = target; root_.value = selected.release();
+      return S_OK;
+    }
+    DWORD pid() const { return pid_; }
+    bool alive() const { return root_.value && WaitForSingleObject(root_.value, 0) == WAIT_TIMEOUT; }
+  };
 
   class process_audio {
     process_audio_detail::ComPtr<IAudioClient> client_;

@@ -194,34 +194,37 @@ index 28a3d81..f1a2a96 100644
    }
  
 diff --git a/src/config.cpp b/src/config.cpp
-index e0e8647..a1d4c1e 100644
+index e0e8647..4bea96b 100644
 --- a/src/config.cpp
 +++ b/src/config.cpp
-@@ -806,6 +806,7 @@ namespace config {
+@@ -806,6 +806,8 @@ namespace config {
      {},  // virtual_sink
      true,  // stream audio
      true,  // install_steam_drivers
 +    false,  // cliprelay_process_audio (enable only with the matching host controls)
++    0,  // cliprelay_audio_exclude_pid
    };
  
    /**
-@@ -1738,6 +1739,7 @@ namespace config {
+@@ -1738,6 +1740,8 @@ namespace config {
  
      string_f(vars, "audio_sink", audio.sink);
      string_f(vars, "virtual_sink", audio.virtual_sink);
 +    bool_f(vars, "cliprelay_process_audio", audio.process_audio);
++    int_f(vars, "cliprelay_audio_exclude_pid", audio.process_audio_exclude_pid);
      bool_f(vars, "stream_audio", audio.stream);
      bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
  
 diff --git a/src/config.h b/src/config.h
-index 7861538..731282b 100644
+index 7861538..2f416ec 100644
 --- a/src/config.h
 +++ b/src/config.h
-@@ -229,6 +229,7 @@ namespace config {
+@@ -229,6 +229,8 @@ namespace config {
      std::string virtual_sink;  ///< Virtual audio sink for audio routing
      bool stream;  ///< Enable audio streaming to clients
      bool install_steam_drivers;  ///< Install Steam audio drivers for enhanced compatibility
 +    bool process_audio;  ///< ClipRelay opt-in mute-independent process capture on Windows
++    int process_audio_exclude_pid;  ///< Trusted host ancestor; 0 excludes this engine
    };
  
    /**
@@ -412,7 +415,7 @@ index 325f913..f9e144e 100644
      /**
       * @brief Check if the audio sink is available in the system.
 diff --git a/src/platform/windows/audio.cpp b/src/platform/windows/audio.cpp
-index 9ace2a6..3994e25 100644
+index 9ace2a6..b5eff15 100644
 --- a/src/platform/windows/audio.cpp
 +++ b/src/platform/windows/audio.cpp
 @@ -18,6 +18,7 @@
@@ -423,34 +426,39 @@ index 9ace2a6..3994e25 100644
  #include "src/logging.h"
  #include "src/platform/common.h"
  #include "utf_utils.h"
-@@ -560,6 +561,18 @@ namespace platf::audio {
+@@ -560,6 +561,20 @@ namespace platf::audio {
    /**
     * @brief WASAPI microphone capture stream and endpoint notification state.
     */
 +  class mic_process_t: public mic_t {
 +  public:
++    cliprelay::audio_exclusion_root root;
 +    cliprelay::process_audio capture;
 +    capture_e sample(std::vector<float> &output) override {
++      if (!root.alive()) return capture_e::reinit;
 +      auto status = capture.read(output);
 +      if (status == S_OK) return capture_e::ok;
 +      if (status == S_FALSE) return capture_e::timeout;
 +      return capture_e::reinit;
 +    }
-+    bool host_mute_safe() const override { return capture.healthy(); }
++    bool host_mute_safe() const override { return root.alive() && capture.healthy(); }
 +  };
 +
    class mic_wasapi_t: public mic_t {
    public:
      /**
-@@ -1021,6 +1034,18 @@ namespace platf::audio {
+@@ -1021,6 +1036,21 @@ namespace platf::audio {
        return mic;
      }
  
 +    std::unique_ptr<mic_t> independent_microphone(int channels, std::uint32_t sample_rate, bool continuous) override {
 +      auto mic = std::make_unique<mic_process_t>();
-+      // The ClipRelay Desktop app launches no child audio applications. Capture
-+      // other desktop processes while excluding the engine and its children.
-+      auto status = mic->capture.init(GetCurrentProcessId(), false, sample_rate, channels, continuous);
++      // Exclude the host service tree, including its voice-injection workers.
++      // An invalid configured ancestor must not silently become engine-only
++      // capture, which would feed injected speech back to the remote client.
++      if (config::audio.process_audio_exclude_pid < 0) return nullptr;
++      auto status = mic->root.open(static_cast<DWORD>(config::audio.process_audio_exclude_pid));
++      if (SUCCEEDED(status)) status = mic->capture.init(mic->root.pid(), false, sample_rate, channels, continuous);
 +      if (FAILED(status)) {
 +        BOOST_LOG(warning) << "Process audio unavailable [0x" << util::hex(status).to_string_view() << ']';
 +        return nullptr;
@@ -461,7 +469,7 @@ index 9ace2a6..3994e25 100644
      /**
       * If the requested sink is a virtual sink, meaning no speakers attached to
       * the host, then we can seamlessly set the format to stereo and surround sound.
-@@ -1542,7 +1567,7 @@ namespace platf {
+@@ -1542,7 +1572,7 @@ namespace platf {
  
      // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
      // the sink information returned includes the new Steam Streaming Speakers device.
@@ -470,7 +478,7 @@ index 9ace2a6..3994e25 100644
        // This is best effort. Don't fail if it doesn't work.
        control->install_steam_audio_drivers();
      }
-@@ -1561,7 +1586,7 @@ namespace platf {
+@@ -1561,7 +1591,7 @@ namespace platf {
      // If Steam Streaming Speakers are currently the default audio device,
      // change the default to something else (if another device is available).
      audio::audio_control_t audio_ctrl;
