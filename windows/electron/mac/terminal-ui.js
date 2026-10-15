@@ -18,6 +18,7 @@ function render(next){
   term.options.disableStdin=state.phase!=='ready' || !running() || renderingReplay || reviewing && !parsing;
   $('paste-confirm').disabled=parsing || renderingReplay || pasteSending || !pasteTarget;
   $('paste-text').disabled=pasteSending;
+  $('paste-cancel').disabled=pasteSending;
   $('new').disabled=state.phase!=='ready' || state.uncertain || parsing;$('refresh').disabled=['connecting','recovering'].includes(state.phase);$('end').disabled=state.phase!=='ready' || !running() || parsing;$('paste').disabled=term.options.disableStdin;
   $('pause').disabled=['paused','idle'].includes(state.phase);$('resume').disabled=!['paused','error','recovering'].includes(state.phase);sessions.disabled=state.phase!=='ready' || state.uncertain || parsing;
   $('input-status').textContent=state.uncertain?'输入结果待确认':state.queuedBytes?'待发送 '+state.queuedBytes+' 字节':state.accepted>state.written?'电脑已接收，等待写入终端':'输入已确认';
@@ -58,7 +59,7 @@ term.attachCustomKeyEventHandler(event=>{
   const key=event.key.toLowerCase(),isPaste=(event.ctrlKey || event.metaKey) && key==='v' || event.shiftKey && key==='insert',isCopy=(event.ctrlKey && event.shiftKey || event.metaKey) && key==='c';
   if(isPaste || isCopy){if(event.type==='keydown'){event.preventDefault();isCopy?void copy():void paste();}return false;}return true;
 });
-$('paste-cancel').onclick=()=>{dismissPaste();render(state);term.focus();};$('paste-dialog').addEventListener('cancel',event=>{event.preventDefault();dismissPaste();render(state);});$('paste-confirm').onclick=confirmPaste;
+$('paste-cancel').onclick=()=>{if(pasteSending)return;dismissPaste();render(state);term.focus();};$('paste-dialog').addEventListener('cancel',event=>{event.preventDefault();if(pasteSending)return;dismissPaste();render(state);});$('paste-confirm').onclick=confirmPaste;
 $('copy').onclick=copy;$('paste').onclick=paste;
 $('new').onclick=()=>{if(!parsing)void action('open',{shell:$('shell').value});};$('refresh').onclick=()=>action('refresh');$('pause').onclick=()=>action('pause');$('resume').onclick=()=>action('resume');
 sessions.onchange=()=>{if(sessions.value && !parsing)void action('select',{id:sessions.value});};

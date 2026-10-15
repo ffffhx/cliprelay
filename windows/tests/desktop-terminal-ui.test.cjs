@@ -28,7 +28,7 @@ test('native paste is captured for editable review and the real parser determine
   listener.fn({preventDefault:()=>prevented=true,stopImmediatePropagation:()=>stopped=true,clipboardData:{getData:type=>{assert.equal(type,'text/plain');return 'echo original\n';}}});await next();
   assert.ok(prevented && stopped);assert.equal(f.elements.get('paste-dialog').open,true);assert.equal(f.term.options.disableStdin,true);assert.equal(f.calls.filter(c=>c.action==='input').length,0);
   await f.more();await f.frame('\x1b[6n');assert.match(f.calls.find(c=>c.action==='input')?.data.text || '',/^\x1b\[1;1R$/);
-  f.elements.get('paste-text').value='echo edited\n';await f.elements.get('paste-confirm').onclick();
+  f.elements.get('paste-text').value='echo edited\n';const submitting=f.elements.get('paste-confirm').onclick();assert.equal(f.elements.get('paste-cancel').disabled,true);f.elements.get('paste-cancel').onclick();assert.equal(f.elements.get('paste-dialog').open,true);await submitting;
   const command=f.calls.find(c=>c.action==='paste-submit');assert.equal(command.data.text,'echo edited\n');assert.equal(command.data.bracketed,true);assert.equal(command.data.id,'one');assert.equal(f.elements.get('paste-dialog').open,false);assert.equal(f.elements.get('paste-text').value,'');
 });
 test('paste keyboard shortcuts always enter review and cancellation sends no terminal input',async t=>{
