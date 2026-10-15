@@ -7,4 +7,6 @@ $sources=@('terminal.cs','terminal-native.cs','terminal-mouse.cs','desktop-user.
 if($LASTEXITCODE -ne 0){throw 'Terminal test build failed'}
 & $output
 if($LASTEXITCODE -ne 0){throw 'Terminal policy tests failed'}
+& node (Join-Path $PSScriptRoot 'terminal-mouse-parser.cjs') $output
+if($LASTEXITCODE -ne 0){throw 'Terminal mouse parser compatibility failed'}
 if($Native){& python (Join-Path $PSScriptRoot 'terminal_native.py') $output;if($LASTEXITCODE -ne 0){throw 'Native terminal tests failed'}}

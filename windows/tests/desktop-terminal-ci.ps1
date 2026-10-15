@@ -54,7 +54,7 @@ try {
         '$env:CLIPRELAY_TERMINAL_MOUSE_FIXTURE = $env:CLIPRELAY_TERMINAL_TEST_WORKER',
         ('& ' + (Quote-Literal $node) + ' --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs'),
         '$testExit = $LASTEXITCODE',
-        ('if ($testExit -eq 0) { & ' + (Quote-Literal $hostTests) + ' -test.run ''^TestTerminal'' -test.timeout 90s -test.v; $testExit = $LASTEXITCODE }'),
+        ('if ($testExit -eq 0) { & ' + (Quote-Literal $hostTests) + ' ''-test.run=^TestTerminal'' ''-test.timeout=90s'' ''-test.v''; $testExit = $LASTEXITCODE }'),
         '[IO.File]::WriteAllText((Join-Path $env:TEMP ''terminal-exit.txt''), [string]$testExit)',
         'exit $testExit'
     )

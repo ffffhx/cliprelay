@@ -112,6 +112,7 @@ public static class TerminalTests {
         if(args.Length==1 && args[0]=="--pid-wait"){Console.WriteLine("TERMINAL_CHILD_PID:"+Process.GetCurrentProcess().Id);Thread.Sleep(15000);return 0;}
         if(args.Length==1 && args[0]=="--terminal-probe")return TerminalWorker.Run();
         if(args.Length==1 && args[0]=="--mouse-echo")return TerminalMouseTests.NativeEcho();
+        if(args.Length==1 && args[0]=="--mouse-modes")return TerminalMouseTests.ModesProbe();
         if(args.Length==1 && args[0]=="--native"){Native();return 0;}
         Policies();TerminalMouseTests.Run();return 0;
     }catch(Exception error){Console.Error.WriteLine(error);return 1;}}

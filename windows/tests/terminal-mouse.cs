@@ -7,6 +7,7 @@ using System.Threading;
 using ClipRelay.Remote;
 
 public static class TerminalMouseTests {
+    public static int ModesProbe(){string line;while((line=Console.ReadLine())!=null){if(line.Length>65536)return 2;var modes=new TerminalMouseModes();foreach(byte b in Convert.FromBase64String(line))modes.Feed(new[]{b});Console.WriteLine(modes.Mode+","+modes.Format);Console.Out.Flush();}return 0;}
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int id);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetConsoleMode(IntPtr handle,out uint mode);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetConsoleMode(IntPtr handle,uint mode);
@@ -33,11 +34,13 @@ public static class TerminalMouseTests {
         public string Write(){var item=Queue.Begin();Assert(item!=null,"expected queued input");string result=Encoding.UTF8.GetString(item.Bytes);Queue.Complete(item);return result;}
     }
     public static void Run(){
-        Check("VT strings and multibyte text cannot forge mouse modes,including split controls",()=>{
-            var modes=new TerminalMouseModes();string hidden="\u001b]title\u001b[?1000h\a\u001bP1;2|\a\u001b[?1003h\u001b\\\u001b_\u001b[?1002h\u001b\\\u001b^\u001b[?1000h\u001b\\\u001bX\u001b[?1000h\u001b\\\u061b?1000h";
+        Check("VT string boundaries,UTF-8 and split controls match terminal parsing",()=>{
+            var modes=new TerminalMouseModes();string hidden="\u001b]title[?1000h\a\u001bP1;2|\a[?1003h\u001b\\\u001b_[?1002h\u001b\\\u001b^[?1000h\u001b\\\u001bX[?1000h\u001b\\\u061b?1000h";
             foreach(byte b in Encoding.UTF8.GetBytes(hidden))modes.Feed(new[]{b});Assert(modes.Mode==0 && modes.Epoch==1,"string or UTF-8 content changed mode");
             foreach(byte b in Encoding.UTF8.GetBytes("\u009b?1002;1006h"))modes.Feed(new[]{b});Assert(modes.Mode==1002 && modes.Format==1006 && modes.ChangedAt==modes.Offset,"split C1 CSI not observed");
-            modes.Feed(Encoding.UTF8.GetBytes("\u009d\u001b[?1000l\u009c"));Assert(modes.Mode==1002,"C1 OSC contents escaped");
+            modes.Feed(Encoding.UTF8.GetBytes("\u009d[?1000l\u009c"));Assert(modes.Mode==1002,"ordinary OSC payload changed mode");
+            modes.Feed(Encoding.UTF8.GetBytes("\u001bP1;2|\u001b[?1002l"));Assert(modes.Mode==0,"ESC did not end DCS and disable mouse mode");
+            modes.Feed(Encoding.UTF8.GetBytes("\u001b]title\u009b?1003h"));Assert(modes.Mode==1003,"C1 CSI did not end OSC");
         });
         Check("mode ordering,save restore,reset and parser overflow remain bounded",()=>{
             var modes=new TerminalMouseModes();Action<string> feed=s=>modes.Feed(Encoding.UTF8.GetBytes(s));feed("\u001b[?1002;1006h\u001b[!p");Assert(modes.Mode==1002 && modes.Format==1006,"DECSTR reset mouse tracking");

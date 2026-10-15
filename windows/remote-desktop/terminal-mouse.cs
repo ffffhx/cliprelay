@@ -5,11 +5,11 @@ using System.Text;
 using System.Threading;
 
 namespace ClipRelay.Remote {
-    // Observes output, never text submitted by a client. OSC/DCS/APC/PM/SOS
-    // payloads and UTF-8 continuation bytes cannot masquerade as CSI controls.
+    // Observes output, never client input. ESC and C1 controls can terminate
+    // OSC/DCS/APC/PM/SOS; ordinary payload text cannot become a CSI command.
     public sealed class TerminalMouseModes {
-        enum Parser { Ground,Escape,EscapeIntermediate,Csi,CsiIgnore,String,StringEscape }
-        Parser parser;bool osc,csiPrivate;int utf8Left;bool utf8C1;
+        enum Parser { Ground,Escape,EscapeIntermediate,Csi,CsiIgnore,String }
+        Parser parser;bool osc,csiPrivate;int utf8Left,utf8Value,utf8Minimum;
         readonly StringBuilder csi=new StringBuilder();
         readonly Dictionary<int,bool> saved=new Dictionary<int,bool>();
         public int Mode{get;private set;}public int Format{get;private set;}
@@ -18,12 +18,15 @@ namespace ClipRelay.Remote {
         public bool Enabled{get{return Mode==9 || Mode==1000 || Mode==1002 || Mode==1003;}}
         public void Feed(byte[] bytes){foreach(byte b in bytes){
             Offset++;
-            if(utf8Left>0 && b>=0x80 && b<=0xbf){utf8Left--;if(utf8C1 && utf8Left==0 && b<=0x9f)Character(b);utf8C1=false;continue;}
-            utf8Left=0;utf8C1=false;
+            if(utf8Left>0){
+                if(b>=0x80 && b<=0xbf){utf8Value=(utf8Value<<6)|(b&63);if(--utf8Left==0)Character(utf8Value>=utf8Minimum && utf8Value<=0x10ffff && (utf8Value<0xd800 || utf8Value>0xdfff)?utf8Value:0xfffd);continue;}
+                utf8Left=0;Character(0xfffd);
+            }
             if(b<0x80)Character(b);
-            else if(b>=0xc2 && b<=0xdf){utf8Left=1;utf8C1=b==0xc2;}
-            else if(b>=0xe0 && b<=0xef)utf8Left=2;
-            else if(b>=0xf0 && b<=0xf4)utf8Left=3;
+            else if(b>=0xc2 && b<=0xdf){utf8Left=1;utf8Value=b&31;utf8Minimum=0x80;}
+            else if(b>=0xe0 && b<=0xef){utf8Left=2;utf8Value=b&15;utf8Minimum=0x800;}
+            else if(b>=0xf0 && b<=0xf4){utf8Left=3;utf8Value=b&7;utf8Minimum=0x10000;}
+            else Character(0xfffd);
         }}
         void Change(int mode,int format,bool force=false){if(!force && Mode==mode && Format==format)return;Mode=mode;Format=format;Epoch++;ChangedAt=Offset;}
         public void InvalidateGrid(){Change(Mode,Format,true);}
@@ -44,14 +47,13 @@ namespace ClipRelay.Remote {
         }
         void Character(int value){
             if(value==0x18 || value==0x1a){parser=Parser.Ground;csi.Clear();return;}
-            if(parser==Parser.String || parser==Parser.StringEscape){
-                if(value==0x9c || osc && value==7 || parser==Parser.StringEscape && value=='\\'){parser=Parser.Ground;return;}
-                parser=value==27?Parser.StringEscape:Parser.String;return;
-            }
             if(value==27){parser=Parser.Escape;csi.Clear();return;}
             if(value==0x9b){parser=Parser.Csi;csi.Clear();csiPrivate=false;return;}
             if(value==0x90 || value==0x98 || value==0x9d || value==0x9e || value==0x9f){osc=value==0x9d;parser=Parser.String;return;}
-            if(value<32 || value==127 || value>=128)return;
+            if(value==0x9c){parser=Parser.Ground;csi.Clear();return;}
+            if(parser==Parser.String){if(osc && value==7)parser=Parser.Ground;return;}
+            if(value<32 || value==127)return;
+            if(value>=128){parser=Parser.Ground;csi.Clear();return;}
             if(parser==Parser.Ground)return;
             if(parser==Parser.Escape){
                 if(value=='['){parser=Parser.Csi;csiPrivate=false;return;}
