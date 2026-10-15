@@ -22,18 +22,22 @@ async function fixture(){
   imports['./terminal-window.cjs']={DesktopTerminal:class{open(){}reconcile(){}close(){}}};
   const bitrateActions=[];imports['./bitrate-controller.cjs']={BitrateController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}apply(data){bitrateActions.push(data);}},message:()=> 'Bitrate operation failed'};
   const displayActions=[],inputActions=[];imports['./display-controller.cjs']={DisplayController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}apply(data){displayActions.push(data);}setInput(data){inputActions.push(data);}},message:()=> 'Display operation failed'};
+  const privacyActions=[];imports['./privacy-controller.cjs']={PrivacyController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}setEnabled(data){privacyActions.push(data);}},message:()=> 'Privacy operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),require:name=>imports[name] || require(name),setTimeout:()=>0,Buffer,URLSearchParams},{filename});await ready;
-  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},controller,windows,fileActions,bitrateActions,displayActions,inputActions};
+  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},controller,windows,fileActions,bitrateActions,displayActions,inputActions,privacyActions};
 }
 test('Mac pairing IPC is restricted to its owned top-level window and never returns key material',async()=>{
   const f=await fixture(),window=f.open(),event=f.event(window);
   const snapshot=await f.request(event,'paired-status');assert.equal(snapshot.hosts[0].name,'PC');assert.ok(!JSON.stringify(snapshot).includes('CERTIFICATE'));
+  await f.request(event,'privacy-set-enabled',{viewId:'owned',enabled:true});assert.equal(f.privacyActions.length,1);
+  await assert.rejects(f.request({...event,senderFrame:{}},'privacy-set-enabled',{}),/Unknown renderer/);
   await f.request(event,'pair-start',{address:'fixture'});assert.equal(f.controller.started,1);
   await assert.rejects(f.request({...event,senderFrame:{}},'pair-start',{}),/Unknown renderer/);assert.equal(f.controller.started,1);
   await f.request(event,'network-claim',{code:'12345678'});
   await assert.rejects(f.request({...event,senderFrame:{}},'network-claim',{code:'12345678'}),/Unknown renderer/);
   await assert.rejects(f.request(event,'network-claim',{code:'x'.repeat(33000)}),/Invalid request/);
   const alert=f.windows.find(candidate=>candidate.webContents.mainFrame.url.includes('kind=alert'));
+  await assert.rejects(f.request(f.event(alert),'privacy-set-enabled',{}),/Unknown action/);assert.equal(f.privacyActions.length,1);
   await assert.rejects(f.request(f.event(alert),'pair-start',{}),/Unknown action/);assert.equal(f.controller.started,1);
   await f.request(event,'files-download',{names:['test']});assert.equal(f.fileActions.length,1);assert.equal(f.fileActions[0].window,window);
   await assert.rejects(f.request({...event,senderFrame:{}},'files-upload'),/Unknown renderer/);

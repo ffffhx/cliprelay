@@ -337,3 +337,26 @@ fixture verifies frames advancing while manually paused, same-stream display
 reconstruction, old-child cleanup, a new stream remaining paused and explicit
 resume of that new stream. This is an owned loopback route replacement, not a
 real physical network outage. No physical input is injected.
+
+The manual-pause complete packages have also been downloaded and verified:
+Windows run 38766024045 (706 files, including 148 engine files) and Mac run
+38766031990 (arm64/x64). Windows disposable installation, independent processes
+and pipe lifetime checks pass. See `desktop-pause-artifacts.json`.
+
+The desktop privacy panel now uses the existing paired `/v1/privacy` API. Its
+main-process controller generates the lease identifier and binds explicit intent
+to one authenticated host instance and stream. Renderer requests contain only a
+view token and a boolean. A single loop serializes start, status, renewal and stop;
+renewal acknowledgments are bounded by a monotonic deadline measured from request
+dispatch. An expired or cancelled intent cannot become active from a late reply.
+Presentation loss, local restore, revocation and session/route replacement stop
+renewals and request restoration. A new child never inherits privacy intent.
+Best-effort cleanup uses the old certificate pin and exact old lease; independent
+host/worker expiry remains necessary when the app exits or a route is lost.
+
+The combined Electron checks pass 83 cases. `TestPrivacyDesktopControllerInterop`
+runs this controller against production Go display/privacy handlers with real
+mutual TLS, including lease renewal and route cleanup. Its display source and
+mask worker are simulated, so it does not claim physical screen acceptance.
+The unchanged C# worker also passes its eight lifecycle/recovery scenarios.
+Desktop audio mute, session-end lock and wake controls remain to be added.

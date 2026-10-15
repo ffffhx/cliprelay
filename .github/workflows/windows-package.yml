@@ -35,6 +35,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop recovery tests failed' }
           node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Desktop bitrate tests failed' }
+          node --test windows/tests/desktop-privacy.test.cjs windows/tests/desktop-privacy-ui.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop privacy tests failed' }
           node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs windows/tests/desktop-input-ui.test.cjs windows/tests/desktop-display.test.cjs windows/tests/desktop-display-ui.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Desktop input and display tests failed' }
           & windows/tests/file-transfer.ps1 -TestWorkerOutput .tools/uu-parity/file-transfer-tests.exe

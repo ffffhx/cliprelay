@@ -36,6 +36,7 @@ jobs:
       - run: npm run test:electron
       - run: node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
       - run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
+      - run: node --test windows/tests/desktop-privacy.test.cjs windows/tests/desktop-privacy-ui.test.cjs
       - run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs windows/tests/desktop-input-ui.test.cjs windows/tests/desktop-display.test.cjs windows/tests/desktop-display-ui.test.cjs
       - run: node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/mac-owned-window.test.cjs
       - run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs

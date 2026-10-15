@@ -35,9 +35,11 @@ jobs:
         run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs windows/tests/desktop-input-ui.test.cjs
       - name: Desktop guarded display selection
         run: node --test windows/tests/desktop-display.test.cjs windows/tests/desktop-display-ui.test.cjs
+      - name: Desktop privacy lease lifecycle
+        run: node --test windows/tests/desktop-privacy.test.cjs windows/tests/desktop-privacy-ui.test.cjs
       - name: Paired display and input binding
         working-directory: network
-        run: go test -count=1 -timeout=60s ./inputfocus -run 'TestDisplay|TestInputState'
+        run: go test -count=1 -timeout=60s ./inputfocus -run 'TestDisplay|TestInputState|TestPrivacy'
       - name: Build native file interoperability fixture
         if: runner.os == 'Windows'
         shell: powershell
