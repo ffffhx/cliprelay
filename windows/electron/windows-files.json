@@ -28,6 +28,7 @@
   "mac/stream-viewer.cjs",
   "mac/input-protocol.cjs",
   "mac/input-session.cjs",
+  "mac/input-ui.js",
   "mac/bitrate-controller.cjs",
   "mac/bitrate-protocol.cjs",
   "mac/bitrate-ui.js",

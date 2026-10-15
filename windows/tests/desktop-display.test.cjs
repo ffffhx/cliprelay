@@ -24,7 +24,8 @@ async function fixture(t,{post,timeoutMs=3000}={}){
   });
   const port=await listen(server),host={id:'a',clientId:'b',enabled:true,certificate:identities.host.cert,address:'127.0.0.1',port:port-2};
   const session={host:{...host},telemetry:true},store={selected:()=>host,identity:async()=>identities.client};
-  const viewer={session,failures:[],progress:{received:20,rendered:20,width:1280,height:720,receivedAgeMs:0,renderedAgeMs:0},currentSession(){return this.session;},snapshot(){return {progress:this.progress};},
+  const viewer={session,failures:[],manualPaused:false,progress:{received:20,rendered:20,width:1280,height:720,receivedAgeMs:0,renderedAgeMs:0},currentSession(){return this.session;},snapshot(){return {progress:this.progress};},
+    inputPaused(record){return this.session===record&&this.manualPaused;},setInputPaused(record,value){if(this.session!==record)return false;this.manualPaused=value;return true;},
     finish(code){this.failures.push(code);session.input.close(code);this.session=null;},reconcile(code){if(code)this.finish(code);}};
   const input=session.input=new InputSession({host,identity:identities.client,instance:s.i.instance,current:()=>viewer.session===session,progress:()=>viewer.progress,pollMs:5,timeoutMs,
     onFailure:code=>viewer.finish(code),write:(frame,callback)=>{
@@ -37,6 +38,7 @@ async function fixture(t,{post,timeoutMs=3000}={}){
   t.after(async()=>{controller.close();input.close();await close(server);});controller.reconcile();
   return {s,posts,commands,reads,host,session,store,viewer,input,controller,block(){blocked=true;},local(value){local=value;},
     apply(){return controller.apply({viewId:controller.snapshot().viewId,display:'right'});},
+    setInput(paused){return controller.setInput({viewId:controller.snapshot().viewId,paused});},
     encoded(){Object.assign(s.d,{generation:3,capture:{id:'right'},result:'applied'});Object.assign(s.d.streams[0],{generation:3,firstFrame:25});}};
 }
 test('paired display selection pauses through host encoding and actual native presentation',async t=>{
@@ -47,6 +49,37 @@ test('paired display selection pauses through host encoding and actual native pr
   f.viewer.progress.received=f.viewer.progress.rendered=25;await until(()=>f.controller.snapshot().result?.kind==='applied');
   assert.deepEqual(f.commands.slice(-2),[[4,2],[4,3]]);assert.equal(f.input.phase,'active');assert.equal(f.viewer.session,f.session);
   assert.equal(f.controller.snapshot().capture,'right');assert.equal(f.posts.length,1);
+});
+test('manual pause survives display selection and explicit resume requires a new presented frame',async t=>{
+  const f=await fixture(t);await until(()=>f.controller.snapshot().input.canPause);f.setInput(true);await until(()=>f.controller.snapshot().input.canResume);
+  assert.equal(f.viewer.manualPaused,true);assert.equal(f.input.epoch,3);
+  f.apply();await until(()=>f.posts.length===1);assert.equal(f.posts[0].inputEpoch,3);f.encoded();f.viewer.progress.received=f.viewer.progress.rendered=25;
+  await until(()=>f.controller.snapshot().result?.kind==='applied');assert.equal(f.input.phase,'paused');assert.equal(f.input.epoch,3);
+  assert.equal(f.commands.some(([epoch])=>epoch===4),false);f.setInput(false);
+  await until(()=>f.controller.snapshot().input.phase==='resuming');await delay(40);assert.equal(f.input.epoch,3);assert.equal(f.viewer.manualPaused,true);
+  f.viewer.progress.received=f.viewer.progress.rendered=26;await until(()=>f.input.phase==='active');
+  assert.equal(f.viewer.manualPaused,false);assert.deepEqual(f.commands.slice(-2),[[4,2],[4,3]]);
+});
+test('a manual pause requested during automatic display switching suppresses its automatic resume',async t=>{
+  const f=await fixture(t);await until(()=>f.controller.snapshot().canSelect);f.apply();await until(()=>f.posts.length===1);
+  assert.equal(f.controller.snapshot().input.canPause,true);f.setInput(true);f.encoded();f.viewer.progress.received=f.viewer.progress.rendered=25;
+  await until(()=>f.controller.snapshot().result?.kind==='applied');assert.equal(f.input.phase,'paused');assert.equal(f.input.epoch,3);assert.equal(f.viewer.manualPaused,true);
+  assert.equal(f.commands.filter(([epoch,op])=>epoch===3&&op===1).length,1);
+});
+test('manual pause remains available with frozen video; resume waits for current display metadata',async t=>{
+  const f=await fixture(t);await until(()=>f.controller.snapshot().canSelect);f.viewer.progress.renderedAgeMs=3000;
+  assert.equal(f.controller.snapshot().canSelect,false);assert.equal(f.controller.snapshot().input.canPause,true);f.setInput(true);
+  await until(()=>f.input.phase==='paused'&&!f.input.busy);assert.equal(f.controller.snapshot().input.canResume,false);
+  assert.throws(()=>f.setInput(false),{code:'INPUT_NOT_READY'});assert.equal(f.input.epoch,3);
+  f.viewer.progress.renderedAgeMs=0;await until(()=>f.controller.snapshot().input.canResume);
+  f.s.d.inputEpochSelection=false;await until(()=>f.controller.snapshot().error==='DISPLAY_UNSUPPORTED');assert.equal(f.controller.snapshot().input.canResume,true);
+  f.setInput(false);await delay(30);f.viewer.progress.received=f.viewer.progress.rendered=21;await until(()=>f.input.phase==='active');
+});
+test('manual resume cancellation preserves pause intent and rejects stale or injected renderer targets',async t=>{
+  const f=await fixture(t);await until(()=>f.controller.snapshot().input.canPause);const viewId=f.controller.snapshot().viewId;
+  for(const data of [{viewId,paused:'true'},{viewId,paused:true,epoch:3},{viewId:'old',paused:true}])assert.throws(()=>f.controller.setInput(data));
+  f.setInput(true);await until(()=>f.controller.snapshot().input.canResume);f.setInput(false);await until(()=>f.controller.record.pending?.paused===false);
+  f.viewer.finish('CANCELLED');f.controller.reconcile();await delay(30);assert.equal(f.viewer.manualPaused,true);assert.equal(f.commands.some(([epoch])=>epoch===4),false);
 });
 test('a lost selection response is observed once and never automatically resent',async t=>{
   const f=await fixture(t,{post:({s,body,res})=>{Object.assign(s.d,{requestId:1,requested:body.display,requestStream:body.stream,inputEpoch:body.inputEpoch,result:'pending'});res.destroy();}});

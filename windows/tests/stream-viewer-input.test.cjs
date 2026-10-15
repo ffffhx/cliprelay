@@ -55,6 +55,19 @@ test('real owned child negotiates epochs and completes the local/host/presentati
   await f.viewer.currentSession().input.pause();assert.equal(f.viewer.snapshot().input.phase,'paused');
   const old=f.viewer.record;f.viewer.stop();await until(()=>!f.viewer.child);assert.equal(old.input.closed,true);assert.equal(f.viewer.phase,'idle');
 });
+test('user pause persists through a replacement route and the new child never receives a resume',async t=>{
+  const f=await fixture(t);await f.viewer.open();await until(()=>f.viewer.snapshot().input.phase==='active');const old=f.viewer.record;
+  assert.equal(f.viewer.setInputPaused(old,true),true);await old.input.pause();assert.equal(f.viewer.snapshot().input.manualPaused,true);
+  const count=f.commands.length;f.store.host.routeId='replacement';f.viewer.reconcile();
+  await until(()=>f.children.length===2&&f.viewer.snapshot().input.phase==='paused'&&!f.viewer.record.input.busy);
+  assert.deepEqual(f.commands.slice(count),[[1,1],[1,3]]);assert.equal(f.viewer.snapshot().input.manualPaused,true);
+  assert.equal(f.viewer.setInputPaused(old,false),false);await delay(30);assert.equal(f.viewer.snapshot().input.phase,'paused');
+});
+test('paused recovery refuses an unsupported host instead of opening unrestricted input',async t=>{
+  const options={},f=await fixture(t,options);await f.viewer.open();await until(()=>f.viewer.snapshot().input.phase==='active');const old=f.viewer.record;
+  f.viewer.setInputPaused(old,true);await old.input.pause();options.unsupported=true;f.store.host.routeId='replacement';f.viewer.reconcile();
+  await until(()=>f.viewer.phase==='error');assert.equal(f.viewer.error,'INPUT_UNSUPPORTED');assert.equal(f.children.length,1);
+});
 test('epoch capability requires telemetry and unsupported hosts retain the legacy envelope',async t=>{
   for(const options of [{capability:false},{telemetry:false},{unsupported:true}])await t.test(JSON.stringify(options),async t=>{
     const f=await fixture(t,options);await f.viewer.open();await until(()=>f.initial.length===1&&f.viewer.phase==='running');

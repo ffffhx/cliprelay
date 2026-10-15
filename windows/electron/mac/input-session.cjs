@@ -116,9 +116,9 @@ class InputSession {
     this.check();this.epoch=epoch;this.change(paused?'paused':'active');
     return {instance:this.instance,stream:this.stream,epoch};
   }
-  initialize(){
+  initialize(stayPaused=false){
     if(this.phase!=='starting')return Promise.reject(fault('INPUT_BUSY'));
-    return this.operation(async()=>{await this.bind();await this.transition(true);const proof=await this.presented();return this.transition(false,proof);});
+    return this.operation(async()=>{await this.bind();const bound=await this.transition(true);if(stayPaused)return bound;const proof=await this.presented();return this.transition(false,proof);});
   }
   pause(){
     if(this.phase!=='active')return Promise.reject(fault('INPUT_BUSY'));
@@ -127,6 +127,10 @@ class InputSession {
   resume(proof){
     if(this.phase!=='paused'||!proof)return Promise.reject(fault('INPUT_BUSY'));
     return this.operation(async()=>{await this.presented(proof);return this.transition(false,proof);});
+  }
+  confirmPaused(proof){
+    if(this.phase!=='paused'||!proof)return Promise.reject(fault('INPUT_BUSY'));
+    return this.operation(async()=>{await this.hostAcknowledgment(this.epoch);return this.presented(proof);});
   }
 }
 module.exports={InputSession};

@@ -63,7 +63,7 @@ class StreamViewer{
   snapshot(){
     const record=this.record,p=record?.progress;
     const progress=p && !record.closing && this.phase==='running'?{...p,receivedAgeMs:Math.min(60000,Math.ceil(Math.max(0,this.now()-record.receivedAt))),renderedAgeMs:Math.min(60000,Math.ceil(Math.max(0,this.now()-record.renderedAt)))}:null;
-    return {available:this.available,phase:this.phase,hostName:this.intent?.bound.name || '',error:this.error,retry:this.intent?.retries || 0,telemetry:!!record?.telemetry,progress,input:record?.input?.snapshot()||{phase:'unavailable'}};
+    return {available:this.available,phase:this.phase,hostName:this.intent?.bound.name || '',error:this.error,retry:this.intent?.retries || 0,telemetry:!!record?.telemetry,progress,input:{...(record?.input?.snapshot()||{phase:'unavailable'}),manualPaused:this.intent?.manualPaused===true}};
   }
   changed(){this.onUpdate(this.snapshot());}
   authorized(){
@@ -112,7 +112,7 @@ class StreamViewer{
     if(host.routeBlocked)throw fault(host.routeBlocked);
     if(host.routeReady===false)throw fault('NETWORK_NOT_READY');
     if(!options || typeof options!=='object' || Array.isArray(options))throw fault('INVALID_STREAM_OPTIONS');
-    this.intent={bound:{...host},options:Object.freeze({...options}),retries:0,since:null};this.error='';
+    this.intent={bound:{...host},options:Object.freeze({...options}),retries:0,since:null,manualPaused:false};this.error='';
     return this.launch();
   }
   async launch(){
@@ -132,6 +132,9 @@ class StreamViewer{
         if(generation!==this.generation||!sameRoute(this.authorized(),host))throw fault('CANCELLED');
       }
       const inputEpochs=inputState?.supported===true;
+      // Recovery must preserve a user's pause even if the replacement route
+      // reaches an older host. Never silently fall back to unrestricted input.
+      if(intent.manualPaused&&!inputEpochs)throw fault('INPUT_UNSUPPORTED');
       bytes=envelope(host,identity,intent.options,telemetry,inputEpochs);
       // The host app owns this child. Its still-open stdin is the session lease;
       // normal quit and crashes close it. Credentials never enter argv/env/disk.
@@ -209,7 +212,7 @@ class StreamViewer{
       }else if(event.event==='connected'){
         record.connected=true;clearTimeout(record.startTimer);clearTimeout(this.deadlineTimer);
         this.phase='running';this.error='';this.changed();
-        if(record.input)void record.input.initialize().catch(()=>{});
+        if(record.input)void record.input.initialize(record.intent.manualPaused).catch(()=>{});
         this.stableTimer=setTimeout(()=>{if(this.record===record && this.intent===record.intent){this.intent.retries=0;this.intent.since=null;}},this.stableMs);this.stableTimer.unref?.();
       }else{
         record.ended=true;
@@ -230,6 +233,11 @@ class StreamViewer{
   }
   stop(){this.finish();}
   currentSession(){const r=this.record;return r&&this.phase==='running'&&r.connected&&!r.closing&&sameRoute(this.authorized(),r.host)?r:null;}
+  inputPaused(record){return this.currentSession()===record&&this.intent.manualPaused===true;}
+  setInputPaused(record,paused){
+    if(this.currentSession()!==record||!record.input||typeof paused!=='boolean')return false;
+    this.intent.manualPaused=paused;this.changed();return true;
+  }
   acceptBitrate(record,budget){
     if(this.currentSession()!==record||!Number.isInteger(budget)||budget<1000||budget>100000)return false;
     this.intent.options=Object.freeze({...this.intent.options,bitrate:budget});return true;

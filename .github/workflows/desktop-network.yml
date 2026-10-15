@@ -32,7 +32,7 @@ jobs:
       - name: Desktop live bitrate and presentation confirmation
         run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
       - name: Desktop input ownership and presentation gating
-        run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs
+        run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs windows/tests/desktop-input-ui.test.cjs
       - name: Desktop guarded display selection
         run: node --test windows/tests/desktop-display.test.cjs windows/tests/desktop-display-ui.test.cjs
       - name: Paired display and input binding

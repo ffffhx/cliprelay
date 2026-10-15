@@ -136,6 +136,7 @@ async function start(){
         if(action==='paired-status')return pairedSnapshot();
         if(action==='bitrate-apply'){try{bitrate.apply(data);}catch(error){throw Object.assign(new Error(bitrateMessage(error)),{bitrateMessage:true});}return pairedSnapshot();}
         if(action==='display-select'){try{displays.apply(data);}catch(error){throw Object.assign(new Error(displayMessage(error)),{displayMessage:true});}return pairedSnapshot();}
+        if(action==='input-set-paused'){try{displays.setInput(data);}catch(error){throw Object.assign(new Error(displayMessage(error)),{displayMessage:true});}return pairedSnapshot();}
         if(typeof action==='string' && action.startsWith('files-')){try{await files.action(action,data,entry.window);}catch(error){throw Object.assign(new Error(fileMessage(error)),{fileMessage:true});}return pairedSnapshot();}
         if(action==='pair-start'){if(network.pairAbort)throw Object.assign(new Error(),{code:'PAIRING_BUSY'});paired.startPair(data);return pairedSnapshot();}
         if(action==='pair-cancel')paired.cancelPair();

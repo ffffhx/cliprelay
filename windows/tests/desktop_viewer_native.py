@@ -184,6 +184,16 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
             if input_epochs:
                 admitted=next((item['input'] for item in reversed(history) if item.get('type')=='state'),{})
                 assert admitted.get('phase')=='active' and admitted.get('epoch')==2,admitted
+                process.stdin.write(b'{"action":"input-manual"}\n');process.stdin.flush();deadline=time.monotonic()+30
+                while time.monotonic()<deadline:
+                    manual=next((item for item in history if item.get('type')=='input-manual'),None)
+                    if manual:break
+                    if process.poll() is not None:raise RuntimeError('Manual input owner exited')
+                    time.sleep(.05)
+                else:raise RuntimeError('Manual pause/display/resume acceptance timed out')
+                assert manual['pausedEpoch']==3 and manual['resumedEpoch']==4 and manual['manualPausePreserved']
+                assert manual['heldFrame']>=manual['firstFrame']>manual['firstPausedFrame'] and manual['resumedFrame']>manual['heldFrame']
+                report['manualInput']=manual
                 started=time.monotonic();process.stdin.write(b'{"action":"input-switch"}\n');process.stdin.flush()
                 deadline=started+20
                 while time.monotonic()<deadline:
@@ -192,10 +202,10 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
                     if process.poll() is not None:raise RuntimeError('Input owner exited during guarded display selection')
                     time.sleep(.05)
                 else:raise RuntimeError('Guarded display selection did not resume after presentation')
-                assert switched['resumedEpoch']==4 and switched['pausedEpoch']==3 and switched['generation']>switched['previousGeneration']
+                assert switched['resumedEpoch']==6 and switched['pausedEpoch']==5 and switched['generation']>switched['previousGeneration']
                 assert switched['progress']['rendered']>=switched['firstFrame']>0 and switched['progress']['rendered']>switched['afterFrame']
                 native=[(item['epoch'],item['stage']) for item in history if item.get('type')=='native' and item.get('event')=='input']
-                assert native==[(epoch,stage) for epoch in range(1,5) for stage in ['submitted','acknowledged']],native
+                assert native==[(epoch,stage) for epoch in range(1,7) for stage in ['submitted','acknowledged']],native
                 assert len([item for item in history if item.get('type')=='spawn'])==1
                 report['inputEpochs']={**switched,'confirmationMs':round((time.monotonic()-started)*1000),'nativeEvents':native,
                     'productionOwner':True,'productionPairedHandlers':True,'physicalInputInjected':False}

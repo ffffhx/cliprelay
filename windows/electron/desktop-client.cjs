@@ -42,6 +42,7 @@ class DesktopClient {
       if(action==='cancel'){this.window.close();return;}
       if(action==='bitrate-apply'){try{this.bitrate.apply(data);}catch(error){throw Object.assign(new Error(bitrateMessage(error)),{bitrateMessage:true});}return this.snapshot();}
       if(action==='display-select'){try{this.displays.apply(data);}catch(error){throw Object.assign(new Error(displayMessage(error)),{displayMessage:true});}return this.snapshot();}
+      if(action==='input-set-paused'){try{this.displays.setInput(data);}catch(error){throw Object.assign(new Error(displayMessage(error)),{displayMessage:true});}return this.snapshot();}
       if(typeof action==='string' && action.startsWith('files-')){try{await this.files.action(action,data,this.window);}catch(error){throw Object.assign(new Error(fileMessage(error)),{fileMessage:true});}return this.snapshot();}
       if(action==='pair-start'){if(this.network.pairAbort)throw Object.assign(new Error(),{code:'PAIRING_BUSY'});this.paired.startPair(data);return this.snapshot();}
       if(action==='pair-cancel')this.paired.cancelPair();

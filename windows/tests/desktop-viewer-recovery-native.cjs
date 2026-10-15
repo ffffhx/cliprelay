@@ -47,6 +47,24 @@ lines.on('line',async line=>{
       viewer.reconcile();
     }else if(value.action==='bitrate'){
       bitrate.apply({viewId:bitrate.snapshot().viewId,budgetKbps:value.budgetKbps});
+    }else if(value.action==='input-manual'&&inputTest&&!switching){
+      switching=true;const record=viewer.currentSession(),signal=AbortSignal.timeout(30000);
+      const check=()=>{if(!record||viewer.currentSession()!==record||signal.aborted)throw Error('manual input binding lost');};
+      const wait=async predicate=>{while(!predicate()){check();await new Promise(resolve=>setTimeout(resolve,25));}check();};
+      await wait(()=>displays.snapshot().input.canPause&&displays.snapshot().canSelect);
+      const started=performance.now();displays.setInput({viewId:displays.snapshot().viewId,paused:true});
+      await wait(()=>displays.snapshot().input.canResume);
+      const pausedMs=Math.round(performance.now()-started),epoch=record.input.epoch,firstPausedFrame=viewer.snapshot().progress.rendered;
+      const before=displays.record.latest.d,switchStarted=performance.now();displays.apply({viewId:displays.snapshot().viewId,display:before.capture});
+      await wait(()=>displays.snapshot().result?.kind==='applied');const switchedMs=Math.round(performance.now()-switchStarted);
+      const applied=displays.record.latest.d;await new Promise(resolve=>setTimeout(resolve,350));check();
+      if(record.input.epoch!==epoch||record.input.phase!=='paused'||!viewer.inputPaused(record))throw Error('display selection released manual pause');
+      const heldFrame=viewer.snapshot().progress.rendered,resumeStarted=performance.now();
+      displays.setInput({viewId:displays.snapshot().viewId,paused:false});
+      await wait(()=>record.input.phase==='active'&&!viewer.inputPaused(record));
+      emit({type:'input-manual',pausedEpoch:epoch,resumedEpoch:record.input.epoch,pauseMs:pausedMs,displayMs:switchedMs,resumeMs:Math.round(performance.now()-resumeStarted),
+        generation:applied.generation,firstFrame:applied.stream.firstFrame,firstPausedFrame,heldFrame,resumedFrame:viewer.snapshot().progress.rendered,
+        manualPausePreserved:true,sameStream:true});switching=false;
     }else if(value.action==='input-switch'&&inputTest&&!switching){
       switching=true;
       const record=viewer.currentSession();

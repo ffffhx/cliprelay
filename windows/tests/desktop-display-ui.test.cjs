@@ -29,4 +29,5 @@ test('unsupported and pending states never claim that input has resumed',()=>{
   const f=fixture();f.set({displays:{...f.state.displays,phase:'unavailable',canSelect:false,error:'DISPLAY_UNSUPPORTED'}});assert.match(f.status.textContent,/更新两端/);assert.equal(f.button.disabled,true);
   f.set({displays:{...f.state.displays,phase:'switching',canSelect:false,result:{kind:'applied'}}});assert.ok(!f.status.textContent.includes('输入已恢复'));
   f.set({displays:{...f.state.displays,phase:'ready',canSelect:true,error:'',result:{kind:'applied'}}});assert.match(f.status.textContent,/输入已恢复/);
+  f.set({displays:{...f.state.displays,input:{manualPaused:true,phase:'paused'}}});assert.match(f.status.textContent,/保持暂停/);assert.ok(!f.status.textContent.includes('已恢复'));
 });

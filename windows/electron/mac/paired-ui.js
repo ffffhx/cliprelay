@@ -1,6 +1,7 @@
 import {mountFiles} from './file-ui.js';
 import {mountBitrate} from './bitrate-ui.js';
 import {mountDisplays} from './display-ui.js';
+import {mountInput} from './input-ui.js';
 export async function mount(root,api,close,initial){
   root.className='paired';let state=initial,closed=false,busy=false,feedbackText='',feedbackUntil=0;
   const element=(tag,text)=>{const item=document.createElement(tag);if(text)item.textContent=text;return item;};
@@ -16,6 +17,7 @@ export async function mount(root,api,close,initial){
   stopRemote.onclick=()=>change('viewer-stop');remote.append(openRemote,stopRemote,remoteStatus);root.append(remote);
   const bitrate=mountBitrate(remote,async(action,data)=>{state=await api.request(action,data);render();return state;});
   const displays=mountDisplays(remote,async(action,data)=>{state=await api.request(action,data);render();return state;});
+  const input=mountInput(remote,async(action,data)=>{state=await api.request(action,data);render();return state;});
   const files=mountFiles(root,async(action,data)=>{state=await api.request(action,data);render();return state;});
   const terminalSection=element('section'),terminalOpen=element('button','打开远程终端');terminalOpen.onclick=()=>change('terminal-open');terminalSection.append(element('h2','终端'),element('p','在独立窗口中使用电脑的 PowerShell 或 CMD，支持多会话与断线续接。'),terminalOpen);root.append(terminalSection);
   const form=element('form');form.append(element('h2','添加电脑'));
@@ -37,6 +39,7 @@ export async function mount(root,api,close,initial){
   function render(){
     bitrate.render(state);
     displays.render(state);
+    input.render(state);
     files.render(state);
     const key=JSON.stringify(state.hosts);if(key!==roster){roster=key;list.replaceChildren();
       if(!state.hosts.length)list.append(element('p','尚无配对电脑。发起配对后，在电脑端核对验证码并确认。'));
