@@ -32,7 +32,7 @@ class NetworkController{
     if(before!==JSON.stringify([session.phase,session.error,session.route,session.path]))this.changed();
   }
   withdraw(session){session.route=null;if(this.sessions.get(session.record.id)===session)this.changed();}
-  stopSession(session){session.abort.abort();this.withdraw(session);session.channel?.stop();}
+  stopSession(session){session.abort.abort();session.phase='paused';session.error='';session.path='connecting';this.withdraw(session);session.channel?.stop();}
   reconcile(forceId){
     if(this.closed)return;
     const records=this.catalog.records(),hosts=this.store.hosts();

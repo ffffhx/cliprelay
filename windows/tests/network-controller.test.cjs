@@ -99,6 +99,12 @@ test('cancelled approval cannot overwrite a saved computer or start a channel',a
   assert.equal(f.manager.pairing.error,'CANCELLED');assert.equal(f.catalog.records().length,0);assert.equal(f.channels.length,0);
 });
 
+test('pausing a paired host withdraws its network and reports paused until the host is enabled again',async t=>{
+  const f=setup(t);f.manager.claim('12345678');await f.manager.pairTask;const id=f.catalog.records()[0].id,first=f.manager.route(id);
+  f.store.enable(f.host.id,false);f.manager.reconcile();assert.equal(f.manager.snapshot().computers[0].phase,'paused');assert.equal(f.manager.route(id),null);assert.equal(f.channels[0].closed,true);
+  f.store.enable(f.host.id,true);f.manager.reconcile();await until(()=>f.manager.route(id));assert.notEqual(f.manager.route(id).routeId,first.routeId);assert.equal(f.manager.snapshot().computers[0].phase,'ready');
+});
+
 test('coordinator outage preserves a working route; explicit revocation withdraws and closes it',async t=>{
   const f=setup(t),record=f.catalog.save(token(),peer);f.manager.reconcile();await until(()=>f.manager.route(record.id));const first=f.manager.route(record.id);
   f.control.offline=true;await until(()=>f.manager.sessions.get(record.id).error==='BROKER_UNAVAILABLE');assert.deepEqual(f.manager.route(record.id),first);assert.equal(f.channels[0].closed,false);
