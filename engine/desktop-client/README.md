@@ -360,3 +360,12 @@ mutual TLS, including lease renewal and route cleanup. Its display source and
 mask worker are simulated, so it does not claim physical screen acceptance.
 The unchanged C# worker also passes its eight lifecycle/recovery scenarios.
 Desktop audio mute, session-end lock and wake controls remain to be added.
+
+Privacy source commit `b1ff746d97e9728d45aed2de3872d23f5827403a` passes the
+three-platform run 38769236478. Complete packages Windows 38769246502 and Mac
+38769254186 have been downloaded and verified against that commit, including
+all three privacy modules. Windows has 712 verified files and passes disposable
+installation, independent process and pipe lifetime checks. Both Mac architectures
+retain the verified native viewer/network components and 163 internal links.
+See `.tools/uu-parity/desktop-privacy-artifacts.json`; physical GUI/mask acceptance
+remains pending and the developer machine's installed application is unchanged.
