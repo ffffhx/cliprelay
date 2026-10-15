@@ -52,7 +52,7 @@ test('uploads and downloads multiple chunks, Unicode and empty files; never over
   const sent=await upload(f,bytes,'中文.bin');await f.controller.running;assert.equal(sent.state,'complete');assert.deepEqual(f.server.files.get('中文.bin'),bytes);
   await fsp.writeFile(path.join(f.destination,'中文.bin'),'keep');const got=await download(f,bytes,'中文.bin');await f.controller.running;assert.equal(got.state,'complete');
   assert.equal(await fsp.readFile(path.join(f.destination,'中文.bin'),'utf8'),'keep');assert.deepEqual(await fsp.readFile(path.join(f.destination,got.finalName)),bytes);
-  assert.notEqual(got.finalName,'中文.bin');await f.controller.reveal(got.id);assert.equal(f.revealed,path.join(f.destination,got.finalName));
+  assert.notEqual(got.finalName,'中文.bin');await f.controller.reveal(got.id);assert.equal(f.revealed,await fsp.realpath(path.join(f.destination,got.finalName)));
   const empty=await upload(f,Buffer.alloc(0),'empty');await f.controller.running;assert.equal(empty.state,'complete');
   const zero=await download(f,Buffer.alloc(0),'zero');await f.controller.running;assert.equal(zero.state,'complete');assert.equal((await fsp.stat(path.join(f.destination,'zero'))).size,0);
   const publicState=JSON.stringify(f.controller.snapshot());assert.ok(!publicState.includes('PRIVATE KEY'));assert.ok(!publicState.includes(f.source));assert.ok(!publicState.includes(identities.client.cert));

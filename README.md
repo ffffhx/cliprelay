@@ -402,7 +402,13 @@ WASD 移动、P 拿放、O 操作、K 准备，另有 Enter 确认和 Esc 暂停
 
 [Mac 完整包构建](https://github.com/ffffhx/cliprelay/actions/runs/38712199302)已包含这版恢复逻辑，Apple Silicon 与 Intel 包分别核验 23 个应用源码文件、1,845 个播放器文件、4 个网络组件文件和 163 个相对框架链接。构建包仍为开发版，尚未正式发布。
 
-实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面文件、终端、显示器、实时码率及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
+桌面配对窗口新增「文件传输」，Windows 和 Mac 都可浏览已配对 Windows 电脑的目录、翻页、新建文件夹，并通过系统选择器批量上传和下载。队列支持进度、暂停、继续、取消和完成后定位文件，最多保存 128 条记录，单文件上限 1 TiB。关闭配对窗口后传输继续；退出应用、切换电脑、暂停连接、路由改变或撤销配对后停止，重新打开须手动继续。文件功能与远程画面独立，不要求停止串流。
+
+传输绑定原电脑证书、控制端身份和外网配对记录；本地路径仅由主进程的系统选择器取得。256 KiB 分块及完整文件均校验 SHA-256，续传检查源文件和保存目录是否被替换。下载临时文件位于所选目录，校验后以不覆盖同名文件的方式发布；同名文件自动改名。保存目录需要支持硬链接，例如 NTFS、APFS；不支持时保留记录并提示，不使用覆盖写入降级。取消请求未获电脑确认时显示等待确认，可手动重试；若文件已发布则报告完成。
+
+桌面文件验证命令为 `node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs`。Windows 先运行 `windows/tests/file-transfer.ps1 -TestWorkerOutput <路径>`，将生成程序的绝对路径设为 `CLIPRELAY_TEST_FILE_WORKER`；测试包含真实 C# worker 重启、固定证书双向 TLS、丢失确认后的续传、完整哈希、同名文件保护、发布中断恢复和窗口权限检查。真实桌面界面、系统文件选择器和公网文件传输仍待验收。
+
+实际界面操作、被控端批准到公网画面的完整流程、外网直连/中继视频、弱网和 Wi-Fi 切换、真实输入与音频、显卡兼容性仍待验收。桌面终端、显示器、实时码率及隐私控制菜单、Mac 被控和 iOS 控制能力仍未补齐；Mac 真机验收按当前约定暂不要求。开发电脑上正在运行的正式安装未被替换。
 
 Windows 离线包由 `scripts/package_windows.ps1` 生成，包含引擎、服务及内置网络组件。
 源码构建需要 Go 1.26.7：先运行 `python scripts/build_network.py windows`，再运行
