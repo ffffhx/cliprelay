@@ -8,7 +8,7 @@ async function until(check){for(let i=0;i<500;i++){if(check())return;await delay
 async function main(){
   let raw='';for await(const chunk of process.stdin)raw+=chunk;
   const {host,identity}=JSON.parse(raw),calls=[];
-  const event=event=>jsonRequest({host:host.address,port:host.port+2,path:'/fixture-event',method:'POST',body:{event},identity,trust:{cert:host.certificate}});
+  const event=event=>jsonRequest({address:host.address,port:host.port+2,path:'/fixture-event',method:'POST',body:{event},identity,trust:{cert:host.certificate},timeout:2000});
   const store={selected:()=>host,identity:async()=>identity};
   const viewer={session:{host,telemetry:true},currentSession(){return this.session;},snapshot(){return {progress:{received:200,rendered:200,width:1280,height:720,receivedAgeMs:0,renderedAgeMs:0}};},reconcile(code){throw Error(code);}};
   const controller=new SessionLockController({store,viewer,pollMs:20,request:async(...args)=>{calls.push({op:args[2],binding:args[3]});return protocol.request(...args);}});
