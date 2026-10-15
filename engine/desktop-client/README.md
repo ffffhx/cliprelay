@@ -19,6 +19,14 @@ private key, client ID, exact host certificate, host/port and display options.
 The pipe remains open for the lifetime of the session; EOF ends the viewer.
 Do not pass this payload through argv, environment variables, files or logs.
 
+Viewers advertising `session-events-v1` write fixed newline-delimited JSON to
+stdout: `{"version":1,"event":"connected"}` after transport setup, followed by
+at most one `{"version":1,"event":"ended","reason":"network"}`. Other reasons
+are `pairing`, `host`, `user`, `parent` and `decoder`; the first terminal reason
+wins. These messages contain no credentials or server diagnostics. `connected`
+does not establish that a frame has rendered. An unknown exit, malformed event,
+startup timeout or non-network failure never triggers automatic recovery.
+
 Client identity is imported in memory, isolated from Moonlight settings. The
 viewer uses only the paired HTTPS endpoint, rejects redirects and certificate
 changes, never falls back to HTTP or silently pairs, and asks for all stream
@@ -61,7 +69,13 @@ Only viewer manifests advertising `embedded-network` support this mode. Desktop
 enrollment also requires a helper advertising `pairing-bootstrap`; earlier helpers
 cannot forward the TLS approval endpoint. Network revocation, pause and host
 changes close the helper and its associated stream. A replacement route requires
-reopening the viewer; automatic stream recovery remains pending.
+the old viewer to close before its replacement can start. The desktop supervisor
+automatically resumes the same paired host on a new route after network loss,
+preserving picture settings. It waits up to 90 seconds, makes at most eight
+attempts with 0.5/1/2/5-second backoff, and resets the budget only after a connection
+has stayed established for 15 seconds. Stop, pause, selection/identity changes and
+revocation cancel the recovery intent. There is no background retry after these
+actions. Older viewers without lifecycle events require a component update.
 
 `windows/electron/mac/network-channel.cjs` implements the shared main-process
 helper manager. It checks the packaged helper hash, validates enrollment before
@@ -84,7 +98,8 @@ loopback ports. Each computer retains independent node state, pause and removal.
 Route generations invalidate old clipboard transfers and viewer leases, including
 local port reuse. A temporary broker outage preserves an existing route; explicit
 revocation or identity mismatch closes it. A previously paired direct TLS address
-can remain a fallback while the external network is paused. Removing a record
+can remain a fallback during a temporary external outage. Pausing the external
+record, removing it, or observing revocation blocks that fallback. Removing a record
 only removes local access; revoke the authorization on the controlled computer.
 
 `scripts/package_windows.ps1 -NetworkArtifact DIRECTORY` stages the verified
@@ -115,3 +130,21 @@ network component files and 163 relative framework links. Windows staging matche
 19 application sources, 292 viewer files and four network files. These checks do
 not constitute production installation, physical Mac, new UI interaction or
 end-to-end WAN streaming acceptance.
+
+Desktop recovery is built in [component run 38710965221](https://github.com/ffffhx/cliprelay/actions/runs/38710965221).
+The actual Windows supervisor and packaged viewer recover after terminating an
+isolated encrypted network fixture and rebuilding its route on a different port.
+Both viewer processes exit normally; their render rates are 29.91 and 29.97 FPS.
+The replacement route is ready 4,922 ms before native transport setup completes;
+this is a local fixture measurement, not WAN or first-frame latency. Final direct
+regression renders 29.82 FPS and exits on parent EOF in 344 ms. No input/audio or
+production installation is exercised. The first acceptance attempt exposed a
+generic `-1` ENet disconnect; the pinned common patch now reports a distinct
+transport-loss code without treating allocation/protocol failures as network loss.
+
+The supervisor is tested with actual child processes for retry limits, stable
+budget reset, delayed cleanup, port reuse, cancellation during identity unlock,
+revocation/direct-fallback suppression, malformed events and native startup timeout.
+49 local Node and actual Electron cases pass; the broader desktop CI runs on
+Windows, macOS and Linux. These checks do not establish desktop UI interaction,
+external enrollment-to-video, public relay streaming or physical platform coverage.
