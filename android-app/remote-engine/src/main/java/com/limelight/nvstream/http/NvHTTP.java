@@ -217,12 +217,199 @@ public class NvHTTP {
         return getControlMetadata("foreground-app");
     }
 
+    private OkHttpClient displayClient;
+    private OkHttpClient bitrateClient;
+
+    private synchronized OkHttpClient bitrateClient() throws IOException {
+        if (bitrateClient == null) bitrateClient = displayClient().newBuilder()
+                .dispatcher(new okhttp3.Dispatcher()).callTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(4, TimeUnit.SECONDS).build();
+        return bitrateClient;
+    }
+
+    public com.limelight.nvstream.BitrateState getBitrate() throws IOException {
+        return bitrateRequest(new Request.Builder().url(displayUrl("bitrate").build()).get().build());
+    }
+
+    public com.limelight.nvstream.BitrateState setBitrate(com.limelight.nvstream.BitrateState before, int budgetKbps) throws IOException {
+        try {
+            byte[] body = before.selection(budgetKbps).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            return bitrateRequest(new Request.Builder().url(displayUrl("bitrate").build())
+                    .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"), body)).build());
+        } catch (org.json.JSONException e) { throw new IOException("BITRATE_INVALID_RESPONSE", e); }
+    }
+
+    private com.limelight.nvstream.BitrateState bitrateRequest(Request request) throws IOException {
+        try { return new com.limelight.nvstream.BitrateState(controlRequest(bitrateClient(), request, "BITRATE")); }
+        catch (org.json.JSONException e) { throw new IOException("BITRATE_INVALID_RESPONSE", e); }
+    }
+
+    public synchronized void cancelBitrateRequests() { if (bitrateClient != null) bitrateClient.dispatcher().cancelAll(); }
+
+    private synchronized OkHttpClient displayClient() throws IOException {
+        if (serverCert == null) throw new IOException("DISPLAY_UNPAIRED");
+        if (displayClient == null) displayClient = performAndroidTlsHack(httpClientShortConnectTimeout).newBuilder()
+                .hostnameVerifier((host, session) -> {
+                    try { return session.getPeerCertificates().length > 0 && serverCert.equals(session.getPeerCertificates()[0]); }
+                    catch (SSLPeerUnverifiedException e) { return false; }
+                })
+                .connectionPool(new ConnectionPool(1, 15, TimeUnit.SECONDS))
+                .callTimeout(20, TimeUnit.SECONDS).connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(18, TimeUnit.SECONDS).writeTimeout(3, TimeUnit.SECONDS)
+                .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
+        return displayClient;
+    }
+
+    public com.limelight.nvstream.DisplayState getDisplays(boolean refresh) throws IOException {
+        HttpUrl.Builder url = displayUrl("displays");
+        if (refresh) url.addQueryParameter("refresh", "1");
+        try { return new com.limelight.nvstream.DisplayState(displayRequest(new Request.Builder().url(url.build()).get().build())); }
+        catch (org.json.JSONException e) { throw new IOException("DISPLAY_INVALID_RESPONSE", e); }
+    }
+
+    public com.limelight.nvstream.DisplayState selectDisplay(com.limelight.nvstream.DisplayState state, String display) throws IOException {
+        try {
+            byte[] body = state.selection(display).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            return new com.limelight.nvstream.DisplayState(displayRequest(new Request.Builder().url(displayUrl("displays").build())
+                    .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"), body)).build()));
+        } catch (org.json.JSONException e) { throw new IOException("DISPLAY_INVALID_RESPONSE", e); }
+    }
+
+    public org.json.JSONObject getDisplayFocus(float x, float y, com.limelight.nvstream.DisplayState state, long renderedFrame) throws IOException {
+        if (!Float.isFinite(x) || !Float.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1 || !state.ready(renderedFrame))
+            throw new IOException("DISPLAY_NOT_READY");
+        HttpUrl url = displayUrl("display-focus").addQueryParameter("instance", state.instance)
+                .addQueryParameter("stream", Long.toString(state.stream)).addQueryParameter("generation", Long.toString(state.generation))
+                .addQueryParameter("frame", Long.toString(renderedFrame)).addQueryParameter("x", Float.toString(x))
+                .addQueryParameter("y", Float.toString(y)).build();
+        return displayRequest(new Request.Builder().url(url).get().build());
+    }
+
+    private HttpUrl.Builder displayUrl(String endpoint) {
+        return baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2).addPathSegment("v1").addPathSegment(endpoint);
+    }
+
+    private org.json.JSONObject displayRequest(Request request) throws IOException {
+        return controlRequest(displayClient(), request, "DISPLAY");
+    }
+
+    private OkHttpClient terminalClient;
+    private okhttp3.Call terminalCall;
+    private boolean terminalCancelled;
+    public org.json.JSONObject terminalRequest(org.json.JSONObject payload) throws IOException {
+        byte[] bytes=payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if(bytes.length>8192)throw new IOException("TERMINAL_BAD_REQUEST");
+        okhttp3.Call call;
+        synchronized(this) {
+            if(terminalCancelled)throw new IOException("TERMINAL_CANCELLED");
+            if(terminalCall!=null)throw new IOException("TERMINAL_BUSY");
+            if(terminalClient==null)terminalClient=displayClient().newBuilder()
+                    .dispatcher(new okhttp3.Dispatcher()).connectionPool(new ConnectionPool(1,10,TimeUnit.SECONDS))
+                    .proxy(java.net.Proxy.NO_PROXY).callTimeout(12,TimeUnit.SECONDS).readTimeout(11,TimeUnit.SECONDS).build();
+            call=terminalClient.newCall(new Request.Builder().url(displayUrl("terminal").build())
+                    .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"),bytes)).build());
+            terminalCall=call;
+        }
+        try(Response response=call.execute()) {
+            if(response.body()==null)throw new IOException("TERMINAL_UNAVAILABLE");
+            okio.BufferedSource source=response.body().source();source.request(65537);
+            if(source.buffer().size()>65536)throw new IOException("TERMINAL_INVALID_RESPONSE");
+            org.json.JSONObject body;
+            try {body=new org.json.JSONObject(source.readUtf8());}
+            catch(org.json.JSONException e) {
+                if(response.code()==404)throw new IOException("TERMINAL_UNSUPPORTED");
+                throw new IOException("TERMINAL_INVALID_RESPONSE",e);
+            }
+            com.limelight.terminal.TerminalProtocol.checkHttp(response.code(),body);return body;
+        } finally {synchronized(this){if(terminalCall==call)terminalCall=null;}}
+    }
+    // Cancellation is terminal even before registration. A foreground reconnect uses a new instance.
+    public synchronized void cancelTerminalRequests() {
+        terminalCancelled=true;if(terminalCall!=null)terminalCall.cancel();
+        if(terminalClient!=null)terminalClient.connectionPool().evictAll();
+    }
+
+    private OkHttpClient wakeClient;
+    private okhttp3.Call wakeCall;
+    private boolean wakeCancelled;
+    public org.json.JSONObject wakeRequest(org.json.JSONObject payload) throws IOException {
+        byte[] bytes = payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (bytes.length > 1024) throw new IOException("WAKE_BAD_REQUEST");
+        okhttp3.Call call;
+        synchronized (this) {
+            if (wakeCancelled) throw new IOException("WAKE_CANCELLED");
+            if (wakeCall != null) throw new IOException("WAKE_BUSY");
+            if (wakeClient == null) wakeClient = displayClient().newBuilder()
+                    .dispatcher(new okhttp3.Dispatcher()).connectionPool(new ConnectionPool(1, 10, TimeUnit.SECONDS))
+                    .proxy(java.net.Proxy.NO_PROXY).callTimeout(12, TimeUnit.SECONDS).readTimeout(11, TimeUnit.SECONDS).build();
+            call = wakeClient.newCall(new Request.Builder().url(displayUrl("wake").build())
+                    .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"), bytes)).build());
+            wakeCall = call;
+        }
+        try (Response response = call.execute()) { return controlResponse(response, "WAKE"); }
+        finally { synchronized (this) { if (wakeCall == call) wakeCall = null; } }
+    }
+    // Each wake operation uses a new NvHTTP instance. Cancellation is terminal,
+    // including when it arrives before the HTTP call has been registered.
+    public synchronized void cancelWakeRequests() { wakeCancelled = true; if (wakeCall != null) wakeCall.cancel(); }
+
+    private OkHttpClient privacyClient;
+    public org.json.JSONObject privacyRequest(org.json.JSONObject payload) throws IOException {
+        return privacyControlRequest(payload, "privacy", "PRIVACY");
+    }
+    public org.json.JSONObject sessionLockRequest(org.json.JSONObject payload) throws IOException {
+        return privacyControlRequest(payload, "session-lock", "LOCK");
+    }
+    public org.json.JSONObject audioMuteRequest(org.json.JSONObject payload) throws IOException {
+        return privacyControlRequest(payload, "audio-mute", "AUDIO");
+    }
+    private org.json.JSONObject privacyControlRequest(org.json.JSONObject payload, String endpoint, String prefix) throws IOException {
+        if (serverCert == null) throw new IOException("PRIVACY_UNPAIRED");
+        OkHttpClient client;
+        synchronized (this) {
+            if (privacyClient == null) privacyClient = displayClient().newBuilder()
+                    .dispatcher(new okhttp3.Dispatcher()).connectionPool(new ConnectionPool(1, 10, TimeUnit.SECONDS))
+                    .proxy(java.net.Proxy.NO_PROXY).callTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).build();
+            client = privacyClient;
+        }
+        byte[] bytes = payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (bytes.length > 1024) throw new IOException("PRIVACY_BAD_REQUEST");
+        return controlRequest(client, new Request.Builder().url(displayUrl(endpoint).build())
+                .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"), bytes)).build(), prefix);
+    }
+    public synchronized void cancelPrivacyRequests() { if (privacyClient != null) privacyClient.dispatcher().cancelAll(); }
+
+    private org.json.JSONObject controlRequest(OkHttpClient client, Request request, String prefix) throws IOException {
+        try (Response response = client.newCall(request).execute()) {
+            return controlResponse(response, prefix);
+        }
+    }
+
+    private org.json.JSONObject controlResponse(Response response, String prefix) throws IOException {
+            if (response.code() == 404) throw new IOException(prefix + "_UNSUPPORTED");
+            if (response.code() == 403) throw new IOException(prefix + "_UNPAIRED");
+            if (response.code() == 409) throw new IOException(prefix + "_STALE");
+            if (response.code() == 429) throw new IOException(prefix + "_BUSY");
+            if (!response.isSuccessful() || response.body() == null) throw new IOException(prefix + "_UNAVAILABLE");
+            okio.BufferedSource source = response.body().source();
+            source.request(64 * 1024 + 1);
+            if (source.buffer().size() > 64 * 1024) throw new IOException(prefix + "_INVALID_RESPONSE");
+            try { return new org.json.JSONObject(source.readUtf8()); }
+            catch (org.json.JSONException e) { throw new IOException(prefix + "_INVALID_RESPONSE", e); }
+    }
+
+    public synchronized void cancelDisplayRequests() { if (displayClient != null) displayClient.dispatcher().cancelAll(); }
+
     public void sendClipboardImage(byte[] png) throws IOException {
         if (serverCert == null || png.length == 0 || png.length > 8 * 1024 * 1024)
             throw new IOException("Invalid image or unpaired host");
         HttpUrl url = baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2)
                 .addPathSegment("v1").addPathSegment("clipboard-image").build();
         OkHttpClient client = performAndroidTlsHack(httpClientShortConnectTimeout).newBuilder()
+                .hostnameVerifier((host, session) -> {
+                    try { return session.getPeerCertificates().length > 0 && serverCert.equals(session.getPeerCertificates()[0]); }
+                    catch (SSLPeerUnverifiedException e) { return false; }
+                })
                 .callTimeout(50, TimeUnit.SECONDS).connectTimeout(8, TimeUnit.SECONDS)
                 .writeTimeout(40, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
                 .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
@@ -237,6 +424,141 @@ public class NvHTTP {
                 if (!new org.json.JSONObject(source.readUtf8()).optBoolean("ok")) throw new IOException("IMAGE_UPLOAD_FAILED");
             } catch (org.json.JSONException e) { throw new IOException("INVALID_RESPONSE", e); }
         }
+    }
+
+    private OkHttpClient clipboardClient;
+
+    public org.json.JSONObject clipboardRequest(org.json.JSONObject payload) throws IOException {
+        if (serverCert == null) throw new IOException("CLIPBOARD_UNPAIRED");
+        OkHttpClient client;
+        synchronized (this) {
+            if (clipboardClient == null) clipboardClient = performAndroidTlsHack(httpClientShortConnectTimeout).newBuilder()
+                    .hostnameVerifier((host, session) -> {
+                        try { return session.getPeerCertificates().length > 0 && serverCert.equals(session.getPeerCertificates()[0]); }
+                        catch (SSLPeerUnverifiedException e) { return false; }
+                    }).dispatcher(new okhttp3.Dispatcher()).connectionPool(new ConnectionPool(1, 15, TimeUnit.SECONDS))
+                    .callTimeout(45, TimeUnit.SECONDS).connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(30, TimeUnit.SECONDS).writeTimeout(30, TimeUnit.SECONDS)
+                    .proxy(java.net.Proxy.NO_PROXY).followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
+            client = clipboardClient;
+        }
+        byte[] bytes = payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        int limit = com.limelight.nvstream.ClipboardData.MESSAGE_LIMIT;
+        if (bytes.length > limit) throw new IOException("CLIPBOARD_TOO_LARGE");
+        HttpUrl url = baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2)
+                .addPathSegment("v1").addPathSegment("clipboard").build();
+        try (Response response = client.newCall(new Request.Builder().url(url)
+                .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"), bytes)).build()).execute()) {
+            if (response.code() == 404) throw new IOException("UPDATE_HOST");
+            if (response.code() == 403) throw new IOException("CLIPBOARD_UNPAIRED");
+            if (response.body() == null) throw new IOException("CLIPBOARD_UNAVAILABLE");
+            okio.BufferedSource source = response.body().source(); source.request(limit + 1L);
+            if (source.buffer().size() > limit) throw new IOException("CLIPBOARD_TOO_LARGE");
+            try {
+                org.json.JSONObject result = new org.json.JSONObject(source.readUtf8());
+                if (!response.isSuccessful() || !Boolean.TRUE.equals(result.opt("ok"))) {
+                    String code = result.optString("code", "CLIPBOARD_UNAVAILABLE");
+                    throw new IOException(code.matches("CLIPBOARD_[A-Z_]{1,32}") ? code : "CLIPBOARD_UNAVAILABLE");
+                }
+                return result;
+            } catch (org.json.JSONException e) { throw new IOException("CLIPBOARD_INVALID_RESPONSE", e); }
+        }
+    }
+
+    public synchronized void cancelClipboardRequests() { if (clipboardClient != null) clipboardClient.dispatcher().cancelAll(); }
+
+    private OkHttpClient relayClient;
+    private boolean relayClosed;
+    private final java.util.Set<okhttp3.Call> relayCalls = new java.util.HashSet<>();
+
+    /** Phone-initiated mailbox reads stay on this paired host's exact certificate. */
+    public org.json.JSONObject relayRequest(org.json.JSONObject payload) throws IOException {
+        if (serverCert == null) throw new IOException("RELAY_UNPAIRED");
+        byte[] bytes = payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (bytes.length > 16384) throw new IOException("RELAY_BAD_REQUEST");
+        okhttp3.Call call;
+        synchronized (this) {
+            if (relayClosed) throw new IOException("RELAY_CLOSED");
+            if (relayClient == null) relayClient = performAndroidTlsHack(httpClientShortConnectTimeout).newBuilder()
+                    .hostnameVerifier((host, session) -> {
+                        try { return session.getPeerCertificates().length > 0 && serverCert.equals(session.getPeerCertificates()[0]); }
+                        catch (SSLPeerUnverifiedException e) { return false; }
+                    }).dispatcher(new okhttp3.Dispatcher()).connectionPool(new ConnectionPool(1, 20, TimeUnit.SECONDS))
+                    .callTimeout(20, TimeUnit.SECONDS).connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(16, TimeUnit.SECONDS).writeTimeout(5, TimeUnit.SECONDS)
+                    .proxy(java.net.Proxy.NO_PROXY).followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
+            HttpUrl url = baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2)
+                    .addPathSegment("v1").addPathSegment("relay").build();
+            call = relayClient.newCall(new Request.Builder().url(url)
+                    .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"), bytes)).build());
+            relayCalls.add(call);
+        }
+        try (Response response = call.execute()) {
+            if (response.code() == 404) throw new IOException("UPDATE_HOST");
+            if (response.code() == 403) throw new IOException("RELAY_UNPAIRED");
+            if (response.body() == null) throw new IOException("RELAY_UNAVAILABLE");
+            okio.BufferedSource source = response.body().source(); source.request(400 * 1024 + 1L);
+            if (source.buffer().size() > 400 * 1024) throw new IOException("RELAY_BAD_REPLY");
+            try {
+                org.json.JSONObject result = new org.json.JSONObject(source.readUtf8());
+                if (!response.isSuccessful() || !Boolean.TRUE.equals(result.opt("ok"))) {
+                    String code = result.optString("code", "RELAY_UNAVAILABLE");
+                    throw new IOException(code.matches("RELAY_[A-Z_]{1,40}") ? code : "RELAY_UNAVAILABLE");
+                }
+                return result;
+            } catch (org.json.JSONException e) { throw new IOException("RELAY_BAD_REPLY", e); }
+        } finally { synchronized (this) { relayCalls.remove(call); } }
+    }
+
+    public synchronized void closeRelayRequests() {
+        relayClosed = true;
+        for (okhttp3.Call call : relayCalls) call.cancel();
+        if (relayClient != null) { relayClient.dispatcher().cancelAll(); relayClient.connectionPool().evictAll(); }
+    }
+
+    private OkHttpClient filesClient;
+
+    /** File access is pinned to this paired host, including hosts with CA-issued certificates. */
+    public org.json.JSONObject filesRequest(org.json.JSONObject payload) throws IOException {
+        if (serverCert == null) throw new IOException("FILES_UNPAIRED");
+        OkHttpClient client;
+        synchronized (this) {
+            if (filesClient == null) filesClient = performAndroidTlsHack(httpClientShortConnectTimeout).newBuilder()
+                    .hostnameVerifier((host, session) -> {
+                        try { return session.getPeerCertificates().length > 0 && serverCert.equals(session.getPeerCertificates()[0]); }
+                        catch (SSLPeerUnverifiedException e) { return false; }
+                    })
+                    .connectionPool(new ConnectionPool(1, 15, TimeUnit.SECONDS))
+                    .callTimeout(45, TimeUnit.SECONDS).connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(30, TimeUnit.SECONDS).writeTimeout(30, TimeUnit.SECONDS)
+                    .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
+            client = filesClient;
+        }
+        byte[] bytes = payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (bytes.length > 400 * 1024) throw new IOException("FILES_BAD_REQUEST");
+        HttpUrl url = baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2)
+                .addPathSegment("v1").addPathSegment("files").build();
+        try (Response response = client.newCall(new Request.Builder().url(url)
+                .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"), bytes)).build()).execute()) {
+            if (response.code() == 404) throw new IOException("UPDATE_HOST");
+            if (response.code() == 403) throw new IOException("FILES_UNPAIRED");
+            if (response.body() == null) throw new IOException("FILES_UNAVAILABLE");
+            okio.BufferedSource source = response.body().source();
+            source.request(400 * 1024 + 1);
+            if (source.buffer().size() > 400 * 1024) throw new IOException("FILES_INVALID_RESPONSE");
+            try {
+                org.json.JSONObject result = new org.json.JSONObject(source.readUtf8());
+                if (!response.isSuccessful() || !result.optBoolean("ok")) {
+                    String code = result.optString("code", "FILES_UNAVAILABLE");
+                    throw new IOException(code.matches("FILES_[A-Z_]{1,32}") ? code : "FILES_UNAVAILABLE");
+                }
+                return result;
+            } catch (org.json.JSONException e) { throw new IOException("FILES_INVALID_RESPONSE", e); }
+        }
+    }
+
+    public synchronized void cancelFilesRequest() {
+        if (filesClient != null) filesClient.dispatcher().cancelAll();
     }
 
     private OkHttpClient voiceClient;

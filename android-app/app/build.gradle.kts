@@ -36,8 +36,8 @@ android {
         applicationId = "com.cliprelay.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 58
-        versionName = "0.10.28"
+        versionCode = 60
+        versionName = "0.10.30"
 
         val updateManifestUrl = providers.gradleProperty("cliprelayUpdateManifestUrl")
             .orElse("https://124-221-36-36.anyip.dev:8443/cliprelay/update.json")
@@ -138,4 +138,5 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    add("qaImplementation", "androidx.compose.ui:ui-test-manifest")
 }

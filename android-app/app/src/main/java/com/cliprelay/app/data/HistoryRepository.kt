@@ -36,17 +36,17 @@ class HistoryRepository(context: Context) {
     }
 
     @Synchronized
-    fun add(text: String): ReceivedClip {
+    fun add(text: String, durable: Boolean = false): ReceivedClip {
         val clip = ReceivedClip(
             id = nextId(),
             text = text.take(MAX_STORED_CHARACTERS),
             receivedAt = System.currentTimeMillis(),
         )
-        return prepend(clip)
+        return prepend(clip, durable)
     }
 
     @Synchronized
-    fun addImage(bytes: ByteArray, width: Int, height: Int): ReceivedClip {
+    fun addImage(bytes: ByteArray, width: Int, height: Int, durable: Boolean = false): ReceivedClip {
         check(imageDirectory.isDirectory || imageDirectory.mkdirs()) {
             "Cannot create the received image directory"
         }
@@ -55,7 +55,7 @@ class HistoryRepository(context: Context) {
         val imageFile = File(imageDirectory, "clip-$id.jpg")
         val stagingFile = File.createTempFile("incoming-", ".tmp", imageDirectory)
         try {
-            stagingFile.outputStream().use { it.write(bytes) }
+            stagingFile.outputStream().use { it.write(bytes); if (durable) it.fd.sync() }
             if (!stagingFile.renameTo(imageFile)) {
                 stagingFile.copyTo(imageFile, overwrite = true)
                 check(stagingFile.delete()) { "Cannot remove the staged image" }
@@ -69,7 +69,7 @@ class HistoryRepository(context: Context) {
                     imagePath = imageFile.absolutePath,
                     imageWidth = width,
                     imageHeight = height,
-                ),
+                ), durable,
             )
         } catch (error: Exception) {
             runCatching { stagingFile.delete() }
@@ -89,12 +89,10 @@ class HistoryRepository(context: Context) {
         return maxOf(now, preferences.getLong(KEY_LAST_ID, 0L) + 1)
     }
 
-    private fun prepend(clip: ReceivedClip): ReceivedClip {
+    private fun prepend(clip: ReceivedClip, durable: Boolean): ReceivedClip {
         val updated = (listOf(clip) + all()).take(MAX_ITEMS)
-        preferences.edit {
-            putString(KEY_HISTORY, HistoryCodec.encode(updated))
-            putLong(KEY_LAST_ID, clip.id)
-        }
+        val editor = preferences.edit().putString(KEY_HISTORY, HistoryCodec.encode(updated)).putLong(KEY_LAST_ID, clip.id)
+        if (durable) check(editor.commit()) { "Cannot save received clipboard history" } else editor.apply()
         removeUnreferencedImages(updated)
         return clip
     }

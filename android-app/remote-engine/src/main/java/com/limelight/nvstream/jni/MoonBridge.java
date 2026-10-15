@@ -389,7 +389,13 @@ public class MoonBridge {
 
     public static native void sendMouseHighResHScroll(short scrollAmount);
 
-    public static native void sendUtf8Text(String text);
+    public static void sendUtf8Text(String text) { sendUtf8TextChecked(text); }
+    public static int sendUtf8TextChecked(String text) {
+        // JNI GetStringUTFChars uses modified UTF-8 (surrogate pairs for emoji).
+        // The host expects standard UTF-8 and the native queue provides a result.
+        return sendUtf8TextBytes(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+    private static native int sendUtf8TextBytes(byte[] text);
 
     public static native String getStageName(int stage);
 

@@ -1,0 +1,27 @@
+<resources>
+    <string name="terminal_title">终端</string>
+    <string name="terminal_sessions">会话</string>
+    <string name="terminal_new">新建</string>
+    <string name="terminal_close">结束</string>
+    <string name="terminal_retry">重连</string>
+    <string name="terminal_refresh">刷新</string>
+    <string name="terminal_keyboard">键盘</string>
+    <string name="terminal_choose">选择或新建会话</string>
+    <string name="terminal_running">运行中</string>
+    <string name="terminal_finished">已结束</string>
+    <string name="terminal_lifetime">离开页面后 Shell 继续运行；会话连续 30 分钟无操作后过期。</string>
+    <string name="terminal_close_confirm">结束这个 Shell 及其子进程？终端内未保存的工作可能丢失。</string>
+    <string name="terminal_closed">会话已结束。</string>
+    <string name="terminal_discarded">进入后台时，尚未发送的按键已清除。</string>
+    <string name="terminal_input_wait">暂时无法输入或队列已满，请等待连接恢复。</string>
+    <string name="terminal_restarted">电脑终端服务已重启，之前的待发输入已清除，请选择或新建会话。</string>
+    <string name="terminal_missing">这个会话已不在保留记录中，请选择或新建会话。</string>
+    <string name="terminal_gap">部分输出已过期，画面已重置，全屏内容可能不完整。请在当前程序中刷新画面。</string>
+    <string name="terminal_uncertain">无法确认输入状态，已停止自动发送。请重连并检查会话，再输入新命令。</string>
+    <string name="terminal_unpaired">电脑配对已变更或撤销，请返回电脑列表重新配对。</string>
+    <string name="terminal_unsupported">电脑暂不支持终端，请更新 Windows 10 1809 及以上版本的 ClipRelay。</string>
+    <string name="terminal_user_required">请先在电脑上登录普通权限的桌面会话。</string>
+    <string name="terminal_capacity">会话数量已达上限，请结束已有会话后再新建。</string>
+    <string name="terminal_reconnecting">正在重连… 结果未知的输入将沿用原序号确认，避免重复执行。</string>
+    <string name="terminal_disconnected">终端 · 已断开</string>
+</resources>

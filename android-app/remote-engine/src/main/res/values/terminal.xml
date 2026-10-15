@@ -1,0 +1,27 @@
+<resources>
+    <string name="terminal_title">Terminal</string>
+    <string name="terminal_sessions">Sessions</string>
+    <string name="terminal_new">New</string>
+    <string name="terminal_close">End</string>
+    <string name="terminal_retry">Reconnect</string>
+    <string name="terminal_refresh">Refresh</string>
+    <string name="terminal_keyboard">Keyboard</string>
+    <string name="terminal_choose">Choose or create a session</string>
+    <string name="terminal_running">Running</string>
+    <string name="terminal_finished">Ended</string>
+    <string name="terminal_lifetime">Leaving this page keeps the shell running. Sessions expire after 30 minutes without activity.</string>
+    <string name="terminal_close_confirm">End this shell and its child processes? Unsaved work in this terminal may be lost.</string>
+    <string name="terminal_closed">Session ended.</string>
+    <string name="terminal_discarded">Unsent keys were discarded when the page entered the background.</string>
+    <string name="terminal_input_wait">Input unavailable or queue full. Wait for the connection.</string>
+    <string name="terminal_restarted">The computer terminal service restarted. Previous input was discarded; choose or create a session.</string>
+    <string name="terminal_missing">This session is no longer retained. Choose or create a session.</string>
+    <string name="terminal_gap">Some output expired. The screen was reset; full-screen content may be incomplete. Refresh it in the running program.</string>
+    <string name="terminal_uncertain">Input status could not be confirmed. Automatic sending stopped. Reconnect and check the session before entering another command.</string>
+    <string name="terminal_unpaired">Computer pairing changed or was revoked. Pair again from the computer list.</string>
+    <string name="terminal_unsupported">This computer does not support the terminal. Update ClipRelay on Windows 10 1809 or later.</string>
+    <string name="terminal_user_required">Sign in to a standard desktop session on the computer before opening a terminal.</string>
+    <string name="terminal_capacity">The session limit was reached. End an existing session before creating another.</string>
+    <string name="terminal_reconnecting">Reconnecting… Any uncertain input will be retried with the same sequence to prevent duplicate execution.</string>
+    <string name="terminal_disconnected">Terminal · Disconnected</string>
+</resources>

@@ -1,0 +1,37 @@
+<resources>
+    <string name="shortcuts_title">自定义键</string>
+    <string name="shortcuts_empty">添加有名称的组合键，即可在这部手机连接的各台电脑上使用。</string>
+    <string name="shortcuts_add">添加快捷键</string>
+    <string name="shortcuts_edit">编辑</string>
+    <string name="shortcuts_up">上移</string>
+    <string name="shortcuts_down">下移</string>
+    <string name="shortcuts_delete">删除快捷键</string>
+    <string name="shortcuts_save">保存</string>
+    <string name="shortcuts_done">完成</string>
+    <string name="shortcuts_name">名称（最多 18 个字）</string>
+    <string name="shortcuts_name_invalid">请输入 1–18 个字的名称，不包含换行。</string>
+    <string name="shortcuts_limit">最多保存 12 个快捷键。</string>
+    <string name="shortcuts_save_failed">设置保存失败，请重试。</string>
+    <string name="shortcuts_invalid">无法读取已保存的快捷键。可以重置后重新配置。</string>
+    <string name="shortcuts_reset">重置快捷键</string>
+    <string name="speech_provider">语音输入方式</string>
+    <string name="speech_provider_hint_short">长按切换语音输入方式</string>
+    <string name="speech_provider_hint">手机识别会先显示文字供检查，再输入到电脑。系统服务可能把音频发送给其提供方。原有电脑方式使用豆包。</string>
+    <string name="speech_local">手机 · 本机识别</string>
+    <string name="speech_system">手机 · 系统语音服务（可能联网）</string>
+    <string name="speech_desktop">电脑 · 豆包</string>
+    <string name="speech_unavailable">手机没有可用的此类语音服务。请在 Android 设置中配置服务，或选择其他方式。</string>
+    <string name="speech_starting">正在启动手机识别…</string>
+    <string name="speech_listening">请对着手机说话（最多 60 秒）</string>
+    <string name="speech_processing">正在完成识别…</string>
+    <string name="speech_stop">结束说话</string>
+    <string name="speech_review">检查识别文字</string>
+    <string name="speech_review_hint">检查或修改文字，再输入到电脑当前输入框。换行会转换为空格，不会按回车。</string>
+    <string name="speech_type">输入到电脑</string>
+    <string name="speech_no_match">未识别到可用文字，请再次点击语音输入重试。</string>
+    <string name="speech_failed">手机识别失败，请检查系统语音服务后重试。</string>
+    <string name="speech_language_unavailable">语音服务没有可用的手机当前语言模型，请在 Android 设置中配置识别语言。</string>
+    <string name="speech_timeout">识别超时，已取消，没有发送文字。</string>
+    <string name="speech_invalid_text">请输入非空文字，长度不超过 8 KB，不包含控制字符。</string>
+    <string name="speech_not_sent">当前连接无法发送文字，不会自动重试。</string>
+</resources>

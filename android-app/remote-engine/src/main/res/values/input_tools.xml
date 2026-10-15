@@ -1,0 +1,37 @@
+<resources>
+    <string name="shortcuts_title">Custom keys</string>
+    <string name="shortcuts_empty">Add a named key combination. These shortcuts are available on every remote computer from this phone.</string>
+    <string name="shortcuts_add">Add shortcut</string>
+    <string name="shortcuts_edit">Edit</string>
+    <string name="shortcuts_up">Move up</string>
+    <string name="shortcuts_down">Move down</string>
+    <string name="shortcuts_delete">Delete shortcut</string>
+    <string name="shortcuts_save">Save</string>
+    <string name="shortcuts_done">Done</string>
+    <string name="shortcuts_name">Name (up to 18 characters)</string>
+    <string name="shortcuts_name_invalid">Enter a name with 1–18 characters and no line breaks.</string>
+    <string name="shortcuts_limit">You can save up to 12 shortcuts.</string>
+    <string name="shortcuts_save_failed">Could not save the setting. Please try again.</string>
+    <string name="shortcuts_invalid">The saved shortcuts could not be read. Reset them to create a new list.</string>
+    <string name="shortcuts_reset">Reset shortcuts</string>
+    <string name="speech_provider">Voice input method</string>
+    <string name="speech_provider_hint_short">Hold to change voice input method</string>
+    <string name="speech_provider_hint">Phone recognition shows text for review before typing it on the computer. The system service may send audio to its provider. The existing computer method uses Doubao.</string>
+    <string name="speech_local">Phone · On-device recognition</string>
+    <string name="speech_system">Phone · System service (may use network)</string>
+    <string name="speech_desktop">Computer · Doubao</string>
+    <string name="speech_unavailable">This phone has no available recognition service for this method. Configure a service in Android settings, or choose another method.</string>
+    <string name="speech_starting">Starting phone recognition…</string>
+    <string name="speech_listening">Speak to your phone (up to 60 seconds)</string>
+    <string name="speech_processing">Finishing recognition…</string>
+    <string name="speech_stop">Finish speaking</string>
+    <string name="speech_review">Review recognized text</string>
+    <string name="speech_review_hint">Check or edit this text, then type it into the current computer input field. Line breaks become spaces. Enter will not be pressed.</string>
+    <string name="speech_type">Type on computer</string>
+    <string name="speech_no_match">No usable speech was recognized. Tap voice input to try again.</string>
+    <string name="speech_failed">Phone recognition failed. Check the system speech service and try again.</string>
+    <string name="speech_language_unavailable">The recognition service does not have the phone language available. Configure its language model in Android settings.</string>
+    <string name="speech_timeout">Recognition timed out and was cancelled. No text was sent.</string>
+    <string name="speech_invalid_text">Enter non-empty text within 8 KB, without control characters.</string>
+    <string name="speech_not_sent">Text could not be queued on the current connection. It will not be retried automatically.</string>
+</resources>

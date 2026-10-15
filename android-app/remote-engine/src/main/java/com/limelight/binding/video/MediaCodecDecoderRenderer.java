@@ -118,6 +118,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     private long lastTimestampUs;
     private int lastFrameNumber;
+    private final RenderedFrameTracker renderedFrames = new RenderedFrameTracker();
+
+    public long getLastRenderedFrameNumber() { return renderedFrames.lastRendered(); }
+    public RenderedFrameTracker.Presentation getLastPresentation() { return renderedFrames.presentation(); }
     private long baseTimestampUs;
     private int refreshRate;
     private PreferenceConfiguration prefs;
@@ -665,10 +669,12 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             }
         }
 
-        if (USE_FRAME_RENDER_TIME && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             videoDecoder.setOnFrameRenderedListener(new MediaCodec.OnFrameRenderedListener() {
                 @Override
                 public void onFrameRendered(MediaCodec mediaCodec, long presentationTimeUs, long renderTimeNanos) {
+                    if (mediaCodec != videoDecoder || stopping) return;
+                    renderedFrames.rendered(presentationTimeUs);
                     long delta = (renderTimeNanos / 1000000L) - (presentationTimeUs / 1000);
                     if (delta >= 0 && delta < 1000) {
                         if (USE_FRAME_RENDER_TIME) {
@@ -684,6 +690,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     @Override
     public int setup(int format, int width, int height, int redrawRate) {
+        renderedFrames.reset();
         this.initialWidth = width;
         this.initialHeight = height;
         this.videoFormat = format;
@@ -1725,7 +1732,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         // Copy data from our buffer list into the input buffer
         nextInputBuffer.put(decodeUnitData, 0, decodeUnitLength);
 
+        renderedFrames.queued(timestampUs, frameNumber, (baseTimestampUs + receiveTimeUs) / 1000);
         if (!queueNextInputBuffer(timestampUs, codecFlags)) {
+            renderedFrames.discarded(timestampUs);
             return MoonBridge.DR_NEED_IDR;
         }
 

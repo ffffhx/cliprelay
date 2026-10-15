@@ -1,0 +1,15 @@
+<resources>
+    <string name="displays_title">Displays</string>
+    <string name="displays_shared_title">Displays · also changes other connected viewers</string>
+    <string name="displays_name">Display %1$s</string>
+    <string name="displays_current"> · current</string>
+    <string name="displays_loading">Finding available displays…</string>
+    <string name="displays_refresh">Refresh</string>
+    <string name="displays_not_ready">Wait for the desktop picture, then try again.</string>
+    <string name="displays_update_host">This computer needs a ClipRelay host update to switch displays.</string>
+    <string name="displays_unavailable">Unable to read displays. Check the connection and try again.</string>
+    <string name="displays_switching">Switching display… Input will resume when the new picture appears.</string>
+    <string name="displays_recovering">The computer display changed. Waiting for its new picture before resuming input…</string>
+    <string name="displays_switch_failed">The display could not be switched. Input has resumed on the current picture.</string>
+    <string name="displays_waiting">Still waiting for the display picture. Input is paused; you can disconnect and reconnect.</string>
+</resources>

@@ -10,7 +10,7 @@ import com.limelight.nvstream.CellularDataPolicy.NetworkType;
 
 /** Watches the app's actual default network, never the stream's LAN/tunnel address. */
 public final class StreamNetworkMonitor implements AutoCloseable {
-    public interface Listener { void changed(NetworkType type); }
+    public interface Listener { void changed(NetworkType type, long networkHandle); }
     private final ConnectivityManager connectivity;
     private final Listener listener;
     private Network current;
@@ -21,12 +21,12 @@ public final class StreamNetworkMonitor implements AutoCloseable {
             // Capabilities follow onAvailable on API 26+. Querying here races Android.
         }
         @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
-            if (!closed && network.equals(current)) listener.changed(classify(caps));
+            if (!closed && network.equals(current)) listener.changed(classify(caps), network.getNetworkHandle());
         }
         @Override public void onLost(Network network) {
             if (!closed && network.equals(current)) {
                 current = null;
-                listener.changed(NetworkType.UNKNOWN);
+                listener.changed(NetworkType.UNKNOWN, 0);
             }
         }
     };
@@ -41,6 +41,14 @@ public final class StreamNetworkMonitor implements AutoCloseable {
         try {
             return classify(connectivity.getNetworkCapabilities(connectivity.getActiveNetwork()));
         } catch (SecurityException error) { return NetworkType.UNKNOWN; }
+    }
+
+    public long snapshotHandle() {
+        if (connectivity == null) return 0;
+        try {
+            Network network = connectivity.getActiveNetwork();
+            return network == null ? 0 : network.getNetworkHandle();
+        } catch (SecurityException error) { return 0; }
     }
 
     public static NetworkType classify(NetworkCapabilities caps) {

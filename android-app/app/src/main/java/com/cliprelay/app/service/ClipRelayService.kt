@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     private var server: ClipRelayHttpServer? = null
+    private var pairedReceiver: PairedRelayReceiver? = null
     private val debugStayAwake by lazy { DebugStayAwake(this) }
     private val discoveryPublisher by lazy { ClipRelayNsdPublisher(this) }
     private lateinit var historyRepository: HistoryRepository
@@ -58,7 +59,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
         createNotificationChannels()
         AppUpdater.startAutomaticChecks(this)
-        startAsForeground(buildReceiverNotification("正在启动局域网接收服务"))
+        startAsForeground(buildReceiverNotification("正在启动配对接收服务"))
         debugStayAwake.start()
     }
 
@@ -81,6 +82,8 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     }
 
     override fun onDestroy() {
+        pairedReceiver?.close()
+        pairedReceiver = null
         debugStayAwake.close()
         discoveryPublisher.stop()
         server?.stop()
@@ -99,6 +102,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     override fun onListening(port: Int) {
         val addresses = NetworkAddresses.localIpv4()
         val settings = AppPreferences.load(this)
+        if (!settings.legacyCompatibility) { showPairedReceiverStatus(); return }
         val discoveryError = if (settings.discoveryEnabled) {
             runCatching {
                 discoveryPublisher.start(
@@ -119,7 +123,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
             detail = when {
                 addresses.isEmpty() -> "等待网络连接"
                 discoveryError != null -> "接收正常；局域网自动发现暂不可用"
-                else -> null
+                else -> "配对加密接收已开启；旧版局域网兼容也已开启（未加密）"
             },
         )
         updateReceiverNotification(
@@ -138,16 +142,26 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
         com.cliprelay.app.runtime.PreviewRemote.snapshot()
 
     override fun onTextReceived(text: String) {
+        check(AppPreferences.load(this).legacyCompatibility) { "Legacy compatibility disabled" }
+        receiveText(text, false)
+    }
+
+    private fun receiveText(text: String, durable: Boolean) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("ClipRelay", text))
         clearCachedClipboardImages()
 
-        historyRepository.add(text)
+        historyRepository.add(text, durable)
         ClipRelayRuntime.historyChanged()
-        showReceivedNotification(text)
+        runCatching { showReceivedNotification(text) }
     }
 
     override fun onImageReceived(bytes: ByteArray, mediaType: String) {
+        check(AppPreferences.load(this).legacyCompatibility) { "Legacy compatibility disabled" }
+        receiveImage(bytes, false)
+    }
+
+    private fun receiveImage(bytes: ByteArray, durable: Boolean) {
         val dimensions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, dimensions)
         val pixelCount = dimensions.outWidth.toLong() * dimensions.outHeight.toLong()
@@ -161,6 +175,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
             bytes = bytes,
             width = dimensions.outWidth,
             height = dimensions.outHeight,
+            durable = durable,
         )
         val imageFile = File(requireNotNull(clip.imagePath))
         val imageUri = FileProvider.getUriForFile(
@@ -173,11 +188,15 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
 
         clearCachedClipboardImages()
         ClipRelayRuntime.historyChanged()
-        showReceivedImageNotification(dimensions.outWidth, dimensions.outHeight)
+        runCatching { showReceivedImageNotification(dimensions.outWidth, dimensions.outHeight) }
     }
 
     override fun onFailure(message: String) {
         discoveryPublisher.stop()
+        if (pairedReceiver != null) {
+            showPairedReceiverStatus("配对加密接收已开启；旧版接收端口不可用")
+            return
+        }
         val settings = AppPreferences.load(this)
         ClipRelayRuntime.receiverStatus.value = ReceiverStatus(
             phase = ReceiverPhase.ERROR,
@@ -191,6 +210,8 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
     private fun startServer() {
         val settings = AppPreferences.load(this)
         AppPreferences.setReceiverEnabled(this, true)
+        if (pairedReceiver == null) pairedReceiver = PairedRelayReceiver(this, { receiveText(it, true) }, { receiveImage(it, true) })
+        if (!settings.legacyCompatibility) { showPairedReceiverStatus(); return }
         ClipRelayRuntime.receiverStatus.value = ReceiverStatus(
             phase = ReceiverPhase.STARTING,
             port = settings.port,
@@ -200,7 +221,18 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
             port = settings.port,
             accessToken = { AppPreferences.load(this).accessToken },
             listener = this,
+            legacyEnabled = { AppPreferences.load(this).legacyCompatibility },
         ).also { it.start() }
+    }
+
+    private fun showPairedReceiverStatus(detail: String = "配对加密接收已开启；在电脑端选择本手机") {
+        discoveryPublisher.stop()
+        ClipRelayRuntime.receiverStatus.value = ReceiverStatus(
+            phase = ReceiverPhase.RUNNING,
+            port = AppPreferences.load(this).port,
+            detail = detail,
+        )
+        updateReceiverNotification(detail)
     }
 
     private fun refreshRunningEndpoint() {

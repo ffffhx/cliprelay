@@ -10,6 +10,38 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ConnectionRouteSelectorTest {
+    @Test fun everyRouteStallingStillHasATotalDeadline() {
+        val started = CountDownLatch(2)
+        val cancelled = CountDownLatch(2)
+        val probes = List(2) { Callable<String?> {
+            started.countDown()
+            try { CountDownLatch(1).await(); null }
+            finally { cancelled.countDown() }
+        } }
+        val then = System.nanoTime()
+        assertNull(ConnectionRouteSelector.select(probes, 400, 300))
+        assertEquals(0L, started.count)
+        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - then) < 1500)
+        assertTrue(cancelled.await(1, TimeUnit.SECONDS))
+    }
+
+    @Test fun preferenceGraceCannotExtendTheTotalDeadline() {
+        val started = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val then = System.nanoTime()
+        val selected = ConnectionRouteSelector.select(listOf(
+            Callable<String?> {
+                started.countDown()
+                try { CountDownLatch(1).await(); null }
+                finally { cancelled.countDown() }
+            },
+            Callable { check(started.await(1, TimeUnit.SECONDS)); "tunnel" },
+        ), 30000, 300)
+        assertEquals("tunnel", selected)
+        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - then) < 1500)
+        assertTrue(cancelled.await(1, TimeUnit.SECONDS))
+    }
+
     @Test fun prefersLanEvenWhenTunnelRespondsFirst() {
         val tunnelReplied = CountDownLatch(1)
         val selected = ConnectionRouteSelector.select(listOf(

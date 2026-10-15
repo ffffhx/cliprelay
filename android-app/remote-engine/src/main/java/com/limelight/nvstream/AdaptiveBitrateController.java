@@ -56,7 +56,16 @@ public final class AdaptiveBitrateController {
         poorMs = severeMs = healthyMs = queuedMs = 0;
     }
 
-    /** Returns a new session bitrate, or zero when no reconnect should occur. */
+    /** Forget an unsuccessful probe while retaining cooldowns against oscillation. */
+    public void onRateRejected(int actualKbps, long nowMs) {
+        bitrateKbps = Math.max(floorKbps, Math.min(actualKbps, ceilingKbps));
+        previousProbeKbps = 0;
+        lastChangeAt = nowMs;
+        increaseAllowedAt = Math.max(increaseAllowedAt, nowMs + RECOVERY_MS);
+        resetObservation();
+    }
+
+    /** Returns a new bitrate request, or zero when the current rate should stay. */
     public int observe(Sample sample, long nowMs) {
         if (sample == null || sample.atMs > nowMs || nowMs - sample.atMs > 2_500 ||
                 sample.durationMs < 500 || sample.durationMs > 2_500 ||

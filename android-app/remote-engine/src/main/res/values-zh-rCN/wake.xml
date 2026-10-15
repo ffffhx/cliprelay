@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wake_title">远程唤醒</string>
+    <string name="wake_settings">远程唤醒设置</string>
+    <string name="wake_reading">正在读取网卡设置…</string>
+    <string name="wake_need_online">请先连接这台已配对的电脑，再打开远程唤醒设置。</string>
+    <string name="wake_unavailable">暂时无法读取唤醒设置。请确认电脑在线，并已更新电脑端 ClipRelay。</string>
+    <string name="wake_no_adapter">未检测到物理网卡。</string>
+    <string name="wake_adapter">选择连接目标局域网的网卡</string>
+    <string name="wake_configured">唤醒设置已启用，尚未实测</string>
+    <string name="wake_disabled">唤醒设置未启用</string>
+    <string name="wake_unsupported">网卡报告不支持魔术包唤醒</string>
+    <string name="wake_unknown">唤醒能力待确认</string>
+    <string name="wake_disconnected">未连接</string>
+    <string name="wake_need_lan">请先将这块网卡连接到目标局域网，再保存唤醒设置。</string>
+    <string name="wake_hardware_help">请在 Windows 设备管理器中检查网卡的“魔术包唤醒”和“允许此设备唤醒计算机”。BIOS/UEFI、驱动及睡眠或关机方式也会影响唤醒。调整后请重新检测。ClipRelay 不会自动修改这些设置。</string>
+    <string name="wake_network">选择目标局域网</string>
+    <string name="wake_helper">选择同一局域网中在线的电脑</string>
+    <string name="wake_no_helper">请配对目标局域网中的另一台电脑，并保持它在线、运行 ClipRelay。目标电脑睡眠时，它可以代发唤醒包。准备好后再回来选择。</string>
+    <string name="wake_helper_failed">助手电脑无法确认自己处于这个局域网。请检查它的网络，并更新电脑端 ClipRelay。</string>
+    <string name="wake_saved">已保存助手，硬件唤醒尚未验证。请在目标电脑睡眠后测试，并保持助手在线。更换网络后或超过 30 天，请重新保存设置。</string>
+    <string name="wake_clear">清除已保存的助手</string>
+    <string name="wake_changed">配对或已保存的网卡信息发生变化，请连接目标电脑后重新设置远程唤醒。</string>
+    <string name="wake_confirm">通过“%2$s”向 %3$s 局域网发送“%1$s”的唤醒包？能否唤醒取决于硬件和电源设置。</string>
+    <string name="wake_no_saved_helper">没有可用的在线助手。请在目标电脑在线时打开“远程唤醒设置”，选择网卡及同一局域网中的已配对电脑。已保存的设置超过 30 天需要更新。</string>
+    <string name="wake_send">发送唤醒包</string>
+    <string name="wake_local">从当前手机发送</string>
+    <string name="wake_local_help">手机将按已保存的地址发送普通 Wake-on-LAN 数据包，通常需要手机处于目标局域网。发出数据包不代表电脑已经唤醒。</string>
+    <string name="wake_sending">正在发送唤醒包…</string>
+    <string name="wake_waiting">唤醒包已发出，正在等待已配对电脑上线，最多等待 60 秒…</string>
+    <string name="wake_timeout">电脑尚未确认上线。请检查电源、网卡、BIOS/UEFI 设置及助手网络。唤醒包已发出，唤醒结果仍未确认。</string>
+    <string name="wake_send_uncertain">未能确认数据包发送结果。回复可能在发送后丢失，请先观察电脑是否上线，再决定是否重试。</string>
+    <string name="wake_online">已确认配对电脑上线。</string>
+</resources>

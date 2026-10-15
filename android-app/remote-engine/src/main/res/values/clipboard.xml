@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="clipboard_title">Clipboard exchange</string>
+    <string name="clipboard_send">Send this device’s clipboard</string>
+    <string name="clipboard_receive">Copy the computer’s clipboard</string>
+    <string name="clipboard_working">Transferring text or image…</string>
+    <string name="clipboard_sent">Sent to the computer. You can now paste it.</string>
+    <string name="clipboard_received">Copied to this device’s clipboard.</string>
+    <string name="clipboard_empty">No supported text or image in the clipboard.</string>
+    <string name="clipboard_failed">Clipboard transfer failed. Check the connection and content size.</string>
+    <string name="clipboard_locked">Unlock the computer’s desktop and try again.</string>
+    <string name="clipboard_update_host">Update ClipRelay on the computer and try again.</string>
+</resources>

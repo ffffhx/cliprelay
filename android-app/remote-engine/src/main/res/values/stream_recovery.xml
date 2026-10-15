@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stream_recovery_title">Connection recovery</string>
+    <string name="stream_recovery_connecting">Reconnecting to your computer…</string>
+    <string name="stream_recovery_waiting">Connection interrupted. Recovering…</string>
+    <string name="stream_recovery_resumed">Connection restored</string>
+    <string name="stream_recovery_failed">The connection could not stay stable. Check the network and try again.</string>
+    <string name="stream_recovery_retry">Retry</string>
+</resources>

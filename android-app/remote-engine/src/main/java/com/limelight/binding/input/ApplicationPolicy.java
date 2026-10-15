@@ -6,6 +6,10 @@ public final class ApplicationPolicy {
         return !gameMode && "chatgpt".equals(app);
     }
 
+    public static boolean usesPhonePinchCompatibility(String app, boolean gameMode) {
+        return !gameMode && "orca".equals(app);
+    }
+
     private String candidate;
     private long since;
     public String observe(boolean supported, String app, long now) {

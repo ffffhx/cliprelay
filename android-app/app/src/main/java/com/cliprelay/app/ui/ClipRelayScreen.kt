@@ -196,6 +196,7 @@ fun ClipRelayScreen(
                 status = status,
                 primaryAddress = primaryAddress,
                 endpoint = endpoint,
+                legacyCompatibility = settings.legacyCompatibility,
                 onToggleReceiver = onToggleReceiver,
                 onCopyEndpoint = onCopyEndpoint,
                 onShareEndpoint = onShareEndpoint,
@@ -387,6 +388,7 @@ private fun ReceiverPanel(
     status: ReceiverStatus,
     primaryAddress: String?,
     endpoint: String?,
+    legacyCompatibility: Boolean,
     onToggleReceiver: (Boolean) -> Unit,
     onCopyEndpoint: (String) -> Unit,
     onShareEndpoint: (String) -> Unit,
@@ -451,18 +453,18 @@ private fun ReceiverPanel(
 
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(
-                    text = "电脑端填写这个接收地址",
+                    text = if (legacyCompatibility) "旧版局域网接收地址（未加密）" else "配对加密接收",
                     color = Color(0xFFAFC5D7),
                     fontSize = 12.sp,
                 )
                 Text(
-                    text = endpoint ?: "等待 Wi-Fi 地址 · 端口 ${status.port}",
+                    text = if (legacyCompatibility) endpoint ?: "等待 Wi-Fi 地址 · 端口 ${status.port}" else "在电脑端选择已配对的手机",
                     color = Color.White,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
                 )
-                if (status.addresses.size > 1) {
+                if (legacyCompatibility && status.addresses.size > 1) {
                     Text(
                         text = status.addresses.drop(1).joinToString("  ·  ") { "$it:${status.port}" },
                         color = Color(0xFF8FA9BC),
@@ -490,7 +492,7 @@ private fun ReceiverPanel(
                 ) {
                     Text(if (isActive) "停止接收" else "开始接收")
                 }
-                primaryAddress?.let { address ->
+                primaryAddress?.takeIf { legacyCompatibility }?.let { address ->
                     TextButton(onClick = { onCopyEndpoint(address) }) { Text("复制 IP") }
                     TextButton(onClick = { onShareEndpoint("$address:${status.port}") }) { Text("分享") }
                 }
@@ -566,11 +568,17 @@ private fun SettingsPanel(
         Text("接收设置", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(5.dp))
         Text(
-            text = "设备名、发现方式、端口或密钥修改后，正在运行的接收站会自动重启。",
+            text = "配对加密接收不需要填写地址或密钥。下方兼容设置只用于仍使用旧版客户端的局域网设备。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(18.dp))
+        SettingSwitch(
+            title = "旧版局域网兼容（未加密）",
+            description = "默认关闭。开启后允许旧客户端通过 HTTP 发送；访问密钥只能限制访问，不能加密内容。请仅在可信局域网使用。",
+            checked = draft.legacyCompatibility,
+            onCheckedChange = { draft = draft.copy(legacyCompatibility = it) },
+        )
 
         OutlinedTextField(
             value = draft.deviceName,
@@ -591,9 +599,10 @@ private fun SettingsPanel(
 
         OutlinedTextField(
             value = portText,
+            enabled = draft.legacyCompatibility,
             onValueChange = { portText = it.filter(Char::isDigit).take(5) },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("接收端口") },
+            label = { Text("旧版接收端口") },
             supportingText = {
                 Text(if (portValid) "电脑端也使用同一端口" else "请输入 1024–65535")
             },
@@ -606,11 +615,12 @@ private fun SettingsPanel(
         Spacer(Modifier.height(10.dp))
         OutlinedTextField(
             value = draft.accessToken,
+            enabled = draft.legacyCompatibility,
             onValueChange = { draft = draft.copy(accessToken = it.take(128)) },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("访问密钥（可选）") },
             supportingText = {
-                Text("启用后发送方需携带 X-ClipRelay-Token；兼容旧客户端请留空")
+                Text("填写后旧客户端需使用同一密钥；该兼容连接仍未加密")
             },
             singleLine = true,
             visualTransformation = if (revealToken) VisualTransformation.None else PasswordVisualTransformation(),
@@ -639,7 +649,7 @@ private fun SettingsPanel(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
         SettingSwitch(
             title = "允许局域网发现",
-            description = "通过 mDNS 公布设备名称和端口，不会公布密钥或剪贴板内容",
+            description = "仅在旧版兼容开启时公布接收地址，不影响配对加密连接",
             checked = draft.discoveryEnabled,
             onCheckedChange = { draft = draft.copy(discoveryEnabled = it) },
         )

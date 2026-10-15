@@ -16,6 +16,7 @@ class ClipRelayHttpServer(
     private val port: Int,
     private val accessToken: () -> String,
     private val listener: Listener,
+    private val legacyEnabled: () -> Boolean = { false },
 ) {
     interface Listener {
         fun onListening(port: Int)
@@ -81,6 +82,7 @@ class ClipRelayHttpServer(
                 val requestPath = request.path.substringBefore('?')
                 when {
                     request.method != "POST" -> respond(output, 405, "Method Not Allowed")
+                    !running.get() || !LegacyLanPolicy.allows(legacyEnabled(), client.inetAddress) -> respond(output, 403, "Legacy compatibility disabled or non-local peer")
                     requestPath !in setOf("/push", "/push-image", "/preview/navigate", "/preview/state") ->
                         respond(output, 404, "Not Found")
                     !isAuthorized(request) -> respond(output, 401, "Unauthorized")
@@ -105,7 +107,10 @@ class ClipRelayHttpServer(
         val bearerToken = request.headers["authorization"]
             ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
             ?.substringAfter(' ')
-        return headerToken == expected || bearerToken == expected
+        val bytes = expected.toByteArray(StandardCharsets.UTF_8)
+        return listOfNotNull(headerToken, bearerToken).any {
+            java.security.MessageDigest.isEqual(bytes, it.toByteArray(StandardCharsets.UTF_8))
+        }
     }
 
     private fun handlePreviewState(request: HttpRequest, output: BufferedOutputStream) {

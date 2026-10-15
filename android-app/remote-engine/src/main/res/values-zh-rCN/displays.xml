@@ -1,0 +1,15 @@
+<resources>
+    <string name="displays_title">显示器</string>
+    <string name="displays_shared_title">显示器 · 切换也会影响其他已连接设备</string>
+    <string name="displays_name">显示器 %1$s</string>
+    <string name="displays_current"> · 当前</string>
+    <string name="displays_loading">正在查找可用显示器…</string>
+    <string name="displays_refresh">刷新</string>
+    <string name="displays_not_ready">请等桌面画面出现后再试。</string>
+    <string name="displays_update_host">这台电脑需要更新 ClipRelay 被控端，才能切换显示器。</string>
+    <string name="displays_unavailable">暂时无法读取显示器，请检查连接后重试。</string>
+    <string name="displays_switching">正在切换显示器… 新画面显示后恢复操作。</string>
+    <string name="displays_recovering">电脑显示器发生变化，等新画面显示后恢复操作…</string>
+    <string name="displays_switch_failed">未能切换显示器，已恢复操作当前画面。</string>
+    <string name="displays_waiting">仍在等待显示器画面，操作已暂停；可以断开后重新连接。</string>
+</resources>

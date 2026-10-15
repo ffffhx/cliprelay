@@ -18,6 +18,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.limelight.R
 import com.limelight.binding.input.touch.PhoneTouchContext
 import com.limelight.binding.input.touch.PhoneScrollState
+import com.limelight.binding.input.touch.PhonePinchState
 import com.limelight.nvstream.jni.MoonBridge
 import com.limelight.preferences.TouchMode
 import com.limelight.ui.DesktopToolbar
@@ -31,6 +32,16 @@ class PhoneTouchTest {
     private val instrument = InstrumentationRegistry.getInstrumentation()
     private data class Finger(val id: Int, val x: Float, val y: Float)
     private data class Contact(val type: Byte, val id: Int, val x: Float, val y: Float)
+
+    private fun awaitUi(message: String, condition: () -> Boolean) {
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        var ready = false
+        while (!ready && SystemClock.elapsedRealtime() < deadline) {
+            instrument.runOnMainSync { ready = condition() }
+            if (!ready) SystemClock.sleep(20)
+        }
+        assertTrue(message, ready)
+    }
 
     @Test fun gesturesCancellationAndModeSelection() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(instrument.targetContext)
@@ -50,6 +61,11 @@ class PhoneTouchTest {
                 instrument.targetContext.packageName, "com.limelight.PcView")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             val screen = activity
+            // A fresh installation probes GL asynchronously before creating the PC screen.
+            // Replacing its content sooner lets completeOnCreate() detach our test views.
+            awaitUi("Computer screen did not finish initializing") {
+                screen.findViewById<View>(R.id.settingsButton) != null
+            }
             lateinit var root: FrameLayout
             lateinit var video: View
             val events = mutableListOf<Contact>()
@@ -57,6 +73,7 @@ class PhoneTouchTest {
             val mousePositions = mutableListOf<Pair<Float, Float>>()
             val wheels = mutableListOf<Pair<Short, Short>>()
             val clicks = mutableListOf<Boolean>()
+            val zooms = mutableListOf<Boolean>()
             val feedbackPoints = mutableListOf<Pair<Float, Float>>()
             var feedbackVisible = false
             var feedbackReleases = 0
@@ -86,6 +103,11 @@ class PhoneTouchTest {
                     override fun scroll(vertical: Short, horizontal: Short) { wheels += vertical to horizontal }
                     override fun click(right: Boolean) { clicks += right }
                 })
+                context!!.setPinchSink(object : PhonePinchState.Sink {
+                    override fun position(x: Float, y: Float) { mousePositions += x to y }
+                    override fun scroll(vertical: Short, horizontal: Short) { wheels += vertical to horizontal }
+                    override fun zoom(inside: Boolean) { zooms += inside }
+                })
                 context!!.setScrollFeedback(object : PhoneTouchContext.ScrollFeedback {
                     override fun show(x: Float, y: Float) { feedbackPoints += x to y; feedbackVisible = true }
                     override fun release() { feedbackReleases++; feedbackVisible = false }
@@ -94,6 +116,9 @@ class PhoneTouchTest {
                 root.setOnTouchListener { v, e -> desktopTouches++; context!!.onTouch(v, e) }
             }
             instrument.waitForIdleSync()
+            awaitUi("Touch target did not finish layout") {
+                video.isAttachedToWindow && video.width == 800 && video.height == 400
+            }
             fun send(action: Int, vararg fingers: Finger, flags: Int = 0) {
                 val properties = fingers.map { f -> MotionEvent.PointerProperties().apply {
                     id = f.id; toolType = MotionEvent.TOOL_TYPE_FINGER
@@ -219,6 +244,57 @@ class PhoneTouchTest {
             assertEquals(MoonBridge.LI_TOUCH_EVENT_UP, events.last().type)
             assertEquals(3, keyboardChecks)
             instrument.runOnMainSync { context!!.setScrollCompatibility(false) }
+            // Orca takes over the pair, preserving single-finger native behavior.
+            instrument.runOnMainSync { context!!.setPinchCompatibility(true) }
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+            assertTrue(held.isEmpty())
+            assertEquals(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, events.last().type)
+            val nativeBeforePinch = events.size
+            val wheelsBeforePinch = wheels.size
+            val clicksBeforePinch = clicks.size
+            send(MotionEvent.ACTION_MOVE, a.copy(x = 250f), b.copy(x = 750f))
+            assertEquals(listOf(true), zooms)
+            // Pointer array order is not contact identity.
+            send(MotionEvent.ACTION_MOVE, b.copy(x = 650f), a.copy(x = 350f))
+            assertTrue(zooms.last() == false)
+            val zoomCount = zooms.size
+            send(MotionEvent.ACTION_POINTER_UP, a, b)
+            send(MotionEvent.ACTION_MOVE, b.copy(x = 800f))
+            send(MotionEvent.ACTION_UP, b)
+            assertEquals(zoomCount, zooms.size)
+            assertEquals(nativeBeforePinch, events.size)
+            assertEquals(wheelsBeforePinch, wheels.size)
+            assertEquals(clicksBeforePinch, clicks.size)
+            assertEquals(3, keyboardChecks)
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+            send(MotionEvent.ACTION_MOVE, a.copy(y = 400f), b.copy(y = 400f))
+            send(MotionEvent.ACTION_POINTER_UP, a, b)
+            send(MotionEvent.ACTION_UP, b)
+            assertEquals(wheelsBeforePinch + 1, wheels.size)
+            assertTrue(wheels.last().first > 0)
+            assertEquals(400f to 200f, mousePositions.last())
+            assertEquals(zoomCount, zooms.size)
+            // Third fingers, focus loss and black-bar starts cannot produce zoom shortcuts.
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+            send(MotionEvent.ACTION_POINTER_DOWN or (2 shl 8), a, b, Finger(27, 500f, 200f))
+            send(MotionEvent.ACTION_MOVE, a.copy(x = 200f), b.copy(x = 800f))
+            send(MotionEvent.ACTION_UP, a)
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+            instrument.runOnMainSync { context!!.cancel() }
+            send(MotionEvent.ACTION_MOVE, a.copy(x = 200f), b.copy(x = 800f))
+            send(MotionEvent.ACTION_UP, a)
+            val outside = Finger(19, 950f, 300f)
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, outside)
+            send(MotionEvent.ACTION_MOVE, a.copy(x = 200f), b.copy(x = 800f))
+            send(MotionEvent.ACTION_UP, a)
+            assertEquals(zoomCount, zooms.size)
+            assertTrue(held.isEmpty())
+            instrument.runOnMainSync { context!!.setPinchCompatibility(false) }
             // Exercise preference migration and the actual toolbar selector without a host connection.
             prefs.edit().remove(TouchMode.PREF).putBoolean("checkbox_touchscreen_trackpad", false).commit()
             assertEquals(TouchMode.PHONE, TouchMode.read(screen))
@@ -237,6 +313,7 @@ class PhoneTouchTest {
                     override fun gameModeChanged(enabled: Boolean) = Unit
                     override fun applicationChanged() { context!!.cancel() }
                     override fun scrollCompatibilityChanged(enabled: Boolean) { context!!.setScrollCompatibility(enabled) }
+                    override fun pinchCompatibilityChanged(enabled: Boolean) { context!!.setPinchCompatibility(enabled) }
                     override fun touchMode() = selected
                     override fun selectTouchMode(mode: TouchMode) { selected = mode; mode.save(screen) }
                 })
@@ -293,7 +370,7 @@ class PhoneTouchTest {
             chooseTouchMode(TouchMode.PHONE)
             assertEquals(TouchMode.PHONE, selected)
             assertEquals(TouchMode.PHONE, TouchMode.read(screen))
-            // Only ChatGPT uses wheel scrolling; Orca/general retain native contacts.
+            // Only ChatGPT uses single-finger wheel scrolling; Orca/general retain native contacts.
             val checksBeforeProfiles = keyboardChecks
             fun swipeInPhoneMode(compatible: Boolean) {
                 assertEquals(TouchMode.PHONE, selected)
@@ -329,8 +406,25 @@ class PhoneTouchTest {
                 instrument.runOnMainSync { toolbar.observeApplication(app) }
                 assertFalse(toolbar.isGameMode)
                 swipeInPhoneMode(app == "chatgpt")
+                val zoomsBefore = zooms.size
+                send(MotionEvent.ACTION_DOWN, a)
+                send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+                send(MotionEvent.ACTION_MOVE, a.copy(x = 250f), b.copy(x = 750f))
+                send(MotionEvent.ACTION_POINTER_UP, a, b)
+                send(MotionEvent.ACTION_UP, b)
+                assertEquals(zoomsBefore + if (app == "orca") 1 else 0, zooms.size)
+                assertTrue(held.isEmpty())
             }
-            // Reopening desktop mode must not reinterpret Orca's touch gestures.
+            // A foreground switch during a pinch must not send shortcuts to the new app.
+            send(MotionEvent.ACTION_DOWN, a)
+            send(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), a, b)
+            val zoomsBeforeSwitch = zooms.size
+            instrument.runOnMainSync { toolbar.observeApplication("chatgpt") }
+            send(MotionEvent.ACTION_MOVE, a.copy(x = 200f), b.copy(x = 800f))
+            send(MotionEvent.ACTION_UP, a)
+            assertEquals(zoomsBeforeSwitch, zooms.size)
+            instrument.runOnMainSync { toolbar.observeApplication("orca") }
+            // Reopening desktop mode must preserve Orca's native single-finger gestures.
             instrument.runOnMainSync { toolbar.setGameMode(false) }
             swipeInPhoneMode(false)
             instrument.runOnMainSync { toolbar.observeApplication("chatgpt") }

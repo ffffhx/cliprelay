@@ -38,9 +38,16 @@ public final class DesktopToolbar {
         default void gamePointerModeChanged(boolean enabled) {}
         default void applicationChanged() {}
         default void scrollCompatibilityChanged(boolean enabled) {}
+        default void pinchCompatibilityChanged(boolean enabled) {}
         default void virtualKeyboardChanged(boolean visible) {}
         default void image() {}
+        default void files() {}
+        default void terminal() {}
+        default void displays() {}
+        default void clipboard() {}
+        default void privacy() {}
         default void voice() {}
+        default void voiceSettings() {}
         default void home() {}
         default void streamInfo() {}
     }
@@ -58,6 +65,7 @@ public final class DesktopToolbar {
         private VirtualKeyboardView virtualKeyboard;
         private boolean keyboardOpen;
         private DesktopSideRails sideRails;
+        private CustomShortcutPanel shortcuts;
 
         public boolean isSideRailsActive() { return sideRails != null && sideRails.isAvailable(); }
 
@@ -130,6 +138,7 @@ public final class DesktopToolbar {
         }
         private void updateScrollCompatibility() {
             actions.scrollCompatibilityChanged(ApplicationPolicy.usesPhoneScrollCompatibility(detectedApp, gameMode));
+            actions.pinchCompatibilityChanged(ApplicationPolicy.usesPhonePinchCompatibility(detectedApp, gameMode));
         }
         private boolean canSend() { return connected && !paused && !pip; }
 
@@ -158,6 +167,7 @@ public final class DesktopToolbar {
             if (virtualKeyboard != null) virtualKeyboard.clearModifiers();
         }
         private void update() {
+            if (shortcuts != null && (!connected || paused || pip)) shortcuts.close();
             boolean ready = connected && focused && !paused && !pip;
             if (keyboardOpen && !ready) {
                 keyboardOpen = false;
@@ -195,6 +205,7 @@ public final class DesktopToolbar {
         controller.actions = actions;
         controller.focused = activity.hasWindowFocus();
         DesktopInput keyboard = new DesktopInput(sink);
+        controller.shortcuts = new CustomShortcutPanel(activity, keyboard, controller::canSend, controller::releaseTouches);
         controller.game = new GameControlsView(activity, sink,
                 () -> controller.setGameMode(false), actions::gamePointerModeChanged);
         controller.game.setVirtualKeyboardAction(controller::showVirtualKeyboard);
@@ -295,6 +306,8 @@ public final class DesktopToolbar {
             controller.voiceIdleBackground = voice.getBackground();
             controller.updateVoiceButton();
             voice.setOnClickListener(v -> { if (controller.canSend()) { controller.releaseTouches(); actions.voice(); } });
+            voice.setOnLongClickListener(v -> { if (controller.canSend()) actions.voiceSettings(); return true; });
+            voice.setTooltipText(activity.getString(R.string.speech_provider_hint_short));
             Button image = button(activity, primary, activity.getString(R.string.desktop_image));
             image.setId(R.id.desktopImageButton);
             image.setOnClickListener(v -> { if (controller.canSend()) actions.image(); });
@@ -310,6 +323,7 @@ public final class DesktopToolbar {
             backspace.setOnClickListener(v -> { if (controller.canSend()) keyboard.tap(0x08); });
             shortcut(activity, secondary, controller, keyboard, "Esc", 0x1B);
             shortcut(activity, secondary, controller, keyboard, "Win", 0x5B);
+            button(activity, secondary, activity.getString(R.string.shortcuts_title)).setOnClickListener(v -> controller.shortcuts.show());
             Button more = button(activity, secondary, activity.getString(R.string.desktop_more_button));
             more.setId(R.id.desktopMoreButton);
             more.setOnClickListener(v -> showMore(activity, controller, keyboard, sink, actions));
@@ -328,7 +342,7 @@ public final class DesktopToolbar {
                 activity.getString(R.string.touch_mode_button, activity.getString(actions.touchMode().label)),
                 activity.getString(R.string.desktop_undo), activity.getString(R.string.desktop_redo),
                 activity.getString(R.string.desktop_scroll_up), activity.getString(R.string.desktop_scroll_down),
-                activity.getString(R.string.stream_info_title), activity.getString(R.string.desktop_disconnect)};
+                activity.getString(R.string.stream_info_title), activity.getString(R.string.desktop_disconnect), activity.getString(R.string.files_title), activity.getString(R.string.displays_title), activity.getString(R.string.clipboard_title), activity.getString(R.string.privacy_title), activity.getString(R.string.terminal_title), activity.getString(R.string.speech_provider), activity.getString(R.string.shortcuts_title)};
         new AlertDialog.Builder(activity).setTitle(R.string.desktop_more)
                 .setItems(labels, (dialog, which) -> {
                     dialog.dismiss();
@@ -336,6 +350,13 @@ public final class DesktopToolbar {
                     if (which == 8) { actions.streamInfo(); return; }
                     if (which == 9) { actions.disconnect(); return; }
                     if (!controller.canSend()) return;
+                    if (which == 10) { actions.files(); return; }
+                    if (which == 11) { actions.displays(); return; }
+                    if (which == 12) { actions.clipboard(); return; }
+                    if (which == 13) { actions.privacy(); return; }
+                    if (which == 14) { actions.terminal(); return; }
+                    if (which == 15) { actions.voiceSettings(); return; }
+                    if (which == 16) { controller.shortcuts.show(); return; }
                     switch (which) {
                         case 0: keyboard.tap(0x11, 'C'); break;
                         case 1: keyboard.tap(0x11, 'V'); break;

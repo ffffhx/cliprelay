@@ -65,10 +65,26 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private PcGridAdapter pcGridAdapter;
     private ShortcutHelper shortcutHelper;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
+    private com.limelight.ui.RemoteWake remoteWake;
+
+    private com.limelight.ui.RemoteWake wakeControls() {
+        if (remoteWake == null) remoteWake = new com.limelight.ui.RemoteWake(this, new com.limelight.ui.RemoteWake.Peers() {
+            @Override public java.util.List<ComputerDetails> current() {
+                java.util.List<ComputerDetails> result = new java.util.ArrayList<>();
+                if (pcGridAdapter != null) for (int i = 0; i < pcGridAdapter.getCount(); i++)
+                    result.add(new ComputerDetails(((ComputerObject) pcGridAdapter.getItem(i)).details));
+                return result;
+            }
+            @Override public String uniqueId() { return managerBinder == null ? null : managerBinder.getUniqueId(); }
+            @Override public void localWake(ComputerDetails computer) { doWakeOnLan(computer); }
+        });
+        return remoteWake;
+    }
     private boolean freezeUpdates, runningPolling, inForeground, completeOnCreateCalled;
     private boolean openingStream;
     private final android.os.Handler networkHandler = new android.os.Handler(android.os.Looper.getMainLooper());
-    private boolean embeddedAdded, embeddedAdding;
+    private final java.util.Set<String> embeddedAdded = new java.util.HashSet<>();
+    private final java.util.Set<String> embeddedAdding = new java.util.HashSet<>();
     private final java.util.concurrent.atomic.AtomicBoolean pairingActive = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile NvHTTP pairingHttp;
     private volatile boolean pairingCancelled;
@@ -77,19 +93,23 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         @Override public void run() {
             if (!inForeground || isFinishing() || isDestroyed()) return;
             EmbeddedNetwork.Provider provider = EmbeddedNetwork.provider;
-            if (provider == null || !provider.ready()) embeddedAdded = false;
-            else if (managerBinder != null && !embeddedAdded && !embeddedAdding) {
-                embeddedAdding = true;
+            String[] ready = provider == null ? new String[0] : provider.readyAddresses();
+            embeddedAdded.retainAll(java.util.Arrays.asList(ready));
+            for (final String address : ready) {
+                if (managerBinder == null || embeddedAdded.contains(address) || !embeddedAdding.add(address)) continue;
                 final ComputerManagerService.ComputerManagerBinder binder = managerBinder;
                 new Thread(() -> {
                     boolean added = false;
                     try {
                         ComputerDetails details = new ComputerDetails();
-                        details.embeddedAddress = new ComputerDetails.AddressTuple(EmbeddedNetwork.ADDRESS, 48789);
+                        details.embeddedAddress = new ComputerDetails.AddressTuple(address, 48789);
                         added = binder.addComputerBlocking(details);
                     } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
                     final boolean success = added;
-                    networkHandler.post(() -> { embeddedAdding = false; embeddedAdded = success; });
+                    networkHandler.post(() -> {
+                        embeddedAdding.remove(address);
+                        if (success) embeddedAdded.add(address);
+                    });
                 }, "ClipRelay paired computer discovery").start();
             }
             networkHandler.postDelayed(this, 3000);
@@ -334,6 +354,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
     @Override
     public void onDestroy() {
+        if (remoteWake != null) { remoteWake.close(); remoteWake = null; }
         cancelLanPairing();
         if (lanPairDialog != null) lanPairDialog.dismiss();
         super.onDestroy();
@@ -363,6 +384,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     @Override
     protected void onPause() {
         super.onPause();
+        if (remoteWake != null) { remoteWake.close(); remoteWake = null; }
 
         inForeground = false;
         networkHandler.removeCallbacks(checkEmbeddedNetwork);
@@ -428,6 +450,9 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             }
 
             menu.add(Menu.NONE, FULL_APP_LIST_ID, 4, getResources().getString(R.string.pcview_menu_app_list));
+            menu.add(Menu.NONE, 110, 5, getString(R.string.files_title));
+            menu.add(Menu.NONE, 111, 6, getString(R.string.wake_settings));
+            menu.add(Menu.NONE, 112, 7, getString(R.string.terminal_title));
         }
 
         menu.add(Menu.NONE, TEST_NETWORK_ID, 5, getResources().getString(R.string.pcview_menu_test_network));
@@ -610,7 +635,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
+                        if (inForeground && !isFinishing() && !isDestroyed())
+                            Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
                     }
                 });
             }
@@ -708,6 +734,23 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         AdapterContextMenuInfo info = (AdapterContextMenuInfo) item.getMenuInfo();
         final ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(info.position);
         switch (item.getItemId()) {
+            case 111:
+                wakeControls().configure(computer.details);
+                return true;
+            case 112:
+                if (managerBinder != null && computer.details.activeAddress != null) {
+                    Intent terminal = ServerHelper.createStartIntent(this, new NvApp("Desktop", 0, false), computer.details, managerBinder);
+                    terminal.setClass(this, com.limelight.terminal.TerminalActivity.class);
+                    startActivity(terminal);
+                }
+                return true;
+            case 110:
+                if (managerBinder != null && computer.details.activeAddress != null) {
+                    Intent files = ServerHelper.createStartIntent(this, new NvApp("Desktop", 0, false), computer.details, managerBinder);
+                    files.setClass(this, com.limelight.files.FileTransferActivity.class);
+                    startActivity(files);
+                }
+                return true;
             case PAIR_ID:
                 doPair(computer.details);
                 return true;
@@ -717,7 +760,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 return true;
 
             case WOL_ID:
-                doWakeOnLan(computer.details);
+                wakeControls().show(computer.details);
                 return true;
 
             case DELETE_ID:
@@ -785,6 +828,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     
     private void removeComputer(ComputerDetails details) {
         managerBinder.removeComputer(details);
+        com.limelight.ui.RemoteWake.forget(this, details.uuid);
 
         new DiskAssetLoader(this).deleteAssetsForComputer(details.uuid);
 
