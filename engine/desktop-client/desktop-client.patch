@@ -106,6 +106,14 @@
      QSettings settings;
  
      m_CachedPemCert = settings.value(SER_CERT).toByteArray();
+@@ -198,6 +207,7 @@
+ IdentityManager::getSslConfig()
+ {
+     QSslConfiguration sslConfig(QSslConfiguration::defaultConfiguration());
++    if (ClipRelayImport::active()) sslConfig.setProtocol(QSsl::TlsV1_2OrLater);
+     sslConfig.setLocalCertificate(getSslCertificate());
+     sslConfig.setPrivateKey(getSslKey());
+     return sslConfig;
 --- a/app/backend/computermanager.cpp
 +++ b/app/backend/computermanager.cpp
 @@ -1,4 +1,5 @@
@@ -162,13 +170,14 @@
  
      // Throws if the request failed
      verifyResponseStatus(response);
-@@ -485,6 +492,14 @@
+@@ -485,6 +492,15 @@
                         int timeoutMs,
                         NvLogLevel logLevel)
  {
 +    if (ClipRelayImport::active()) {
 +        const auto& input = ClipRelayImport::get();
-+        if (baseUrl.scheme() != "https" || baseUrl.host() != input.address ||
++        QUrl expected; expected.setHost(input.address);
++        if (baseUrl.scheme() != "https" || baseUrl.host() != expected.host() ||
 +            baseUrl.port() != input.port - 5 || m_ServerCert != input.hostCertificate) {
 +            throw GfeHttpResponseException(401, "Paired endpoint mismatch");
 +        }
@@ -177,7 +186,7 @@
      // Port must be set
      Q_ASSERT(baseUrl.port(0) != 0);
  
-@@ -498,6 +513,7 @@
+@@ -498,6 +514,7 @@
                   ((arguments != nullptr) ? ("&" + arguments) : ""));
  
      QNetworkRequest request(url);
@@ -185,7 +194,7 @@
  
      // Add our client certificate
      request.setSslConfiguration(IdentityManager::get()->getSslConfig());
-@@ -516,6 +532,16 @@
+@@ -516,6 +533,16 @@
  
      auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
      QNetworkReply* reply = m_Nam->get(request);
@@ -223,7 +232,7 @@
  
                  m_ComputerSeeker = new ComputerSeeker(m_ComputerManager, m_ComputerName, q);
                  q->connect(m_ComputerSeeker, &ComputerSeeker::computerFound,
-@@ -140,6 +147,35 @@
+@@ -140,6 +147,36 @@
          }
      }
  
@@ -234,6 +243,7 @@
 +            const auto& input = ClipRelayImport::get();
 +            NvHTTP http(NvAddress(input.address, input.port), input.port - 5, input.hostCertificate, true);
 +            QString info = http.getServerInfo(NvHTTP::NVLL_NONE);
++            if (!ClipRelayImport::parentAlive()) return;
 +            m_PairedComputer.reset(new NvComputer(http, info));
 +            m_Computer = m_PairedComputer.get();
 +            if (m_Computer->pairState != NvComputer::PS_PAIRED || m_Computer->isNvidiaServerSoftware)
@@ -246,7 +256,7 @@
 +            NvApp app = m_Computer->appList[index];
 +            if (!isNotStreaming() && !isStreamingApp(app))
 +                throw GfeHttpResponseException(409, "Another application is streaming. End it on the computer first.");
-+            if (QCoreApplication::closingDown()) return;
++            if (!ClipRelayImport::parentAlive()) return;
 +            m_State = StateStartSession;
 +            emit q->sessionCreated(app.name, new Session(m_Computer, app, m_Preferences));
 +        }
@@ -259,7 +269,7 @@
      int getAppIndex() const
      {
          for (int i = 0; i < m_Computer->appList.length(); i++) {
-@@ -170,6 +206,7 @@
+@@ -170,6 +207,7 @@
          return "<UNKNOWN>";
      }
  

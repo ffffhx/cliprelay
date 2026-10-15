@@ -19,6 +19,7 @@ constexpr int MaxFrame = 65536;
 bool parse(const QByteArray& bytes, Session& result);
 bool loadStdin();
 bool active();
+bool parentAlive();
 const Session& get();
 void watchParent();
 }

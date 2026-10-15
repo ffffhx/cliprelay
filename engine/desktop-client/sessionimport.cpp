@@ -138,19 +138,21 @@ bool loadStdin() {
 }
 bool active() { return loaded; }
 const Session& get() { Q_ASSERT(loaded); return current; }
+bool parentAlive() {
+#ifdef Q_OS_WIN
+    DWORD available = 0;
+    return PeekNamedPipe(GetStdHandle(STD_INPUT_HANDLE), nullptr, 0, nullptr, &available, nullptr) && !available;
+#else
+    pollfd fd{STDIN_FILENO, POLLIN, 0};
+    int result = poll(&fd, 1, 0);
+    return result == 0 || (result < 0 && errno == EINTR);
+#endif
+}
 void watchParent() {
     auto timer = new QTimer(QCoreApplication::instance());
     QObject::connect(timer, &QTimer::timeout, [] {
-#ifdef Q_OS_WIN
-        DWORD available = 0;
-        bool alive = PeekNamedPipe(GetStdHandle(STD_INPUT_HANDLE), nullptr, 0, nullptr, &available, nullptr) && !available;
-#else
-        pollfd fd{STDIN_FILENO, POLLIN, 0};
-        int result = poll(&fd, 1, 0);
-        bool alive = result == 0 || (result < 0 && errno == EINTR);
-#endif
         // EOF or unexpected further messages terminate this one-shot session.
-        if (!alive) QCoreApplication::quit();
+        if (!parentAlive()) QCoreApplication::quit();
     });
     timer->start(100);
 }
