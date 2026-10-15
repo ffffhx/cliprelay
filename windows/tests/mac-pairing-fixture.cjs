@@ -2,7 +2,9 @@
 const {execFileSync}=require('node:child_process');
 const path=require('node:path'),crypto=require('node:crypto'),http=require('node:http'),https=require('node:https');
 const {once}=require('node:events');
-const identities=JSON.parse(execFileSync('go',['run',path.join(__dirname,'mac-pairing-fixture/main.go')],{encoding:'utf8',timeout:60000,windowsHide:true,maxBuffer:32768,env:{...process.env,GOTOOLCHAIN:'local'}}));
+const generator=process.env.CLIPRELAY_PAIRING_TEST_FIXTURE;
+if(generator&&!path.isAbsolute(generator))throw Error('Pairing fixture executable must use an absolute path');
+const identities=JSON.parse(execFileSync(generator||'go',generator?[]:['run',path.join(__dirname,'mac-pairing-fixture/main.go')],{encoding:'utf8',timeout:60000,windowsHide:true,maxBuffer:32768,env:{...process.env,GOTOOLCHAIN:'local'}}));
 const der=value=>new crypto.X509Certificate(value).raw;
 const digest=(...parts)=>crypto.createHash('sha256').update(Buffer.concat(parts.map(p=>Buffer.isBuffer(p)?p:Buffer.from(p)))).digest();
 const aes=(bytes,key,decrypt=false)=>{const c=(decrypt?crypto.createDecipheriv:crypto.createCipheriv)('aes-128-ecb',key,null);c.setAutoPadding(false);return Buffer.concat([c.update(bytes),c.final()]);};

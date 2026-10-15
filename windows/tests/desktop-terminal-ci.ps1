@@ -12,6 +12,11 @@ $suffix = [Guid]::NewGuid().ToString('N').Substring(0,8)
 $account = 'crterm_' + $suffix
 $directory = Join-Path $repository ('.tools/terminal-ci-' + $suffix)
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
+$pairingFixture = Join-Path $directory 'pairing-fixture.exe'
+# Compile before switching users. A fresh user's Go cache can spend the entire
+# certificate-generation timeout compiling the standard library.
+& go build -o $pairingFixture (Join-Path $PSScriptRoot 'mac-pairing-fixture/main.go')
+if ($LASTEXITCODE -ne 0) { throw 'Could not compile the pairing certificate fixture.' }
 $random = New-Object byte[] 32
 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($random)
 $password = ConvertTo-SecureString ('Cr!9' + [Convert]::ToBase64String($random)) -AsPlainText -Force
@@ -38,6 +43,7 @@ try {
         ('$env:GOCACHE = ' + (Quote-Literal (Join-Path $directory 'go-cache'))),
         ('$env:GOPATH = ' + (Quote-Literal (Join-Path $directory 'go-path'))),
         '$env:GOTELEMETRY = ''off''',
+        ('$env:CLIPRELAY_PAIRING_TEST_FIXTURE = ' + (Quote-Literal $pairingFixture)),
         ('$env:CLIPRELAY_TERMINAL_TEST_WORKER = ' + (Quote-Literal (Join-Path $repository '.tools/uu-parity/terminal-tests.exe'))),
         ('& ' + (Quote-Literal $node) + ' --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs'),
         '$testExit = $LASTEXITCODE',
