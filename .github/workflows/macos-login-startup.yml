@@ -7,6 +7,7 @@ on:
       - '.github/workflows/macos-login-startup.yml'
       - 'windows/electron/mac/login-startup.cjs'
       - 'scripts/test_macos_login_startup.py'
+      - 'scripts/run_macos_login_fixture.swift'
       - 'windows/tests/native-mac-login-startup.cjs'
 permissions:
   contents: read

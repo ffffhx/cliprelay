@@ -29,9 +29,12 @@ def main():
                   sourceSha256=hashlib.sha256((modules/'login-startup.cjs').read_bytes()).hexdigest(),
                   productionBundleRegistered=False, loginSessionRestarted=False, windowsCreated=0, cleanupConfirmed=False)
     failure = None
-    with tempfile.TemporaryDirectory(prefix='cliprelay-login-test-', dir=runner) as temporary:
+    with tempfile.TemporaryDirectory(prefix='cliprelay-login-test-', dir=runner) as temporary, \
+         tempfile.TemporaryDirectory(prefix='ClipRelayLoginFixture-', dir='/Applications') as installation:
         directory = Path(temporary).resolve()
-        isolated = directory/'ClipRelayLoginFixture.app'
+        install_directory = Path(installation).resolve()
+        assert install_directory.parent == Path('/Applications') and install_directory.name.startswith('ClipRelayLoginFixture-')
+        isolated = install_directory/'ClipRelayLoginFixture.app'
         # Preserve the production runtime and load unchanged packaged modules,
         # but give the probe its own bundle ID, entry point and data directory.
         resources = runtime/'Contents/Resources'
@@ -64,13 +67,16 @@ def main():
         result['productionRuntimeExecutableSha256'] = hashlib.sha256((runtime/'Contents/MacOS'/info['CFBundleExecutable']).read_bytes()).hexdigest()
         result['runtimeExecutableSha256'] = hashlib.sha256(executable.read_bytes()).hexdigest()
         (directory/'user-data').mkdir()
+        launcher = directory/'launch-fixture'
+        subprocess.run(['/usr/bin/swiftc', str(Path(__file__).with_name('run_macos_login_fixture.swift')), '-o', str(launcher)], check=True, capture_output=True, timeout=60)
+        result['launchedThroughNSWorkspace'] = True
 
         def invoke(phase):
             receipt = directory/(phase+'.json')
             env['CLIPRELAY_NATIVE_LOGIN_OPTIONS'] = json.dumps(dict(phase=phase, userData=str(directory/'user-data'), modules=str(modules), report=str(receipt)))
-            child = subprocess.Popen([str(executable)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            child = subprocess.Popen([str(launcher), str(isolated)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
             try:
-                stdout, stderr = child.communicate(timeout=25)
+                stdout, stderr = child.communicate(timeout=35)
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.communicate()
