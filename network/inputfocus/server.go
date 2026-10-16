@@ -98,6 +98,7 @@ type probe struct {
 	closed     bool
 	executable string
 	argument   string
+	arguments  []string
 	cmd        *exec.Cmd
 	in         io.WriteCloser
 	out        *bufio.Reader
@@ -181,7 +182,11 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 		if argument == "" {
 			argument = "--focus-probe"
 		}
-		cmd := exec.Command(p.executable, argument)
+		arguments := p.arguments
+		if len(arguments) == 0 {
+			arguments = []string{argument}
+		}
+		cmd := exec.Command(p.executable, arguments...)
 		quietProcess(cmd)
 		in, err := cmd.StdinPipe()
 		if err != nil {
@@ -431,9 +436,9 @@ func ServeWithEngineAccess(ctx context.Context, dir, executable string, access E
 }
 
 // ServeManagedHost serves the engine's control APIs and LAN enrollment for an
-// independently admitted application-owned companion. Native auxiliary workers
-// are explicitly unavailable until Mac providers exist; no Windows probe flags
-// are launched. The caller owns the private transient runtime directory.
+// independently admitted application-owned companion. Mac file I/O uses its own
+// owned worker; other auxiliary providers remain unavailable. No Windows probe
+// flags are launched. The caller owns the private transient runtime directory.
 // onListening means required endpoints are bound, not that video is streaming.
 func ServeManagedHost(ctx context.Context, dir, runtimeDir string, access EngineAccess, onListening func() error) error {
 	if !filepath.IsAbs(runtimeDir) || !filepath.IsAbs(dir) {
@@ -484,6 +489,11 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	p := &probe{ctx: ctx, executable: executable}
 	voice := &probe{ctx: ctx, executable: executable, argument: "--voice-probe"}
 	files := &probe{ctx: ctx, executable: executable, argument: "--file-probe", maxOutput: fileMessageLimit, timeout: 15 * time.Second}
+	if managed {
+		if err := configureManagedFiles(files, dir); err != nil {
+			return err
+		}
+	}
 	clipboard := &probe{ctx: ctx, executable: executable, argument: "--clipboard-probe", maxOutput: clipboardMessageLimit, timeout: 10 * time.Second}
 	privacy := &probe{ctx: ctx, executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	audio := &probe{ctx: ctx, executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}

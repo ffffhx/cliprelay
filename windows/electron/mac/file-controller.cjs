@@ -49,7 +49,7 @@ class FileController{
       const after=more?this.browser.next:'',reply=await this.call(operation,{op:'list',root,path:relative,...(after?{after}:{})});
       requireValue(!reply.next || reply.next!==after,'FILES_INVALID_RESPONSE');
       const entries=more?[...this.browser.entries,...reply.entries]:reply.entries;requireValue(entries.length<=4096,'FILES_TOO_LARGE');
-      requireValue(new Set(entries.map(entry=>entry.name.toLowerCase())).size===entries.length,'FILES_INVALID_RESPONSE');
+      requireValue(new Set(entries.map(entry=>entry.name)).size===entries.length,'FILES_INVALID_RESPONSE');
       this.browser={roots,root,path:relative,entries,next:reply.next,loaded:true};
     }finally{this.operations.delete(operation);if(this.browsing===operation)this.browsing=null;this.onUpdate();}
   }

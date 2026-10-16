@@ -22,6 +22,7 @@ func main() {
 	flags.SetOutput(io.Discard)
 	directory := flags.String("state-dir", "", "private prepared engine state directory")
 	owner := flags.Int("owner-pid", 0, "direct owning application PID")
+	managedFiles := flags.Bool("managed-files", false, "owned native file worker")
 	if flags.Parse(os.Args[1:]) != nil || flags.NArg() != 0 || runtime.GOOS != "darwin" || *owner <= 1 || *owner != os.Getppid() ||
 		!filepath.IsAbs(*directory) || !ownedInput(os.Stdin) || !ownedOutput(os.Stdout) {
 		fmt.Fprintln(os.Stderr, "HOST_OWNER_INVALID")
@@ -42,6 +43,30 @@ func main() {
 	_ = os.Stdin.Close()
 	_ = os.Stdout.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	workerDone := make(chan struct{})
+	guardianDone := make(chan struct{})
+	if *managedFiles {
+		// A killed companion cannot supervise its worker any more. EOF or the
+		// parent watcher still withdraws access; bound even a stuck filesystem
+		// shutdown instead of retaining an orphan after the parent disappears.
+		go func() {
+			defer close(guardianDone)
+			select {
+			case <-ctx.Done():
+			case <-workerDone:
+				return
+			}
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-workerDone:
+			case <-timer.C:
+				os.Exit(2)
+			}
+		}()
+	} else {
+		close(guardianDone)
+	}
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
@@ -61,9 +86,16 @@ func main() {
 			}
 		}
 	}()
-	err := hostcompanion.Run(ctx, input, output, *directory, *owner, inputfocus.ServeManagedHost)
+	var err error
+	if *managedFiles {
+		err = runManagedFiles(ctx, input, output, *directory)
+	} else {
+		err = hostcompanion.Run(ctx, input, output, *directory, *owner, inputfocus.ServeManagedHost)
+	}
 	cancel()
 	<-watchDone
+	close(workerDone)
+	<-guardianDone
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)

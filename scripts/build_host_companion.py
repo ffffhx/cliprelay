@@ -41,7 +41,7 @@ def build(output):
         archive.add(ROOT/'LICENSE', arcname='LICENSE')
         for name in ['go.mod', 'go.sum']:
             archive.add(ROOT/'network'/name, arcname='network/'+name)
-        for directory in ['inputfocus', 'hostcompanion', 'cmd/cliprelay-host-network']:
+        for directory in ['inputfocus', 'hostcompanion', 'hostfiles', 'cmd/cliprelay-host-network']:
             for source in sorted((ROOT/'network'/directory).rglob('*.go')):
                 archive.add(source, arcname=source.relative_to(ROOT).as_posix())
         for name in ['build_host_companion.py', 'network_notices.py', 'test_host_companion.py']:

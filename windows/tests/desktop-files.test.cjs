@@ -64,6 +64,21 @@ test('lost upload acknowledgment resumes the same remote job after restart, with
   f.controller.close();const resumed=f.create();assert.equal(resumed.storage.get(task.id).state,'paused');const before=f.server.calls.length;await wait(30);assert.equal(f.server.calls.length,before);
   await resumed.resume(task.id);await resumed.running;assert.equal(resumed.storage.get(task.id).state,'complete');assert.equal(f.server.jobs.size,1);assert.deepEqual(f.server.files.get('test.bin'),bytes);
 });
+
+test('case-sensitive host names survive pagination and download without overwriting a local alias',async t=>{
+  const f=await fixture(t),names=['Case.bin','case.bin'],contents=[Buffer.from('upper-case file'),Buffer.from('lower-case file')];
+  names.forEach((name,index)=>f.server.files.set(name,contents[index]));
+  const entry=index=>({name:names[index],directory:false,blocked:false,hidden:false,size:contents[index].length,modified:0});
+  const command={op:'list',root:'downloads',path:''};
+  assert.equal(protocol.validateReply(command,{ok:true,...command,entries:[entry(0),entry(1)]}).entries.length,2);
+  assert.throws(()=>protocol.validateReply(command,{ok:true,...command,entries:[entry(0),entry(0)]}),{code:'FILES_INVALID_RESPONSE'});
+  f.server.hook=async c=>c.op==='list'?{root:c.root,path:c.path,next:c.after?'':'next-page',entries:[entry(c.after?1:0)]}:undefined;
+  await f.controller.browse();await f.controller.browse('downloads','',true);
+  assert.deepEqual(f.controller.snapshot().browser.entries.map(value=>value.name),names);
+  f.selection=[f.destination];await f.controller.pick(window,'download',names);await f.controller.running;
+  const jobs=f.controller.storage.jobs;assert.equal(jobs.length,2);
+  for(let i=0;i<jobs.length;i++){assert.equal(jobs[i].state,'complete');assert.deepEqual(await fsp.readFile(path.join(f.destination,jobs[i].finalName)),contents[i]);}
+});
 test('download restart truncates an uncheckpointed tail and verifies the full file',async t=>{
   const f=await fixture(t),bytes=crypto.randomBytes(protocol.CHUNK*2+53);let calls=0;
   f.server.hook=async c=>{if(c.op==='download-chunk' && ++calls===2)throw fault('TIMEOUT');};

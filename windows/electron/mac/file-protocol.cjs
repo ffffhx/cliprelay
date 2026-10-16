@@ -31,7 +31,7 @@ function validateReply(command,value){
   if(command.op==='list'){
     requireValue(value.root===command.root && (value.path || '')===command.path && (!value.next || typeof value.next==='string' && value.next.length<=1024) && (!value.entries || Array.isArray(value.entries) && value.entries.length<=256));
     const seen=new Set();return {root:value.root,path:value.path || '',next:value.next || '',entries:(value.entries || []).map(entry=>{
-      requireValue(typeof entry.name==='string' && entry.name.length<=32768 && !seen.has(entry.name.toLowerCase()) && typeof entry.directory==='boolean' && typeof entry.blocked==='boolean' && typeof entry.hidden==='boolean' && integer(entry.size) && Number.isSafeInteger(entry.modified));seen.add(entry.name.toLowerCase());
+      requireValue(typeof entry.name==='string' && entry.name.length<=32768 && !seen.has(entry.name) && typeof entry.directory==='boolean' && typeof entry.blocked==='boolean' && typeof entry.hidden==='boolean' && integer(entry.size) && Number.isSafeInteger(entry.modified));seen.add(entry.name);
       let blocked=entry.blocked;try{safeName(entry.name);}catch{blocked=true;}
       return {name:entry.name,directory:entry.directory,blocked,hidden:entry.hidden,size:entry.size,modified:entry.modified};
     })};
