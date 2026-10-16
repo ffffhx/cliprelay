@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {clipboardAccess,captureSelection}=require('../electron/mac/clipboard-access.cjs');
 const {PairedController}=require('../electron/mac/paired-controller.cjs');
-const {receive}=require('../electron/mac/relay.cjs');
+const {receive,sendSelection}=require('../electron/mac/relay.cjs');
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
 class Item{constructor(values){this.values=values;this.types=Object.keys(values);}async getType(type){return this.values[type];}}
 function fixture(){
@@ -57,4 +57,12 @@ test('legacy HTTP awaits the asynchronous write and returns failure without ackn
   await Promise.resolve();assert.equal(finished,false);assert.equal(notified,0);gate.reject(new Error('clipboard busy'));assert.equal((await pending).status,503);assert.equal(notified,0);
   const config={legacyEnabled:true};adapters.getConfig=()=>config;adapters.withClipboard=async op=>{config.legacyEnabled=false;return op();};
   assert.equal((await receive('POST','/push','{"text":"synthetic"}',adapters,context)).status,403);
+  config.legacyEnabled=true;adapters.withClipboard=operation=>operation();
+  assert.equal((await receive('POST','/push','{"text":"synthetic"}',adapters,{...context,active:()=>false})).status,503);
+});
+test('legacy destination changes while reading stop copy and sending',async()=>{
+  const f=fixture(),gate=deferred(),began=deferred(),config={legacyEnabled:true,peer:'first.local',peerPort:1};f.clipboard.has=async()=>true;
+  f.clipboard.readText=()=>{began.resolve();return gate.promise;};
+  const task=sendSelection({clipboard:f.clipboard,config,copySelection:()=>assert.fail('copy after target changed'),post:()=>assert.fail('send after target changed')});
+  await began.promise;config.peer='replacement.local';gate.resolve('synthetic');await assert.rejects(task,{code:'CANCELLED'});assert.equal(f.writes.length,0);
 });

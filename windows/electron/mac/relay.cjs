@@ -8,9 +8,11 @@ const MAX_BODY=1024*1024;
 
 // Behavioral contract is init.lua: one peer, Ctrl+Alt+G, restore previous
 // plain text, suppress empty/unchanged selections, POST /push and probes.
-async function sendSelection({clipboard,copySelection,config,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),post=postText}){
+async function sendSelection({clipboard,copySelection,config,active=()=>true,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),post=postText}){
   if(config.legacyEnabled!==true)return false;
-  const payload=await captureSelection(clipboardAccess({clipboard}),copySelection,{active:()=>config.legacyEnabled===true,delay});
+  const destination={peer:config.peer,peerPort:config.peerPort,peerToken:config.peerToken};
+  const current=()=>active() && config.legacyEnabled===true && Object.keys(destination).every(key=>config[key]===destination[key]);
+  const payload=await captureSelection(clipboardAccess({clipboard}),copySelection,{active:current,delay});
   if(!payload)return false;
   await post(config,payload.text).catch(()=>{}); // Sender remains silent on failures.
   return true;
@@ -54,6 +56,7 @@ async function receive(method,path,body,{clipboard,notify,getConfig=()=>({}),wit
         if(data.probe!==true){
           const result=await withClipboard(async()=>{
             const denied=authorize(getConfig(),context.remoteAddress,context.headers);if(denied)return denied;
+            if(context.active && !context.active())return {status:503,body:'request cancelled'};
             await clipboard.writeText(data.text);
             try{notify('ClipRelay 收到文本',Buffer.from(data.text,'utf8').subarray(0,80).toString('utf8'));}catch{}
             return {status:200,body:'ok'};
@@ -73,7 +76,7 @@ function createReceiver(adapters){
     const finish=result=>{if(finished)return;finished=true;clearTimeout(deadline);response.writeHead(result.status,{'Connection':'close','Cache-Control':'no-store'});response.end(result.body);};
     response.on('close',()=>{clearTimeout(deadline);request.destroy();});
     request.on('error',()=>{clearTimeout(deadline);response.destroy();});
-    const context={remoteAddress:request.socket.remoteAddress,headers:request.headers};
+    const context={remoteAddress:request.socket.remoteAddress,headers:request.headers,active:()=>!finished && !response.destroyed};
     const denied=authorize(adapters.getConfig?.(),context.remoteAddress,context.headers);
     if(denied){finish(denied);return;}
     if(request.method!=='POST' || request.url!=='/push'){finish({status:400,body:'bad request'});return;}

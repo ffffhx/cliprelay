@@ -224,7 +224,7 @@ async function start(){
   globalShortcut.register(config.hotkey || 'Control+Alt+G',()=>{
     if(paired.store.data.legacySelected!==true){paired.sendCurrent(true).catch(error=>alert(pairedMessage(error)));return;}
     if(config.legacyEnabled!==true){alert('旧版收发已关闭，请选择配对电脑或明确开启兼容');return;}
-    paired.withClipboard(()=>sendSelection({clipboard,config,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[])})).catch(()=>{});
+    paired.withClipboard(()=>sendSelection({clipboard,config,active:()=>!paired.closed && paired.store.data.legacySelected===true,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[])})).catch(()=>{});
   });
   alert('ClipRelay 已启动');
   await host.launch();
