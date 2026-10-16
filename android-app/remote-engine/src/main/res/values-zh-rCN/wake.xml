@@ -28,7 +28,7 @@
     <string name="wake_local_help">手机将按已保存的地址发送普通 Wake-on-LAN 数据包，通常需要手机处于目标局域网。发出数据包不代表电脑已经唤醒。</string>
     <string name="wake_sending">正在发送唤醒包…</string>
     <string name="wake_waiting">唤醒包已发出，正在等待已配对电脑上线，最多等待 60 秒…</string>
-    <string name="wake_timeout">电脑尚未确认上线。请检查电源、网卡、BIOS/UEFI 设置及助手网络。唤醒包已发出，唤醒结果仍未确认。</string>
+    <string name="wake_timeout">电脑尚未确认上线。请检查电源、系统网络唤醒设置、网卡及助手网络。唤醒包已发出，唤醒结果仍未确认。</string>
     <string name="wake_send_uncertain">未能确认数据包发送结果。回复可能在发送后丢失，请先观察电脑是否上线，再决定是否重试。</string>
     <string name="wake_online">已确认配对电脑上线。</string>
 </resources>

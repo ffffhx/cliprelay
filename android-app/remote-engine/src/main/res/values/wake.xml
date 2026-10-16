@@ -28,7 +28,7 @@
     <string name="wake_local_help">This sends ordinary Wake-on-LAN packets from the phone using saved addresses. It usually requires the phone to be on the target LAN. Sending a packet does not confirm that the computer woke up.</string>
     <string name="wake_sending">Sending wake packet…</string>
     <string name="wake_waiting">Wake packet sent. Waiting up to 60 seconds for the paired computer to come online…</string>
-    <string name="wake_timeout">The computer has not confirmed it is online. Check power, adapter and BIOS/UEFI settings, and the helper’s network. The packet was sent; wake is still unconfirmed.</string>
+    <string name="wake_timeout">The computer has not confirmed it is online. Check power, system network-wake settings, the adapter and the helper’s network. The packet was sent; wake is still unconfirmed.</string>
     <string name="wake_send_uncertain">Could not confirm packet delivery. A lost reply can occur after sending; check whether the computer appears online before trying again.</string>
     <string name="wake_online">The paired computer is online.</string>
 </resources>

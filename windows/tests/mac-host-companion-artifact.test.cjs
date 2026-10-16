@@ -50,8 +50,8 @@ test('legacy and version-one file manifests are accepted but unknown capability 
   for(const version of [0,2,true,'1',null]){f.manifest.fileTransfer=version;f.update();assert.throws(()=>verify(f.source,f.pin));}
 });
 
-test('clipboard and terminal capabilities retain old packages and reject unsupported versions',t=>{
-  for(const capability of ['clipboardExchange','terminalControl']){
+test('clipboard, terminal and wake capabilities retain old packages and reject unsupported versions',t=>{
+  for(const capability of ['clipboardExchange','terminalControl','wakeControl']){
     const f=fixture(t);assert.equal(verify(f.source,f.pin).manifest[capability],undefined);
     f.manifest[capability]=1;f.update();assert.equal(verify(f.source,f.pin).manifest[capability],1);
     for(const version of [0,2,true,'1',null]){f.manifest[capability]=version;f.update();assert.throws(()=>verify(f.source,f.pin));}

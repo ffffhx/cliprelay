@@ -88,9 +88,15 @@ def verify_sources(source_path, commit):
     terminal = b"'hostterminal'" in output('git', 'show', commit+':scripts/build_host_companion.py')
     if terminal:
         paths += output('git', 'ls-tree', '-r', '--name-only', commit, 'network/hostterminal').decode().splitlines()
+    wake = b"'hostwake'" in output('git', 'show', commit+':scripts/build_host_companion.py')
+    if wake:
+        paths += output('git', 'ls-tree', '-r', '--name-only', commit, 'network/hostwake').decode().splitlines()
     expected = {name for name in paths if name.endswith(('.go', '.m', '.h'))}
     expected |= {'LICENSE', 'network/go.mod', 'network/go.sum', 'scripts/build_host_companion.py',
                  'scripts/network_notices.py', 'scripts/test_host_companion.py'}
+    if wake:
+        expected |= {'scripts/test_host_wake.py', 'scripts/test_host_wake_client.cjs', 'scripts/WakeMacInterop.java', 'windows/electron/mac/wake-protocol.cjs'}
+        expected |= {'android-app/remote-engine/src/main/java/com/limelight/nvstream/wol/'+name+'.java' for name in ['WakeState', 'WakeSelection']}
     if terminal:
         expected.add('scripts/test_host_terminal_process.py')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal.py').strip():
@@ -118,6 +124,9 @@ def verify_sources(source_path, commit):
             if archive.extractfile(member).read() != output('git', 'show', commit+':'+member.name):
                 raise ValueError('Companion source does not match selected Git tree')
     return len(expected)
+
+
+WAKE_CASES = ['wake-native-read-only-inventory-and-worker-EOF', 'wake-worker-rejects-send-and-malformed-input', 'wake-managed-host-launches-owned-native-provider', 'wake-desktop-native-inventory-and-off-LAN-send-rejection-over-mutual-TLS', 'wake-Android-shipped-parser-native-inventory-over-mutual-TLS', 'wake-established-TLS-revocation-blocks-inventory-and-sending', 'wake-host-EOF-reaps-native-worker']
 
 
 def terminal_http_cases(commit):
@@ -148,8 +157,9 @@ def fetch(run, arch, directory):
     file_transfer = json.loads((artifact/'manifest.json').read_bytes()).get('fileTransfer') == 1
     clipboard_exchange = json.loads((artifact/'manifest.json').read_bytes()).get('clipboardExchange') == 1
     terminal_control = json.loads((artifact/'manifest.json').read_bytes()).get('terminalControl') == 1
+    wake_control = json.loads((artifact/'manifest.json').read_bytes()).get('wakeControl') == 1
     terminal_cases = terminal_http_cases(commit)
-    expected_cases = (terminal_cases if terminal_control else []) + (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
+    expected_cases = (WAKE_CASES if wake_control else []) + (terminal_cases if terminal_control else []) + (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
     executable_hash = hashlib.sha256((artifact/'runtime/cliprelay-host-network').read_bytes()).hexdigest()
     terminal = b"'hostterminal'" in subprocess.check_output(['git', 'show', commit+':scripts/build_host_companion.py'], cwd=ROOT)
     terminal_receipt = artifact/TERMINAL_REPORT
@@ -164,6 +174,7 @@ def fetch(run, arch, directory):
             or (file_transfer and report.get('fileTransfer') != 1)
             or (clipboard_exchange and report.get('clipboardExchange') != 1)
             or (terminal_control and report.get('terminalControl') != 1)
+            or (wake_control and report.get('wakeControl') != 1)
             or report['architecture'] != arch or report['executableSha256'] != executable_hash):
         raise ValueError('Companion process receipt does not match the selected architecture and executable')
     result = {'run': int(run), 'architecture': arch, 'pin': pin, 'sourceFilesVerified': source_files,

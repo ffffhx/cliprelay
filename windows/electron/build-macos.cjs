@@ -94,9 +94,10 @@ async function build(){
             'clipboard-worker-crash-recovery','clipboard-eof-joins-worker','clipboard-parent-loss-with-writer-held','clipboard-owner-admission','tls-clipboard-desktop-client']:[];
           const terminalCases=result.manifest.terminalControl===1?['tls-terminal-shells-sessions-and-lost-replies','tls-terminal-native-mouse-lease-and-resize',
             'tls-terminal-desktop-client','tls-terminal-android-protocol','tls-terminal-owner-isolation-and-live-revocation','tls-terminal-output-gap-and-worker-restart','terminal-eof-reaps-owned-sessions']:[];
-          const expected=[...terminalCases,...clipboardCases,'tls-files-desktop-resume-and-no-overwrite','tls-files-owner-and-live-revocation','files-eof-joins-worker','files-parent-loss-with-writer-held','files-owner-admission'];
-          if(files.fileTransfer!==1 || files.passed!==17+clipboardCases.length+terminalCases.length || (clipboardCases.length && files.clipboardExchange!==1) ||
-              (terminalCases.length && files.terminalControl!==1) || JSON.stringify(files.cases.slice(0,expected.length))!==JSON.stringify(expected) ||
+          const wakeCases=result.manifest.wakeControl===1?['wake-native-read-only-inventory-and-worker-EOF', 'wake-worker-rejects-send-and-malformed-input', 'wake-managed-host-launches-owned-native-provider', 'wake-desktop-native-inventory-and-off-LAN-send-rejection-over-mutual-TLS', 'wake-Android-shipped-parser-native-inventory-over-mutual-TLS', 'wake-established-TLS-revocation-blocks-inventory-and-sending', 'wake-host-EOF-reaps-native-worker']:[];
+          const expected=[...wakeCases,...terminalCases,...clipboardCases,'tls-files-desktop-resume-and-no-overwrite','tls-files-owner-and-live-revocation','files-eof-joins-worker','files-parent-loss-with-writer-held','files-owner-admission'];
+          if(files.fileTransfer!==1 || files.passed!==17+clipboardCases.length+terminalCases.length+wakeCases.length || (clipboardCases.length && files.clipboardExchange!==1) ||
+              (terminalCases.length && files.terminalControl!==1) || (wakeCases.length && files.wakeControl!==1) || JSON.stringify(files.cases.slice(0,expected.length))!==JSON.stringify(expected) ||
               files.executableSha256!==result.manifest.files['runtime/cliprelay-host-network'])throw new Error('Packaged Mac file acceptance failed');
         }
         fs.writeFileSync(path.join(output,`host-companion-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:companionPin,
