@@ -228,191 +228,6 @@ index 7861538..2f416ec 100644
    };
  
    /**
-diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index 1b47397..c364049 100644
---- a/src/confighttp.cpp
-+++ b/src/confighttp.cpp
-@@ -37,6 +37,8 @@
- 
- // local includes
- #include "config.h"
-+#include "cliprelay_control.h"
-+#include "cliprelay_input.h"
- #include "confighttp.h"
- #include "crypto.h"
- #include "display_device.h"
-@@ -2310,6 +2312,159 @@ namespace confighttp {
-   /**
-    * @brief Start the HTTPS configuration server.
-    */
-+  // Private engine extension, available only through Sunshine's existing
-+  // administrator authentication. ClipRelay's paired control service filters
-+  // streams to the authenticated client; credentials never travel to a phone.
-+  const std::string &cliprelayInstance() {
-+    static const auto instance = uuid_util::uuid_t::generate().string();
-+    return instance;
-+  }
-+
-+  nlohmann::json cliprelayDisplayState() {
-+    const auto state = cliprelay::displays.snapshot();
-+    nlohmann::json result = {
-+      {"protocol", 1}, {"instance", cliprelayInstance()}, {"revision", state.revision}, {"generation", state.generation},
-+      {"phase", state.phase}, {"displays", state.displays},
-+      {"inputEpochSelection", true}, {"requestStream", state.request_stream}, {"inputEpoch", state.input_epoch},
-+      {"requestId", state.request_id}, {"requested", state.requested},
-+      {"result", state.result}, {"error", state.error}, {"capture", nullptr},
-+      {"streams", nlohmann::json::array()}
-+    };
-+    if (state.capture) {
-+      const auto &d = *state.capture;
-+      result["capture"] = {{"id", d.id}, {"x", d.x}, {"y", d.y}, {"width", d.width},
-+        {"height", d.height}, {"desktopX", d.desktop_x}, {"desktopY", d.desktop_y},
-+        {"desktopWidth", d.desktop_width}, {"desktopHeight", d.desktop_height}};
-+    }
-+    for (const auto &s : state.streams) {
-+      result["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"generation", s.generation},
-+        {"width", s.width}, {"height", s.height}, {"firstFrame", s.first_frame},
-+        {"audio", {{"capture", s.audio_capture}, {"generation", s.audio_generation}, {"ready", s.audio_ready}}}});
-+    }
-+    return result;
-+  }
-+
-+  void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
-+    if (!authenticate(response, request)) return;
-+#ifdef _WIN32
-+    // EnumOutputs filters detached/non-capturable devices in the same way as
-+    // the capture thread. Revalidate by ID there before applying a selection.
-+    if (request->query_string == "refresh=1") {
-+      cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::dxgi));
-+    } else if (!request->query_string.empty()) {
-+      bad_request(response, request, "Invalid display query"); return;
-+    }
-+    send_response(response, cliprelayDisplayState());
-+#else
-+    send_response(response, {{"protocol", 1}, {"error", "unsupported_platform"}});
-+#endif
-+  }
-+
-+  void cliprelaySelectDisplay(const resp_https_t &response, const req_https_t &request) {
-+    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
-+    if (!validate_csrf_token(response, request, get_client_id(request))) return;
-+    // Bound parsing and reject unknown keys instead of accepting arbitrary
-+    // configuration changes through this narrow control endpoint.
-+    std::array<char, 1025> body {};
-+    request->content.read(body.data(), body.size());
-+    const auto length = request->content.gcount();
-+    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
-+    try {
-+      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
-+      const bool guarded = input.is_object() && (input.contains("inputEpoch") || input.contains("stream"));
-+      if (!input.is_object() || input.size() != (guarded ? 5 : 3) || !input.contains("display") || !input.contains("revision") || !input.contains("instance") ||
-+          !input["display"].is_string() || !input["revision"].is_number_unsigned() || !input["instance"].is_string() ||
-+          (guarded && (!input.contains("stream") || !input.contains("inputEpoch") || !input["stream"].is_number_unsigned() ||
-+            !input["inputEpoch"].is_number_unsigned() || input["stream"].get<std::uint64_t>() == 0 ||
-+            input["stream"].get<std::uint64_t>() > 9007199254740991ULL || input["inputEpoch"].get<std::uint64_t>() > UINT32_MAX ||
-+            !(input["inputEpoch"].get<std::uint32_t>() & 1)))) {
-+        bad_request(response, request, "Expected display, revision and instance"); return;
-+      }
-+      const auto id = input["display"].get<std::string>();
-+      if (id.empty() || id.size() > 256) { bad_request(response, request, "Invalid display"); return; }
-+      std::string outcome = "stale_instance";
-+      if (input["instance"].get<std::string>() == cliprelayInstance()) {
-+        const auto revision = input["revision"].get<std::uint64_t>();
-+        if (guarded) {
-+          const auto stream = input["stream"].get<std::uint64_t>();
-+          const auto epoch = input["inputEpoch"].get<std::uint32_t>();
-+          outcome = cliprelay::inputs.select(stream, epoch, [&](const auto &selection) {
-+            return cliprelay::displays.request(id, revision, stream, epoch, selection);
-+          });
-+        } else outcome = cliprelay::displays.request(id, revision);
-+      }
-+      auto output = cliprelayDisplayState();
-+      output["accepted"] = outcome == "accepted";
-+      output["outcome"] = outcome;
-+      send_response(response, output);
-+    } catch (const nlohmann::json::exception &) {
-+      bad_request(response, request, "Invalid display request");
-+    }
-+  }
-+
-+  void cliprelayInput(const resp_https_t &response, const req_https_t &request) {
-+    if (!authenticate(response, request)) return;
-+    if (!request->query_string.empty()) { bad_request(response, request, "Invalid input query"); return; }
-+    nlohmann::json output = {{"protocol", 1}, {"instance", cliprelayInstance()}, {"streams", nlohmann::json::array()}};
-+    const auto streams = cliprelay::inputs.snapshot();
-+    for (const auto &stream : streams) {
-+      const auto state = stream.gate->snapshot();
-+      output["streams"].push_back({{"id", stream.id}, {"owner", stream.owner}, {"epoch", state.epoch},
-+        {"acknowledged", state.acknowledged}, {"enabled", state.enabled}, {"paused", state.paused},
-+        {"pending", state.pending}, {"closed", state.closed}, {"failed", state.failed}, {"exclusive", streams.size() == 1}});
-+    }
-+    send_response(response, output);
-+  }
-+
-+  nlohmann::json cliprelayBitrateState() {
-+    nlohmann::json output = {{"protocol", 1}, {"instance", cliprelayInstance()}, {"streams", nlohmann::json::array()}};
-+    for (const auto &s : cliprelay::bitrates.snapshot()) {
-+      output["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"revision", s.revision},
-+        {"supported", s.supported}, {"budgetKbps", s.budget}, {"videoKbps", s.video},
-+        {"requestId", s.request_id}, {"requestedKbps", s.requested}, {"targetVideoKbps", s.target},
-+        {"appliedFrame", s.applied_frame}, {"result", s.result}, {"error", s.error}});
-+    }
-+    return output;
-+  }
-+
-+  void cliprelayBitrate(const resp_https_t &response, const req_https_t &request) {
-+    if (!authenticate(response, request)) return;
-+    if (!request->query_string.empty()) { bad_request(response, request, "Invalid bitrate query"); return; }
-+    send_response(response, cliprelayBitrateState());
-+  }
-+
-+  void cliprelaySetBitrate(const resp_https_t &response, const req_https_t &request) {
-+    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
-+    if (!validate_csrf_token(response, request, get_client_id(request))) return;
-+    std::array<char, 1025> body {};
-+    request->content.read(body.data(), body.size());
-+    const auto length = request->content.gcount();
-+    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
-+    try {
-+      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
-+      if (!input.is_object() || input.size() != 5 || !input.contains("instance") || !input["instance"].is_string() ||
-+          !input.contains("owner") || !input["owner"].is_string() || !input.contains("stream") || !input["stream"].is_number_unsigned() ||
-+          !input.contains("revision") || !input["revision"].is_number_unsigned() ||
-+          !input.contains("budgetKbps") || !input["budgetKbps"].is_number_unsigned()) {
-+        bad_request(response, request, "Expected instance, owner, stream, revision and budgetKbps"); return;
-+      }
-+      const auto owner = input["owner"].get<std::string>();
-+      const auto budget = input["budgetKbps"].get<std::uint64_t>();
-+      if (owner.size() != 64 || owner.find_first_not_of("0123456789abcdef") != std::string::npos || budget < 500 || budget > 150000) {
-+        bad_request(response, request, "Invalid bitrate request"); return;
-+      }
-+      const auto outcome = input["instance"].get<std::string>() == cliprelayInstance()
-+        ? cliprelay::bitrates.request(input["stream"].get<std::uint64_t>(), owner, input["revision"].get<std::uint64_t>(), static_cast<int>(budget))
-+        : "stale_instance";
-+      auto output = cliprelayBitrateState();
-+      output["accepted"] = outcome == "accepted";
-+      output["outcome"] = outcome;
-+      send_response(response, output);
-+    } catch (const nlohmann::json::exception &) {
-+      bad_request(response, request, "Invalid bitrate request");
-+    }
-+  }
-+
-   void start() {
-     platf::set_thread_name("confighttp");
-     const auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-@@ -2354,6 +2509,11 @@ namespace confighttp {
-     server.resource["^/welcome/?$"]["GET"] = page_handler("welcome.html", false, true);
- 
-     // rest api
-+    server.resource["^/api/cliprelay/displays$"]["GET"] = cliprelayDisplays;
-+    server.resource["^/api/cliprelay/displays$"]["POST"] = cliprelaySelectDisplay;
-+    server.resource["^/api/cliprelay/input$"]["GET"] = cliprelayInput;
-+    server.resource["^/api/cliprelay/bitrate$"]["GET"] = cliprelayBitrate;
-+    server.resource["^/api/cliprelay/bitrate$"]["POST"] = cliprelaySetBitrate;
-     server.resource["^/api/browse$"]["GET"] = browseDirectory;
-     server.resource["^/api/apps$"]["GET"] = getApps;
-     server.resource["^/api/apps$"]["POST"] = saveApp;
 diff --git a/src/input.cpp b/src/input.cpp
 index a12514d..df82f98 100644
 --- a/src/input.cpp
@@ -1374,3 +1189,606 @@ index c0b0f96..032871c 100644
      /**
       * @brief Wait for worker threads owned by the session to exit.
       *
+diff --git a/src/confighttp.cpp b/src/confighttp.cpp
+index 1b47397..eb98ab5 100644
+--- a/src/confighttp.cpp
++++ b/src/confighttp.cpp
+@@ -37,6 +37,8 @@
+ 
+ // local includes
+ #include "config.h"
++#include "cliprelay_control.h"
++#include "cliprelay_input.h"
+ #include "confighttp.h"
+ #include "crypto.h"
+ #include "display_device.h"
+@@ -1757,6 +1759,8 @@ namespace confighttp {
+         {"id", pairing.id},
+         {"name", pairing.name},
+         {"address", pairing.address},
++        {"managed_id", pairing.managed_id},
++        {"client_fingerprint", pairing.client_fingerprint},
+       });
+     }
+     send_response(response, output_tree);
+@@ -1773,6 +1777,28 @@ namespace confighttp {
+    *
+    * @api_examples{/api/pin| DELETE| {"pairing_id":"0123456789abcdef0123456789abcdef"}}
+    */
++  void cliprelayManagedPairing(const resp_https_t &response, const req_https_t &request) {
++    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
++    if (!validate_csrf_token(response, request, get_client_id(request))) return;
++    try {
++      std::string body;
++      char byte;
++      while (body.size() <= 512 && request->content.get(byte)) body += byte;
++      if (body.size() > 512) { bad_request(response, request, "Managed pairing request too large"); return; }
++      const auto input = nlohmann::json::parse(body);
++      if (!input.is_object() || input.size() != 2 || !input.contains("id") || !input.contains("client_fingerprint")) {
++        bad_request(response, request, "Invalid managed pairing fields"); return;
++      }
++      const auto id = input.at("id").get<std::string>();
++      const auto fingerprint = input.at("client_fingerprint").get<std::string>();
++      if (!nvhttp::valid_managed_pairing(id, fingerprint)) { bad_request(response, request, "Invalid managed pairing identity"); return; }
++      const auto status = request->method == "POST" ? nvhttp::register_managed_pairing(id, fingerprint) : nvhttp::cancel_managed_pairing(id, fingerprint);
++      send_response(response, nlohmann::json {{"protocol", 1}, {"status", status}});
++    } catch (const nlohmann::json::exception &) {
++      bad_request(response, request, "Invalid managed pairing JSON");
++    }
++  }
++
+   void cancelPairing(const resp_https_t &response, const req_https_t &request) {
+     if (!check_content_type(response, request, "application/json")) {
+       return;
+@@ -2310,6 +2336,159 @@ namespace confighttp {
+   /**
+    * @brief Start the HTTPS configuration server.
+    */
++  // Private engine extension, available only through Sunshine's existing
++  // administrator authentication. ClipRelay's paired control service filters
++  // streams to the authenticated client; credentials never travel to a phone.
++  const std::string &cliprelayInstance() {
++    static const auto instance = uuid_util::uuid_t::generate().string();
++    return instance;
++  }
++
++  nlohmann::json cliprelayDisplayState() {
++    const auto state = cliprelay::displays.snapshot();
++    nlohmann::json result = {
++      {"protocol", 1}, {"instance", cliprelayInstance()}, {"revision", state.revision}, {"generation", state.generation},
++      {"phase", state.phase}, {"displays", state.displays},
++      {"inputEpochSelection", true}, {"requestStream", state.request_stream}, {"inputEpoch", state.input_epoch},
++      {"requestId", state.request_id}, {"requested", state.requested},
++      {"result", state.result}, {"error", state.error}, {"capture", nullptr},
++      {"streams", nlohmann::json::array()}
++    };
++    if (state.capture) {
++      const auto &d = *state.capture;
++      result["capture"] = {{"id", d.id}, {"x", d.x}, {"y", d.y}, {"width", d.width},
++        {"height", d.height}, {"desktopX", d.desktop_x}, {"desktopY", d.desktop_y},
++        {"desktopWidth", d.desktop_width}, {"desktopHeight", d.desktop_height}};
++    }
++    for (const auto &s : state.streams) {
++      result["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"generation", s.generation},
++        {"width", s.width}, {"height", s.height}, {"firstFrame", s.first_frame},
++        {"audio", {{"capture", s.audio_capture}, {"generation", s.audio_generation}, {"ready", s.audio_ready}}}});
++    }
++    return result;
++  }
++
++  void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++#ifdef _WIN32
++    // EnumOutputs filters detached/non-capturable devices in the same way as
++    // the capture thread. Revalidate by ID there before applying a selection.
++    if (request->query_string == "refresh=1") {
++      cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::dxgi));
++    } else if (!request->query_string.empty()) {
++      bad_request(response, request, "Invalid display query"); return;
++    }
++    send_response(response, cliprelayDisplayState());
++#else
++    send_response(response, {{"protocol", 1}, {"error", "unsupported_platform"}});
++#endif
++  }
++
++  void cliprelaySelectDisplay(const resp_https_t &response, const req_https_t &request) {
++    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
++    if (!validate_csrf_token(response, request, get_client_id(request))) return;
++    // Bound parsing and reject unknown keys instead of accepting arbitrary
++    // configuration changes through this narrow control endpoint.
++    std::array<char, 1025> body {};
++    request->content.read(body.data(), body.size());
++    const auto length = request->content.gcount();
++    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
++    try {
++      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
++      const bool guarded = input.is_object() && (input.contains("inputEpoch") || input.contains("stream"));
++      if (!input.is_object() || input.size() != (guarded ? 5 : 3) || !input.contains("display") || !input.contains("revision") || !input.contains("instance") ||
++          !input["display"].is_string() || !input["revision"].is_number_unsigned() || !input["instance"].is_string() ||
++          (guarded && (!input.contains("stream") || !input.contains("inputEpoch") || !input["stream"].is_number_unsigned() ||
++            !input["inputEpoch"].is_number_unsigned() || input["stream"].get<std::uint64_t>() == 0 ||
++            input["stream"].get<std::uint64_t>() > 9007199254740991ULL || input["inputEpoch"].get<std::uint64_t>() > UINT32_MAX ||
++            !(input["inputEpoch"].get<std::uint32_t>() & 1)))) {
++        bad_request(response, request, "Expected display, revision and instance"); return;
++      }
++      const auto id = input["display"].get<std::string>();
++      if (id.empty() || id.size() > 256) { bad_request(response, request, "Invalid display"); return; }
++      std::string outcome = "stale_instance";
++      if (input["instance"].get<std::string>() == cliprelayInstance()) {
++        const auto revision = input["revision"].get<std::uint64_t>();
++        if (guarded) {
++          const auto stream = input["stream"].get<std::uint64_t>();
++          const auto epoch = input["inputEpoch"].get<std::uint32_t>();
++          outcome = cliprelay::inputs.select(stream, epoch, [&](const auto &selection) {
++            return cliprelay::displays.request(id, revision, stream, epoch, selection);
++          });
++        } else outcome = cliprelay::displays.request(id, revision);
++      }
++      auto output = cliprelayDisplayState();
++      output["accepted"] = outcome == "accepted";
++      output["outcome"] = outcome;
++      send_response(response, output);
++    } catch (const nlohmann::json::exception &) {
++      bad_request(response, request, "Invalid display request");
++    }
++  }
++
++  void cliprelayInput(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++    if (!request->query_string.empty()) { bad_request(response, request, "Invalid input query"); return; }
++    nlohmann::json output = {{"protocol", 1}, {"instance", cliprelayInstance()}, {"streams", nlohmann::json::array()}};
++    const auto streams = cliprelay::inputs.snapshot();
++    for (const auto &stream : streams) {
++      const auto state = stream.gate->snapshot();
++      output["streams"].push_back({{"id", stream.id}, {"owner", stream.owner}, {"epoch", state.epoch},
++        {"acknowledged", state.acknowledged}, {"enabled", state.enabled}, {"paused", state.paused},
++        {"pending", state.pending}, {"closed", state.closed}, {"failed", state.failed}, {"exclusive", streams.size() == 1}});
++    }
++    send_response(response, output);
++  }
++
++  nlohmann::json cliprelayBitrateState() {
++    nlohmann::json output = {{"protocol", 1}, {"instance", cliprelayInstance()}, {"streams", nlohmann::json::array()}};
++    for (const auto &s : cliprelay::bitrates.snapshot()) {
++      output["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"revision", s.revision},
++        {"supported", s.supported}, {"budgetKbps", s.budget}, {"videoKbps", s.video},
++        {"requestId", s.request_id}, {"requestedKbps", s.requested}, {"targetVideoKbps", s.target},
++        {"appliedFrame", s.applied_frame}, {"result", s.result}, {"error", s.error}});
++    }
++    return output;
++  }
++
++  void cliprelayBitrate(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++    if (!request->query_string.empty()) { bad_request(response, request, "Invalid bitrate query"); return; }
++    send_response(response, cliprelayBitrateState());
++  }
++
++  void cliprelaySetBitrate(const resp_https_t &response, const req_https_t &request) {
++    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
++    if (!validate_csrf_token(response, request, get_client_id(request))) return;
++    std::array<char, 1025> body {};
++    request->content.read(body.data(), body.size());
++    const auto length = request->content.gcount();
++    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
++    try {
++      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
++      if (!input.is_object() || input.size() != 5 || !input.contains("instance") || !input["instance"].is_string() ||
++          !input.contains("owner") || !input["owner"].is_string() || !input.contains("stream") || !input["stream"].is_number_unsigned() ||
++          !input.contains("revision") || !input["revision"].is_number_unsigned() ||
++          !input.contains("budgetKbps") || !input["budgetKbps"].is_number_unsigned()) {
++        bad_request(response, request, "Expected instance, owner, stream, revision and budgetKbps"); return;
++      }
++      const auto owner = input["owner"].get<std::string>();
++      const auto budget = input["budgetKbps"].get<std::uint64_t>();
++      if (owner.size() != 64 || owner.find_first_not_of("0123456789abcdef") != std::string::npos || budget < 500 || budget > 150000) {
++        bad_request(response, request, "Invalid bitrate request"); return;
++      }
++      const auto outcome = input["instance"].get<std::string>() == cliprelayInstance()
++        ? cliprelay::bitrates.request(input["stream"].get<std::uint64_t>(), owner, input["revision"].get<std::uint64_t>(), static_cast<int>(budget))
++        : "stale_instance";
++      auto output = cliprelayBitrateState();
++      output["accepted"] = outcome == "accepted";
++      output["outcome"] = outcome;
++      send_response(response, output);
++    } catch (const nlohmann::json::exception &) {
++      bad_request(response, request, "Invalid bitrate request");
++    }
++  }
++
+   void start() {
+     platf::set_thread_name("confighttp");
+     const auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+@@ -2354,6 +2533,13 @@ namespace confighttp {
+     server.resource["^/welcome/?$"]["GET"] = page_handler("welcome.html", false, true);
+ 
+     // rest api
++    server.resource["^/api/cliprelay/pairing$"]["POST"] = cliprelayManagedPairing;
++    server.resource["^/api/cliprelay/pairing$"]["DELETE"] = cliprelayManagedPairing;
++    server.resource["^/api/cliprelay/displays$"]["GET"] = cliprelayDisplays;
++    server.resource["^/api/cliprelay/displays$"]["POST"] = cliprelaySelectDisplay;
++    server.resource["^/api/cliprelay/input$"]["GET"] = cliprelayInput;
++    server.resource["^/api/cliprelay/bitrate$"]["GET"] = cliprelayBitrate;
++    server.resource["^/api/cliprelay/bitrate$"]["POST"] = cliprelaySetBitrate;
+     server.resource["^/api/browse$"]["GET"] = browseDirectory;
+     server.resource["^/api/apps$"]["GET"] = getApps;
+     server.resource["^/api/apps$"]["POST"] = saveApp;
+diff --git a/src/confighttp.h b/src/confighttp.h
+index 49c7039..9d6bcc9 100644
+--- a/src/confighttp.h
++++ b/src/confighttp.h
+@@ -93,6 +93,7 @@ namespace confighttp {
+    * @param request HTTP request data from the client.
+    */
+   void cancelPairing(const resp_https_t &response, const req_https_t &request);
++  void cliprelayManagedPairing(const resp_https_t &response, const req_https_t &request);
+ 
+   /**
+    * @brief Apply a PIN to an explicitly selected pairing request.
+diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
+index 8e33cad..a7615b1 100644
+--- a/src/nvhttp.cpp
++++ b/src/nvhttp.cpp
+@@ -185,6 +185,14 @@ namespace nvhttp {
+   // uniqueID, session
+   std::unordered_map<std::string, pair_session_t> map_id_sess;  ///< Pairing sessions keyed by temporary unique ID.
+ 
++  struct managed_pairing_t {
++    std::string fingerprint;
++    std::chrono::steady_clock::time_point expires;
++  };
++  // Serialized with the pending-session registry. Absence refuses late managed
++  // getservercert requests, so no unbounded cancellation tombstones are needed.
++  std::unordered_map<std::string, managed_pairing_t> managed_pairings;
++
+   /**
+    * @brief Get the mutex protecting pairing-session state.
+    *
+@@ -575,6 +583,7 @@ namespace nvhttp {
+    * @param now Monotonic time used to evaluate session deadlines.
+    */
+   void expire_pair_sessions_unlocked(const std::chrono::steady_clock::time_point now) {
++    std::erase_if(managed_pairings, [now](const auto &entry) { return entry.second.expires <= now; });
+     for (auto it = map_id_sess.begin(); it != map_id_sess.end();) {
+       if (it->second.async_insert_pin.expires_at > now) {
+         ++it;
+@@ -597,6 +606,18 @@ namespace nvhttp {
+     expire_pair_sessions_unlocked(now);
+     pairing_id.clear();
+ 
++    auto expires = now + PAIRING_SESSION_TIMEOUT;
++    if (!sess.managed_id.empty()) {
++      const auto registration = managed_pairings.find(sess.managed_id);
++      const auto fingerprint = pairing_certificate_fingerprint(sess.client.cert);
++      if (sess.client.uniqueID != sess.managed_id || registration == managed_pairings.end() ||
++          fingerprint.empty() || registration->second.fingerprint != fingerprint) {
++        return pair_session_insert_e::MANAGED_REFUSED;
++      }
++      sess.managed_fingerprint = fingerprint;
++      expires = registration->second.expires;
++    }
++
+     if (map_id_sess.contains(sess.client.uniqueID)) {
+       return pair_session_insert_e::ALREADY_EXISTS;
+     }
+@@ -611,7 +632,7 @@ namespace nvhttp {
+     }));
+ 
+     sess.async_insert_pin.id = pairing_id;
+-    sess.async_insert_pin.expires_at = now + PAIRING_SESSION_TIMEOUT;
++    sess.async_insert_pin.expires_at = expires;
+     map_id_sess.emplace(sess.client.uniqueID, std::move(sess));
+     return pair_session_insert_e::ADDED;
+   }
+@@ -622,6 +643,62 @@ namespace nvhttp {
+            });
+   }
+ 
++  std::string pairing_certificate_fingerprint(const std::string_view certificate) {
++    auto cert = crypto::x509(certificate);
++    unsigned char digest[EVP_MAX_MD_SIZE] {};
++    unsigned int length = 0;
++    if (!cert || X509_digest(cert.get(), EVP_sha256(), digest, &length) != 1 || length != 32) return {};
++    constexpr char hex[] = "0123456789abcdef";
++    std::string result;
++    result.reserve(64);
++    for (unsigned int i = 0; i < length; ++i) {
++      result += hex[digest[i] >> 4];
++      result += hex[digest[i] & 15];
++    }
++    return result;
++  }
++
++  bool valid_managed_pairing(const std::string_view id, const std::string_view fingerprint) {
++    const auto lower_hex = [](const char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); };
++    return id.size() == 32 && fingerprint.size() == 64 &&
++           std::ranges::all_of(id, lower_hex) && std::ranges::all_of(fingerprint, lower_hex);
++  }
++
++  bool register_managed_pairing(const std::string_view id, const std::string_view fingerprint) {
++    if (!valid_managed_pairing(id, fingerprint)) return false;
++    std::scoped_lock lock {map_id_sess_mutex()};
++    const auto now = std::chrono::steady_clock::now();
++    expire_pair_sessions_unlocked(now);
++    const auto existing = managed_pairings.find(std::string {id});
++    if (existing != managed_pairings.end()) return existing->second.fingerprint == fingerprint;
++    if (managed_pairings.size() >= MAX_MANAGED_PAIRINGS) return false;
++    managed_pairings.emplace(std::string {id}, managed_pairing_t {std::string {fingerprint}, now + MANAGED_PAIRING_TIMEOUT});
++    return true;
++  }
++
++  bool cancel_managed_pairing(const std::string_view id, const std::string_view fingerprint) {
++    if (!valid_managed_pairing(id, fingerprint)) return false;
++    std::scoped_lock lock {map_id_sess_mutex()};
++    expire_pair_sessions_unlocked(std::chrono::steady_clock::now());
++    const auto existing = managed_pairings.find(std::string {id});
++    if (existing != managed_pairings.end()) {
++      if (existing->second.fingerprint != fingerprint) return false;
++      managed_pairings.erase(existing);
++    }
++    for (auto it = map_id_sess.begin(); it != map_id_sess.end();) {
++      auto &session = it->second;
++      if (session.managed_id != id || session.managed_fingerprint != fingerprint) { ++it; continue; }
++      pt::ptree tree;
++      tree.put("root.paired", 0);
++      tree.put("root.<xmlattr>.status_code", 400);
++      tree.put("root.<xmlattr>.status_message", "Managed pairing request ended");
++      write_pairing_response(session, tree);
++      complete_pairing(session, false);
++      it = map_id_sess.erase(it);
++    }
++    return true;
++  }
++
+   bool is_valid_pairing_pin(const std::string_view pin) {
+     return pin.size() == 4 && std::ranges::all_of(pin, [](const char character) {
+              return character >= '0' && character <= '9';
+@@ -659,6 +736,8 @@ namespace nvhttp {
+         .id = sess->async_insert_pin.id,
+         .name = sess->async_insert_pin.device_name,
+         .address = sess->async_insert_pin.address,
++        .managed_id = sess->managed_id,
++        .client_fingerprint = sess->managed_fingerprint,
+       });
+     }
+     return result;
+@@ -973,6 +1052,7 @@ namespace nvhttp {
+   ) {
+     pair_session_t sess;
+     sess.client.uniqueID = unique_id;
++    sess.managed_id = get_arg(args, "cliprelay_pairing", "");
+     sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
+     sess.async_insert_pin.salt = get_arg(args, "salt");
+     sess.async_insert_pin.device_name = get_arg(args, "devicename");
+@@ -998,6 +1078,11 @@ namespace nvhttp {
+         tree.put("root.<xmlattr>.status_code", 503);
+         tree.put("root.<xmlattr>.status_message", "Too many pending pairing sessions");
+         return false;
++      case MANAGED_REFUSED:
++        tree.put("root.paired", 0);
++        tree.put("root.<xmlattr>.status_code", 403);
++        tree.put("root.<xmlattr>.status_message", "Managed pairing generation is unavailable");
++        return false;
+       case ADDED:
+         break;
+     }
+diff --git a/src/nvhttp.h b/src/nvhttp.h
+index fe7e2c6..8c1e05d 100644
+--- a/src/nvhttp.h
++++ b/src/nvhttp.h
+@@ -162,6 +162,8 @@ namespace nvhttp {
+      */
+     PAIR_PHASE last_phase = PAIR_PHASE::NONE;
+     bool failed = false;  ///< Whether protocol validation failed and the session must be removed.
++    std::string managed_id;  ///< One host-registered ClipRelay bootstrap generation.
++    std::string managed_fingerprint;  ///< Certificate bound to that generation.
+   };
+ 
+   /**
+@@ -171,6 +173,8 @@ namespace nvhttp {
+     std::string id;  ///< Unguessable approval identifier.
+     std::string name;  ///< Untrusted device name reported by the pairing client.
+     std::string address;  ///< Network address from which the request originated.
++    std::string managed_id;
++    std::string client_fingerprint;
+   };
+ 
+   /**
+@@ -179,7 +183,8 @@ namespace nvhttp {
+   enum class pair_session_insert_e {
+     ADDED,  ///< The session was inserted successfully.
+     ALREADY_EXISTS,  ///< A session with the same client unique ID is already active.
+-    FULL  ///< The bounded session store has reached its limit.
++    FULL,  ///< The bounded session store has reached its limit.
++    MANAGED_REFUSED  ///< This managed generation is absent, expired or certificate-mismatched.
+   };
+ 
+   /**
+@@ -237,6 +242,15 @@ namespace nvhttp {
+    */
+   bool cancel_pairing(std::string_view pairing_id);
+ 
++  // These reservations only admit a pending exchange. PIN and client-key proof
++  // remain mandatory; cancellation never changes an already paired certificate.
++  constexpr std::size_t MAX_MANAGED_PAIRINGS = 8;
++  constexpr auto MANAGED_PAIRING_TIMEOUT = std::chrono::minutes {2};
++  std::string pairing_certificate_fingerprint(std::string_view certificate);
++  bool valid_managed_pairing(std::string_view id, std::string_view fingerprint);
++  bool register_managed_pairing(std::string_view id, std::string_view fingerprint);
++  bool cancel_managed_pairing(std::string_view id, std::string_view fingerprint);
++
+   /**
+    * @brief removes the temporary pairing session
+    * @param sess
+diff --git a/tests/unit/test_confighttp.cpp b/tests/unit/test_confighttp.cpp
+index 29e5529..87494cd 100644
+--- a/tests/unit/test_confighttp.cpp
++++ b/tests/unit/test_confighttp.cpp
+@@ -331,6 +331,8 @@ protected:
+     server->resource["^/pairing-test$"]["DELETE"] = confighttp::cancelPairing;
+     server->resource["^/pairing-test$"]["GET"] = confighttp::getPendingPairings;
+     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
++    server->resource["^/managed-pairing-test$"]["POST"] = confighttp::cliprelayManagedPairing;
++    server->resource["^/managed-pairing-test$"]["DELETE"] = confighttp::cliprelayManagedPairing;
+     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
+ 
+     // Start server
+@@ -573,6 +575,35 @@ TEST_F(ConfigHttpTest, PairingMutationsRejectUnauthenticatedRestRequests) {
+   EXPECT_EQ(delete_response->status_code, "401 Unauthorized");
+ }
+ 
++TEST_F(ConfigHttpTest, ClipRelayManagedPairingRequiresAuthenticationAndCSRF) {
++  const auto body = nlohmann::json {{"id", std::string(32, 'a')}, {"client_fingerprint", std::string(64, 'b')}}.dump();
++  for (const auto &method : {"POST", "DELETE"}) {
++    SimpleWeb::CaseInsensitiveMultimap headers;
++    headers.emplace("Content-Type", "application/json");
++    EXPECT_EQ(client->request(method, "/managed-pairing-test", body, headers)->status_code, "401 Unauthorized");
++    headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++    headers.emplace("Origin", "https://example.invalid");
++    EXPECT_EQ(client->request(method, "/managed-pairing-test", body, headers)->status_code, "400 Bad Request");
++  }
++}
++
++TEST_F(ConfigHttpTest, ClipRelayManagedPairingValidatesFieldsAndReturnsNativeResult) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  const auto body = nlohmann::json {{"id", std::string(32, 'a')}, {"client_fingerprint", std::string(64, 'b')}}.dump();
++  for (const auto &invalid : {std::string("{}"), std::string(513, 'a'), std::string("{\"id\":0,\"client_fingerprint\":false}")}) {
++    EXPECT_EQ(client->request("POST", "/managed-pairing-test", invalid, headers)->status_code, "400 Bad Request");
++  }
++  for (const auto &method : {"POST", "DELETE"}) {
++    const auto reply = client->request(method, "/managed-pairing-test", body, headers);
++    ASSERT_EQ(reply->status_code, "200 OK");
++    const auto result = nlohmann::json::parse(reply->content.string());
++    EXPECT_EQ(result.at("protocol"), 1);
++    EXPECT_EQ(result.at("status"), true);
++  }
++}
++
+ TEST_F(ConfigHttpTest, PairingMutationsRejectCrossOriginRestRequestsWithoutCsrfToken) {
+   const std::string pairing_id = insert_pending_pairing();
+   SimpleWeb::CaseInsensitiveMultimap headers;
+diff --git a/tests/unit/test_http_pairing.cpp b/tests/unit/test_http_pairing.cpp
+index 353180d..a2b75d4 100644
+--- a/tests/unit/test_http_pairing.cpp
++++ b/tests/unit/test_http_pairing.cpp
+@@ -783,3 +783,117 @@ TEST_F(PairingSessionRegistryTest, ConcurrentInsertionAndCancellationLeaveConsis
+   EXPECT_EQ(successful_cancellations, session_count);
+   EXPECT_TRUE(get_pending_pairings().empty());
+ }
++
++class ClipRelayManagedPairingTest: public PairingSessionRegistryTest {
++protected:
++  const std::string first = std::string(32, 'a');
++  const std::string second = std::string(32, 'b');
++  const std::string fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  static pair_session_t managed_session(const std::string &id) {
++    auto session = pending_session(id, "same display name", "192.0.2.10");
++    session.client.cert = PUBLIC_CERT;
++    session.managed_id = id;
++    return session;
++  }
++};
++
++TEST_F(ClipRelayManagedPairingTest, AdmissionRequiresRegisteredGenerationAndCertificate) {
++  ASSERT_EQ(fingerprint.size(), 64);
++  std::string pairing_id;
++  EXPECT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  auto wrong_certificate = managed_session(first);
++  wrong_certificate.client.cert = "invalid certificate";
++  EXPECT_EQ(insert_pair_session(std::move(wrong_certificate), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  auto wrong_id = managed_session(first);
++  wrong_id.client.uniqueID = second;
++  EXPECT_EQ(insert_pair_session(std::move(wrong_id), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  ASSERT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::ADDED);
++  const auto pending = get_pending_pairings();
++  ASSERT_EQ(pending.size(), 1);
++  EXPECT_EQ(pending.front().managed_id, first);
++  EXPECT_EQ(pending.front().client_fingerprint, fingerprint);
++}
++
++TEST_F(ClipRelayManagedPairingTest, CancellationReleasesOnlyItsGenerationAndRefusesLateAdmission) {
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  ASSERT_TRUE(register_managed_pairing(second, fingerprint));
++  auto session = managed_session(first);
++  auto completion = session.completion;
++  std::string one, two;
++  ASSERT_EQ(insert_pair_session(std::move(session), one), pair_session_insert_e::ADDED);
++  ASSERT_EQ(insert_pair_session(managed_session(second), two), pair_session_insert_e::ADDED);
++  ASSERT_TRUE(cancel_managed_pairing(first, fingerprint));
++  ASSERT_TRUE(completion->result.has_value());
++  EXPECT_FALSE(*completion->result);
++  EXPECT_TRUE(cancel_managed_pairing(first, fingerprint));
++  EXPECT_EQ(insert_pair_session(managed_session(first), one), pair_session_insert_e::MANAGED_REFUSED);
++  const auto pending = get_pending_pairings();
++  ASSERT_EQ(pending.size(), 1);
++  EXPECT_EQ(pending.front().id, two);
++}
++
++TEST_F(ClipRelayManagedPairingTest, WrongCertificateCannotReplaceOrCancelRegistration) {
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  EXPECT_FALSE(register_managed_pairing(first, std::string(64, '0')));
++  EXPECT_FALSE(cancel_managed_pairing(first, std::string(64, '0')));
++  std::string pairing_id;
++  EXPECT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::ADDED);
++}
++
++TEST_F(ClipRelayManagedPairingTest, ExpiredGenerationCannotConsumeFreshRequestWithSameName) {
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  std::string pairing_id;
++  ASSERT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::ADDED);
++  expire_pair_sessions(std::chrono::steady_clock::now() + MANAGED_PAIRING_TIMEOUT + std::chrono::seconds {1});
++  EXPECT_TRUE(get_pending_pairings().empty());
++  EXPECT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  ASSERT_TRUE(register_managed_pairing(second, fingerprint));
++  ASSERT_EQ(insert_pair_session(managed_session(second), pairing_id), pair_session_insert_e::ADDED);
++  EXPECT_TRUE(cancel_managed_pairing(first, fingerprint));
++  ASSERT_EQ(get_pending_pairings().size(), 1);
++  EXPECT_EQ(get_pending_pairings().front().managed_id, second);
++}
++
++TEST_F(ClipRelayManagedPairingTest, ReservationsAreBoundedAndExpire) {
++  for (std::size_t index = 0; index < MAX_MANAGED_PAIRINGS; ++index) {
++    EXPECT_TRUE(register_managed_pairing(std::format("{:032x}", index), fingerprint));
++  }
++  EXPECT_FALSE(register_managed_pairing(first, fingerprint));
++  EXPECT_TRUE(register_managed_pairing(std::string(32, '0'), fingerprint));
++  expire_pair_sessions(std::chrono::steady_clock::now() + MANAGED_PAIRING_TIMEOUT + std::chrono::seconds {1});
++  EXPECT_TRUE(register_managed_pairing(first, fingerprint));
++  EXPECT_FALSE(valid_managed_pairing("short", fingerprint));
++  EXPECT_FALSE(valid_managed_pairing(first, std::string(64, 'z')));
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedCancellationClosesPendingHTTPAndRefusesLateRequest) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'c');
++  const auto fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  ASSERT_TRUE(register_managed_pairing(id, fingerprint));
++  const auto target = server_certificate_target(id) + "&cliprelay_pairing=" + id;
++  auto response = std::async(std::launch::async, [this, target]() { return request(target); });
++  ASSERT_FALSE(wait_for_pending_pairing().empty());
++  EXPECT_TRUE(cancel_managed_pairing(id, fingerprint));
++  ASSERT_EQ(response.wait_for(std::chrono::seconds {1}), std::future_status::ready);
++  EXPECT_NE(response.get().find("status_code=\"400\""), std::string::npos);
++  EXPECT_NE(request(target).find("status_code=\"403\""), std::string::npos);
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedCancellationReleasesPINSubmitter) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'd');
++  const auto fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  ASSERT_TRUE(register_managed_pairing(id, fingerprint));
++  auto response = std::async(std::launch::async, [this, id]() { return request(server_certificate_target(id) + "&cliprelay_pairing=" + id); });
++  const auto pairing_id = wait_for_pending_pairing();
++  ASSERT_FALSE(pairing_id.empty());
++  config::stream.ping_timeout = std::chrono::seconds {3};
++  auto submitted = std::async(std::launch::async, [pairing_id]() { return pin(pairing_id, "5338", "Managed test"); });
++  EXPECT_NE(response.get().find("status_code=\"200\""), std::string::npos);
++  EXPECT_TRUE(cancel_managed_pairing(id, fingerprint));
++  ASSERT_EQ(submitted.wait_for(std::chrono::seconds {1}), std::future_status::ready);
++  EXPECT_FALSE(submitted.get());
++  EXPECT_TRUE(get_pending_pairings().empty());
++}

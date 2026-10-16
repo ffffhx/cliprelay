@@ -1,11 +1,11 @@
 # ClipRelay Sunshine control extension
 
-This directory contains the reproducible source patch for the Windows engine
-pinned in `upstream.json`. It is development work: the installed engine and
-`windows/remote-desktop/engine.json` still use the upstream release. The paired
-Go control API, Android display picker, input pause and frame tracking are implemented
-with local tests. The complete installed service and Android UI still need runtime validation before
-this can be described as a completed multi-display feature.
+This directory contains the reproducible extension for the upstream revision in
+`upstream.json`. Windows packaging selects a separately built, hash-verified
+engine through `windows/components.json` and `windows/remote-desktop/engine.json`;
+that archived revision can precede the current development patch. Acceptance
+records identify the exact native and application builds tested. Physical
+multi-display transitions and Android presentation still require device evidence.
 
 Apply to a clean checkout using:
 
@@ -27,6 +27,18 @@ input for the revoked session. Ordinary error stops retain their previous
 disconnect behavior. The installed video fixture must prove received frames,
 the client's normal termination callback, the unchanged engine instance and a
 new stream for the preserved certificate before this change is accepted.
+
+Managed pairing adds authenticated POST/DELETE `/api/cliprelay/pairing` operations
+binding a fresh 32-character generation ID to the client's DER SHA-256 fingerprint.
+At most eight registrations live for two minutes. Repeating registration cannot
+renew that deadline or replace its certificate. A native request carrying
+`cliprelay_pairing` must match its registered ID, `uniqueid` and certificate;
+the existing PIN and private-key proof still decide whether trust is granted.
+Cancellation ends pending native HTTP and PIN waiters, removes only that
+generation, and makes later requests for the removed generation fail admission.
+It never deletes an already paired certificate. Legacy native pairing retains
+its existing protocol. Client negotiation, bounded helper cleanup and installed
+acceptance must also pass before this new flow is considered integrated.
 The patch also gives NVENC object targets their transitive Boost include requirements so
 the pinned FetchContent Boost works without unrelated system Boost headers.
 The upstream service launcher also receives the transitive Boost includes needed
