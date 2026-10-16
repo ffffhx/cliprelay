@@ -64,6 +64,13 @@ func nativeFixture(t *testing.T, shell string) (Process, *Buffer) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		if t.Failed() {
+			value := contents(buffer)
+			if len(value) > 1200 {
+				value = value[:500] + " ... " + value[len(value)-700:]
+			}
+			t.Logf("native state: %+v; synthetic output: %q", process.Status(), value)
+		}
 		process.Close()
 		select {
 		case <-process.Done():
@@ -94,7 +101,7 @@ func TestNativePTYUnicodeResizeAndExit(t *testing.T) {
 			if err := p.Resize(120, 40); err != nil {
 				t.Fatal(err)
 			}
-			nativeWrite(t, p, 2, "stty size\r", false)
+			nativeWrite(t, p, 2, "printf '\\n'; stty size\r", false)
 			eventually(t, 5*time.Second, func() bool { return strings.Contains(contents(b), "\r\n40 120\r\n") })
 			nativeWrite(t, p, 3, "exit 7\r", false)
 			select {

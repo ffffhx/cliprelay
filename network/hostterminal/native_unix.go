@@ -7,6 +7,7 @@ package hostterminal
 #include <sys/wait.h>
 #include <errno.h>
 #include <string.h>
+#include <termios.h>
 // Observe without reaping. Until Cmd.Wait, the child PID cannot be reused by
 // an unrelated process group during terminal teardown.
 static int terminal_child_exited(int pid) {
@@ -14,6 +15,16 @@ static int terminal_child_exited(int pid) {
     memset(&info, 0, sizeof(info));
     if (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT) != 0) return -errno;
     return info.si_pid == pid;
+}
+static int terminal_initial_mode(int fd) {
+    struct termios settings;
+    if (tcgetattr(fd, &settings) != 0) return errno;
+    // Input can arrive before the login shell switches to readline's mode.
+    // Canonical line limits can silently discard a large accepted paste.
+    settings.c_lflag &= ~(ICANON | ECHO);
+    settings.c_cc[VMIN] = 1;
+    settings.c_cc[VTIME] = 0;
+    return tcsetattr(fd, TCSANOW, &settings) == 0 ? 0 : errno;
 }
 */
 import "C"
@@ -24,6 +35,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -68,8 +80,26 @@ func StartNative(shell string, columns, rows int, output func([]byte)) (Process,
 		}
 	}
 	command.Env = append(command.Env, "TERM=xterm-256color", "COLORTERM=truecolor")
-	terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: uint16(columns), Rows: uint16(rows)})
+	terminal, slave, err := pty.Open()
 	if err != nil {
+		return nil, err
+	}
+	defer slave.Close()
+	if err = pty.Setsize(terminal, &pty.Winsize{Cols: uint16(columns), Rows: uint16(rows)}); err == nil {
+		if code := int(C.terminal_initial_mode(C.int(slave.Fd()))); code != 0 {
+			err = syscall.Errno(code)
+		}
+	}
+	if err != nil {
+		_ = terminal.Close()
+		return nil, err
+	}
+	command.Stdin = slave
+	command.Stdout = slave
+	command.Stderr = slave
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if err = command.Start(); err != nil {
+		_ = terminal.Close()
 		return nil, err
 	}
 	// A fresh nonblocking descriptor lets os.File deadlines and Close interrupt
