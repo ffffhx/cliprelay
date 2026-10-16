@@ -10,6 +10,15 @@ import java.util.*;
 public final class TerminalProtocol {
     private TerminalProtocol() {}
     public static final long MAX = 9007199254740991L;
+    private static final List<String> KNOWN_SHELLS=Arrays.asList("powershell","cmd","zsh","bash");
+    public static String shellLabel(String shell){return shell.equals("powershell")?"PowerShell":shell.equals("cmd")?"CMD":shell.equals("zsh")?"Zsh":"Bash";}
+    private static List<String> shells(JSONObject value) throws JSONException {
+        if(!value.has("shells"))return Collections.unmodifiableList(Arrays.asList("powershell","cmd"));
+        JSONArray array=value.getJSONArray("shells");require(array.length()>0 && array.length()<=4);
+        ArrayList<String> result=new ArrayList<>();
+        for(int i=0;i<array.length();i++){Object item=array.get(i);require(item instanceof String && KNOWN_SHELLS.contains(item) && !result.contains(item));result.add((String)item);}
+        return Collections.unmodifiableList(result);
+    }
     public static final class Mouse {
         public final int mode,format,buttons;
         public final long epoch,offset,gesture,nextGesture,accepted,written,remainingMs;
@@ -36,7 +45,7 @@ public final class TerminalProtocol {
         public final Mouse mouse;
         public Session(JSONObject value) throws JSONException {
             id = id(value, "id"); shell = text(value,"shell"); state = text(value,"state");
-            require(shell.equals("cmd") || shell.equals("powershell"));
+            require(KNOWN_SHELLS.contains(shell));
             require(Arrays.asList("running","closed","exited","failed","expired","revoked").contains(state));
             columns=(int)number(value,"columns",20,240); rows=(int)number(value,"rows",5,120);
             exitCode=(int)number(value,"exitCode",Integer.MIN_VALUE,Integer.MAX_VALUE);
@@ -51,6 +60,7 @@ public final class TerminalProtocol {
     public static final class Reply {
         public final String instance;
         public final List<Session> sessions;
+        public final List<String> shells;
         public final Session session;
         public final long nextOpen, offset, next;
         public final boolean gap;
@@ -62,6 +72,7 @@ public final class TerminalProtocol {
             if (!op.equals("list")) require(instance.equals(request.getString("instance")));
             ArrayList<Session> list=new ArrayList<>();
             if(op.equals("list")) {
+                shells=shells(value);
                 mouseProtocol=value.has("mouseProtocol")?(int)number(value,"mouseProtocol",0,1):0;
                 nextOpen=number(value,"nextOpen",1,MAX);
                 JSONArray array=value.has("sessions")?value.getJSONArray("sessions"):new JSONArray(); require(array.length()<=32);
@@ -69,10 +80,12 @@ public final class TerminalProtocol {
                 for(int i=0;i<array.length();i++) {
                     Session item=new Session(array.getJSONObject(i));
                     require(mouseProtocol!=1 || item.mouse!=null);
-                    require(ids.add(item.id) && sequences.add(item.openSequence) && item.openSequence<nextOpen); list.add(item);
+                    require(shells.contains(item.shell) && ids.add(item.id) && sequences.add(item.openSequence) && item.openSequence<nextOpen); list.add(item);
                 }
                 session=null;
             } else {
+                require(!value.has("shells"));
+                shells=Collections.emptyList();
                 mouseProtocol=0;
                 nextOpen=0; session=new Session(value.getJSONObject("session"));
                 require(session.id.equals(request.getString("id")));

@@ -135,7 +135,7 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
                 session==null?0:session.mouse.revision(),!modal && !selecting && canMouseInput());
         boolean controls=foreground && !modal && !selecting && connected && !busy && action==null;
         sessionsButton.setEnabled(controls && (session==null || !session.hasInput()));
-        newButton.setEnabled(controls && inventory!=null && (session==null || !session.hasInput()));
+        newButton.setEnabled(controls && !needList && inventory!=null && (session==null || !session.hasInput()));
         closeButton.setEnabled(controls && session!=null && session.snapshot.running());
         retryButton.setEnabled(foreground && !modal && !selecting && !busy);
         // View construction calls selectionChanged before these buttons are assigned.
@@ -218,10 +218,13 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
         modal();
     }
     private void showNew(){
-        if(inventory==null)return;
-        dialog=new AlertDialog.Builder(this).setTitle(R.string.terminal_new).setItems(new String[]{"PowerShell","CMD"},(d,i)->{
-            try{action=TerminalProtocol.request("open",inventory.instance,UUID.randomUUID().toString().replace("-",""))
-                    .put("shell",i==0?"powershell":"cmd").put("columns",desiredColumns).put("rows",desiredRows).put("sequence",inventory.nextOpen);update();schedule(0);}
+        if(inventory==null || needList)return;
+        final TerminalProtocol.Reply offered=inventory;String[] labels=new String[offered.shells.size()];
+        for(int i=0;i<labels.length;i++)labels[i]=TerminalProtocol.shellLabel(offered.shells.get(i));
+        dialog=new AlertDialog.Builder(this).setTitle(R.string.terminal_new).setItems(labels,(d,i)->{
+            try{TerminalProtocol.require(!needList && inventory!=null && offered.instance.equals(inventory.instance) && offered.nextOpen==inventory.nextOpen && offered.shells.equals(inventory.shells));
+                action=TerminalProtocol.request("open",offered.instance,UUID.randomUUID().toString().replace("-",""))
+                    .put("shell",offered.shells.get(i)).put("columns",desiredColumns).put("rows",desiredRows).put("sequence",offered.nextOpen);update();schedule(0);}
             catch(JSONException e){failure(e);}
         }).setNegativeButton(android.R.string.cancel,null).show();
         modal();

@@ -4,6 +4,12 @@ const MAX=Number.MAX_SAFE_INTEGER;
 const codes=new Set('BUSY CAPACITY UNPAIRED STALE NOT_FOUND CLOSED OFFSET SEQUENCE ID_CONFLICT INPUT_CONFLICT MOUSE_MODE MOUSE_GESTURE MOUSE_SEQUENCE MOUSE_CONFLICT USER_REQUIRED UNSUPPORTED UNAVAILABLE INVALID_RESPONSE BAD_REQUEST'.split(' ').map(value=>'TERMINAL_'+value));
 const id=value=>typeof value==='string' && /^[a-f0-9]{32}$/.test(value);
 const number=(value,min=0,max=MAX)=>Number.isSafeInteger(value) && value>=min && value<=max;
+const knownShells=['powershell','cmd','zsh','bash'];
+function shells(value){
+  if(value===undefined)return ['powershell','cmd'];
+  requireValue(Array.isArray(value) && value.length>0 && value.length<=4 && new Set(value).size===value.length && value.every(shell=>knownShells.includes(shell)));
+  return [...value];
+}
 function requireValue(value,code='TERMINAL_INVALID_RESPONSE'){if(!value)throw fault(code);}
 function dimensions(columns,rows){requireValue(number(columns,20,240) && number(rows,5,120),'TERMINAL_BAD_REQUEST');return {columns,rows};}
 function bytes(data,max){requireValue(typeof data==='string' && data.length<=Math.ceil(max/3)*4);const value=Buffer.from(data,'base64');requireValue(value.length<=max && value.toString('base64')===data);return value;}
@@ -25,7 +31,7 @@ function mouse(value,end){
   return Object.fromEntries(['mode','format','epoch','offset','buttons','remainingMs','gesture','nextGesture','acceptedSequence','writtenSequence','phase','outcome'].map(key=>[key,value[key]]));
 }
 function session(value){
-  requireValue(value && id(value.id) && ['cmd','powershell'].includes(value.shell) && ['running','closed','exited','expired','revoked','failed'].includes(value.state));
+  requireValue(value && id(value.id) && knownShells.includes(value.shell) && ['running','closed','exited','expired','revoked','failed'].includes(value.state));
   requireValue(number(value.columns,20,240) && number(value.rows,5,120) && number(value.exitCode,-2147483648,2147483647) && number(value.openSequence,1) && number(value.acceptedSequence) && number(value.writtenSequence,0,value.acceptedSequence) && number(value.start) && number(value.end,value.start) && value.end-value.start<=1048576 && number(value.remainingMs,0,1800000));
   return {...Object.fromEntries(['id','shell','state','columns','rows','exitCode','openSequence','acceptedSequence','writtenSequence','start','end','remainingMs'].map(key=>[key,value[key]])),mouse:mouse(value.mouse,value.end)};
 }
@@ -33,14 +39,15 @@ function validate(command,value){
   requireValue(value && typeof value==='object' && !Array.isArray(value) && typeof value.ok==='boolean');
   if(!value.ok)throw fault(codes.has(value.code)?value.code:'TERMINAL_UNAVAILABLE');requireValue(id(value.instance));
   if(command.op==='list'){
+    const supported=shells(value.shells);
     requireValue(number(value.nextOpen,1) && (!value.sessions || Array.isArray(value.sessions) && value.sessions.length<=32) && !value.session && !value.data);
     const ids=new Set(),sequences=new Set(),sessions=(value.sessions || []).map(item=>{
-      const s=session(item);requireValue(!ids.has(s.id) && !sequences.has(s.openSequence) && s.openSequence<value.nextOpen);ids.add(s.id);sequences.add(s.openSequence);return s;
+      const s=session(item);requireValue(supported.includes(s.shell) && !ids.has(s.id) && !sequences.has(s.openSequence) && s.openSequence<value.nextOpen);ids.add(s.id);sequences.add(s.openSequence);return s;
     });requireValue(value.pasteLimit===undefined || value.pasteLimit===0 || value.pasteLimit===16396);
     requireValue(value.mouseProtocol===undefined || value.mouseProtocol===0 || value.mouseProtocol===1);requireValue(value.mouseProtocol!==1 || sessions.every(s=>s.mouse));
-    return {instance:value.instance,nextOpen:value.nextOpen,pasteLimit:value.pasteLimit || 0,mouseProtocol:value.mouseProtocol || 0,sessions};
+    return {instance:value.instance,nextOpen:value.nextOpen,pasteLimit:value.pasteLimit || 0,mouseProtocol:value.mouseProtocol || 0,shells:supported,sessions};
   }
-  requireValue(value.instance===command.instance && !value.sessions?.length);const current=session(value.session);requireValue(current.id===command.id);
+  requireValue(value.instance===command.instance && !value.sessions?.length && value.shells===undefined);const current=session(value.session);requireValue(current.id===command.id);
   if(command.op==='open')requireValue(current.openSequence===command.sequence && current.shell===command.shell);
   if(command.op==='write' || command.op==='paste')requireValue(current.acceptedSequence===command.sequence);
   if(command.op==='mouse')requireValue(current.mouse && current.mouse.acceptedSequence===command.sequence);
@@ -78,4 +85,4 @@ class InputState{
   acknowledge(reply){requireValue(this.pending && reply.instance===this.pending.instance && reply.session.id===this.pending.id && reply.session.acceptedSequence===this.pending.sequence);this.refresh(reply.session);this.queuedBytes-=this.queue.shift().bytes.length;this.pending=null;}
   discardUnsent(){const keep=this.pending?this.queue[0]:null,discarded=this.queue.length>(keep?1:0);this.queue=keep?[keep]:[];this.queuedBytes=keep?keep.bytes.length:0;return discarded;}
 }
-module.exports={MAX,codes,id,number,requireValue,dimensions,bytes,preparePaste,pasteBytes,session,validate,request,InputState};
+module.exports={MAX,codes,id,number,requireValue,dimensions,bytes,preparePaste,pasteBytes,shells,session,validate,request,InputState};

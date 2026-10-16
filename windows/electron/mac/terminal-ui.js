@@ -3,7 +3,7 @@ const term=new window.Terminal({cols:100,rows:30,fontSize:14,fontFamily:'Consola
 const fit=new window.FitAddon.FitAddon();term.loadAddon(fit);term.open($('terminal'));
 // Remote escape sequences cannot read/write the local clipboard or open URLs.
 term.parser.registerOscHandler(52,()=>true);
-let state,closed=false,polling=false,renderingReplay=false,parsing=false,screen='',catalog='',feedback='',timer,resizeTimer,endTarget,pasteTarget,pasteOpening=false,pasteSending=false,geometryPending=false;
+let state,closed=false,polling=false,renderingReplay=false,parsing=false,screen='',catalog='',shellCatalog='',feedback='',timer,resizeTimer,endTarget,pasteTarget,pasteOpening=false,pasteSending=false,geometryPending=false;
 const running=()=>state?.sessions.find(session=>session.id===state.selected)?.state==='running';
 const mouseUI=new window.ClipRelayTerminalMouse({window,document,element:$('terminal'),term,
   getState:()=>{const mouse=state?.sessions.find(s=>s.id===state.selected)?.mouse;return {view:state?.view,id:state?.selected,epoch:mouse?.epoch,mode:mouse?.mode || 0,format:mouse?.format || 0,...state?.mouse,parsing,blocked:state?.phase!=='ready' || renderingReplay || !!pasteTarget || pasteOpening || geometryPending};},
@@ -12,6 +12,9 @@ const mouseUI=new window.ClipRelayTerminalMouse({window,document,element:$('term
   problem:text=>{feedback=feedback || text;render(state);}});
 function render(next){
   if(!next)return;state=next;host.textContent=(state.hostName || '远程电脑')+' · 终端';
+  const supported=state.shells || [],shellKey=JSON.stringify(supported);
+  if(shellKey!==shellCatalog){shellCatalog=shellKey;const picker=$('shell'),selected=picker.value;picker.replaceChildren();for(const shell of supported){const option=document.createElement('option');option.value=shell;option.textContent=({powershell:'PowerShell',cmd:'CMD',zsh:'Zsh',bash:'Bash'})[shell];picker.append(option);}picker.value=supported.includes(selected)?selected:(supported[0] || '');}
+  $('shell').disabled=state.phase!=='ready' || state.uncertain || parsing || !supported.length;
   if(pasteTarget && (state.phase!=='ready' || !running() || state.view!==pasteTarget.view || state.selected!==pasteTarget.id))dismissPaste();
   if(screen!==state.screen){screen=state.screen;term.reset();clearTimeout(resizeTimer);resizeTimer=setTimeout(size,150);}
   const labels={idle:'未连接',connecting:'正在连接',ready:running()?'终端已连接':'请选择或新建会话',paused:'连接已暂停',recovering:'正在恢复连接',error:'连接需要处理'};
@@ -24,7 +27,7 @@ function render(next){
   $('paste-confirm').disabled=parsing || renderingReplay || pasteSending || !pasteTarget;
   $('paste-text').disabled=pasteSending;
   $('paste-cancel').disabled=pasteSending;
-  $('new').disabled=state.phase!=='ready' || state.uncertain || parsing;$('refresh').disabled=['connecting','recovering'].includes(state.phase);$('end').disabled=state.phase!=='ready' || !running() || parsing;$('paste').disabled=term.options.disableStdin;
+  $('new').disabled=state.phase!=='ready' || state.uncertain || parsing || !supported.length;$('refresh').disabled=['connecting','recovering'].includes(state.phase);$('end').disabled=state.phase!=='ready' || !running() || parsing;$('paste').disabled=term.options.disableStdin;
   $('pause').disabled=['paused','idle'].includes(state.phase);$('resume').disabled=!['paused','error','recovering'].includes(state.phase);sessions.disabled=state.phase!=='ready' || state.uncertain || parsing;
   $('input-status').textContent=state.uncertain?'输入结果待确认':state.queuedBytes?'待发送 '+state.queuedBytes+' 字节':state.accepted>state.written?'电脑已接收，等待写入终端':'输入已确认';
   if(state.mouse?.busy)$('input-status').textContent+=' · 鼠标操作中';

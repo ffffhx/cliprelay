@@ -20,8 +20,20 @@ public class TerminalTest {
     @Test public void emptyGoInventoryCanOmitEmptyFields() throws Exception {
         TerminalProtocol.Reply list=new TerminalProtocol.Reply(TerminalProtocol.list(),new JSONObject().put("ok",true).put("instance",INSTANCE).put("nextOpen",1));
         assertTrue(list.sessions.isEmpty());assertEquals(1,list.nextOpen);
+        assertEquals(Arrays.asList("powershell","cmd"),list.shells);
         JSONObject request=TerminalProtocol.request("read",INSTANCE,ID).put("offset",0);
         assertEquals(0,new TerminalProtocol.Reply(request,reply(state()).put("offset",0).put("next",0).put("gap",false)).data.length);
+    }
+    @Test public void hostShellInventoryIsExplicitAndBoundToSessions() throws Exception {
+        JSONObject list=new JSONObject().put("ok",true).put("instance",INSTANCE).put("nextOpen",2)
+            .put("shells",new JSONArray().put("zsh").put("bash")).put("sessions",new JSONArray().put(state().put("shell","zsh")));
+        TerminalProtocol.Reply accepted=new TerminalProtocol.Reply(TerminalProtocol.list(),list);
+        assertEquals(Arrays.asList("zsh","bash"),accepted.shells);assertEquals("zsh",accepted.sessions.get(0).shell);
+        try{accepted.shells.add("cmd");fail();}catch(UnsupportedOperationException expected){}
+        for(Object bad:new Object[]{JSONObject.NULL,new JSONArray(),new JSONArray().put("zsh").put("zsh"),new JSONArray().put("/bin/zsh"),new JSONArray().put("fish"),new JSONArray().put(1),new JSONArray().put("bash"),"zsh"}) {
+            try{new TerminalProtocol.Reply(TerminalProtocol.list(),list.put("shells",bad));fail("accepted invalid shells: "+bad);}catch(JSONException expected){}
+        }
+        list.remove("shells");try{new TerminalProtocol.Reply(TerminalProtocol.list(),list);fail("Mac session in legacy Windows inventory");}catch(JSONException expected){}
     }
     @Test public void malformedSnapshotCannotAdvanceInput() throws Exception {
         for(Object[] field:new Object[][]{{"acceptedSequence","1"},{"acceptedSequence",1.5},{"writtenSequence",1},{"end",1048577},{"columns",0},{"rows",121},{"state","ready"},{"remainingMs",1800001},{"id","bad"}}) {

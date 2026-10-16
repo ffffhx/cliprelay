@@ -36,6 +36,33 @@ async function poll(f){const value=await f.controller.poll();f.advance(100);retu
 async function open(f,shell='cmd'){if(!f.controller.instance)await poll(f);assert.equal(f.controller.phase,'ready',f.controller.error);f.controller.open(shell);for(let i=0;i<5 && f.controller.pendingAction;i++)await poll(f);assert.ok(f.controller.selected);return f.controller.selected;}
 function input(f,text){return f.controller.input({id:f.controller.selected,view:f.controller.view,text});}
 async function drain(f){for(let i=0;i<50 && (f.controller.states.get(f.controller.selected)?.queuedBytes || f.controller.pendingAction || f.controller.needList);i++)await poll(f);}
+
+test('host shell inventory preserves legacy Windows and restricts Mac session creation',async t=>{
+  const legacy=fixture(t);await poll(legacy);assert.deepEqual(legacy.controller.snapshot().shells,['powershell','cmd']);
+  const f=fixture(t),base=f.controller.request;
+  f.controller.request=async(...args)=>{const reply=await base(...args);return args[2].op==='list'?{...reply,shells:['zsh','bash']}:reply;};
+  await poll(f);assert.deepEqual(f.controller.snapshot().shells,['zsh','bash']);
+  assert.throws(()=>f.controller.open('powershell'),/BAD_REQUEST/);assert.equal(f.server.sessions.size,0);
+  const first=await open(f,'zsh'),second=await open(f,'bash');assert.notEqual(first,second);
+  f.controller.snapshot().shells.push('cmd');assert.throws(()=>f.controller.open('cmd'),/BAD_REQUEST/);
+  assert.deepEqual([...f.server.sessions.values()].map(s=>s.shell),['zsh','bash']);
+});
+
+test('malformed or unadvertised shells cannot be accepted as legacy Windows',()=>{
+  const value={ok:true,instance:'1'.repeat(32),nextOpen:2,sessions:[]};
+  for(const shells of [null,[],['zsh','zsh'],['/bin/zsh'],['zsh','fish'],[1],{zsh:true}])assert.throws(()=>protocol.validate({op:'list'},{...value,shells}),/INVALID_RESPONSE/);
+  const s={id:'a'.repeat(32),shell:'zsh',state:'running',columns:80,rows:24,exitCode:0,openSequence:1,acceptedSequence:0,writtenSequence:0,start:0,end:0,remainingMs:1};
+  assert.throws(()=>protocol.validate({op:'list'},{...value,sessions:[s]}),/INVALID_RESPONSE/);
+  assert.equal(protocol.validate({op:'list'},{...value,shells:['zsh','bash'],sessions:[s]}).sessions[0].shell,'zsh');
+  assert.throws(()=>protocol.validate({op:'list'},{...value,shells:['bash'],sessions:[s]}),/INVALID_RESPONSE/);
+});
+
+test('a changed inventory stops an uncertain open before it can be resent',async t=>{
+  const f=fixture(t),base=f.controller.request;let changed=false;
+  f.controller.request=async(...args)=>{const reply=await base(...args);return args[2].op==='list'?{...reply,shells:changed?['bash']:['zsh']}:reply;};
+  await poll(f);f.controller.open('zsh');changed=true;f.controller.needList=true;await poll(f);
+  assert.equal(f.controller.phase,'error');assert.equal(f.controller.error,'TERMINAL_INVALID_RESPONSE');assert.equal(f.server.calls.filter(c=>c.op==='open').length,0);
+});
 test('multiple sessions keep independent input sequences, UTF-8 bytes and output positions',async t=>{
   const f=fixture(t),first=await open(f);input(f,'中文 😀\r');await drain(f);assert.equal(f.server.writes[0].data.toString(),'中文 😀\r');
   const initial=await poll(f);assert.equal(initial.frame.replay,false);assert.match(Buffer.from(initial.frame.data,'base64').toString(),/中文/);

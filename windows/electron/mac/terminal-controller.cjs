@@ -14,9 +14,9 @@ Object.assign(messages,{TERMINAL_MOUSE_HOST:'请更新电脑端 ClipRelay 后使
 class TerminalController{
   constructor({store,request=protocol.request,now=()=>performance.now()}){
     Object.assign(this,{store,request,now});this.phase='idle';this.view=crypto.randomBytes(16).toString('hex');this.states=new Map();this.sessions=[];this.selected='';this.instance='';this.nextOpen=0;this.pendingAction=null;this.status='';this.error='';this.notice='';this.desired={columns:100,rows:30};this.needList=true;this.retryAt=0;this.failures=0;this.retryStarted=0;
-    this.mice=new Map();this.mouseProtocol=0;this.shownOffset=0;this.shownDimensions=null;this.frameReceipt=null;this.lastRead=-Infinity;this.lastKeyboard=-Infinity;this.nonMouse=0;this.lastInputOp='';
+    this.shells=[];this.mice=new Map();this.mouseProtocol=0;this.shownOffset=0;this.shownDimensions=null;this.frameReceipt=null;this.lastRead=-Infinity;this.lastKeyboard=-Infinity;this.nonMouse=0;this.lastInputOp='';
   }
-  snapshot(){const current=this.states.get(this.selected),mouse=this.mice.get(this.selected);return {phase:this.phase,hostName:this.bound?.name || '',hostId:this.bound?.id || '',view:this.view,screen:this.screen || '',selected:this.selected,sessions:this.sessions.map(s=>({...s})),error:this.error?message({code:this.error}):'',notice:this.notice,queuedBytes:current?.queuedBytes || 0,uncertain:!!current?.pending || !!this.pendingAction,accepted:current?.snapshot.acceptedSequence || 0,written:current?.snapshot.writtenSequence || 0,busy:!!this.operation,mouse:{supported:this.mouseProtocol===1,ready:this.mouseReady(),available:mouseEnabled(current?.snapshot.mouse),revision:mouse?.revision || 0,buttons:mouse?.buttons || 0,busy:mouse?.busy() || false}};}
+  snapshot(){const current=this.states.get(this.selected),mouse=this.mice.get(this.selected);return {phase:this.phase,shells:[...this.shells],hostName:this.bound?.name || '',hostId:this.bound?.id || '',view:this.view,screen:this.screen || '',selected:this.selected,sessions:this.sessions.map(s=>({...s})),error:this.error?message({code:this.error}):'',notice:this.notice,queuedBytes:current?.queuedBytes || 0,uncertain:!!current?.pending || !!this.pendingAction,accepted:current?.snapshot.acceptedSequence || 0,written:current?.snapshot.writtenSequence || 0,busy:!!this.operation,mouse:{supported:this.mouseProtocol===1,ready:this.mouseReady(),available:mouseEnabled(current?.snapshot.mouse),revision:mouse?.revision || 0,buttons:mouse?.buttons || 0,busy:mouse?.busy() || false}};}
   mouseReady(){const s=this.states.get(this.selected)?.snapshot;return !!(this.mouseProtocol===1 && this.phase==='ready' && s?.state==='running' && mouseEnabled(s.mouse) && !this.pasteDraft && this.shownOffset>=s.mouse.offset && this.shownOffset>=(this.replayUntil || 0) && ['columns','rows'].every(key=>s[key]===this.desired[key] && s[key]===this.shownDimensions?.[key]));}
   mouseUpdate(session){requireValue(this.mouseProtocol!==1 || session.mouse);if(!session.mouse){this.mice.get(session.id)?.stop();this.mice.delete(session.id);return;}const state=this.mice.get(session.id);if(state)state.refresh(session.mouse);else this.mice.set(session.id,new MouseState(session.mouse,this.now));}
   parsed(data){const receipt=this.frameReceipt;this.checkView(data);requireValue(receipt && receipt.token===data.token && receipt.view===data.view && receipt.id===data.id,'TERMINAL_VIEW_CHANGED');this.shownOffset=receipt.next;this.shownDimensions={columns:receipt.columns,rows:receipt.rows};this.frameReceipt=null;return this.snapshot();}
@@ -80,7 +80,7 @@ class TerminalController{
   }
   resize(data){this.checkView(data);const dimensions=protocol.dimensions(data.columns,data.rows);if(dimensions.columns!==this.desired.columns || dimensions.rows!==this.desired.rows){this.mice.get(this.selected)?.stop();this.shownDimensions=null;}this.desired=dimensions;return this.snapshot();}
   open(shell){
-    requireValue(this.phase==='ready' && !this.pendingAction && !!this.instance,'TERMINAL_BUSY');requireValue(['cmd','powershell'].includes(shell),'TERMINAL_BAD_REQUEST');this.target();this.invalidate();
+    requireValue(this.phase==='ready' && !this.pendingAction && !!this.instance,'TERMINAL_BUSY');requireValue(this.shells.includes(shell),'TERMINAL_BAD_REQUEST');this.target();this.invalidate();
     this.pendingAction={op:'open',instance:this.instance,id:crypto.randomBytes(16).toString('hex'),shell,...this.desired,sequence:this.nextOpen};return this.snapshot();
   }
   end(data){
@@ -88,9 +88,11 @@ class TerminalController{
   }
   async refresh(){
     const reply=await this.call({op:'list'}),restarted=this.instance && this.instance!==reply.instance;
+    const shells=protocol.shells(reply.shells);requireValue(reply.sessions.every(session=>shells.includes(session.shell)));
     if(restarted){this.invalidate();this.screen=this.view;this.states.clear();this.mice.clear();this.selected='';this.pendingAction=null;this.notice='电脑终端服务已重启，旧输入已停止。请选择或新建会话。';}
     if(this.mouseProtocol!==(reply.mouseProtocol || 0)){this.invalidate();this.mouseProtocol=reply.mouseProtocol || 0;}
     if(this.pasteLimit!==(reply.pasteLimit || 0))this.pasteDraft=null;this.pasteLimit=reply.pasteLimit || 0;
+    requireValue(!this.pendingAction || this.pendingAction.op!=='open' || shells.includes(this.pendingAction.shell));this.shells=shells;
     this.instance=reply.instance;this.nextOpen=reply.nextOpen;const known=new Set();
     for(const item of reply.sessions){known.add(item.id);const state=this.states.get(item.id);if(state)state.refresh(item);else this.states.set(item.id,new InputState(item));this.mouseUpdate(item);}
     for(const id of this.states.keys())if(!known.has(id)){this.states.delete(id);this.mice.delete(id);if(id===this.selected){this.invalidate();this.selected='';this.notice='原会话已结束或记录过期。';}}
@@ -123,7 +125,7 @@ class TerminalController{
       if(this.needList || !this.instance || this.now()-(this.listedAt || 0)>3000)await this.refresh();
       else if(this.pendingAction){
         const command=this.pendingAction,reply=await this.call(command);this.pendingAction=null;this.update(reply);this.needList=true;
-        if(command.op==='open'){this.invalidate();this.screen=this.view;this.selected=reply.session.id;this.offset=0;this.replayUntil=0;}
+        if(command.op==='open'){this.nextOpen=Math.max(this.nextOpen,reply.session.openSequence+1);this.invalidate();this.screen=this.view;this.selected=reply.session.id;this.offset=0;this.replayUntil=0;}
         else if(command.op==='close'){const state=this.states.get(command.id);state.queue=[];state.queuedBytes=0;state.pending=null;this.notice='会话已结束。';}
       }else{
         const state=this.states.get(this.selected);if(state){

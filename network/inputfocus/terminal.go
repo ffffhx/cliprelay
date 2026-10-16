@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,6 +71,7 @@ type terminalReply struct {
 	Instance      string            `json:"instance"`
 	NextOpen      int64             `json:"nextOpen,omitempty"`
 	PasteLimit    int               `json:"pasteLimit,omitempty"`
+	Shells        []string          `json:"shells,omitempty"`
 	MouseProtocol int               `json:"mouseProtocol,omitempty"`
 	Offset        int64             `json:"offset"`
 	Next          int64             `json:"next"`
@@ -84,6 +86,25 @@ type terminalControl struct {
 	cleanupRead func(string) (json.RawMessage, error)
 	mu          sync.Mutex
 	started     bool
+}
+
+func (r *terminalReply) UnmarshalJSON(data []byte) error {
+	type wire terminalReply
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for key, raw := range fields {
+		if strings.EqualFold(key, "shells") && (key != "shells" || string(raw) == "null") {
+			return errors.New("invalid terminal shell inventory")
+		}
+	}
+	*r = terminalReply(value)
+	return nil
 }
 
 // This list is sent only through the trusted local worker pipe. The network
@@ -171,6 +192,9 @@ func (p *terminalControl) maintain(ctx context.Context) {
 		}
 	}
 }
+func validTerminalShell(shell string) bool {
+	return shell == "cmd" || shell == "powershell" || shell == "zsh" || shell == "bash"
+}
 func validTerminalRequest(r terminalRequest) bool {
 	if r.Op != "mouse" && (r.Action != "" || r.Epoch != nil || r.Gesture != nil || r.Column != 0 || r.Row != 0 || r.Button != 0 || r.Modifiers != 0) {
 		return false
@@ -206,7 +230,7 @@ func validTerminalRequest(r terminalRequest) bool {
 		}
 		return false
 	case "open":
-		return (r.Shell == "cmd" || r.Shell == "powershell") && dimensions && sequence && r.Offset == nil && r.Data == ""
+		return validTerminalShell(r.Shell) && dimensions && sequence && r.Offset == nil && r.Data == ""
 	case "read":
 		return r.Shell == "" && r.Columns == 0 && r.Rows == 0 && r.Sequence == nil && r.Offset != nil && *r.Offset >= 0 && *r.Offset < 1<<53 && r.Data == ""
 	case "write", "paste":
@@ -225,7 +249,7 @@ func validTerminalRequest(r terminalRequest) bool {
 }
 func validTerminalSession(s terminalSession) bool {
 	state := s.State == "running" || s.State == "closed" || s.State == "exited" || s.State == "expired" || s.State == "revoked" || s.State == "failed"
-	return validTerminalMouse(s.Mouse, s.End) && fileID.MatchString(s.ID) && (s.Shell == "cmd" || s.Shell == "powershell") && state && s.Columns >= 20 && s.Columns <= 240 && s.Rows >= 5 && s.Rows <= 120 &&
+	return validTerminalMouse(s.Mouse, s.End) && fileID.MatchString(s.ID) && validTerminalShell(s.Shell) && state && s.Columns >= 20 && s.Columns <= 240 && s.Rows >= 5 && s.Rows <= 120 &&
 		s.OpenSequence > 0 && s.OpenSequence < 1<<53 && s.AcceptedSequence >= 0 && s.AcceptedSequence < 1<<53 && s.WrittenSequence >= 0 && s.WrittenSequence <= s.AcceptedSequence &&
 		s.Start >= 0 && s.End >= s.Start && s.End < 1<<53 && s.End-s.Start <= 1024*1024 && s.RemainingMs >= 0 && s.RemainingMs <= 1800000
 }
@@ -244,19 +268,32 @@ func validTerminalReply(request terminalRequest, value terminalReply) bool {
 		return false
 	}
 	if request.Op == "list" {
+		shells := map[string]bool{"cmd": true, "powershell": true}
+		if value.Shells != nil {
+			if len(value.Shells) < 1 || len(value.Shells) > 4 {
+				return false
+			}
+			shells = make(map[string]bool)
+			for _, shell := range value.Shells {
+				if !validTerminalShell(shell) || shells[shell] {
+					return false
+				}
+				shells[shell] = true
+			}
+		}
 		if value.NextOpen <= 0 || value.NextOpen >= 1<<53 || value.Session != nil || len(value.Sessions) > 32 || value.Data != "" || (value.PasteLimit != 0 && value.PasteLimit != 16396) || (value.MouseProtocol != 0 && value.MouseProtocol != 1) {
 			return false
 		}
 		seen := make(map[string]bool)
 		for _, s := range value.Sessions {
-			if !validTerminalSession(s) || value.MouseProtocol == 1 && s.Mouse == nil || seen[s.ID] || s.OpenSequence >= value.NextOpen {
+			if !validTerminalSession(s) || !shells[s.Shell] || value.MouseProtocol == 1 && s.Mouse == nil || seen[s.ID] || s.OpenSequence >= value.NextOpen {
 				return false
 			}
 			seen[s.ID] = true
 		}
 		return true
 	}
-	if request.Instance != value.Instance || value.Session == nil || !validTerminalSession(*value.Session) || value.Session.ID != request.ID || len(value.Sessions) != 0 {
+	if request.Instance != value.Instance || value.Session == nil || !validTerminalSession(*value.Session) || value.Session.ID != request.ID || len(value.Sessions) != 0 || value.Shells != nil {
 		return false
 	}
 	if request.Op == "read" {
