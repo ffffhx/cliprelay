@@ -33,22 +33,422 @@ index f9e144e..9caefb1 100644
  
      // Offsets for when streaming a specific monitor. By default, they are 0.
      int offset_x {0};  ///< Horizontal capture offset in physical pixels.
+diff --git a/src/platform/macos/av_video.h b/src/platform/macos/av_video.h
+index 8832f32..88d8b1c 100644
+--- a/src/platform/macos/av_video.h
++++ b/src/platform/macos/av_video.h
+@@ -9,17 +9,51 @@
+ #import <CoreGraphics/CoreGraphics.h>
+ 
+ /**
+- * @brief macOS capture session and video output handles.
++ * @brief One bounded latest-frame mailbox, independently owned by a capture loop.
++ *
++ * AVFoundation callbacks only retain the latest sample. Image conversion and
++ * encoding stay on the caller's capture thread. Stop detaches the delegate and
++ * drains its serial queue before releasing any pending sample or output.
++ */
++@interface AVVideoFrameSource: NSObject <AVCaptureVideoDataOutputSampleBufferDelegate> {
++@private
++  AVCaptureVideoDataOutput *_output;  ///< Output retained until queue cleanup.
++  dispatch_queue_t _queue;  ///< Serial system callback queue owned by this source.
++  dispatch_semaphore_t _ready;  ///< Signals a pending frame or cancellation.
++  NSLock *_frameLock;  ///< Protects the pending frame and stopped flag.
++  NSLock *_stopLock;  ///< Serializes external stop and queue draining.
++  CMSampleBufferRef _sample;  ///< Latest retained frame; at most one is queued.
++  BOOL _stopped;  ///< Cancellation barrier for future frame delivery.
++}
++
++/** @brief Output registered with the owner's AVFoundation session. */
++@property (nonatomic, readonly) AVCaptureVideoDataOutput *output;
++
++/**
++ * @brief Attach a bounded mailbox to an output's serial callback queue.
++ * @param output Output configured by the owner before session registration.
++ * @return Owned frame source, or nil when allocation fails.
+  */
+-struct CaptureSession {
+-  AVCaptureVideoDataOutput *output;  ///< Output.
+-  NSCondition *captureStopped;  ///< Capture stopped.
+-};
++- (id)initWithOutput:(AVCaptureVideoDataOutput *)output;
++
++/**
++ * @brief Take the newest retained sample using a monotonic dispatch deadline.
++ * @param deadline Absolute dispatch deadline, including DISPATCH_TIME_NOW.
++ * @return Owned sample to CFRelease, or nil on timeout/cancellation.
++ */
++- (CMSampleBufferRef)copyNextFrameBefore:(dispatch_time_t)deadline;
++
++/**
++ * @brief Cancel delivery, wake the reader and drain the callback queue.
++ * @details Called by the owner, never from this source's callback queue.
++ */
++- (void)stop;
++@end
+ 
+ /**
+  * @brief AVFoundation video capture controller used by the macOS backend.
+  */
+-@interface AVVideo: NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
++@interface AVVideo: NSObject
+ 
+ /**
+  * @brief Display ID property.
+@@ -42,27 +76,14 @@ struct CaptureSession {
+  */
+ @property (nonatomic, assign) int frameHeight;
+ 
+-/**
+- * @brief Objective-C block invoked for each captured sample buffer.
+- */
+-typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
+-
+ /**
+  * @brief Capture session that owns the active AVFoundation inputs and outputs.
+  */
+ @property (nonatomic, assign) AVCaptureSession *session;
+ /**
+- * @brief Video outputs property.
++ * @brief Independently owned frame sources registered with the session.
+  */
+-@property (nonatomic, assign) NSMapTable<AVCaptureConnection *, AVCaptureVideoDataOutput *> *videoOutputs;
+-/**
+- * @brief Capture callbacks property.
+- */
+-@property (nonatomic, assign) NSMapTable<AVCaptureConnection *, FrameCallbackBlock> *captureCallbacks;
+-/**
+- * @brief Capture signals property.
+- */
+-@property (nonatomic, assign) NSMapTable<AVCaptureConnection *, dispatch_semaphore_t> *captureSignals;
++@property (nonatomic, assign) NSMutableArray<AVVideoFrameSource *> *frameSources;
+ 
+ /**
+  * @brief Initialize AVFoundation capture for a display and frame rate.
+@@ -81,11 +102,15 @@ typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
+  */
+ - (void)setFrameWidth:(int)frameWidth frameHeight:(int)frameHeight;
+ /**
+- * @brief Run the capture loop for this backend.
+- *
+- * @param frameCallback Frame callback.
+- * @return Capture status reported to the streaming pipeline.
++ * @brief Register a new independently cancellable capture output.
++ * @return Owned source; the caller must stopCapture: and release it.
++ */
++- (AVVideoFrameSource *)newCapture;
++
++/**
++ * @brief Remove only the specified output after its callbacks have drained.
++ * @param source Source returned by newCapture; repeated stops are harmless.
+  */
+-- (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback;
++- (void)stopCapture:(AVVideoFrameSource *)source;
+ 
+ @end
+diff --git a/src/platform/macos/av_video.m b/src/platform/macos/av_video.m
+index 5ad931c..17c21ac 100644
+--- a/src/platform/macos/av_video.m
++++ b/src/platform/macos/av_video.m
+@@ -5,10 +5,104 @@
+ // local includes
+ #import "av_video.h"
+ 
++@implementation AVVideoFrameSource
++@synthesize output = _output;
++
++- (id)initWithOutput:(AVCaptureVideoDataOutput *)output {
++  self = [super init];
++  if (!self) {
++    return nil;
++  }
++  _output = [output retain];
++  _frameLock = [[NSLock alloc] init];
++  _stopLock = [[NSLock alloc] init];
++  _ready = dispatch_semaphore_create(0);
++  dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
++  _queue = dispatch_queue_create("cliprelay.video.frames", qos);
++  [_output setSampleBufferDelegate:self queue:_queue];
++  return self;
++}
++
++- (void)captureOutput:(AVCaptureOutput *)captureOutput
++  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
++         fromConnection:(AVCaptureConnection *)connection {
++  if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer) || !CMSampleBufferGetImageBuffer(sampleBuffer)) {
++    return;
++  }
++  [_frameLock lock];
++  CMSampleBufferRef old = NULL;
++  if (!_stopped) {
++    old = _sample;
++    _sample = (CMSampleBufferRef) CFRetain(sampleBuffer);
++    if (!old) {
++      dispatch_semaphore_signal(_ready);
++    }
++  }
++  [_frameLock unlock];
++  if (old) {
++    CFRelease(old);
++  }
++}
++
++- (CMSampleBufferRef)copyNextFrameBefore:(dispatch_time_t)deadline {
++  [_frameLock lock];
++  BOOL stopped = _stopped;
++  [_frameLock unlock];
++  if (stopped || dispatch_semaphore_wait(_ready, deadline) != 0) {
++    return NULL;
++  }
++  [_frameLock lock];
++  CMSampleBufferRef result = _sample;
++  _sample = NULL;
++  [_frameLock unlock];
++  return result;
++}
++
++- (void)stop {
++  [_stopLock lock];
++  [_frameLock lock];
++  if (!_stopped) {
++    _stopped = YES;
++    dispatch_semaphore_signal(_ready);
++  }
++  CMSampleBufferRef old = _sample;
++  _sample = NULL;
++  [_frameLock unlock];
++  [_output setSampleBufferDelegate:nil queue:nil];
++  // The callback never calls stop or waits for its owner. Once this barrier
++  // finishes, no callback can retain another frame or touch released state.
++  if (_queue) {
++    dispatch_sync(_queue, ^ {});
++  }
++  if (old) {
++    CFRelease(old);
++  }
++  [_stopLock unlock];
++}
++
++- (void)dealloc {
++  [self stop];
++  [_output release];
++  [_frameLock release];
++  [_stopLock release];
++  if (_ready) {
++    dispatch_release(_ready);
++  }
++  if (_queue) {
++    dispatch_release(_queue);
++  }
++  [super dealloc];
++}
++
++@end
++
+ @implementation AVVideo
+ 
+ - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
+   self = [super init];
++  if (!self) {
++    return nil;
++  }
+ 
+   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+   if (!mode) {
+@@ -22,41 +116,45 @@
+   self.frameHeight = (int) CGDisplayModeGetPixelHeight(mode);
+   self.minFrameDuration = CMTimeMake(1, frameRate);
+   self.session = [[AVCaptureSession alloc] init];
+-  self.videoOutputs = [[NSMapTable alloc] init];
+-  self.captureCallbacks = [[NSMapTable alloc] init];
+-  self.captureSignals = [[NSMapTable alloc] init];
++  self.frameSources = [[NSMutableArray alloc] init];
+ 
+   CFRelease(mode);
+ 
+   AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
+   [screenInput setMinFrameDuration:self.minFrameDuration];
+ 
+-  if ([self.session canAddInput:screenInput]) {
++  if (screenInput && [self.session canAddInput:screenInput]) {
+     [self.session addInput:screenInput];
+   } else {
+     [screenInput release];
++    [self release];
+     return nil;
+   }
+-
+-  [self.session startRunning];
++  [screenInput release];
+ 
+   return self;
+ }
+ 
+ - (void)dealloc {
+-  [self.videoOutputs release];
+-  [self.captureCallbacks release];
+-  [self.captureSignals release];
++  NSArray *sources = [self.frameSources copy];
++  for (AVVideoFrameSource *source in sources) {
++    [self stopCapture:source];
++  }
++  [sources release];
++  [self.frameSources release];
+   [self.session stopRunning];
++  [self.session release];
+   [super dealloc];
+ }
+ 
+ - (void)setFrameWidth:(int)frameWidth frameHeight:(int)frameHeight {
+-  self.frameWidth = frameWidth;
+-  self.frameHeight = frameHeight;
++  @synchronized(self) {
++    self.frameWidth = frameWidth;
++    self.frameHeight = frameHeight;
++  }
+ }
+ 
+-- (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback {
++- (AVVideoFrameSource *)newCapture {
+   @synchronized(self) {
+     AVCaptureVideoDataOutput *videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+ 
+@@ -67,50 +165,47 @@
+       (NSString *) AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
+     }];
+ 
+-    dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
+-    dispatch_queue_t recordingQueue = dispatch_queue_create("videoCaptureQueue", qos);
+-    [videoOutput setSampleBufferDelegate:self queue:recordingQueue];
+-
+-    [self.session stopRunning];
+-
+-    if ([self.session canAddOutput:videoOutput]) {
+-      [self.session addOutput:videoOutput];
+-    } else {
++    AVVideoFrameSource *source = [[AVVideoFrameSource alloc] initWithOutput:videoOutput];
++    if (!source || ![self.session canAddOutput:videoOutput]) {
++      [source release];
+       [videoOutput release];
+       return nil;
+     }
+-
+-    AVCaptureConnection *videoConnection = [videoOutput connectionWithMediaType:AVMediaTypeVideo];
+-    dispatch_semaphore_t signal = dispatch_semaphore_create(0);
+-
+-    [self.videoOutputs setObject:videoOutput forKey:videoConnection];
+-    [self.captureCallbacks setObject:frameCallback forKey:videoConnection];
+-    [self.captureSignals setObject:signal forKey:videoConnection];
+-
+-    [self.session startRunning];
+-
+-    return signal;
++    [self.session beginConfiguration];
++    [self.session addOutput:videoOutput];
++    [self.frameSources addObject:source];
++    [self.session commitConfiguration];
++    [videoOutput release];
++    if (![self.session isRunning]) {
++      [self.session startRunning];
++    }
++    return source;
+   }
+ }
+ 
+-- (void)captureOutput:(AVCaptureOutput *)captureOutput
+-  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+-         fromConnection:(AVCaptureConnection *)connection {
+-  FrameCallbackBlock callback = [self.captureCallbacks objectForKey:connection];
+-
+-  if (callback != nil) {
+-    if (!callback(sampleBuffer)) {
+-      @synchronized(self) {
++- (void)stopCapture:(AVVideoFrameSource *)source {
++  if (!source) {
++    return;
++  }
++  @synchronized(self) {
++    if (![self.frameSources containsObject:source]) {
++      return;
++    }
++    [source retain];
++  }
++  [source stop];
++  @synchronized(self) {
++    if ([self.frameSources containsObject:source]) {
++      [self.session beginConfiguration];
++      [self.session removeOutput:source.output];
++      [self.frameSources removeObject:source];
++      [self.session commitConfiguration];
++      if (self.frameSources.count == 0) {
+         [self.session stopRunning];
+-        [self.captureCallbacks removeObjectForKey:connection];
+-        [self.session removeOutput:[self.videoOutputs objectForKey:connection]];
+-        [self.videoOutputs removeObjectForKey:connection];
+-        dispatch_semaphore_signal([self.captureSignals objectForKey:connection]);
+-        [self.captureSignals removeObjectForKey:connection];
+-        [self.session startRunning];
+       }
+     }
+   }
++  [source release];
+ }
+ 
+ @end
 diff --git a/src/platform/macos/display.mm b/src/platform/macos/display.mm
-index d5fe3d0..660c558 100644
+index d5fe3d0..1a2b4b1 100644
 --- a/src/platform/macos/display.mm
 +++ b/src/platform/macos/display.mm
-@@ -10,6 +10,7 @@
+@@ -6,10 +6,13 @@
+ // standard includes
+ #include <charconv>
+ #include <chrono>
++#include <climits>
+ #include <optional>
  #include <string_view>
  
  // local includes
++#include "src/cliprelay_capture.h"
 +#include "src/cliprelay_macos.h"
  #include "src/config.h"
  #include "src/display_device.h"
  #include "src/logging.h"
-@@ -32,6 +33,33 @@ namespace platf {
+@@ -18,6 +21,7 @@
+ #include "src/platform/macos/av_video.h"
+ #include "src/platform/macos/misc.h"
+ #include "src/platform/macos/nv12_zero_device.h"
++#include "src/utility.h"
+ 
+ // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
+ /**
+@@ -32,6 +36,87 @@ namespace platf {
    using namespace std::literals;
  
    namespace {
++    /** @brief Move-free ownership of one sample taken from the native mailbox. */
++    struct captured_sample {
++      CMSampleBufferRef sample;  ///< Owned sample, or null after a timeout.
++
++      /** @brief Take the reference returned by copyNextFrameBefore:. */
++      explicit captured_sample(CMSampleBufferRef value):
++          sample(value) {}
++
++      captured_sample(const captured_sample &) = delete;
++      captured_sample &operator=(const captured_sample &) = delete;
++
++      /** @brief Release the mailbox's reference after processing finishes. */
++      ~captured_sample() {
++        if (sample) {
++          CFRelease(sample);
++        }
++      }
++
++      /** @brief Distinguish a real sample from a timeout. */
++      explicit operator bool() const {
++        return sample != nullptr;
++      }
++    };
++
 +    /**
 +     * @brief Read the captured display and active desktop in native logical points.
 +     * @param id Actual display selected for AVFoundation capture.
@@ -76,10 +476,217 @@ index d5fe3d0..660c558 100644
 +      return cliprelay::macos::geometry(std::to_string(id), {selected.origin.x, selected.origin.y, selected.size.width, selected.size.height}, {desktop.origin.x, desktop.origin.y, desktop.size.width, desktop.size.height});
 +    }
 +
++    /**
++     * @brief Replace image storage while retaining the old sample until unlock.
++     * @param image Image owned by the capture thread or its free-image pool.
++     * @param sample Borrowed valid AVFoundation sample with a pixel buffer.
++     * @return Whether the image has a valid, representable pixel extent.
++     */
++    bool assign_sample(img_t *image, CMSampleBufferRef sample) {
++      if (!sample || !CMSampleBufferIsValid(sample) || !CMSampleBufferGetImageBuffer(sample)) {
++        return false;
++      }
++      auto new_sample = std::make_shared<av_sample_buf_t>(sample);
++      auto new_pixels = std::make_shared<av_pixel_buf_t>(sample);
++      const auto width = CVPixelBufferGetWidth(new_pixels->buf);
++      const auto height = CVPixelBufferGetHeight(new_pixels->buf);
++      const auto pitch = CVPixelBufferGetBytesPerRow(new_pixels->buf);
++      if (!width || !height || width > INT_MAX || height > INT_MAX || pitch > INT_MAX) {
++        return false;
++      }
++      auto av_image = static_cast<av_img_t *>(image);
++      auto previous = std::make_shared<temp_retain_av_img_t>(av_image->sample_buffer, av_image->pixel_buffer, image->data);
++      av_image->sample_buffer = std::move(new_sample);
++      av_image->pixel_buffer = std::move(new_pixels);
++      image->data = av_image->pixel_buffer->data();
++      image->width = static_cast<int>(width);
++      image->height = static_cast<int>(height);
++      image->row_pitch = static_cast<int>(pitch);
++      image->pixel_pitch = image->row_pitch / image->width;
++      return true;
++    }
++
      std::optional<CGDirectDisplayID> parse_display_id(std::string_view display_name) {
        if (display_name.empty()) {
          return std::nullopt;
-@@ -240,10 +268,24 @@ namespace platf {
+@@ -66,49 +151,74 @@ namespace platf {
+       [av_capture release];
+     }
+ 
+-    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+-      auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+-        auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
+-        auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
+-
+-        std::shared_ptr<img_t> img_out;
+-        if (!pull_free_image_cb(img_out)) {
+-          // got interrupt signal
+-          // returning false here stops capture backend
+-          return false;
+-        }
+-        auto av_img = std::static_pointer_cast<av_img_t>(img_out);
+-
+-        auto old_data_retainer = std::make_shared<temp_retain_av_img_t>(
+-          av_img->sample_buffer,
+-          av_img->pixel_buffer,
+-          img_out->data
+-        );
+-
+-        av_img->sample_buffer = new_sample_buffer;
+-        av_img->pixel_buffer = new_pixel_buffer;
+-        img_out->data = new_pixel_buffer->data();
+-
+-        img_out->width = (int) CVPixelBufferGetWidth(new_pixel_buffer->buf);
+-        img_out->height = (int) CVPixelBufferGetHeight(new_pixel_buffer->buf);
+-        img_out->row_pitch = (int) CVPixelBufferGetBytesPerRow(new_pixel_buffer->buf);
+-        img_out->pixel_pitch = img_out->row_pitch / img_out->width;
+-
+-        old_data_retainer = nullptr;
++    /**
++     * @brief Detect display removal, native mode changes and desktop rearrangement.
++     * @return Whether the actual capture still matches its published geometry.
++     */
++    bool geometry_current() const {
++      const auto g = capture_geometry(display_id);
++      if (!g || g->id != cliprelay_display_id || g->x != cliprelay_capture_x || g->y != cliprelay_capture_y || g->width != cliprelay_capture_width || g->height != cliprelay_capture_height || g->desktop_x != cliprelay_desktop_x || g->desktop_y != cliprelay_desktop_y || g->desktop_width != cliprelay_desktop_width || g->desktop_height != cliprelay_desktop_height) {
++        return false;
++      }
++      const auto mode = CGDisplayCopyDisplayMode(display_id);
++      if (!mode) {
++        return false;
++      }
++      const bool unchanged = CGDisplayModeGetPixelWidth(mode) == width && CGDisplayModeGetPixelHeight(mode) == height;
++      CFRelease(mode);
++      return unchanged;
++    }
+ 
+-        if (!push_captured_image_cb(std::move(img_out), true)) {
+-          // got interrupt signal
+-          // returning false here stops capture backend
+-          return false;
++    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
++      auto source = [av_capture newCapture];
++      if (!source) {
++        return capture_e::error;
++      }
++      auto close = util::fail_guard([&] {
++        [av_capture stopCapture:source];
++        [source release];
++      });
++      std::shared_ptr<img_t> last_image;
++      if (!pull_free_image_cb(last_image)) {
++        return capture_e::ok;
++      }
++      const auto result = cliprelay::capture_loop(
++        [&](auto budget) {
++          const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(budget).count();
++          return captured_sample {[source copyNextFrameBefore:dispatch_time(DISPATCH_TIME_NOW, nanos)]};
++        },
++        [&](const captured_sample &sample) {
++          std::shared_ptr<img_t> image;
++          if (!pull_free_image_cb(image)) {
++            return cliprelay::frame_result::stopped;
++          }
++          if (!assign_sample(image.get(), sample.sample)) {
++            return cliprelay::frame_result::error;
++          }
++          last_image = image;
++          return push_captured_image_cb(std::move(image), true) ? cliprelay::frame_result::keep_going : cliprelay::frame_result::stopped;
++        },
++        [&] {
++          // A timeout can service control requests without claiming a new image.
++          auto heartbeat = last_image;
++          return push_captured_image_cb(std::move(heartbeat), false);
++        },
++        [&] {
++          return platf::is_screen_capture_allowed() && geometry_current();
++        },
++        [] {
++          return std::chrono::steady_clock::now();
+         }
+-
+-        return true;
+-      }];
+-
+-      // FIXME: We should time out if an image isn't returned for a while
+-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+-
+-      return capture_e::ok;
++      );
++      switch (result) {
++        case cliprelay::capture_result::stopped:
++          return capture_e::ok;
++        case cliprelay::capture_result::reinit:
++          return capture_e::reinit;
++        case cliprelay::capture_result::error:
++          return capture_e::error;
++      }
++      return capture_e::error;
+     }
+ 
+     /**
+@@ -151,42 +261,27 @@ namespace platf {
+      */
+     int dummy_img(img_t *img) override {
+       if (!platf::is_screen_capture_allowed()) {
+-        // If we don't have the screen capture permission, this function will hang
+-        // indefinitely without doing anything useful. Exit instead to avoid this.
+-        // A non-zero return value indicates failure to the calling function.
++        // Check permission before opening a native capture output. A non-zero
++        // return value indicates failure to the calling function.
+         return 1;
+       }
+ 
+-      auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+-        auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
+-        auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
+-
+-        auto av_img = (av_img_t *) img;
+-
+-        auto old_data_retainer = std::make_shared<temp_retain_av_img_t>(
+-          av_img->sample_buffer,
+-          av_img->pixel_buffer,
+-          img->data
+-        );
+-
+-        av_img->sample_buffer = new_sample_buffer;
+-        av_img->pixel_buffer = new_pixel_buffer;
+-        img->data = new_pixel_buffer->data();
+-
+-        img->width = (int) CVPixelBufferGetWidth(new_pixel_buffer->buf);
+-        img->height = (int) CVPixelBufferGetHeight(new_pixel_buffer->buf);
+-        img->row_pitch = (int) CVPixelBufferGetBytesPerRow(new_pixel_buffer->buf);
+-        img->pixel_pitch = img->row_pitch / img->width;
+-
+-        old_data_retainer = nullptr;
+-
+-        // returning false here stops capture backend
+-        return false;
+-      }];
+-
+-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+-
+-      return 0;
++      auto source = [av_capture newCapture];
++      if (!source) {
++        return 1;
++      }
++      auto close = util::fail_guard([&] {
++        [av_capture stopCapture:source];
++        [source release];
++      });
++      const auto sample = [source copyNextFrameBefore:dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)];
++      if (!sample) {
++        return 1;
++      }
++      auto release_sample = util::fail_guard([&] {
++        CFRelease(sample);
++      });
++      return assign_sample(img, sample) ? 0 : 1;
+     }
+ 
+     /**
+@@ -240,10 +335,24 @@ namespace platf {
      if (const auto configured_display_id {parse_display_id(display_name)}) {
        display->display_id = *configured_display_id;
      } else if (!display_name.empty()) {

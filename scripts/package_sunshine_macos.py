@@ -76,7 +76,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     cases = suites.findall('.//testcase')
     expected_cases = []
     for suite, filename in [('ClipRelayInputTest', 'input_integration_test.cpp'),
-                            ('ClipRelayMacMouseTest', 'macos_mouse_test.cpp')]:
+                            ('ClipRelayMacMouseTest', 'macos_mouse_test.cpp'),
+                            ('ClipRelayMacCaptureTest', 'macos_capture_test.mm')]:
         expected_cases.extend((suite, name) for name in re.findall(r'TEST_F\('+suite+r',\s*(\w+)\)',
                               (root / 'engine/sunshine' / filename).read_text()))
     expected = [name for _, name in expected_cases]
@@ -144,7 +145,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     tracked = ['engine/sunshine/' + name for name in [
         'upstream.json', 'control.patch', 'cliprelay_control.h', 'cliprelay_audio.h',
         'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md',
-        'macos-control.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp']]
+        'macos-control.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp',
+        'cliprelay_capture.h', 'macos_capture_test.mm']]
     tracked += ['engine/sunshine/macos-dependencies.json', 'scripts/prepare_sunshine.py',
                 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py',
                 '.github/workflows/sunshine-macos.yml']

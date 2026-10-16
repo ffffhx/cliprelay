@@ -278,12 +278,28 @@ coordinates, invalid bounds and events without a target once targeting begins.
 `macos_mouse_test.cpp` adds fourteen cases using the production CoreGraphics
 backend with posting, cursor and display boundaries replaced. It also exercises
 the production capture registry, video input transform and libvirtualhid adapter.
-These tests do not inject system input or start capture. The workflow requires
-all fourteen cases plus the existing twelve input integration cases to pass.
-Native CI validation of this overlay is pending; these source changes do not
-establish hotplug recovery, screen-capture permission, physical monitor behavior
-or a complete Mac hosting application. Host lifecycle and permission UI remain
-separate work.
+These tests do not inject system input or start capture. The original fourteen
+mouse cases and twelve input integration cases pass in the arm64 job of
+[build 38824743508](https://github.com/ffffhx/cliprelay/actions/runs/38824743508).
+
+The capture overlay keeps AVFoundation callbacks short: each output owns one
+latest retained sample, a serial callback queue and an independent stop path.
+The capture thread reads with a 100 ms budget, services stream controls on empty
+polls and reinitializes after three seconds without a real frame. Display removal,
+native mode changes, logical rearrangement and permission changes are checked
+periodically. Dummy capture has the same bounded first-frame wait. Stopping one
+output detaches its delegate and drains its queue before releasing state; other
+outputs keep running. This follows the documented
+[AVFoundation callback queue contract](https://developer.apple.com/documentation/avfoundation/avcapturevideodataoutput/setsamplebufferdelegate(_:queue:)).
+
+`macos_capture_test.mm` adds thirteen cases for actual CoreMedia sample lifetime,
+latest-frame replacement, bounded waits, cancellation, callback draining, output
+ownership and capture-loop deadlines. Only the capture session boundary is faked;
+no screen is recorded. The workflow requires all thirty-nine cases within a
+two-minute test-process deadline. Native validation of the capture changes is
+pending. Physical hotplug, capture permissions and monitor behavior remain
+unverified, as does a complete Mac hosting application. Host lifecycle and
+permission UI remain separate work.
 
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers
