@@ -291,7 +291,9 @@ Android 0.10.12 / Windows 0.3.4 起，局域网发现同时使用 ClipRelay mDNS
 
 新版 Windows 配对界面需要勾选「两端确认标识一致」后才能允许请求，也可直接拒绝。操作绑定本次请求，已取消或被替换的旧请求不能继续批准；桌面和 Android 新连接端可收到拒绝反馈。新服务通过受保护的本机管道处理这些决定，停止使用旧版批准文件。[完整包与临时 Windows 安装验收](https://github.com/ffffhx/cliprelay/actions/runs/38882004035)已验证实际 SYSTEM 服务、原生证书握手、拒绝反馈及未授权证书拦截；下载包的 742 个文件和源码版本核验一致。记录见 `.tools/uu-parity/windows-host-pairing-artifacts.json`。
 
-Windows 撤销授权会先停用设备并确认，再删除配对并确认；响应丢失后只读取实际状态，不自动重复修改或恢复授权。操作绑定当前引擎和设备身份，重启前的旧列表及重新配对前的旧身份不能继续用于撤销；部分完成时显示「已停用」并要求刷新。[两台设备的实际安装验收](https://github.com/ffffhx/cliprelay/actions/runs/38884453648)通过 10 项场景：被撤销设备的新连接和已建立的控制 TLS 连接均被拒绝，另一台仍可访问，重启后撤销保留。下载包的 743 个文件、148 个引擎文件和源码版本核验一致，记录见 `.tools/uu-parity/windows-host-revocation-artifacts.json`。这项验收未启动视频串流，正在播放的视频是否终止及手机界面仍需单独验证。
+Windows 撤销授权会先停用设备并确认，再删除配对并确认；响应丢失后只读取实际状态，不自动重复修改或恢复授权。操作绑定当前引擎和设备身份，重启前的旧列表及重新配对前的旧身份不能继续用于撤销；部分完成时显示「已停用」并要求刷新。[两台设备的实际安装验收](https://github.com/ffffhx/cliprelay/actions/runs/38884453648)通过 10 项场景：被撤销设备的新连接和已建立的控制 TLS 连接均被拒绝，另一台仍可访问，重启后撤销保留。下载包的 743 个文件、148 个引擎文件和源码版本核验一致，记录见 `.tools/uu-parity/windows-host-revocation-artifacts.json`。该记录验证证书和控制连接；实际视频验收见下文。
+
+实际视频撤销已通过[临时 Windows 安装验收](https://github.com/ffffhx/cliprelay/actions/runs/38893871348)：第一台设备收到加密 H.264 视频后，从 SYSTEM 服务撤销其授权，客户端在 1192 毫秒内正常结束，随后另一台仍获授权的设备在同一引擎进程收到新的视频串流。旧证书发起的远控请求返回未授权。验收使用固定版本的完整安装包，记录原生结束码 0，且未通过本地停止接收器或重启引擎来代替撤销。测试在 CI 虚拟显示器上进行，只统计压缩视频帧，不解码展示或保存画面；手机界面、实际硬件、两路同时串流及 Mac 视频仍需单独验证。记录见 `.tools/uu-parity/native-active-revocation-artifacts.json`。
 
 Windows 服务对本机引擎的管理请求核对完整证书，限定操作和响应大小，拒绝代理及重定向，并对整个请求设置截止时间。即使引擎不断缓慢发送数据，也不能无限延长等待；修改请求丢失响应后不会自动重发。8 项实际 C# HTTPS 测试覆盖这些异常，[新版完整包](https://github.com/ffffhx/cliprelay/actions/runs/38885442103)重新通过 10 项安装版配对与撤销场景，[三平台回归](https://github.com/ffffhx/cliprelay/actions/runs/38886130534)通过。记录见 `.tools/uu-parity/windows-engine-admin-artifacts.json`；多次请求合计的撤销时限仍需单独做故障注入验收。
 
