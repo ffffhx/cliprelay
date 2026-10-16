@@ -125,7 +125,9 @@ func TestNativeWholePasteAndWriteReceipt(t *testing.T) {
 	body := strings.Repeat("a", 14000)
 	want := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
 	nativeWrite(t, p, 1, "printf '%s' '"+body+"' | shasum -a 256\r", true)
-	eventually(t, 8*time.Second, func() bool { return strings.Contains(contents(b), want) })
+	// The native paste writer has a 15s total deadline. Slow CI readline redraw
+	// must be judged against that bound, including its complete-write receipt.
+	eventually(t, 20*time.Second, func() bool { return strings.Contains(contents(b), want) && p.Status().Written == 1 })
 	if p.Status().Written != 1 {
 		t.Fatal("whole paste was not confirmed", p.Status())
 	}

@@ -113,6 +113,9 @@ func exerciseTypedMouse(t *testing.T, fixture func(*testing.T, string) (Process,
 				if string(captured) != want {
 					t.Fatalf("actual PTY bytes %q != %q", captured, want)
 				}
+				// Output can precede the guardian's next 30ms state snapshot. Require
+				// the real cleanup receipt to arrive before checking its final state.
+				eventually(t, time.Second, func() bool { return native.MouseState().Buttons == 0 })
 				state := native.MouseState()
 				if state.Buttons != 0 || state.WrittenSequence != 2 || state.AcceptedSequence != 2 || p.Status().Written != 3 || p.Status().Failed {
 					t.Fatalf("incorrect native receipts: %+v %+v", state, p.Status())
