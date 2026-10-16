@@ -173,6 +173,9 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 	if p.closed {
 		return nil, errors.New("focus worker closed")
 	}
+	if p.executable == "" {
+		return nil, errors.New("native worker unsupported")
+	}
 	if p.cmd == nil {
 		argument := p.argument
 		if argument == "" {
@@ -412,8 +415,26 @@ func ServeWithEngineAccess(ctx context.Context, dir, executable string, access E
 	return serveWithEngineAccess(ctx, dir, executable, access, bindHostListeners)
 }
 
+// ServeManagedHost serves the engine's control APIs and LAN enrollment for an
+// independently admitted application-owned companion. Native auxiliary workers
+// are explicitly unavailable until Mac providers exist; no Windows probe flags
+// are launched. The caller owns the private transient runtime directory.
+// onListening means required endpoints are bound, not that video is streaming.
+func ServeManagedHost(ctx context.Context, dir, runtimeDir string, access EngineAccess, onListening func() error) error {
+	if !filepath.IsAbs(runtimeDir) || !filepath.IsAbs(dir) {
+		return errors.New("private runtime directory required")
+	}
+	relative, err := filepath.Rel(dir, runtimeDir)
+	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("runtime directory must be separate from persistent state")
+	}
+	return serveWithEngineAccess(ctx, dir, "", access, func(ctx context.Context, _ string) (*hostListeners, error) {
+		return bindHostListeners(ctx, runtimeDir)
+	}, onListening)
+}
+
 func serveWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess,
-	bind func(context.Context, string) (*hostListeners, error)) error {
+	bind func(context.Context, string) (*hostListeners, error), onListening ...func() error) error {
 	if access == nil {
 		return errEngineAccessUnavailable
 	}
@@ -480,5 +501,5 @@ func serveWithEngineAccess(ctx context.Context, dir, executable string, access E
 	}
 	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProviderWithAccess(access))
 	pairer := newLANPairerWithAccess(ctx, dir, cert, access)
-	return runHostListeners(ctx, cancel, listeners, server, pairer, cert, relay)
+	return runHostListeners(ctx, cancel, listeners, server, pairer, cert, relay, onListening...)
 }

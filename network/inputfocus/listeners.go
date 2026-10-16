@@ -114,7 +114,7 @@ func (owner *ownedHTTP) stop() {
 // Any required listener's unexpected exit cancels the whole group. Returning
 // means all serving loops, active application handlers and pair requests joined.
 func runHostListeners(ctx context.Context, cancel context.CancelFunc, listeners *hostListeners,
-	control *http.Server, pairer *lanPairer, certificate tls.Certificate, relay *relayMailbox) error {
+	control *http.Server, pairer *lanPairer, certificate tls.Certificate, relay *relayMailbox, onListening ...func() error) error {
 	controlOwner := ownHTTP(ctx, control)
 	pairingOwner := ownHTTP(ctx, lanPairingServer(certificate, pairer))
 	type result struct {
@@ -133,17 +133,22 @@ func runHostListeners(ctx context.Context, cancel context.CancelFunc, listeners 
 	go func() { defer close(maintenanceDone); relay.maintain(ctx) }()
 	remaining := 4
 	var err error
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	case stopped := <-results:
-		remaining--
-		err = ctx.Err()
-		if err == nil {
-			if stopped.err == nil {
-				stopped.err = errors.New("stopped unexpectedly")
+	if ctx.Err() == nil && len(onListening) > 0 && onListening[0] != nil {
+		err = onListening[0]()
+	}
+	if err == nil {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case stopped := <-results:
+			remaining--
+			err = ctx.Err()
+			if err == nil {
+				if stopped.err == nil {
+					stopped.err = errors.New("stopped unexpectedly")
+				}
+				err = fmt.Errorf("%s: %w", stopped.name, stopped.err)
 			}
-			err = fmt.Errorf("%s: %w", stopped.name, stopped.err)
 		}
 	}
 	cancel()

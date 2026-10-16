@@ -405,3 +405,37 @@ func TestHostListenersLocalRelayJoinsIncompleteFrame(t *testing.T) {
 		t.Fatal("owner returned while accepted connection was still reading")
 	}
 }
+
+func TestHostListenersListeningCallbackFailureJoins(t *testing.T) {
+	directory, cert, access := hostServerFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listeners, err := listenHost(ctx, hostLoopbackConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listeners.close()
+	control := &http.Server{TLSConfig: controlTLSConfig(cert, filepath.Join(directory, "clients.json")), Handler: http.NotFoundHandler()}
+	failure := errors.New("fixture owner channel closed")
+	err = runHostListeners(ctx, cancel, listeners, control, newLANPairerWithAccess(ctx, directory, cert, access), cert,
+		newRelayMailbox(filepath.Join(directory, "clients.json")), func() error { return failure })
+	if !errors.Is(err, failure) || ctx.Err() == nil {
+		t.Fatal("owner channel failure was hidden", err)
+	}
+	assertHostPortsFree(t, listeners)
+}
+
+func TestHostListenersManagedRuntimeAndUnsupportedWorkers(t *testing.T) {
+	directory := t.TempDir()
+	for _, runtime := range []string{"relative", directory, filepath.Join(directory, "runtime")} {
+		if err := ServeManagedHost(context.Background(), directory, runtime, nil, nil); err == nil || errors.Is(err, errEngineAccessUnavailable) {
+			t.Fatal("invalid transient directory admitted", err)
+		}
+	}
+	p := &probe{ctx: context.Background()}
+	for _, read := range []func(string) (json.RawMessage, error){p.read, p.readCleanup} {
+		if _, err := read("status"); err == nil || err.Error() != "native worker unsupported" || p.cmd != nil {
+			t.Fatal("absent native provider attempted to launch", err)
+		}
+	}
+}
