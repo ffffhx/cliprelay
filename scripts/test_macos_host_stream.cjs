@@ -198,7 +198,7 @@ async function main(){
     report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),viewerExits,
       diagnostics:diagnostics.slice(-24),files:fileDiagnostics(),debuggers:debuggers.map(debug=>({exit:debug.exit,
         lines:debug.output.split('\n').filter(line=>/stop reason|error:|frame #|stop-reason|exited with status/.test(line))
-          .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(-40)}))};
+          .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(0,60)}))};
     process.exitCode=1;
   }finally{
     for(const debug of debuggers)if(!debug.exit)debug.child.kill('SIGKILL');
