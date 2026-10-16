@@ -29,18 +29,27 @@ const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cli
 const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[];
 const testStarted=Date.now();
 function diagnosticLines(value){
-  return value.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission|invalid|abort|fatal|exception|library not loaded|reason:|screen|capture|video/i.test(line)&&
+  return value.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission|invalid|abort|fatal|exception|assert|library not loaded|reason:|screen|capture|video|vulkan|metal|molten|gpu/i.test(line)&&
     !/rikey|pin=|uniqueid|PRIVATE KEY|certificate|authorization|credential|password|secret|token/i.test(line)).slice(-40).map(line=>line.slice(0,400));
 }
 function fileDiagnostics(){
   const result=[];
-  for(const folder of new Set(['/tmp',os.tmpdir(),path.join(os.homedir(),'Library/Logs/DiagnosticReports')])){
+  for(const folder of new Set(['/tmp',os.tmpdir(),path.join(os.homedir(),'Library/Logs/DiagnosticReports'),'/Library/Logs/DiagnosticReports'])){
     if(!fs.existsSync(folder))continue;
     for(const name of fs.readdirSync(folder)){
-      if(!/^ClipRelayStream-.*\.log$|^Moonlight.*\.(ips|crash)$/.test(name))continue;
+      if(!/^ClipRelayStream-.*\.log$|^(Moonlight|ClipRelay.Stream).*\.(ips|crash)$/.test(name))continue;
       const file=path.join(folder,name),stat=fs.lstatSync(file);
-      if(stat.isFile()&&!stat.isSymbolicLink()&&stat.mtimeMs>=testStarted&&stat.size<=2*1024*1024)
-        result.push({kind:name.endsWith('.log')?'viewer':'crash',lines:diagnosticLines(fs.readFileSync(file,'utf8'))});
+      if(stat.isFile()&&!stat.isSymbolicLink()&&stat.mtimeMs>=testStarted&&stat.size<=2*1024*1024){
+        const content=fs.readFileSync(file,'utf8');
+        if(name.endsWith('.ips')){
+          try{
+            const crash=JSON.parse(content.slice(content.indexOf('\n')+1));
+            result.push({kind:'crash',exception:crash.exception,termination:crash.termination,
+              threads:(crash.threads||[]).filter(thread=>thread.triggered).map(thread=>({
+                frames:(thread.frames||[]).slice(0,35).map(frame=>({symbol:frame.symbol,image:crash.usedImages?.[frame.imageIndex]?.name}))}))});
+          }catch{result.push({kind:'crash',parseFailed:true});}
+        }else result.push({kind:name.endsWith('.log')?'viewer':'crash',lines:diagnosticLines(content)});
+      }
     }
   }
   try{result.push({kind:'engine',lines:diagnosticLines(hostState.read('engine.log',2*1024*1024).toString('utf8'))});}catch{}
@@ -170,6 +179,8 @@ async function main(){
     report.cases.push('all-owned-native-processes-reaped-and-default-state-preserved');
     report.ownedChildrenReaped=true;report.passed=true;
   }catch(error){
+    // ReportCrash writes asynchronously after the native process has exited.
+    if(viewerExits.some(exit=>exit.signal))await pause(10000);
     report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),viewerExits,
       diagnostics:diagnostics.slice(-24),files:fileDiagnostics()};
     process.exitCode=1;
