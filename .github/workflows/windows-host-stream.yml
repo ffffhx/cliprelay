@@ -1,0 +1,92 @@
+name: Windows Installed Host Stream
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Verify and extract immutable complete package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $pin=Get-Content windows/tests/host-stream-package.json -Raw | ConvertFrom-Json
+          $runInfo=gh run view $pin.run --repo $pin.repository --json headSha,status,conclusion | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $runInfo.status -ne 'completed' -or $runInfo.conclusion -ne 'success' -or $runInfo.headSha -cne $pin.commit) {throw 'Unexpected host package run'}
+          $download=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-package'
+          gh run download $pin.run --repo $pin.repository --name $pin.artifact --dir $download
+          if ($LASTEXITCODE -ne 0) {throw 'Pinned host package unavailable'}
+          $archive=Join-Path $download $pin.archive
+          if ((Get-Item $archive).Length -ne $pin.bytes -or (Get-FileHash $archive -Algorithm SHA256).Hash -ine $pin.sha256) {throw 'Host package hash mismatch'}
+          New-Item -ItemType Directory -Path dist/host-stream -Force | Out-Null
+          Copy-Item windows/tests/host-stream-package.json dist/host-stream/package-pin.json
+          python windows/tests/package_archive.py $archive --output (Join-Path $env:RUNNER_TEMP 'cliprelay-stream-install') --report dist/host-stream/archive-report.json
+          if ($LASTEXITCODE -ne 0) {throw 'Package preflight failed'}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-llvm
+      - name: Build receive-only native fixture and identities
+        run: |
+          $ErrorActionPreference='Stop'
+          $engine=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-install/ClipRelay-Windows/remote-desktop/engine'
+          $crypto=@(Get-ChildItem -LiteralPath $engine -Filter 'libcrypto*.dll')
+          if ($crypto.Count -ne 1) {throw 'Expected one pinned crypto DLL'}
+          $receiver=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-receiver'
+          & windows/tests/build-engine-stream-client.ps1 -CompilerDirectory C:/msys64/ucrt64/bin -CryptoDll $crypto[0].FullName -OutputDirectory $receiver
+          if ($LASTEXITCODE -ne 0) {throw 'Native receiver compilation failed'}
+          $identity=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-identities.exe'
+          go build -o $identity windows/tests/mac-pairing-fixture/main.go
+          if ($LASTEXITCODE -ne 0) {throw 'Identity fixture compilation failed'}
+          "CLIPRELAY_STREAM_TEST_RECEIVER=$receiver/engine-stream-client.exe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "CLIPRELAY_PAIRING_TEST_FIXTURE=$identity" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $receipt=[ordered]@{sourceCommit=$env:GITHUB_SHA;receiverSha256=(Get-FileHash "$receiver/engine-stream-client.exe").Hash;cryptoSha256=(Get-FileHash $crypto[0].FullName).Hash;compiler=@(& C:/msys64/ucrt64/bin/clang.exe --version);sourceHashes=@{}}
+          foreach ($file in @('windows/tests/engine_stream_client.c','windows/tests/build-engine-stream-client.ps1','windows/tests/installed-host-stream.cjs')) {$receipt.sourceHashes[$file]=(Get-FileHash $file).Hash}
+          $receipt | ConvertTo-Json -Depth 5 | Set-Content dist/host-stream/receiver-build.json -Encoding UTF8
+      - name: Install through the packaged detached launcher
+        run: |
+          if (Get-Service ClipRelayRemote -ErrorAction SilentlyContinue) {throw 'Disposable runner must not have a host service'}
+          $installer=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-install/ClipRelay-Windows/install.ps1'
+          & C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File $installer -NoStartup
+          if ($LASTEXITCODE -ne 0) {throw 'Installation failed'}
+      - name: Verify installed process ownership
+        run: '& windows/tests/installed-package.ps1 -ReportPath dist/host-stream/installed-package-report.json'
+      - name: Revoke a real stream and start the preserved client
+        run: |
+          node windows/tests/installed-host-stream.cjs dist/host-stream/installed-host-stream-report.json
+          if ($LASTEXITCODE -ne 0) {throw 'Installed stream revocation failed'}
+      - name: Preserve disposable display diagnostics
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Path dist/host-stream -Force | Out-Null
+          $inventory=[ordered]@{video=@(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,Status);sessions=@(Get-Process sunshine -ErrorAction SilentlyContinue | Select-Object Id,SessionId);runnerSession=(Get-Process -Id $PID).SessionId}
+          $inventory | ConvertTo-Json -Depth 5 | Set-Content dist/host-stream/runner-display.json -Encoding UTF8
+          $log=Join-Path $env:ProgramData 'ClipRelay/Remote/engine.log'
+          if (Test-Path $log) {
+            Get-Content $log -Tail 100 | Where-Object {$_ -notmatch '(?i)password|authorization|rikey|clientcert|private.key|/pair\?|/launch\?|/resume\?'} | Set-Content dist/host-stream/engine-diagnostics.log -Encoding UTF8
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Windows-Installed-Stream
+          path: dist/host-stream/
+          if-no-files-found: error
+          retention-days: 14
