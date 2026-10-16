@@ -13,6 +13,12 @@ Apple Silicon virtual GPUs; successful compilation alone does not validate this
 video path. `macos-host-stream.yml` exercises real packaged frame presentation,
 input receipts and active host revocation; debugger runs are diagnostic only.
 
+Imported sessions use the normal Metal drawable queue, retaining VideoToolbox
+decoding and the layer's V-sync. ARM virtual GPUs on macOS 15 and 26 returned
+zero presentation timestamps through CAMetalDisplayLink even with a visible,
+active window; direct presentation after command submission did not resolve it.
+Input remains paused until Metal confirms a nonzero actual presentation time.
+
 `scripts/prepare_desktop_client.py SOURCE` verifies the exact upstream commit
 and an unmodified application tree, then applies the patch and session importer.
 The `Desktop Client Build` workflow builds the production Qt protocol probe,

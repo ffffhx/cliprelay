@@ -872,7 +872,7 @@ index 2852d437..2c64bc45 100644
  
  #import <Cocoa/Cocoa.h>
  #import <VideoToolbox/VideoToolbox.h>
-@@ -564,9 +565,30 @@ public:
+@@ -564,12 +565,31 @@ public:
  
          [renderEncoder endEncoding];
  
@@ -891,20 +891,29 @@ index 2852d437..2c64bc45 100644
 +            }];
 +        }
          // Flip to the newly rendered buffer
--        [commandBuffer presentDrawable:drawable];
--        [commandBuffer commit];
-+        if (hasDisplayLink()) {
-+            // DisplayLink's deadline applies to present(), not GPU completion.
-+            // Commit the encoded work before presenting directly to Core Animation.
-+            [commandBuffer commit];
-+            [drawable present];
-+        } else {
-+            [commandBuffer presentDrawable:drawable];
-+            [commandBuffer commit];
-+        }
+         [commandBuffer presentDrawable:drawable];
+         [commandBuffer commit];
  
          // Wait for the command buffer to complete and free our CVMetalTextureCache references
          [commandBuffer waitUntilCompleted];
++        if (ClipRelayImport::active() && commandBuffer.status == MTLCommandBufferStatusError) {
++            static SDL_atomic_t cliprelayGpuErrorLogged = {};
++            if (SDL_AtomicCAS(&cliprelayGpuErrorLogged, 0, 1))
++                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay Metal command buffer failed: %ld", static_cast<long>(commandBuffer.error.code));
++        }
+     }}
+ 
+     // Caller frees frame after we return
+@@ -810,6 +830,9 @@ public:
+     void startDisplayLink()
+     {
++        // Imported sessions require confirmed drawable presentation for input.
++        // Use the normal Metal drawable queue, retaining the layer's V-sync.
++        if (ClipRelayImport::active()) return;
+         if (@available(macOS 14, *)) {
+             if (m_MetalDisplayLink != nullptr || !m_MetalLayer.displaySyncEnabled || !isAppleSilicon()) {
+                 return;
+             }
 diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
 index c20d3126..f7dd6021 100644
 --- a/app/streaming/video/ffmpeg.cpp
