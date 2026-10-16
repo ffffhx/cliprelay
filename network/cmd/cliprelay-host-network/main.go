@@ -15,6 +15,7 @@ import (
 
 	"cliprelay/network/hostclipboard"
 	"cliprelay/network/hostcompanion"
+	"cliprelay/network/hostterminal"
 	"cliprelay/network/inputfocus"
 )
 
@@ -25,8 +26,20 @@ func main() {
 	owner := flags.Int("owner-pid", 0, "direct owning application PID")
 	managedFiles := flags.Bool("managed-files", false, "owned native file worker")
 	managedClipboard := flags.Bool("managed-clipboard", false, "owned native clipboard worker")
-	if flags.Parse(os.Args[1:]) != nil || flags.NArg() != 0 || runtime.GOOS != "darwin" || *owner <= 1 || *owner != os.Getppid() ||
-		(*managedFiles && *managedClipboard) || !filepath.IsAbs(*directory) || !ownedInput(os.Stdin) || !ownedOutput(os.Stdout) {
+	managedTerminal := flags.Bool("managed-terminal", false, "owned terminal session worker")
+	terminalShell := flags.String("terminal-session", "", "owned native terminal guardian")
+	terminalColumns := flags.Int("terminal-columns", 0, "owned terminal columns")
+	terminalRows := flags.Int("terminal-rows", 0, "owned terminal rows")
+	parseErr := flags.Parse(os.Args[1:])
+	workers := 0
+	for _, enabled := range []bool{*managedFiles, *managedClipboard, *managedTerminal, *terminalShell != ""} {
+		if enabled {
+			workers++
+		}
+	}
+	terminalValid := *terminalShell == "" && *terminalColumns == 0 && *terminalRows == 0 || (*terminalShell == "bash" || *terminalShell == "zsh") && *terminalColumns >= 20 && *terminalColumns <= 240 && *terminalRows >= 5 && *terminalRows <= 120
+	if parseErr != nil || flags.NArg() != 0 || runtime.GOOS != "darwin" || *owner <= 1 || *owner != os.Getppid() ||
+		workers > 1 || !terminalValid || !filepath.IsAbs(*directory) || !ownedInput(os.Stdin) || !ownedOutput(os.Stdout) {
 		fmt.Fprintln(os.Stderr, "HOST_OWNER_INVALID")
 		os.Exit(2)
 	}
@@ -47,7 +60,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	workerDone := make(chan struct{})
 	guardianDone := make(chan struct{})
-	if *managedFiles || *managedClipboard {
+	if workers > 0 {
 		// A killed companion cannot supervise its worker any more. EOF or the
 		// parent watcher still withdraws access; bound even a stuck filesystem
 		// shutdown instead of retaining an orphan after the parent disappears.
@@ -95,6 +108,14 @@ func main() {
 		runtime.LockOSThread()
 		err = hostclipboard.Serve(ctx, input, output, hostclipboard.NewNative())
 		runtime.UnlockOSThread()
+	} else if *managedTerminal {
+		var factory hostterminal.Factory
+		factory, err = managedTerminalFactory(*directory)
+		if err == nil {
+			err = hostterminal.Serve(ctx, input, output, factory)
+		}
+	} else if *terminalShell != "" {
+		err = hostterminal.ServeProcess(ctx, input, output, *terminalShell, *terminalColumns, *terminalRows, hostterminal.StartNative)
 	} else {
 		err = hostcompanion.Run(ctx, input, output, *directory, *owner, inputfocus.ServeManagedHost)
 	}

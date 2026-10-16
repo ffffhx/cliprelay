@@ -41,11 +41,11 @@ def build(output):
         archive.add(ROOT/'LICENSE', arcname='LICENSE')
         for name in ['go.mod', 'go.sum']:
             archive.add(ROOT/'network'/name, arcname='network/'+name)
-        for directory in ['inputfocus', 'hostcompanion', 'hostfiles', 'hostclipboard', 'cmd/cliprelay-host-network']:
+        for directory in ['inputfocus', 'hostcompanion', 'hostfiles', 'hostclipboard', 'hostterminal', 'cmd/cliprelay-host-network']:
             for source in sorted((ROOT/'network'/directory).rglob('*')):
                 if source.suffix in ('.go', '.m', '.h'):
                     archive.add(source, arcname=source.relative_to(ROOT).as_posix())
-        for name in ['build_host_companion.py', 'network_notices.py', 'test_host_companion.py', 'test_host_files.py', 'test_host_files_client.cjs', 'test_host_clipboard.py', 'test_host_clipboard_client.cjs']:
+        for name in ['build_host_companion.py', 'network_notices.py', 'test_host_companion.py', 'test_host_files.py', 'test_host_files_client.cjs', 'test_host_clipboard.py', 'test_host_clipboard_client.cjs', 'test_host_terminal_process.py']:
             archive.add(ROOT/'scripts'/name, arcname='scripts/'+name)
         for name in ['file-controller.cjs', 'file-protocol.cjs', 'file-storage.cjs', 'paired-store.cjs', 'paired-transport.cjs', 'paired-crypto.cjs',
                      'routed-store.cjs', 'paired-controller.cjs', 'pairing.cjs', 'paired-relay.cjs', 'pairing-feedback.cjs', 'clipboard-access.cjs', 'clipboard-protocol.cjs']:
