@@ -872,15 +872,21 @@ index 2852d437..2c64bc45 100644
  
  #import <Cocoa/Cocoa.h>
  #import <VideoToolbox/VideoToolbox.h>
-@@ -564,6 +565,14 @@ public:
+@@ -564,6 +565,20 @@ public:
  
          [renderEncoder endEncoding];
  
 +        // Capture scalar metadata: the frame may be freed before presentation.
 +        const quint64 cliprelayFrame = reinterpret_cast<quintptr>(frame->opaque);
 +        const int cliprelayWidth = frame->width, cliprelayHeight = frame->height;
++        static SDL_atomic_t cliprelaySubmissionLogged = {};
++        if (ClipRelayImport::active() && SDL_AtomicCAS(&cliprelaySubmissionLogged, 0, 1))
++            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay Metal submission frame=%llu size=%dx%d", static_cast<unsigned long long>(cliprelayFrame), cliprelayWidth, cliprelayHeight);
 +        if (@available(macOS 10.15.4, *)) {
 +            [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
++                const bool visible = presented.presentedTime > 0;
++                static SDL_atomic_t cliprelayPresentationLogged[2] = {};
++                if (ClipRelayImport::active() && SDL_AtomicCAS(&cliprelayPresentationLogged[visible ? 1 : 0], 0, 1)) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay Metal presentation visible=%d frame=%llu", visible, static_cast<unsigned long long>(cliprelayFrame));
 +                if (presented.presentedTime > 0) ClipRelayImport::reportRendered(cliprelayFrame, cliprelayWidth, cliprelayHeight);
 +            }];
 +        }

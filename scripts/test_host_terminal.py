@@ -37,6 +37,12 @@ def request(tls, command, connection=None):
 
 def checked(tls, command):
     status, reply = request(tls, command)
+    # The authorization refresh shares the production controller lock. A read
+    # can legitimately observe 429 while it runs; never replay input mutations.
+    until = time.monotonic()+2
+    while command['op'] == 'read' and status == 429 and reply.get('code') == 'TERMINAL_BUSY' and time.monotonic() < until:
+        time.sleep(.05)
+        status, reply = request(tls, command)
     assert status == 200 and reply['ok'] is True, (command['op'], status, reply)
     return reply
 
