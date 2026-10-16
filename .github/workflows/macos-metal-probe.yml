@@ -1,5 +1,8 @@
 name: macOS Metal Presentation Control
 on:
+  push:
+    branches: ['codex/desktop-client-*']
+    paths: ['scripts/test_macos_metal_present.swift', '.github/workflows/macos-metal-probe.yml']
   workflow_dispatch:
 permissions:
   contents: read
