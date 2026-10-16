@@ -50,10 +50,12 @@ test('legacy and version-one file manifests are accepted but unknown capability 
   for(const version of [0,2,true,'1',null]){f.manifest.fileTransfer=version;f.update();assert.throws(()=>verify(f.source,f.pin));}
 });
 
-test('clipboard capability is optional for old packages and requires its exact supported version',t=>{
-  const f=fixture(t);assert.equal(verify(f.source,f.pin).manifest.clipboardExchange,undefined);
-  f.manifest.clipboardExchange=1;f.update();assert.equal(verify(f.source,f.pin).manifest.clipboardExchange,1);
-  for(const version of [0,2,true,'1',null]){f.manifest.clipboardExchange=version;f.update();assert.throws(()=>verify(f.source,f.pin));}
+test('clipboard and terminal capabilities retain old packages and reject unsupported versions',t=>{
+  for(const capability of ['clipboardExchange','terminalControl']){
+    const f=fixture(t);assert.equal(verify(f.source,f.pin).manifest[capability],undefined);
+    f.manifest[capability]=1;f.update();assert.equal(verify(f.source,f.pin).manifest[capability],1);
+    for(const version of [0,2,true,'1',null]){f.manifest[capability]=version;f.update();assert.throws(()=>verify(f.source,f.pin));}
+  }
 });
 test('Mach-O duplicate CPUs, overlap, type, platform and minimum-OS mismatches are rejected',()=>{
   for(const mutate of [b=>b.writeUInt32BE(0x01000007,28),b=>b.writeUInt32BE(64,36),b=>b.writeUInt32LE(6,76),

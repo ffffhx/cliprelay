@@ -2,7 +2,7 @@ name: macOS Host Companion Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/hostclipboard/**', 'network/hostterminal/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_clipboard.py', 'scripts/test_host_terminal_process.py', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
+    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/hostclipboard/**', 'network/hostterminal/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_clipboard.py', 'scripts/test_host_terminal*', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
   workflow_dispatch:
 permissions:
   contents: read

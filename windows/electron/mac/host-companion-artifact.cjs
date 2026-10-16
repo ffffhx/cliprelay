@@ -51,6 +51,7 @@ function verify(directory,pin){
   const fields=['role','platform','protocol','nativeWorkers','pairingControl','files'];
   if(Object.hasOwn(manifest,'fileTransfer')){fields.push('fileTransfer');if(manifest.fileTransfer!==1)reject();}
   if(Object.hasOwn(manifest,'clipboardExchange')){fields.push('clipboardExchange');if(manifest.clipboardExchange!==1)reject();}
+  if(Object.hasOwn(manifest,'terminalControl')){fields.push('terminalControl');if(manifest.terminalControl!==1)reject();}
   if(!keys(manifest,fields) || manifest.role!=='host-companion' ||
       manifest.platform!=='macos' || manifest.protocol!==1 || manifest.nativeWorkers!==false || manifest.pairingControl!==1 || !keys(manifest.files,FILES))reject();
   const expected=new Set([...FILES,'manifest.json']);

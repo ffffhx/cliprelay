@@ -25,6 +25,10 @@ TERMINAL_CASES = [shell+': '+case for shell in ['zsh', 'bash'] for case in [
     'native resize', 'live revocation reaps native shell']]
 TERMINAL_CASES += ['worker EOF reaps foreground shell through guardian', 'worker SIGKILL reaps foreground shell through guardian']
 TERMINAL_REPORT = 'terminal-process-report.json'
+TERMINAL_HTTP_CASES = ['tls-terminal-shells-sessions-and-lost-replies',
+                       'tls-terminal-native-mouse-lease-and-resize', 'tls-terminal-desktop-client',
+                       'tls-terminal-owner-isolation-and-live-revocation',
+                       'tls-terminal-output-gap-and-worker-restart', 'terminal-eof-reaps-owned-sessions']
 
 
 def verify_terminal_report(report, arch, executable_hash):
@@ -88,6 +92,9 @@ def verify_sources(source_path, commit):
                  'scripts/network_notices.py', 'scripts/test_host_companion.py'}
     if terminal:
         expected.add('scripts/test_host_terminal_process.py')
+    if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal.py').strip():
+        expected |= {'scripts/test_host_terminal.py', 'scripts/test_host_terminal_client.cjs'}
+        expected |= {'windows/electron/mac/'+name for name in ['terminal-controller.cjs', 'terminal-protocol.cjs', 'terminal-mouse.cjs']}
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard.py').strip():
         expected.add('scripts/test_host_clipboard.py')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard_client.cjs').strip():
@@ -128,7 +135,8 @@ def fetch(run, arch, directory):
     report = json.loads((artifact/'process-report.json').read_bytes())
     file_transfer = json.loads((artifact/'manifest.json').read_bytes()).get('fileTransfer') == 1
     clipboard_exchange = json.loads((artifact/'manifest.json').read_bytes()).get('clipboardExchange') == 1
-    expected_cases = (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
+    terminal_control = json.loads((artifact/'manifest.json').read_bytes()).get('terminalControl') == 1
+    expected_cases = (TERMINAL_HTTP_CASES if terminal_control else []) + (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
     executable_hash = hashlib.sha256((artifact/'runtime/cliprelay-host-network').read_bytes()).hexdigest()
     terminal = b"'hostterminal'" in subprocess.check_output(['git', 'show', commit+':scripts/build_host_companion.py'], cwd=ROOT)
     terminal_receipt = artifact/TERMINAL_REPORT
@@ -142,6 +150,7 @@ def fetch(run, arch, directory):
     if (report['cases'] != expected_cases or report['passed'] != len(expected_cases) or report['nativeWorkers'] is not False
             or (file_transfer and report.get('fileTransfer') != 1)
             or (clipboard_exchange and report.get('clipboardExchange') != 1)
+            or (terminal_control and report.get('terminalControl') != 1)
             or report['architecture'] != arch or report['executableSha256'] != executable_hash):
         raise ValueError('Companion process receipt does not match the selected architecture and executable')
     result = {'run': int(run), 'architecture': arch, 'pin': pin, 'sourceFilesVerified': source_files,

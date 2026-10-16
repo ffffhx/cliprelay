@@ -97,6 +97,7 @@ def main(binary, report, app_directory=None):
     cases = []
     file_transfer = json.loads((binary.parent.parent/'manifest.json').read_bytes()).get('fileTransfer') == 1
     clipboard_exchange = json.loads((binary.parent.parent/'manifest.json').read_bytes()).get('clipboardExchange') == 1
+    terminal_control = json.loads((binary.parent.parent/'manifest.json').read_bytes()).get('terminalControl') == 1
     def passed(name):
         cases.append(name)
         print(json.dumps({'case': name, 'passed': True}), flush=True)
@@ -141,6 +142,9 @@ def main(binary, report, app_directory=None):
                     process.kill()
                     process.wait()
 
+        if terminal_control:
+            from test_host_terminal import run as run_terminal
+            run_terminal(binary, state, payload, tls, start, read_status, finish, wait_absent, passed, app_directory)
         if clipboard_exchange:
             from test_host_clipboard import run as run_clipboard
             run_clipboard(binary, state, payload, tls, start, read_status, finish, wait_absent, passed, app_directory)
@@ -312,11 +316,13 @@ def main(binary, report, app_directory=None):
         assert_state()
     result = {'cases': cases, 'passed': len(cases), 'nativeWorkers': False,
               'architecture': platform.machine(), 'executableSha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
-              'limits': 'Disposable CI certificates/listeners/files and synthetic clipboard only; no other native desktop providers, streaming client, user Keychain or production installation.'}
+              'limits': 'Disposable CI certificates/listeners/files, synthetic clipboard and owned native terminals only; no other native desktop providers, streaming client, user Keychain or production installation.'}
     if file_transfer:
         result['fileTransfer'] = 1
     if clipboard_exchange:
         result['clipboardExchange'] = 1
+    if terminal_control:
+        result['terminalControl'] = 1
     report.write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result))
 

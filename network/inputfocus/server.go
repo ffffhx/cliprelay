@@ -572,6 +572,11 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	audio := &probe{ctx: ctx, executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	wake := &probe{ctx: ctx, executable: executable, argument: "--wake-probe", maxOutput: 65536, timeout: 8 * time.Second}
 	terminal := &probe{ctx: ctx, executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	if managed {
+		if err := configureManagedTerminal(terminal, dir); err != nil {
+			return err
+		}
+	}
 	// Registered before manager joins: those cleanup operations run first, then
 	// every remaining worker gets its EOF/grace period at the same time.
 	defer func() { cancel(); stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal) }()
