@@ -4,10 +4,32 @@ on:
     branches: ['codex/desktop-network-*']
     paths: ['network/**', 'scripts/build_desktop_network.py', 'scripts/network_notices.py', 'windows/tests/**', 'windows/electron/**', 'LICENSE', '.github/workflows/desktop-network.yml']
   workflow_dispatch:
+    inputs:
+      audio_diagnostics:
+        description: 'Run the Windows audio interoperability race diagnostic only'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
+  audio-diagnostics:
+    if: inputs.audio_diagnostics == true
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Diagnose audio lifecycle transitions over real mutual TLS
+        working-directory: network
+        run: go test -v -failfast -count=100 -timeout=600s ./inputfocus -run '^TestAudioMuteDesktopControllerInterop$'
   verify:
+    if: inputs.audio_diagnostics != true
     strategy:
       fail-fast: false
       matrix:

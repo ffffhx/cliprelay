@@ -12,8 +12,13 @@ async function main(){
   const store={host,selected(){return this.host;},async identity(){return identity;}};
   const viewer={session:{host:{...host},telemetry:true},currentSession(){return this.session;},
     snapshot(){return {progress:{received:200,rendered:200,width:1280,height:720,receivedAgeMs:0,renderedAgeMs:0}};},reconcile(code){throw Error(code);}};
-  let renews=0;
-  const audio=new AudioMuteController({store,viewer,pollMs:20,renewMs:80,request:async(...args)=>{const value=await protocol.request(...args);if(args[2]==='renew')renews++;return value;}});
+  let renews=0;const events=[];const record=event=>{events.push(event);if(events.length>30)events.shift();};
+  const audio=new AudioMuteController({store,viewer,pollMs:20,renewMs:80,request:async(...args)=>{
+    const event={op:args[2],generation:args[3]?.audioGeneration},started=performance.now();
+    try{const value=await protocol.request(...args);if(!['displays','status'].includes(args[2]))record({...event,active:value.active,elapsedMs:performance.now()-started});if(args[2]==='renew')renews++;return value;}
+    catch(error){record({...event,code:error.code||error.name,elapsedMs:performance.now()-started});throw error;}
+  }});
+  const failure=audio.failure.bind(audio);audio.failure=(r,error)=>{record({failure:error.code||error.name,generation:r.display?.stream?.audio?.generation,leaseGeneration:r.lease?.audioGeneration});failure(r,error);};
   const privacy=new PrivacyController({store,viewer,pollMs:20,renewMs:80});
   const set=(controller,enabled)=>controller.setEnabled({viewId:controller.snapshot().viewId,enabled});
   const fixture=kind=>jsonRequest({address:host.address,port:host.port+2,path:'/fixture/'+kind,method:'POST',body:{},identity,trust:{cert:host.certificate},timeout:2000});
@@ -41,7 +46,7 @@ async function main(){
   }catch(error){
     // Only public controller state and source locations: never log the input
     // fixture object, which carries the disposable client's private key.
-    console.error(JSON.stringify({stage,code:error.code || error.name,audio:audio.snapshot(),privacy:privacy.snapshot(),renews,
+    console.error(JSON.stringify({stage,code:error.code || error.name,audio:audio.snapshot(),privacy:privacy.snapshot(),renews,events,
       locations:String(error.stack || '').split('\n').filter(line=>/^\s+at /.test(line)).slice(0,3)}));throw error;
   }finally{await Promise.all([audio.close(),privacy.close()]);}
 }
