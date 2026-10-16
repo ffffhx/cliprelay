@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path');
 const {HostState}=require('./host-state.cjs'),{HostEngine}=require('./host-engine.cjs'),{HostCompanion}=require('./host-companion.cjs'),{HostSession}=require('./host-session.cjs');
 const {hostPairing,decision}=require('./host-pairing.cjs');
+const {HostClients}=require('./host-clients.cjs');
 const fault=code=>Object.assign(new Error(code),{code});
 const messages={
   HOST_UNAVAILABLE:'此安装包未包含完整的本机远程访问组件。',HOST_ENGINE_INVALID:'远程画面组件校验失败，请重新安装完整应用。',
@@ -11,6 +12,9 @@ const messages={
   HOST_PAIR_INVALID:'配对操作无效，请刷新请求。',HOST_PAIR_STALE:'这次请求已过期或已处理，请核对当前请求。',
   HOST_PAIR_CLOSED:'远程访问已停止。',HOST_PAIR_TIMEOUT:'读取配对请求超时，请重试。',HOST_PAIR_UNAVAILABLE:'暂时无法读取配对请求，请重试。',
   HOST_PAIR_BAD_REPLY:'无法确认配对请求，请重试。',HOST_PAIR_CANCELLED:'配对操作已取消。',
+  HOST_CLIENTS_INVALID:'设备操作无效，请刷新列表。',HOST_CLIENTS_STALE:'连接状态已改变，请重新选择设备。',
+  HOST_CLIENTS_BUSY:'正在撤销设备权限，请稍候。',HOST_CLIENTS_UNAVAILABLE:'暂时无法读取已配对设备。',
+  HOST_CLIENTS_UNCONFIRMED:'尚未确认撤销完成，请核对设备状态后重试。已停用的设备不会自动恢复权限。',
   HOST_ENGINE_EXITED:'远程画面组件已退出，远程访问已停止。',HOST_COMPANION_EXITED:'远程连接组件已退出，远程访问已停止。'
 };
 function message(error){return messages[error?.code] || '无法完成远程访问操作，请检查权限后重试。';}
@@ -30,20 +34,23 @@ function createOwners({directory,stateDirectory,safeStorage,enginePin,companionP
   return {session:new HostSession({engine,companion,onUpdate}),companion};
 }
 class HostController{
-  constructor({directory,stateDirectory,safeStorage,localName,platform=process.platform,arch=process.arch,create=createOwners,rpc=hostPairing,onUpdate=()=>{}}){
+  constructor({directory,stateDirectory,safeStorage,localName,platform=process.platform,arch=process.arch,create=createOwners,rpc=hostPairing,clientRequest,onUpdate=()=>{}}){
     Object.assign(this,{localName,rpc,onUpdate});this.owner=null;this.requests=[];this.operations=new Set();this.generation=0;this.error=null;this.closed=false;
     try{
       if(platform!=='darwin' || !['arm64','x64'].includes(arch))throw fault('HOST_PLATFORM_UNSUPPORTED');
       this.owner=create({directory,stateDirectory,safeStorage,enginePin:readPin(directory,'host-engine',arch),companionPin:readPin(directory,'host-companion',arch),onUpdate:()=>this.changed()});
+      this.clients=new HostClients({session:this.owner.session,request:clientRequest});
     }catch(error){this.error=error.code==='HOST_PLATFORM_UNSUPPORTED'?error.code:'HOST_UNAVAILABLE';}
   }
   snapshot(){
     const state=this.owner?.session.snapshot() || {phase:'stopped',error:null};
     return {available:!!this.owner && !this.closed,phase:this.closed?'closed':state.phase,error:state.error || this.error,
-      requests:state.phase==='running' && !this.closed?this.requests.map(request=>({...request})):[],nativeWorkers:false};
+      requests:state.phase==='running' && !this.closed?this.requests.map(request=>({...request})):[],nativeWorkers:false,
+      clients:this.clients?.snapshot() || {viewId:null,phase:'unavailable',error:null,devices:[],revoking:null}};
   }
   changed(){
     if(this.owner?.session.snapshot().phase!=='running')this.invalidate();
+    this.clients?.reconcile();
     try{this.onUpdate(this.snapshot());}catch{}
   }
   cancelRequests(){for(const operation of this.operations)operation.abort();}
@@ -57,7 +64,8 @@ class HostController{
       return result;
     }finally{this.operations.delete(abort);}
   }
-  refresh(){
+  async refresh(){await Promise.all([this.refreshPairing(),this.clients?.refresh()]);return this.snapshot();}
+  refreshPairing(){
     if(this.owner?.session.snapshot().phase!=='running' || this.closed)return Promise.resolve(this.snapshot());
     if(this.refreshOperation)return this.refreshOperation.task;
     const operation={};this.refreshOperation=operation;
@@ -69,8 +77,8 @@ class HostController{
     })();return operation.task;
   }
   async action(action,data){
-    if(!['host-status','host-start','host-stop','host-pair-approve','host-pair-reject'].includes(action))throw fault('HOST_PAIR_INVALID');
-    if(!action.startsWith('host-pair-') && data!==undefined && (data===null || Array.isArray(data) || typeof data!=='object' || Object.keys(data).length))throw fault('HOST_PAIR_INVALID');
+    if(!['host-status','host-start','host-stop','host-pair-approve','host-pair-reject','host-client-revoke'].includes(action))throw fault('HOST_PAIR_INVALID');
+    if(!action.startsWith('host-pair-') && action!=='host-client-revoke' && data!==undefined && (data===null || Array.isArray(data) || typeof data!=='object' || Object.keys(data).length))throw fault('HOST_PAIR_INVALID');
     if(action==='host-status')return this.refresh();
     if(this.closed)throw fault('HOST_SESSION_CLOSED');if(!this.owner)throw fault(this.error || 'HOST_UNAVAILABLE');
     if(action==='host-start'){
@@ -80,6 +88,7 @@ class HostController{
       }).finally(()=>{this.startTask=null;});return this.snapshot();
     }
     if(action==='host-stop'){this.error=null;this.cancelRequests();await this.owner.session.stop();return this.snapshot();}
+    if(action==='host-client-revoke'){await this.clients.revoke(data);return this.snapshot();}
     const selected=decision(data);
     await this.query(action,selected);
     // Decisions are checked against the live in-memory generation in the
@@ -87,9 +96,9 @@ class HostController{
     this.invalidate();
     await this.refresh();return this.snapshot();
   }
-  releaseWindow(){this.cancelRequests();}
+  releaseWindow(){this.cancelRequests();this.clients?.releaseWindow();}
   close(){
-    if(!this.closePromise){this.closed=true;this.invalidate();this.closePromise=Promise.resolve(this.owner?.session.close()).then(()=>this.snapshot());}
+    if(!this.closePromise){this.closed=true;this.invalidate();this.closePromise=(async()=>{await this.clients?.close();await this.owner?.session.close();return this.snapshot();})();}
     return this.closePromise;
   }
 }

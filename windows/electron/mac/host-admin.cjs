@@ -1,9 +1,35 @@
 'use strict';
 const https=require('node:https'),tls=require('node:tls'),crypto=require('node:crypto');
 const fault=code=>Object.assign(new Error(code),{code});
-// Only the application's main process receives the private state object. Keep
-// the destination and read-only endpoint fixed; there is no renderer HTTP proxy.
-function hostStatus({state,signal,timeout=3000,port=48790}){
+const validClientId=value=>typeof value==='string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
+function statusReply(value){
+  if(!value || Object.keys(value).sort().join(',')!=='inputControl,owned,ownerPid,pid,protocol,screenRecording' || value.protocol!==1 ||
+      !Number.isSafeInteger(value.pid) || value.pid<=1 || !Number.isSafeInteger(value.ownerPid) || value.ownerPid<=1 ||
+      ['owned','screenRecording','inputControl'].some(name=>typeof value[name]!=='boolean'))throw fault('HOST_ADMIN_BAD_REPLY');
+  return value;
+}
+function clientReply(value,list){
+  if(!value || Array.isArray(value) || Object.keys(value).sort().join(',')!==(list?'named_certs,status':'status') ||
+      typeof value.status!=='boolean')throw fault('HOST_ADMIN_BAD_REPLY');
+  if(!list)return value;
+  if(value.status!==true || !Array.isArray(value.named_certs) || value.named_certs.length>128)throw fault('HOST_ADMIN_BAD_REPLY');
+  const ids=new Set();
+  return value.named_certs.map(client=>{
+    if(!client || Object.keys(client).sort().join(',')!=='enabled,name,uuid' || !validClientId(client.uuid) ||
+        ids.has(client.uuid.toLowerCase()) || typeof client.enabled!=='boolean' || typeof client.name!=='string' ||
+        Buffer.byteLength(client.name)>128 || /[\r\n\0]/.test(client.name))throw fault('HOST_ADMIN_BAD_REPLY');
+    ids.add(client.uuid.toLowerCase());return {uuid:client.uuid,name:client.name,enabled:client.enabled};
+  });
+}
+// Only fixed main-process operations can use this pinned loopback transport.
+// A renderer cannot supply a URL, HTTP method, payload or authorization header.
+function hostStatus(options){return request(options,{path:'/api/cliprelay/host',method:'GET',limit:16384,parse:statusReply});}
+function hostClientRequest({operation,uuid,...options}){
+  if(!['list','disable','unpair'].includes(operation) || (operation==='list'?uuid!==undefined:!validClientId(uuid)))return Promise.reject(fault('HOST_ADMIN_INVALID'));
+  const list=operation==='list',body=list?undefined:JSON.stringify(operation==='disable'?{uuid,enabled:false}:{uuid});
+  return request(options,{path:'/api/clients/'+({list:'list',disable:'update',unpair:'unpair'})[operation],method:list?'GET':'POST',body,limit:65536,parse:value=>clientReply(value,list)});
+}
+function request({state,signal,timeout=3000,port=48790},{path,method,body,limit,parse}){
   if(signal?.aborted)return Promise.reject(fault('HOST_ADMIN_CANCELLED'));
   let expected,authorization,certificate;
   try{
@@ -40,19 +66,16 @@ function hostStatus({state,signal,timeout=3000,port=48790}){
         });
         socket.once('error',()=>connected(fault('HOST_ADMIN_UNAVAILABLE')));
       };
-      request=https.request({host:'127.0.0.1',port,path:'/api/cliprelay/host',method:'GET',agent,maxHeaderSize:16384,
-        headers:{Connection:'close',Authorization:authorization}},response=>{
+      request=https.request({host:'127.0.0.1',port,path,method,agent,maxHeaderSize:16384,
+        headers:{Connection:'close',Authorization:authorization,...(body?{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}:{})}},response=>{
         if(response.statusCode!==200){response.resume();finish(fault(response.statusCode===401?'HOST_ADMIN_UNAUTHORIZED':'HOST_ADMIN_BAD_REPLY'));return;}
         let length=0;const chunks=[];
         response.on('error',()=>finish(fault('HOST_ADMIN_UNAVAILABLE')));
-        response.on('data',chunk=>{length+=chunk.length;if(length>16384)finish(fault('HOST_ADMIN_BAD_REPLY'));else chunks.push(chunk);});
+        response.on('data',chunk=>{length+=chunk.length;if(length>limit)finish(fault('HOST_ADMIN_BAD_REPLY'));else chunks.push(chunk);});
         response.on('end',()=>{
           try{
             const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));
-            if(!value || Object.keys(value).sort().join(',')!=='inputControl,owned,ownerPid,pid,protocol,screenRecording' || value.protocol!==1 ||
-                !Number.isSafeInteger(value.pid) || value.pid<=1 || !Number.isSafeInteger(value.ownerPid) || value.ownerPid<=1 ||
-                ['owned','screenRecording','inputControl'].some(name=>typeof value[name]!=='boolean'))throw fault('HOST_ADMIN_BAD_REPLY');
-            finish(null,value);
+            finish(null,parse(value));
           }catch{finish(fault('HOST_ADMIN_BAD_REPLY'));}
         });
       });
@@ -60,8 +83,8 @@ function hostStatus({state,signal,timeout=3000,port=48790}){
       timer=setTimeout(()=>finish(fault('HOST_ADMIN_TIMEOUT')),timeout);
       signal?.addEventListener('abort',abort,{once:true});
       if(signal?.aborted){abort();return;}
-      request.end();
+      request.end(body);
     }catch{finish(fault('HOST_ADMIN_UNAVAILABLE'));}
   });
 }
-module.exports={hostStatus};
+module.exports={hostStatus,hostClientRequest,validClientId};

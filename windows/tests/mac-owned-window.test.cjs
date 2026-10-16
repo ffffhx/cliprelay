@@ -93,17 +93,18 @@ test('hosting decisions belong only to the live owned host window; window close 
   const f=await fixture(),window=f.openHost(),event=f.event(window);
   assert.equal((await f.request(event,'initial')).phase,'idle');assert.equal(f.hostingActions.length,0);
   const data={id:'a'.repeat(32),generation:'b'.repeat(32),verification:'1234 5678 9ABC'};
-  for(const action of ['host-start','host-pair-approve','host-pair-reject','host-stop']){
+  for(const action of ['host-start','host-pair-approve','host-pair-reject','host-stop','host-client-revoke']){
     await f.request(event,action,data);
     await assert.rejects(f.request({...event,senderFrame:{}},action,data),/Unknown renderer/);
   }
-  assert.equal(f.hostingActions.length,4);assert.deepEqual(f.hostingActions[1],{action:'host-pair-approve',data});
+  assert.equal(f.hostingActions.length,5);assert.deepEqual(f.hostingActions[1],{action:'host-pair-approve',data});
   const other=f.open();await assert.rejects(f.request(f.event(other),'host-pair-approve',data),/fixture connection failed/);
+  await assert.rejects(f.request(f.event(other),'host-client-revoke',data),/fixture connection failed/);
   const originalURL=event.senderFrame.url;event.senderFrame.url='https://example.invalid/';
   await assert.rejects(f.request(event,'host-start'),/Unknown renderer/);event.senderFrame.url=originalURL;
-  await f.request(event,'host-open-permissions');assert.equal(f.hostingActions.length,4);assert.equal(f.hostActions.length,0);
+  await f.request(event,'host-open-permissions');assert.equal(f.hostingActions.length,5);assert.equal(f.hostActions.length,0);
   assert.ok(f.windows.at(-1).webContents.mainFrame.url.includes('kind=host-permissions'));
   window.webContents.emit('render-process-gone');await f.request(event,'cancel');
   assert.equal(f.hostingOwner.releases,2);assert.equal(f.hostingOwner.closes,0);
-  await assert.rejects(f.request(event,'host-pair-approve',data),/Unknown renderer/);assert.equal(f.hostingActions.length,4);
+  await assert.rejects(f.request(event,'host-pair-approve',data),/Unknown renderer/);assert.equal(f.hostingActions.length,5);
 });

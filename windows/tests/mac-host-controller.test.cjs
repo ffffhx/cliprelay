@@ -7,14 +7,14 @@ function fixture(t,options={}){
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-host-controller-'));
   for(const name of ['host-engine','host-companion'])if(options.missing!==name)fs.writeFileSync(path.join(directory,name+'-pin.json'),JSON.stringify({...(name==='host-engine'?{arch:'arm64'}:{}),commit:'a'.repeat(40),manifestSha256:'b'.repeat(64)}));
   const calls=[];let changed=()=>{};
-  const session={phase:'stopped',current:null,error:null,snapshot(){return {phase:this.phase,error:this.error};},
+  const session={phase:'stopped',current:null,error:null,engine:{state:{}},snapshot(){return {phase:this.phase,error:this.error};},
     update(phase,error=null){this.phase=phase;this.error=error;changed();},
     async start(name){calls.push(['start',name]);this.current={};this.update('starting');await Promise.resolve();this.update('running');},
     async stop(){calls.push(['stop']);this.update('stopping');this.current=null;this.update('stopped');},
     async close(){calls.push(['close']);this.current=null;this.update('closed');}};
   const controller=new HostController({directory,stateDirectory:path.join(directory,'host'),localName:'Trusted fixture name',platform:'darwin',arch:'arm64',
     create:({onUpdate})=>{changed=onUpdate;return {session,companion:{}};},
-    rpc:async({op,data})=>{calls.push([op,data]);return op==='host-pair-list'?{requests:[request]}:{ok:true};},...options});
+    rpc:async({op,data})=>{calls.push([op,data]);return op==='host-pair-list'?{requests:[request]}:{ok:true};},clientRequest:async()=>[],...options});
   t.after(async()=>{await controller.close();assert.ok(path.basename(directory).startsWith('cliprelay-host-controller-'));fs.rmSync(directory,{recursive:true,force:true});});
   return {controller,session,calls,directory};
 }
@@ -22,7 +22,7 @@ async function start(f){const status=await f.controller.action('host-start');ass
 test('opening settings is read-only; start uses the trusted device name and exposes no owner internals',async t=>{
   const f=fixture(t);assert.deepEqual(f.calls,[]);assert.equal((await f.controller.action('host-status')).phase,'stopped');assert.deepEqual(f.calls,[]);
   await start(f);const status=await f.controller.action('host-status');assert.deepEqual(f.calls[0],['start','Trusted fixture name']);
-  assert.deepEqual(Object.keys(status).sort(),['available','error','nativeWorkers','phase','requests']);assert.equal(status.requests.length,1);
+  assert.deepEqual(Object.keys(status).sort(),['available','clients','error','nativeWorkers','phase','requests']);assert.equal(status.requests.length,1);assert.equal(status.clients.phase,'ready');
   status.requests[0].name='mutated';assert.equal(f.controller.snapshot().requests[0].name,'Fixture device');
   f.controller.releaseWindow();assert.equal(f.session.phase,'running');assert.ok(!f.calls.some(([op])=>op==='stop'));
 });
@@ -58,5 +58,13 @@ test('a decision invalidates an older list even when its reply arrives last',asy
 test('close cancels pending private requests and waits for both owned children through the session',async t=>{
   const f=fixture(t);await start(f);let release;f.session.close=()=>new Promise(resolve=>release=resolve);
   const closing=f.controller.close();assert.equal(f.controller.snapshot().available,false);await assert.rejects(f.controller.action('host-start'),{code:'HOST_SESSION_CLOSED'});
-  release();await closing;assert.equal(f.controller.snapshot().phase,'closed');
+  await new Promise(resolve=>setImmediate(resolve));release();await closing;assert.equal(f.controller.snapshot().phase,'closed');
+});
+
+test('host client revoke is routed through the owned session and remains separate from pair approval',async t=>{
+  const device={uuid:'aaaaaaaa-1111-2222-3333-444444444444',name:'Test client',enabled:true};let devices=[device];const writes=[];
+  const f=fixture(t,{clientRequest:async({operation,uuid})=>{if(operation==='list')return devices.map(value=>({...value}));writes.push([operation,uuid]);if(operation==='disable')device.enabled=false;else devices=[];return {status:true};}});
+  await start(f);const status=await f.controller.action('host-status');assert.deepEqual(status.clients.devices,[device]);
+  const final=await f.controller.action('host-client-revoke',{viewId:status.clients.viewId,uuid:device.uuid});assert.deepEqual(final.clients.devices,[]);
+  assert.deepEqual(writes,[['disable',device.uuid],['unpair',device.uuid]]);assert.equal(f.calls.some(([op])=>op==='host-pair-approve'),false);
 });

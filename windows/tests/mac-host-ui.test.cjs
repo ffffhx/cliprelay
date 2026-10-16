@@ -44,3 +44,27 @@ test('late polling cannot undo a stop or update a closed settings window',async(
   const reading=f.ui.refresh();f.ui.close();const before=f.root.all(node=>node.role==='status')[0].textContent;
   finish({available:true,phase:'running',requests:[request]});await reading;assert.equal(f.root.all(node=>node.role==='status')[0].textContent,before);assert.equal(f.events.has('focus'),false);
 });
+
+const client={uuid:'aaaaaaaa-1111-2222-3333-444444444444',name:'<img src=invalid> laptop',enabled:true};
+const clientState=()=>({available:true,phase:'running',requests:[],clients:{phase:'ready',viewId:'a'.repeat(32),devices:[client],error:null,revoking:null}});
+test('saved client names are literal and revoke requires confirmation bound to the current view',async()=>{
+  let state=clientState();const f=fixture({initial:state,request:(action)=>{if(action==='host-client-revoke')state={...state,clients:{...state.clients,devices:[]}};return state;}});await f.ui.ready;
+  assert.equal(f.root.all(node=>node.tag==='h3')[0].textContent,client.name);
+  f.button('撤销访问权限').onclick();assert.equal(f.calls.filter(call=>call.action==='host-client-revoke').length,0);
+  f.button('取消').onclick();assert.equal(f.button('确认撤销'),undefined);
+  f.button('撤销访问权限').onclick();await f.button('确认撤销').onclick();
+  assert.equal(JSON.stringify(f.calls.at(-1)),JSON.stringify({action:'host-client-revoke',data:{viewId:'a'.repeat(32),uuid:client.uuid}}));
+  assert.equal(f.button('撤销访问权限'),undefined);assert.ok(f.root.all(node=>node.textContent.includes('已撤销该设备')).length);f.ui.close();
+});
+test('a replacement host session discards a pending device confirmation',async()=>{
+  let state=clientState();const f=fixture({initial:state,request:()=>state});await f.ui.ready;f.button('撤销访问权限').onclick();
+  state={...state,clients:{...state.clients,viewId:'b'.repeat(32)}};await f.ui.refresh();assert.equal(f.button('确认撤销'),undefined);
+  state={...state,clients:{...state.clients,phase:'revoking',revoking:client.uuid}};await f.ui.refresh();assert.equal(f.button('正在撤销…').disabled,true);f.ui.close();
+});
+test('a partially failed revoke keeps the disabled device visible without claiming success',async()=>{
+  let state=clientState();const f=fixture({initial:state,request:action=>{
+    if(action==='host-client-revoke'){state={...state,clients:{...state.clients,error:'HOST_CLIENTS_UNCONFIRMED',devices:[{...client,enabled:false}]}};throw Error('private detail');}return state;
+  }});await f.ui.ready;f.button('撤销访问权限').onclick();await f.button('确认撤销').onclick();
+  assert.ok(f.root.all(node=>node.textContent.startsWith('已停用')).length);assert.equal(f.root.all(node=>node.textContent.includes('已撤销该设备')).length,0);
+  assert.equal(f.root.all(node=>node.textContent.includes('private detail')).length,0);assert.equal(f.button('确认撤销').disabled,false);f.ui.close();
+});

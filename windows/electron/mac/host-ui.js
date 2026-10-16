@@ -1,13 +1,13 @@
 export function mount(root,api,cancel,initial){
   root.className='host-settings';let state=initial,disposed=false,pending=false,refreshing=false,timer=null,noticeText='',generation=0;
-  const confirmations=new Map();
+  const confirmations=new Map();let revocation=null;
   const element=(tag,text='')=>{const node=document.createElement(tag);node.textContent=text;return node;};
   const title=element('h1','本机远程访问'),status=element('p'),controls=element('div'),start=element('button','启动远程访问'),stop=element('button','停止远程访问');
-  const permissions=element('button','检查系统权限'),close=element('button','关闭'),notice=element('p'),requests=element('div');
+  const permissions=element('button','检查系统权限'),close=element('button','关闭'),notice=element('p'),requests=element('div'),clients=element('div');
   status.setAttribute('role','status');notice.setAttribute('aria-live','polite');controls.className='host-actions';
   controls.append(start,stop,permissions,close);root.append(title,status,controls,
     element('p','启动后，可在同一局域网的另一台设备中添加这台 Mac，再在此处核对验证码。关闭此窗口后仍允许连接，点击“停止远程访问”可结束连接。'),
-    element('p','当前支持远程画面与键鼠控制。本机作为被控端时，文件、剪贴板同步、远程终端、语音及隐私控制暂不可用。'),notice,requests);
+    element('p','当前支持远程画面与键鼠控制。本机作为被控端时，文件、剪贴板同步、远程终端、语音及隐私控制暂不可用。'),notice,requests,clients);
   const errors={HOST_UNAVAILABLE:'此安装包未包含完整的本机远程访问组件。',HOST_PERMISSION_REQUIRED:'请先允许屏幕录制和键鼠控制。',HOST_KEYCHAIN_UNAVAILABLE:'系统钥匙串不可用，请稍后重试。',HOST_PAIR_STALE:'这次请求已过期或已处理，请核对当前请求。',HOST_PAIR_CLOSED:'远程访问已停止。',HOST_PAIR_TIMEOUT:'读取配对请求超时，请重试。',HOST_PAIR_UNAVAILABLE:'暂时无法读取配对请求，请重试。',HOST_ENGINE_EXITED:'远程画面组件已退出。',HOST_COMPANION_EXITED:'远程连接组件已退出。'};
   function render(){
     status.textContent=({stopped:'远程访问已停止',starting:'正在启动远程访问…',running:'远程访问已启动',stopping:'正在停止远程访问…',failed:'远程访问未能运行',closed:'应用正在退出'})[state.phase] || '无法确认远程访问状态';
@@ -29,11 +29,36 @@ export function mount(root,api,cancel,initial){
     }
     for(const key of confirmations.keys())if(!live.has(key))confirmations.delete(key);
     if(state.phase==='running' && !live.size)requests.append(element('p','等待设备发起配对请求。'));
+    renderClients();
+  }
+  function renderClients(){
+    clients.replaceChildren();clients.append(element('h2','已配对设备'));
+    const saved=state.clients || {phase:'unavailable',devices:[]};
+    if(revocation && (revocation.viewId!==saved.viewId || !saved.devices.some(device=>device.uuid===revocation.uuid)))revocation=null;
+    if(saved.phase==='unavailable'){clients.append(element('p','启动远程访问后可管理已配对设备。'));return;}
+    if(saved.phase==='loading'){clients.append(element('p','正在读取设备…'));return;}
+    if(saved.error)clients.append(element('p',saved.error==='HOST_CLIENTS_UNCONFIRMED'?'尚未确认撤销完成。请核对设备状态后重试；已停用的设备不会自动恢复权限。':'暂时无法读取设备，请稍后刷新。'));
+    if(!saved.devices.length && saved.phase==='ready')clients.append(element('p','还没有已配对设备。'));
+    for(const device of saved.devices){
+      const row=element('section'),revoke=element('button',saved.revoking===device.uuid?'正在撤销…':'撤销访问权限');
+      row.append(element('h3',device.name || '未命名设备'),element('p',(device.enabled?'允许连接':'已停用')+' · 设备标识 '+device.uuid.slice(-8)));
+      revoke.disabled=pending || saved.phase!=='ready';
+      const data={viewId:saved.viewId,uuid:device.uuid};
+      revoke.onclick=()=>{if(!revoke.disabled){revocation=data;render();}};
+      if(revocation?.uuid===device.uuid && revocation.viewId===saved.viewId){
+        const confirm=element('button','确认撤销'),back=element('button','取消');
+        confirm.disabled=pending || saved.phase!=='ready';back.disabled=pending;
+        row.append(element('p','撤销后将结束该设备的连接，再次连接需要重新配对。'),confirm,back);
+        confirm.onclick=()=>{if(!confirm.disabled)return perform('host-client-revoke',data);};
+        back.onclick=()=>{if(!back.disabled){revocation=null;render();}};
+      }else row.append(revoke);
+      clients.append(row);
+    }
   }
   async function refresh(){
     if(disposed || refreshing || pending)return;refreshing=true;const current=generation;
     try{const result=await api.request('host-status');if(!disposed && current===generation){state=result;render();}}
-    catch{if(!disposed && current===generation){state={...state,requests:[],error:'HOST_PAIR_UNAVAILABLE'};render();}}
+    catch{if(!disposed && current===generation){state={...state,requests:[],error:'HOST_PAIR_UNAVAILABLE',clients:{phase:'failed',devices:[],error:'HOST_CLIENTS_UNAVAILABLE'}};render();}}
     finally{refreshing=false;}
   }
   async function perform(action,data){
@@ -42,10 +67,11 @@ export function mount(root,api,cancel,initial){
       const result=await api.request(action,data);if(disposed)return;state=result;
       if(action==='host-pair-approve')noticeText='已允许这次请求，请在对方设备完成连接。';
       if(action==='host-pair-reject')noticeText='已拒绝这次请求。';
-    }catch{if(!disposed){noticeText='操作未完成，请刷新并核对当前请求。';await refreshAfterAction();}}
+      if(action==='host-client-revoke'){revocation=null;noticeText='已撤销该设备的访问权限，再次连接需要重新配对。';}
+    }catch{if(!disposed){noticeText=action==='host-client-revoke'?'尚未确认撤销完成，请核对设备状态后重试。':'操作未完成，请刷新并核对当前请求。';await refreshAfterAction();}}
     finally{if(!disposed){pending=false;render();}}
   }
-  async function refreshAfterAction(){try{state=await api.request('host-status');}catch{state={...state,requests:[],error:'HOST_PAIR_UNAVAILABLE'};}}
+  async function refreshAfterAction(){try{state=await api.request('host-status');}catch{state={...state,requests:[],error:'HOST_PAIR_UNAVAILABLE',clients:{phase:'failed',devices:[],error:'HOST_CLIENTS_UNAVAILABLE'}};}}
   start.onclick=()=>{if(!start.disabled)return perform('host-start');};stop.onclick=()=>{if(!stop.disabled)return perform('host-stop');};
   permissions.onclick=()=>api.request('host-open-permissions');close.onclick=cancel;
   const dispose=()=>{disposed=true;generation++;clearInterval(timer);window.removeEventListener('focus',refresh);};
