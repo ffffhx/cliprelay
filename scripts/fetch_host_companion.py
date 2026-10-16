@@ -27,6 +27,7 @@ TERMINAL_CASES += ['worker EOF reaps foreground shell through guardian', 'worker
 TERMINAL_REPORT = 'terminal-process-report.json'
 TERMINAL_HTTP_CASES = ['tls-terminal-shells-sessions-and-lost-replies',
                        'tls-terminal-native-mouse-lease-and-resize', 'tls-terminal-desktop-client',
+                       'tls-terminal-android-protocol',
                        'tls-terminal-owner-isolation-and-live-revocation',
                        'tls-terminal-output-gap-and-worker-restart', 'terminal-eof-reaps-owned-sessions']
 
@@ -95,6 +96,10 @@ def verify_sources(source_path, commit):
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal.py').strip():
         expected |= {'scripts/test_host_terminal.py', 'scripts/test_host_terminal_client.cjs'}
         expected |= {'windows/electron/mac/'+name for name in ['terminal-controller.cjs', 'terminal-protocol.cjs', 'terminal-mouse.cjs']}
+    if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal_android.py').strip():
+        expected |= {'scripts/test_host_terminal_android.py', 'scripts/TerminalMacInterop.java'}
+        expected |= {'android-app/remote-engine/src/main/java/com/limelight/terminal/'+name+'.java'
+                     for name in ['TerminalProtocol', 'TerminalSessionState', 'TerminalMouseState']}
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard.py').strip():
         expected.add('scripts/test_host_clipboard.py')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard_client.cjs').strip():
@@ -136,7 +141,10 @@ def fetch(run, arch, directory):
     file_transfer = json.loads((artifact/'manifest.json').read_bytes()).get('fileTransfer') == 1
     clipboard_exchange = json.loads((artifact/'manifest.json').read_bytes()).get('clipboardExchange') == 1
     terminal_control = json.loads((artifact/'manifest.json').read_bytes()).get('terminalControl') == 1
-    expected_cases = (TERMINAL_HTTP_CASES if terminal_control else []) + (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
+    terminal_cases = list(TERMINAL_HTTP_CASES)
+    if not output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal_android.py').strip():
+        terminal_cases.remove('tls-terminal-android-protocol')
+    expected_cases = (terminal_cases if terminal_control else []) + (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
     executable_hash = hashlib.sha256((artifact/'runtime/cliprelay-host-network').read_bytes()).hexdigest()
     terminal = b"'hostterminal'" in subprocess.check_output(['git', 'show', commit+':scripts/build_host_companion.py'], cwd=ROOT)
     terminal_receipt = artifact/TERMINAL_REPORT

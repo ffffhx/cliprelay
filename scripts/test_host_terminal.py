@@ -17,6 +17,7 @@ import time
 CASES = ['tls-terminal-shells-sessions-and-lost-replies',
          'tls-terminal-native-mouse-lease-and-resize',
          'tls-terminal-desktop-client',
+         'tls-terminal-android-protocol',
          'tls-terminal-owner-isolation-and-live-revocation',
          'tls-terminal-output-gap-and-worker-restart',
          'terminal-eof-reaps-owned-sessions']
@@ -193,6 +194,10 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
         assert json.loads(desktop.stdout) == {'passed': True, 'shells': ['bash', 'zsh'], 'lostReplies': True, 'mouseExpiry': True}
         passed(CASES[2])
 
+        from test_host_terminal_android import run as run_android
+        run_android(state, receiver_command())
+        passed(CASES[3])
+
         other = state.parent/'terminal-other'
         other.mkdir()
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=terminal-other',
@@ -221,7 +226,7 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
             reused.close()
         wait_absent(other_pid)
         assert all(s['state'] == 'revoked' for s in checked(tls, {'op': 'list'})['sessions'] if s['id'] in [x['id'] for x in sessions])
-        passed(CASES[3])
+        passed(CASES[4])
 
         live = open_session(tls, 'bash')
         live_pid = shell_pid(tls, live)
@@ -237,7 +242,7 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
         replacement = checked(tls, {'op': 'list'})
         assert replacement['instance'] != live['instance'] and replacement['nextOpen'] == 1 and not replacement.get('sessions')
         assert request(tls, dict(live, op='read', offset=0))[1]['code'] == 'TERMINAL_STALE'
-        passed(CASES[4])
+        passed(CASES[5])
         live = open_session(tls, 'zsh')
         live_pid = shell_pid(tls, live)
         worker = worker_pid(process.pid)
@@ -245,7 +250,7 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
         finish(process, status)
         wait_absent(worker)
         wait_absent(live_pid)
-        passed(CASES[5])
+        passed(CASES[6])
     finally:
         clients.write_bytes(original)
         if process.poll() is None:
