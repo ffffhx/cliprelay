@@ -22,6 +22,7 @@ async function fixture({autoStart=false}={}){
   const imports={'./stream-viewer.cjs':{StreamViewer:class{snapshot(){return {available:false,phase:'idle'};}reconcile(){}stop(){}async open(){throw new Error('VIEWER_UNAVAILABLE');}}},electron,'bonjour-service':{Bonjour},'./config.cjs':{loadConfig:()=>({peer:'legacy.local',peerPort:47632,legacyEnabled:true,deviceName:'Mac',discoveryEnabled:false,hostAutoStart:autoStart}),saveConfig:(_directory,value)=>savedConfigs.push(value)},'./relay.cjs':{sendSelection:async()=>{legacySends++;},createReceiver:()=>receiver,discoveredPeer(){}},'./paired-store.cjs':{PairedStore:Store},'./paired-controller.cjs':{PairedController:Controller,message:()=> 'fixture connection failed'},'node:child_process':{execFile(){},execFileSync:()=> 'Mac'},'./host-notices.cjs':require('../electron/mac/host-notices.cjs')};
   Object.assign(imports,{'./network-catalog.cjs':{NetworkCatalog:class{}},'./network-controller.cjs':{NetworkController:Network},'./routed-store.cjs':{RoutedStore:class{constructor(base){return base;}}},'./client-identity.cjs':{createClientIdentity:()=>{}}});
   const fileActions=[];imports['./file-controller.cjs']={FileController:class{snapshot(){return {tasks:[]};}reconcile(){}releaseWindow(){}close(){}async action(action,data,window){fileActions.push({action,data,window});}},message:()=> 'File operation failed'};
+  imports['./login-startup.cjs']=require('../electron/mac/login-startup.cjs');
   imports['./terminal-window.cjs']={DesktopTerminal:class{open(){}reconcile(){}close(){}}};
   const clipboardActions=[];let clipboardCancels=0,clipboardAuthorized;
   imports['./clipboard-sync.cjs']={ClipboardSync:class{snapshot(){return {phase:'off'};}reconcile(){}close(){}cancelReceive(){clipboardCancels++;}externalApplied(){}setEnabled(data){clipboardActions.push(['set',data]);}resume(data){clipboardActions.push(['resume',data]);}async receive(data,authorized){assert.ok(authorized());clipboardAuthorized=authorized;clipboardActions.push(['receive',data]);}},message:()=> 'Clipboard operation failed'};
@@ -112,21 +113,22 @@ test('hosting decisions belong only to the live owned host window; window close 
   const f=await fixture(),window=f.openHost(),event=f.event(window);
   assert.equal((await f.request(event,'initial')).phase,'idle');assert.equal(f.hostingActions.length,0);
   const data={id:'a'.repeat(32),generation:'b'.repeat(32),verification:'1234 5678 9ABC'};
-  for(const action of ['host-start','host-pair-approve','host-pair-reject','host-stop','host-client-revoke','host-set-auto-start']){
+  for(const action of ['host-start','host-pair-approve','host-pair-reject','host-stop','host-client-revoke','host-set-auto-start','host-set-login-startup']){
     await f.request(event,action,data);
     await assert.rejects(f.request({...event,senderFrame:{}},action,data),/Unknown renderer/);
   }
-  assert.equal(f.hostingActions.length,6);assert.deepEqual(f.hostingActions[1],{action:'host-pair-approve',data});
+  assert.equal(f.hostingActions.length,7);assert.deepEqual(f.hostingActions[1],{action:'host-pair-approve',data});
   const other=f.open();await assert.rejects(f.request(f.event(other),'host-pair-approve',data),/fixture connection failed/);
   await assert.rejects(f.request(f.event(other),'host-client-revoke',data),/fixture connection failed/);
   await assert.rejects(f.request(f.event(other),'host-set-auto-start',{enabled:true}),/fixture connection failed/);
+  await assert.rejects(f.request(f.event(other),'host-set-login-startup',{enabled:true}),/fixture connection failed/);
   const originalURL=event.senderFrame.url;event.senderFrame.url='https://example.invalid/';
   await assert.rejects(f.request(event,'host-start'),/Unknown renderer/);event.senderFrame.url=originalURL;
-  await f.request(event,'host-open-permissions');assert.equal(f.hostingActions.length,6);assert.equal(f.hostActions.length,0);
+  await f.request(event,'host-open-permissions');assert.equal(f.hostingActions.length,7);assert.equal(f.hostActions.length,0);
   assert.ok(f.windows.at(-1).webContents.mainFrame.url.includes('kind=host-permissions'));
   window.webContents.emit('render-process-gone');await f.request(event,'cancel');
   assert.equal(f.hostingOwner.releases,2);assert.equal(f.hostingOwner.closes,0);
-  await assert.rejects(f.request(event,'host-pair-approve',data),/Unknown renderer/);assert.equal(f.hostingActions.length,6);
+  await assert.rejects(f.request(event,'host-pair-approve',data),/Unknown renderer/);assert.equal(f.hostingActions.length,7);
 });
 
 test('main startup passes strict opt-in and persists explicit changes without requesting accessibility',async()=>{
