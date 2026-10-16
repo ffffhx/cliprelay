@@ -26,7 +26,7 @@ async function until(read,predicate,timeout=30000){
 const protectedDirectories=[path.join(os.homedir(),'.config','sunshine'),path.join(os.homedir(),'Library/Application Support/ClipRelay/host')];
 const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
 const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cliprelay-native-mac-stream-')));
-const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[],debuggers=[];
+const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[],debuggers=[],viewStates=[];
 const testStarted=Date.now();
 function diagnosticLines(value){
   return value.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission|invalid|abort|fatal|exception|assert|library not loaded|reason:|screen|capture|video|vulkan|metal|molten|gpu/i.test(line)&&
@@ -130,14 +130,17 @@ async function closeRaw(item){
 }
 async function main(){
   const report={protocol:1,passed:false,testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.APP_SOURCE_COMMIT,
-    architecture:process.arch,cases:[],physicalInputInjected:false,audioEnabled:false,screenContentSaved:false,keychainValidated:false};
+    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1',
+    physicalInputInjected:false,audioEnabled:false,screenContentSaved:false,keychainValidated:false};
   try{
     stage='host-start';await host.action('host-start');await host.startTask;assert.equal(host.snapshot().phase,'running');
     stage='pair-two';const first=selected(await pair(identities.client,'Mac stream A')),second=selected(await pair(identities.wrong,'Mac stream B'));
     const admin=()=>jsonRequest({address:'127.0.0.1',port:48790,path:'/api/cliprelay/displays',method:'GET',identity:identities.wrong,
       trust:{cert:second.certificate},headers:{Authorization:hostState.authorization()},timeout:3000,limit:65536});
     const store={data:{legacySelected:false},selected:()=>first,identity:async()=>identities.client};
-    viewer=new StreamViewer({directory:viewerDirectory,store,spawnProcess:launchViewer,onUpdate:()=>display?.reconcile(),
+    viewer=new StreamViewer({directory:viewerDirectory,store,spawnProcess:launchViewer,onUpdate:value=>{
+      viewStates.push(value);if(viewStates.length>12)viewStates.shift();display?.reconcile();
+    },
       startupMs:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'?180000:45000});
     display=new DisplayController({store,viewer});
     stage='production-video';await viewer.open(options);
@@ -166,6 +169,7 @@ async function main(){
     report.presentation.last=viewer.snapshot().progress;
     report.cases.push('production-input-ACK-pause-display-reconstruction-and-fresh-frame-resume');
     stage='owner-eof';display.close();viewer.stop();await until(()=>viewer.child,value=>!value,10000);
+    assert.deepEqual(viewerExits[0],{code:0,signal:null});
     await until(admin,value=>value.streams.length===0);
     report.cases.push('desktop-owner-EOF-releases-native-stream');
     stage='raw-video';const receiver=rawViewer(first,identities.client);report.rawPresentation=await presented(receiver);
@@ -197,7 +201,7 @@ async function main(){
   }catch(error){
     // ReportCrash writes asynchronously after the native process has exited.
     if(viewerExits.some(exit=>exit.signal))await pause(10000);
-    report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),viewerExits,
+    report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),viewStates,viewerExits,
       diagnostics:diagnostics.slice(-24),files:fileDiagnostics(),debuggers:debuggers.map(debug=>({exit:debug.exit,
         lines:debug.output.split('\n').filter(line=>/stop reason|error:|frame #|stop-reason|exited with status/.test(line))
           .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(0,60)}))};

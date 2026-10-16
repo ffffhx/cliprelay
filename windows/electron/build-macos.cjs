@@ -166,7 +166,7 @@ async function build(){
           'production-input-ACK-pause-display-reconstruction-and-fresh-frame-resume','desktop-owner-EOF-releases-native-stream',
           'native-host-termination-after-revocation-without-client-control-polling',
           'other-paired-client-still-renders-and-EOF-releases-stream','all-owned-native-processes-reaped-and-default-state-preserved'];
-        if(report.protocol!==1 || report.passed!==true || report.architecture!==architecture ||
+        if(report.protocol!==1 || report.passed!==true || report.diagnosticOnly!==false || report.architecture!==architecture ||
           report.applicationCommit!==process.env.GITHUB_SHA || JSON.stringify(report.cases)!==JSON.stringify(expected) ||
           report.ownedChildrenReaped!==true || report.revocation?.ownerPipeStayedOpen!==true)
           throw new Error('Packaged native Mac streaming acceptance did not complete');

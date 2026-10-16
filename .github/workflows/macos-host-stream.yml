@@ -1,14 +1,15 @@
 name: macOS Packaged Host Stream
 on:
-  push:
-    branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['scripts/test_macos_host_stream.cjs', '.github/workflows/macos-host-stream.yml']
   workflow_dispatch:
     inputs:
       app_run_id:
         description: 'Successful complete Electron macOS build to test'
         type: string
-        default: '38959885824'
+        required: true
+      debug_native:
+        description: 'Attach LLDB for diagnosis only; this cannot pass acceptance'
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -40,7 +41,7 @@ jobs:
       - name: Select successful immutable application build
         env:
           GH_TOKEN: ${{ github.token }}
-          APP_RUN_ID: ${{ inputs.app_run_id || '38959885824' }}
+          APP_RUN_ID: ${{ inputs.app_run_id }}
           APP_ARCH: ${{ matrix.arch }}
         run: |
           python3 - <<'PY'
@@ -55,7 +56,7 @@ jobs:
           ditto -x -k app-download/ClipRelay-macOS-${{ matrix.arch }}-*.zip app-unpacked
       - name: Real packaged capture, Qt presentation, input receipts and revocation
         env:
-          CLIPRELAY_MAC_STREAM_DEBUG: '1'
+          CLIPRELAY_MAC_STREAM_DEBUG: ${{ inputs.debug_native && '1' || '' }}
         run: node scripts/test_macos_host_stream.cjs app-unpacked/ClipRelay.app/Contents/Resources/app/mac native-stream-report.json
       - uses: actions/upload-artifact@v4
         if: always()
