@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const {EventEmitter}=require('node:events');const {pathToFileURL}=require('node:url');
-async function fixture(){
+async function fixture({autoStart=false}={}){
   let ready,menuItems,hotkey,legacySends=0,encryptedSends=0,controller,network,quits=0;const handlers=new Map(),windows=[],appEvents=new Map();
   class Window extends EventEmitter{
     constructor(){super();this.webContents=new EventEmitter();this.webContents.id=windows.length+1;this.webContents.mainFrame={};this.webContents.setWindowOpenHandler=()=>{};windows.push(this);}
@@ -13,10 +13,12 @@ async function fixture(){
   class Network{constructor(){network=this;this.claims=0;}snapshot(){return {available:true,computers:[],pairing:{state:'idle'}};}claim(){this.claims++;}reconcile(){}route(){return null;}cancelPair(){}close(){}}
   class Controller{constructor(options){controller=this;this.store=options.store;this.status='connected';this.started=0;}start(){}snapshot(){return {hosts:[{id:'paired',name:'PC'}],status:'connected',pairing:{state:'idle'}};}startPair(){this.started++;return this.snapshot();}sendCurrent(){encryptedSends++;return Promise.reject(Object.assign(new Error('fixture changed certificate'),{code:'HOST_CERT_CHANGED'}));}cancelPair(){}close(){}reconcileRoutes(){}}
   class Bonjour{publish(){const service=new EventEmitter();service.stop=()=>{};return service;}destroy(){}}
-  const electron={app,Tray:class{setTitle(){}setContextMenu(items){menuItems=items;}},Menu:{buildFromTemplate:items=>items},nativeImage:{createEmpty:()=>({})},globalShortcut:{register:(_,fn)=>{hotkey=fn;}},clipboard:{},Notification:class{show(){}},BrowserWindow:Window,ipcMain:{handle:(name,fn)=>handlers.set(name,fn)},screen:{getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1200,height:800}})},systemPreferences:{isTrustedAccessibilityClient(){}},safeStorage:{},dialog:{showErrorBox:(_,message)=>assert.fail(message)}};
+  const notifications=[],accessibility=[],savedConfigs=[];let trayTitle;
+  class Notification extends EventEmitter{static isSupported(){return true;}constructor(options){super();this.options=options;}show(){notifications.push(this);}close(){this.emit('close');}}
+  const electron={app,Tray:class{setTitle(value){trayTitle=value;}setContextMenu(items){menuItems=items;}},Menu:{buildFromTemplate:items=>items},nativeImage:{createEmpty:()=>({})},globalShortcut:{register:(_,fn)=>{hotkey=fn;}},clipboard:{},Notification,BrowserWindow:Window,ipcMain:{handle:(name,fn)=>handlers.set(name,fn)},screen:{getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1200,height:800}})},systemPreferences:{isTrustedAccessibilityClient(value){accessibility.push(value);}},safeStorage:{},dialog:{showErrorBox:(_,message)=>assert.fail(message)}};
   const receiver=new EventEmitter();receiver.listen=(_,cb)=>cb();receiver.listening=true;
   const filename=path.resolve(__dirname,'../electron/mac/main.cjs');
-  const imports={'./stream-viewer.cjs':{StreamViewer:class{snapshot(){return {available:false,phase:'idle'};}reconcile(){}stop(){}async open(){throw new Error('VIEWER_UNAVAILABLE');}}},electron,'bonjour-service':{Bonjour},'./config.cjs':{loadConfig:()=>({peer:'legacy.local',peerPort:47632,legacyEnabled:true,deviceName:'Mac',discoveryEnabled:false}),saveConfig(){}},'./relay.cjs':{sendSelection:async()=>{legacySends++;},createReceiver:()=>receiver,discoveredPeer(){}},'./paired-store.cjs':{PairedStore:Store},'./paired-controller.cjs':{PairedController:Controller,message:()=> 'fixture connection failed'},'node:child_process':{execFile(){},execFileSync:()=> 'Mac'}};
+  const imports={'./stream-viewer.cjs':{StreamViewer:class{snapshot(){return {available:false,phase:'idle'};}reconcile(){}stop(){}async open(){throw new Error('VIEWER_UNAVAILABLE');}}},electron,'bonjour-service':{Bonjour},'./config.cjs':{loadConfig:()=>({peer:'legacy.local',peerPort:47632,legacyEnabled:true,deviceName:'Mac',discoveryEnabled:false,hostAutoStart:autoStart}),saveConfig:(_directory,value)=>savedConfigs.push(value)},'./relay.cjs':{sendSelection:async()=>{legacySends++;},createReceiver:()=>receiver,discoveredPeer(){}},'./paired-store.cjs':{PairedStore:Store},'./paired-controller.cjs':{PairedController:Controller,message:()=> 'fixture connection failed'},'node:child_process':{execFile(){},execFileSync:()=> 'Mac'},'./host-notices.cjs':require('../electron/mac/host-notices.cjs')};
   Object.assign(imports,{'./network-catalog.cjs':{NetworkCatalog:class{}},'./network-controller.cjs':{NetworkController:Network},'./routed-store.cjs':{RoutedStore:class{constructor(base){return base;}}},'./client-identity.cjs':{createClientIdentity:()=>{}}});
   const fileActions=[];imports['./file-controller.cjs']={FileController:class{snapshot(){return {tasks:[]};}reconcile(){}releaseWindow(){}close(){}async action(action,data,window){fileActions.push({action,data,window});}},message:()=> 'File operation failed'};
   imports['./terminal-window.cjs']={DesktopTerminal:class{open(){}reconcile(){}close(){}}};
@@ -27,9 +29,9 @@ async function fixture(){
   const lockActions=[];imports['./session-lock-controller.cjs']={SessionLockController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}setEnabled(data){lockActions.push(data);}},message:()=> 'Audio mute operation failed'};
   const wakeActions=[];imports['./wake-controller.cjs']={WakeController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}action(action,data){wakeActions.push(data);}},message:()=> 'Wake operation failed'};
   const hostActions=[];let hostOwner;imports['./host-permission-controller.cjs']={HostPermissionController:class{constructor(){hostOwner=this;this.releases=0;this.closes=0;this.stop=Promise.resolve();}snapshot(){return {available:true,screenRecording:null,inputControl:null};}async action(action,data){hostActions.push({action,data});return this.snapshot();}releaseWindow(){this.releases++;return this.stop;}close(){this.closes++;return this.stop;}},message:()=> 'Permission operation failed'};
-  const hostingActions=[];let hostingOwner;imports['./host-controller.cjs']={HostController:class{constructor(){hostingOwner=this;this.releases=0;this.closes=0;}snapshot(){return {available:true,phase:'idle',requests:[],nativeWorkers:false};}async action(action,data){hostingActions.push({action,data});return this.snapshot();}releaseWindow(){this.releases++;}async close(){this.closes++;}},message:()=> 'Hosting operation failed'};
+  const hostingActions=[];let hostingOwner;imports['./host-controller.cjs']={HostController:class{constructor(options){hostingOwner=this;this.options=options;this.releases=0;this.closes=0;this.launches=0;this.state={available:true,phase:'idle',requests:[],nativeWorkers:false};}snapshot(){return this.state;}emit(value){this.state={...this.state,...value};this.options.onUpdate(this.state);}async launch(){this.launches++;}async action(action,data){hostingActions.push({action,data});return this.snapshot();}releaseWindow(){this.releases++;}async close(){this.closes++;}},message:()=> 'Hosting operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),require:name=>imports[name] || require(name),setTimeout:()=>0,Buffer,URLSearchParams},{filename});await ready;
-  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},openPermissions:()=>{menuItems.find(item=>item.label==='本机远程访问权限…').click();return windows.at(-1);},openHost:()=>{menuItems.find(item=>item.label==='允许其他设备连接这台 Mac…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},get quits(){return quits;},controller,windows,fileActions,bitrateActions,displayActions,inputActions,privacyActions,audioActions,lockActions,wakeActions,hostActions,hostOwner,hostingActions,hostingOwner,appEvents};
+  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},openPermissions:()=>{menuItems.find(item=>item.label==='本机远程访问权限…').click();return windows.at(-1);},openHost:()=>{menuItems.find(item=>item.label==='允许其他设备连接这台 Mac…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},get quits(){return quits;},get trayTitle(){return trayTitle;},controller,windows,fileActions,bitrateActions,displayActions,inputActions,privacyActions,audioActions,lockActions,wakeActions,hostActions,hostOwner,hostingActions,hostingOwner,appEvents,notifications,accessibility,savedConfigs};
 }
 test('Mac pairing IPC is restricted to its owned top-level window and never returns key material',async()=>{
   const f=await fixture(),window=f.open(),event=f.event(window);
@@ -93,18 +95,37 @@ test('hosting decisions belong only to the live owned host window; window close 
   const f=await fixture(),window=f.openHost(),event=f.event(window);
   assert.equal((await f.request(event,'initial')).phase,'idle');assert.equal(f.hostingActions.length,0);
   const data={id:'a'.repeat(32),generation:'b'.repeat(32),verification:'1234 5678 9ABC'};
-  for(const action of ['host-start','host-pair-approve','host-pair-reject','host-stop','host-client-revoke']){
+  for(const action of ['host-start','host-pair-approve','host-pair-reject','host-stop','host-client-revoke','host-set-auto-start']){
     await f.request(event,action,data);
     await assert.rejects(f.request({...event,senderFrame:{}},action,data),/Unknown renderer/);
   }
-  assert.equal(f.hostingActions.length,5);assert.deepEqual(f.hostingActions[1],{action:'host-pair-approve',data});
+  assert.equal(f.hostingActions.length,6);assert.deepEqual(f.hostingActions[1],{action:'host-pair-approve',data});
   const other=f.open();await assert.rejects(f.request(f.event(other),'host-pair-approve',data),/fixture connection failed/);
   await assert.rejects(f.request(f.event(other),'host-client-revoke',data),/fixture connection failed/);
+  await assert.rejects(f.request(f.event(other),'host-set-auto-start',{enabled:true}),/fixture connection failed/);
   const originalURL=event.senderFrame.url;event.senderFrame.url='https://example.invalid/';
   await assert.rejects(f.request(event,'host-start'),/Unknown renderer/);event.senderFrame.url=originalURL;
-  await f.request(event,'host-open-permissions');assert.equal(f.hostingActions.length,5);assert.equal(f.hostActions.length,0);
+  await f.request(event,'host-open-permissions');assert.equal(f.hostingActions.length,6);assert.equal(f.hostActions.length,0);
   assert.ok(f.windows.at(-1).webContents.mainFrame.url.includes('kind=host-permissions'));
   window.webContents.emit('render-process-gone');await f.request(event,'cancel');
   assert.equal(f.hostingOwner.releases,2);assert.equal(f.hostingOwner.closes,0);
-  await assert.rejects(f.request(event,'host-pair-approve',data),/Unknown renderer/);assert.equal(f.hostingActions.length,5);
+  await assert.rejects(f.request(event,'host-pair-approve',data),/Unknown renderer/);assert.equal(f.hostingActions.length,6);
+});
+
+test('main startup passes strict opt-in and persists explicit changes without requesting accessibility',async()=>{
+  for(const autoStart of [false,true,'true']){
+    const f=await fixture({autoStart});assert.equal(f.hostingOwner.options.autoStart,autoStart===true);assert.equal(f.hostingOwner.launches,1);
+    assert.deepEqual(f.accessibility,[false]);assert.deepEqual(f.savedConfigs,[]);
+    f.hostingOwner.options.saveAutoStart(true);assert.equal(f.savedConfigs[0].hostAutoStart,true);assert.equal(f.savedConfigs[0].peer,'legacy.local');
+  }
+});
+test('background notice opens current owned settings after window close and cannot reopen on quit',async()=>{
+  const f=await fixture(),window=f.openHost();window.close();
+  f.hostingOwner.emit({phase:'running',requests:[{state:'waiting',expires:Math.floor(Date.now()/1000)+120}],error:null});
+  assert.equal(f.trayTitle,'ClipRelay · 1 个待确认');f.hostingOwner.options.onPairingRequest({count:1});assert.equal(f.notifications.length,1);
+  const before=f.windows.length;f.notifications[0].emit('click');assert.equal(f.windows.length,before+1);assert.equal(f.hostingActions.length,0);
+  assert.ok(f.windows.at(-1).webContents.mainFrame.url.includes('kind=host'));
+  f.hostingOwner.emit({requests:[]});assert.equal(f.trayTitle,'ClipRelay');f.notifications[0].emit('click');assert.equal(f.windows.length,before+1);
+  f.hostingOwner.emit({requests:[{state:'waiting',expires:Math.floor(Date.now()/1000)+120}]});f.hostingOwner.options.onPairingRequest({count:1});
+  f.appEvents.get('before-quit')({preventDefault(){}});f.notifications[1].emit('click');assert.equal(f.windows.length,before+1);
 });

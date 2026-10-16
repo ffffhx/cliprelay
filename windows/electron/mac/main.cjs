@@ -24,9 +24,10 @@ const {SessionLockController,message:sessionLockMessage}=require('./session-lock
 const {WakeController,message:wakeMessage}=require('./wake-controller.cjs');
 const {HostPermissionController,message:hostPermissionMessage}=require('./host-permission-controller.cjs');
 const {HostController,message:hostMessage}=require('./host-controller.cjs');
+const {HostNotices}=require('./host-notices.cjs');
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
-let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake,hostPermissions,host,permissionQuit=false,permissionQuitReady=false;
+let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake,hostPermissions,host,hostNotices,permissionQuit=false,permissionQuitReady=false;
 const windows=new Map();
 const page=path.join(__dirname,'ui.html');const pageURL=pathToFileURL(page).href;
 const pairedSnapshot=()=>{bitrate.reconcile();displays.reconcile();privacy.reconcile();audioMute.reconcile();sessionLock.reconcile();wake.reconcile();return {...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot(),files:files.snapshot(),bitrate:bitrate.snapshot(),displays:displays.snapshot(),privacy:privacy.snapshot(),audioMute:audioMute.snapshot(),sessionLock:sessionLock.snapshot(),wake:wake.snapshot()};};
@@ -36,6 +37,7 @@ else{
   app.on('before-quit',event=>{
     if((!hostPermissions && !host) || permissionQuitReady)return;
     event.preventDefault();if(permissionQuit)return;permissionQuit=true;
+    hostNotices?.close();
     Promise.all([hostPermissions?.close(),host?.close()]).then(()=>{permissionQuitReady=true;app.quit();});
   });
   app.whenReady().then(start).catch(error=>{require('electron').dialog.showErrorBox('ClipRelay',error.code==='EADDRINUSE'?'ClipRelay 端口已被占用。请先停用 Hammerspoon 中的 ClipRelay，再重新打开。':error.message);app.quit();});
@@ -71,10 +73,14 @@ function showHostWindow(kind){
 }
 function menu(){
   const selected=paired?.store.selected(),status=({connected:'已连接',connecting:'连接中',paused:'已暂停',offline:'等待重连'})[paired?.status] || '需重新配对';
+  const hostState=host?.snapshot(),pending=(hostState?.requests || []).filter(request=>request.state==='waiting' && request.expires>Date.now()/1000).length;
+  const hosting=({running:'已启动',starting:'正在启动',stopping:'正在停止',failed:'需检查权限或连接',closed:'正在退出'})[hostState?.phase] || '已停止';
+  tray.setTitle(pending?`ClipRelay · ${pending} 个待确认`:'ClipRelay');
   tray.setContextMenu(Menu.buildFromTemplate([
     {label:selected?`配对电脑：${selected.name} · ${status}`:'尚未选择配对电脑',enabled:false},
     {label:'配对电脑与安全收发…',click:()=>{const existing=[...windows.values()].find(entry=>entry.kind==='paired');if(existing){existing.window.show();existing.window.focus();}else openWindow('paired',{}, {width:620,height:640,alwaysOnTop:true,vibrancy:'popover'});}},
     {label:'允许其他设备连接这台 Mac…',click:()=>showHostWindow('host')},
+    {label:`本机远程访问：${hosting}${pending?` · ${pending} 个待确认`:''}`,enabled:false},
     {label:'本机远程访问权限…',click:()=>showHostWindow('host-permissions')},
     {label:'发送当前剪贴板到配对电脑',enabled:!!selected?.enabled,click:()=>paired.sendCurrent().then(sent=>{if(sent)alert('已加密发送到 '+selected.name);}).catch(error=>alert(pairedMessage(error)))},
     {type:'separator'},
@@ -130,7 +136,14 @@ async function start(){
     try{return execFileSync('/usr/sbin/scutil',['--get','ComputerName'],{encoding:'utf8'}).trim();}catch{return 'Mac';}
   }});
   const localName=Array.from(String(config.deviceName || 'Mac').replace(/[\r\n\0]/g,'')).slice(0,32).join('') || 'Mac';
-  host=new HostController({directory:__dirname,stateDirectory:path.join(app.getPath('userData'),'host'),safeStorage,localName});
+  hostNotices=new HostNotices({Notification,active:()=>!permissionQuit && host?.snapshot().phase==='running',open:()=>showHostWindow('host')});
+  host=new HostController({directory:__dirname,stateDirectory:path.join(app.getPath('userData'),'host'),safeStorage,localName,
+    autoStart:config.hostAutoStart===true,
+    saveAutoStart:enabled=>{const next={...config,hostAutoStart:enabled};saveConfig(app.getPath('userData'),next);config=next;},
+    onPairingRequest:notice=>hostNotices.show(notice),onUpdate:value=>{
+      if(value.phase!=='running' || (!value.error && !value.requests.some(request=>request.state==='waiting' && request.expires>Date.now()/1000)))hostNotices.withdraw();
+      if(tray)menu();
+    }});
   const directory=path.join(app.getPath('userData'),'paired');
   const base=new PairedStore(directory,safeStorage,{legacySelected:config.legacyEnabled===true,generate:createClientIdentity});
   network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(__dirname,'network-helper'),localName,
@@ -207,11 +220,12 @@ async function start(){
     }
     throw new Error('Unknown action');
   });
-  systemPreferences.isTrustedAccessibilityClient(true);
+  systemPreferences.isTrustedAccessibilityClient(false);
   globalShortcut.register(config.hotkey || 'Control+Alt+G',()=>{
     if(paired.store.data.legacySelected!==true){paired.sendCurrent(true).catch(error=>alert(pairedMessage(error)));return;}
     if(config.legacyEnabled!==true){alert('旧版收发已关闭，请选择配对电脑或明确开启兼容');return;}
     sendSelection({clipboard,config,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[])}).catch(()=>{});
   });
   alert('ClipRelay 已启动');
+  await host.launch();
 }

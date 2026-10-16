@@ -93,6 +93,12 @@ async function build(){
             clients.ownedChildrenReaped!==true || clients.defaultStateUnchanged!==true || clients.nativeWorkers!==false || clients.keychainValidated!==false ||
             clients.nativeRequestsExecuted!==false || clients.streamStarted!==false || clients.systemInputInjected!==false)throw new Error('Packaged host client management check failed');
         fs.writeFileSync(path.join(output,`host-clients-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,clients},null,2));
+        const background=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_background.cjs'),appDirectory],{encoding:'utf8',timeout:180000,maxBuffer:65536}));
+        if(background.passed!==true || background.actualChildStarts!==2 || background.observedNoticeEvents!==2 || background.backgroundRequestsObserved!==true ||
+            background.requestNotificationsDeduplicated!==true || background.startupOptInPersisted!==true || background.defaultStartupOff!==true || background.optOutReopenStopped!==true ||
+            background.ownedChildrenReaped!==true || background.defaultStateUnchanged!==true || background.nativeWorkers!==false || background.keychainValidated!==false ||
+            background.nativeRequestsExecuted!==false || background.nativeNotificationsDisplayed!==false || background.guiValidated!==false || background.streamStarted!==false || background.systemInputInjected!==false)throw new Error('Packaged host background and opt-in check failed');
+        fs.writeFileSync(path.join(output,`host-background-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,background},null,2));
       }
       if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
         const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','network-helper');

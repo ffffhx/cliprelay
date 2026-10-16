@@ -56,7 +56,7 @@ jobs:
       - run: node --test windows/tests/mac-host-state.test.cjs
       - run: node --test windows/tests/mac-host-admin.test.cjs windows/tests/mac-host-engine.test.cjs
       - run: node --test windows/tests/mac-host-companion-artifact.test.cjs windows/tests/mac-host-companion.test.cjs windows/tests/mac-host-session.test.cjs
-      - run: node --test windows/tests/mac-host-pairing.test.cjs windows/tests/mac-host-controller.test.cjs windows/tests/mac-host-ui.test.cjs windows/tests/mac-host-main.test.cjs windows/tests/mac-host-clients.test.cjs
+      - run: node --test windows/tests/mac-host-pairing.test.cjs windows/tests/mac-host-controller.test.cjs windows/tests/mac-host-ui.test.cjs windows/tests/mac-host-main.test.cjs windows/tests/mac-host-clients.test.cjs windows/tests/mac-host-background.test.cjs
       - run: python3 -m unittest discover -s scripts/tests -p test_fetch_host_companion.py
       - run: python3 -m unittest discover -s scripts/tests -p test_fetch_sunshine_macos.py
       - run: python3 -m unittest discover -s scripts/tests -p test_sunshine_permission_checker.py
@@ -140,4 +140,5 @@ jobs:
             .tools/mac-electron/host-companion-bundle-*.json
             .tools/mac-electron/host-pairing-bundle-*.json
             .tools/mac-electron/host-clients-bundle-*.json
+            .tools/mac-electron/host-background-bundle-*.json
           if-no-files-found: error

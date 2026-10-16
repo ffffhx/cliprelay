@@ -19,13 +19,13 @@ test('opening settings only reads status; approval requires explicit code confir
   const f=fixture();await f.ui.ready;assert.deepEqual(f.calls.map(value=>value.action),['host-status']);
   assert.equal(f.root.all(node=>node.tag==='h2')[0].textContent,request.name);
   assert.equal(f.button('允许连接').disabled,true);await f.button('允许连接').onclick();assert.equal(f.calls.length,1);
-  const checkbox=f.root.all(node=>node.type==='checkbox')[0];checkbox.checked=true;checkbox.onchange();await f.button('允许连接').onclick();
+  const checkbox=f.root.all(node=>node.name==='pair-confirmation')[0];checkbox.checked=true;checkbox.onchange();await f.button('允许连接').onclick();
   assert.equal(f.calls.at(-2).action,'host-status');assert.equal(f.calls.at(-1).action,'host-pair-approve');
   assert.equal(JSON.stringify(f.calls.at(-1).data),JSON.stringify({id:request.id,generation:request.generation,verification:request.verification}));f.ui.close();
 });
 test('confirmation survives refresh of the same request and resets for a new generation',async()=>{
   let current=request;const f=fixture({request:()=>({available:true,phase:'running',requests:[current]})});await f.ui.ready;
-  const checkbox=f.root.all(node=>node.type==='checkbox')[0];checkbox.checked=true;checkbox.onchange();await f.ui.refresh();assert.equal(f.button('允许连接').disabled,false);
+  const checkbox=f.root.all(node=>node.name==='pair-confirmation')[0];checkbox.checked=true;checkbox.onchange();await f.ui.refresh();assert.equal(f.button('允许连接').disabled,false);
   current={...request,generation:'c'.repeat(32)};await f.ui.refresh();assert.equal(f.button('允许连接').disabled,true);f.ui.close();
 });
 test('reject needs no approval checkbox and window close leaves hosting intact',async()=>{
@@ -67,4 +67,18 @@ test('a partially failed revoke keeps the disabled device visible without claimi
   }});await f.ui.ready;f.button('撤销访问权限').onclick();await f.button('确认撤销').onclick();
   assert.ok(f.root.all(node=>node.textContent.startsWith('已停用')).length);assert.equal(f.root.all(node=>node.textContent.includes('已撤销该设备')).length,0);
   assert.equal(f.root.all(node=>node.textContent.includes('private detail')).length,0);assert.equal(f.button('确认撤销').disabled,false);f.ui.close();
+});
+
+test('startup opt-in requires a checkbox change and saves only an explicit boolean without starting now',async()=>{
+  let state={available:true,phase:'stopped',requests:[],autoStart:false};
+  const f=fixture({initial:state,request:(action,data)=>{if(action==='host-set-auto-start')state={...state,autoStart:data.enabled};return state;}});await f.ui.ready;
+  const checkbox=f.root.all(node=>node.name==='host-auto-start')[0];assert.equal(checkbox.checked,false);assert.deepEqual(f.calls.map(call=>call.action),['host-status']);
+  checkbox.checked=true;await checkbox.onchange();assert.equal(checkbox.checked,true);assert.equal(JSON.stringify(f.calls.at(-1)),JSON.stringify({action:'host-set-auto-start',data:{enabled:true}}));
+  assert.equal(f.calls.some(call=>call.action==='host-start'),false);f.ui.close();
+});
+test('failed preference writes restore the saved checkbox and an unavailable install can opt out',async()=>{
+  const state={available:false,phase:'stopped',requests:[],autoStart:true};
+  const f=fixture({initial:state,request:action=>{if(action==='host-set-auto-start')throw Error('private detail');return state;}});await f.ui.ready;
+  const checkbox=f.root.all(node=>node.name==='host-auto-start')[0];assert.equal(checkbox.disabled,false);checkbox.checked=false;await checkbox.onchange();assert.equal(checkbox.checked,true);
+  assert.ok(f.root.all(node=>node.textContent==='设置未能保存，请重试。').length);f.ui.close();
 });

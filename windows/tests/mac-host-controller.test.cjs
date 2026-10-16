@@ -14,7 +14,8 @@ function fixture(t,options={}){
     async close(){calls.push(['close']);this.current=null;this.update('closed');}};
   const controller=new HostController({directory,stateDirectory:path.join(directory,'host'),localName:'Trusted fixture name',platform:'darwin',arch:'arm64',
     create:({onUpdate})=>{changed=onUpdate;return {session,companion:{}};},
-    rpc:async({op,data})=>{calls.push([op,data]);return op==='host-pair-list'?{requests:[request]}:{ok:true};},clientRequest:async()=>[],...options});
+    rpc:async({op,data})=>{calls.push([op,data]);return op==='host-pair-list'?{requests:[request]}:{ok:true};},clientRequest:async()=>[],
+    monitorOptions:{setTimer:()=>({unref(){}}),clearTimer(){}},...options});
   t.after(async()=>{await controller.close();assert.ok(path.basename(directory).startsWith('cliprelay-host-controller-'));fs.rmSync(directory,{recursive:true,force:true});});
   return {controller,session,calls,directory};
 }
@@ -22,7 +23,7 @@ async function start(f){const status=await f.controller.action('host-start');ass
 test('opening settings is read-only; start uses the trusted device name and exposes no owner internals',async t=>{
   const f=fixture(t);assert.deepEqual(f.calls,[]);assert.equal((await f.controller.action('host-status')).phase,'stopped');assert.deepEqual(f.calls,[]);
   await start(f);const status=await f.controller.action('host-status');assert.deepEqual(f.calls[0],['start','Trusted fixture name']);
-  assert.deepEqual(Object.keys(status).sort(),['available','clients','error','nativeWorkers','phase','requests']);assert.equal(status.requests.length,1);assert.equal(status.clients.phase,'ready');
+  assert.deepEqual(Object.keys(status).sort(),['autoStart','available','clients','error','nativeWorkers','phase','requests']);assert.equal(status.requests.length,1);assert.equal(status.clients.phase,'ready');
   status.requests[0].name='mutated';assert.equal(f.controller.snapshot().requests[0].name,'Fixture device');
   f.controller.releaseWindow();assert.equal(f.session.phase,'running');assert.ok(!f.calls.some(([op])=>op==='stop'));
 });
@@ -67,4 +68,42 @@ test('host client revoke is routed through the owned session and remains separat
   await start(f);const status=await f.controller.action('host-status');assert.deepEqual(status.clients.devices,[device]);
   const final=await f.controller.action('host-client-revoke',{viewId:status.clients.viewId,uuid:device.uuid});assert.deepEqual(final.clients.devices,[]);
   assert.deepEqual(writes,[['disable',device.uuid],['unpair',device.uuid]]);assert.equal(f.calls.some(([op])=>op==='host-pair-approve'),false);
+});
+
+test('automatic hosting is off by default; manual start does not persist future consent',async t=>{
+  const saved=[],f=fixture(t,{saveAutoStart:async value=>saved.push(value)});await f.controller.launch();assert.deepEqual(f.calls,[]);
+  await start(f);assert.equal(f.controller.snapshot().autoStart,false);assert.deepEqual(saved,[]);
+  await f.controller.action('host-set-auto-start',{enabled:true});assert.deepEqual(saved,[true]);assert.equal(f.controller.snapshot().autoStart,true);
+  await f.controller.action('host-set-auto-start',{enabled:false});assert.deepEqual(saved,[true,false]);assert.equal(f.session.phase,'running');
+});
+test('persisted strict opt-in starts once and permission failure never triggers a retry or a preference write',async t=>{
+  const f=fixture(t,{autoStart:true,saveAutoStart:()=>assert.fail('must not write on launch')});
+  await f.controller.launch();await f.controller.startTask;await f.controller.launch();assert.equal(f.calls.filter(([op])=>op==='start').length,1);
+  const denied=fixture(t,{autoStart:true});let attempts=0;
+  denied.session.start=async()=>{attempts++;denied.session.update('failed','HOST_PERMISSION_REQUIRED');throw fault('HOST_PERMISSION_REQUIRED');};
+  await denied.controller.launch();await denied.controller.startTask;await denied.controller.launch();assert.equal(attempts,1);assert.equal(denied.controller.snapshot().error,'HOST_PERMISSION_REQUIRED');
+  const malformed=fixture(t,{autoStart:'true'});await malformed.controller.launch();assert.deepEqual(malformed.calls,[]);
+});
+test('startup preference validation and failed persistence cannot change the selected value',async t=>{
+  let fail=true;const f=fixture(t,{saveAutoStart:()=>{if(fail)throw Error('/private/config');}});
+  for(const value of [{enabled:'true'},{enabled:true,path:'/elsewhere'},null])await assert.rejects(f.controller.action('host-set-auto-start',value),{code:'HOST_PREFERENCES_INVALID'});
+  await assert.rejects(f.controller.action('host-set-auto-start',{enabled:true}),{code:'HOST_PREFERENCES_FAILED'});assert.equal(f.controller.snapshot().autoStart,false);
+  fail=false;await f.controller.action('host-set-auto-start',{enabled:true});assert.equal(f.controller.snapshot().autoStart,true);assert.equal(f.session.phase,'stopped');
+});
+test('pending preference writes are serialized and joined on close without starting a host',async t=>{
+  let finish,value;const f=fixture(t,{saveAutoStart:enabled=>{value=enabled;return new Promise(resolve=>finish=resolve);}}),data={enabled:true};
+  const saving=f.controller.action('host-set-auto-start',data);data.enabled=false;await new Promise(resolve=>setImmediate(resolve));assert.equal(value,true);
+  await assert.rejects(f.controller.action('host-set-auto-start',{enabled:false}),{code:'HOST_PREFERENCES_BUSY'});
+  const closing=f.controller.close();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.calls.length,0);finish();await saving;await closing;
+  assert.equal(f.controller.snapshot().autoStart,true);assert.deepEqual(f.calls,[['close']]);
+});
+test('closing settings cancels foreground reads while the background request monitor continues',async t=>{
+  const timers=new Set(),reads=[],notices=[];
+  const f=fixture(t,{monitorOptions:{setTimer:fn=>{timers.add(fn);return fn;},clearTimer:fn=>timers.delete(fn)},onPairingRequest:value=>notices.push(value),
+    rpc:({signal})=>new Promise(resolve=>reads.push({signal,resolve}))});
+  await start(f);const tick=timers.values().next().value;timers.delete(tick);tick();await new Promise(resolve=>setImmediate(resolve));assert.equal(reads.length,1);
+  const foreground=f.controller.refreshPairing();f.controller.releaseWindow();assert.equal(reads[0].signal.aborted,false);assert.equal(reads[1].signal.aborted,true);
+  reads[1].resolve({requests:[]});await foreground;reads[0].resolve({requests:[request]});await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(notices,[{count:1}]);assert.equal(f.controller.snapshot().requests.length,1);
+  await f.controller.action('host-stop');assert.equal(timers.size,0);assert.equal(f.controller.monitor.tasks.size,0);
 });
