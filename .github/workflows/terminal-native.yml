@@ -23,3 +23,12 @@ jobs:
       - name: Session ownership and real pseudo-terminal acceptance
         working-directory: network
         run: go test -mod=readonly -race -count=1 -v -timeout=90s ./hostterminal
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - name: Mouse parser agrees with shipped desktop terminal
+        run: |
+          cd network
+          go test -mod=readonly -c -o "$RUNNER_TEMP/terminal-mouse-probe" ./hostterminal
+          cd ..
+          node windows/tests/terminal-mouse-parser.cjs "$RUNNER_TEMP/terminal-mouse-probe"
