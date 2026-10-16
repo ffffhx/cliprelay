@@ -66,6 +66,12 @@ func (p *lanPairer) local(raw []byte) (any, bool) {
 	if len(raw) > 2048 || !valid {
 		return managedPairError("HOST_PAIR_INVALID"), true
 	}
+	// The service drains admissions over the authenticated local pipe before
+	// tearing down the helper's Windows job. Keep the engine alive for cleanup.
+	if fields["op"] == "host-pair-stop" && len(fields) == 1 {
+		p.close()
+		return map[string]any{"protocol": 1, "ok": true}, true
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed || p.ctx.Err() != nil {

@@ -228,3 +228,50 @@ func TestLANPairingNativeNonceReuseGetsFreshIdentityAfterCleanup(t *testing.T) {
 	managedCall(t, p, managedDecision(current, "host-pair-reject"))
 	waitManagedGone(t, p, second.ID)
 }
+
+func TestLANPairingNativeLocalStopClosesAdmissionsAndJoinsCleanup(t *testing.T) {
+	p := managedPairFixture(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	p.engine = func(ctx context.Context, method, path string, body any) ([]byte, error) {
+		if method == "DELETE" {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return []byte(`{"protocol":1,"status":true}`), nil
+	}
+	nativeRequest(t, p)
+	if reply := managedCall(t, p, map[string]string{"op": "host-pair-stop", "id": strings.Repeat("0", 32)}); reply["ok"] != false {
+		t.Fatal("malformed stop closed admissions")
+	}
+	done := make(chan any, 1)
+	go func() { reply, _ := p.local([]byte(`{"op":"host-pair-stop"}`)); done <- reply }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop did not reach cleanup")
+	}
+	select {
+	case <-done:
+		t.Fatal("stop acknowledged before cleanup")
+	default:
+	}
+	if nativeBootstrap(p).Code != 503 {
+		t.Fatal("closed owner still admitted pairing")
+	}
+	close(release)
+	select {
+	case value := <-done:
+		if value.(map[string]any)["ok"] != true {
+			t.Fatal("stop did not acknowledge joined cleanup")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop failed to join completed cleanup")
+	}
+	if reply := managedCall(t, p, map[string]string{"op": "host-pair-list"}); reply["code"] != "HOST_PAIR_CLOSED" {
+		t.Fatal("stopped pairer reopened")
+	}
+}

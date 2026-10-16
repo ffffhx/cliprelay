@@ -3,6 +3,7 @@
 // exchange with a disposable synthetic client. No user GUI or streaming client.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {snapshot,encryptedStorage}=require('./test_macos_host_state.cjs');
+const {verifyNativeCleanup,nativeWaiter,holdManagedPairing}=require('./test_native_pairing_cleanup.cjs');
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(read,predicate){const deadline=Date.now()+15000;while(true){const value=await read();if(predicate(value))return value;if(Date.now()>deadline)throw Error('PACKAGED_PAIRING_WAIT_TIMEOUT');await pause(25);}}
 async function main(){
@@ -15,7 +16,13 @@ async function main(){
   const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
   const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-packaged-host-pairing-'))),stateDirectory=path.join(base,'Private CI host');
   const controller=new HostController({directory,stateDirectory,safeStorage:encryptedStorage(),localName:'Packaged pairing fixture'});
-  const cases=[],children=[],runtimes=[];let stage='start',rejectionFeedbackMs,expiryWaitMs,pendingNativeBeforeStop;
+  const cases=[],children=[],runtimes=[];let stage='start',rejectionFeedbackMs,expiryWaitMs,pendingNativeBeforeStop,nativeCleanup;
+  const waiters=[],waiterOwners=[];
+  const nativePending=()=>{
+    const state=controller.owner.session.engine.state;
+    return jsonRequest({address:'127.0.0.1',port:48790,path:'/api/pin',method:'GET',identity:identities.client,
+      trust:{cert:state.read('cacert.pem',16384)},headers:{Authorization:state.authorization()},timeout:3000,limit:16384});
+  };
   const data=request=>({id:request.id,generation:request.generation,verification:request.verification});
   async function start(){
     assert.equal((await controller.action('host-start')).phase,'starting');await controller.startTask;
@@ -31,6 +38,11 @@ async function main(){
   }
   try{
     await start();assert.deepEqual((await controller.action('host-status')).requests,[]);cases.push('packaged-host-controller-start');
+    stage='native-cleanup';
+    nativeCleanup=await verifyNativeCleanup({jsonRequest,exchange,identity:identities.client,
+      listNative:async()=>(await nativePending()).pairings,listManaged:async()=>(await controller.action('host-status')).requests,
+      reject:value=>controller.action('host-pair-reject',data(value))});
+    cases.push('packaged-native-pairing-generation-cleanup-and-late-request-refusal');
     stage='reject';await bootstrap();const first=(await controller.action('host-status')).requests[0];assert.ok(first);
     await controller.action('host-pair-reject',data(first));
     const second=await until(async()=>{await bootstrap();return (await controller.action('host-status')).requests[0];},request=>request && request.generation!==first.generation);
@@ -72,29 +84,37 @@ async function main(){
     stage='paired-tls';const control={address:'127.0.0.1',port:48791,path:'/not-a-command',method:'GET',identity:identities.client,
       trust:{cert:pairing.certificate},acceptStatuses:[404],timeout:3000,limit:2048};
     await exchange(control);await assert.rejects(exchange({...control,identity:identities.wrong}));cases.push('paired-client-tls-accepted-and-other-client-refused');
-    const nativePending=()=>jsonRequest({address:'127.0.0.1',port:48790,path:'/api/pin',method:'GET',identity:identities.client,
-      trust:{cert:certificate},headers:{Authorization:state.authorization()},timeout:3000,limit:16384});
-    stage='restart-pending';pendingNativeBeforeStop=(await nativePending()).pairings.length;
-    // Native PIN requests have a longer lifetime than managed requests. Keep
-    // at least one real deferred response alive to exercise engine shutdown.
-    assert.ok(pendingNativeBeforeStop>=1 && pendingNativeBeforeStop<=2);
+    stage='restart-pending';await until(nativePending,value=>value.pairings.length===0);
+    // Managed requests now clean up promptly. Explicitly open one legacy
+    // deferred response to retain the independent native shutdown regression.
+    const legacyOwner=new AbortController();waiterOwners.push(legacyOwner);
+    let legacyEnded=false;
+    const legacy=nativeWaiter(exchange,identities.wrong,'f'.repeat(32),{managed:false,signal:legacyOwner.signal})
+      .then(value=>{legacyEnded=true;return {value};},error=>{legacyEnded=true;return {error};});waiters.push(legacy);
+    pendingNativeBeforeStop=(await until(nativePending,value=>value.pairings.length===1)).pairings.length;assert.equal(legacyEnded,false);
     stage='restart-stop';await controller.action('host-stop');stage='restart-reap';reaped();stage='restart-start';await start();
+    await until(()=>legacyEnded,value=>value);const legacyResult=await legacy;
+    assert.equal(legacyResult.error,undefined);assert.match(legacyResult.value,/<paired>0<\/paired>/);
     stage='restart-persistence';
     assert.deepEqual(state.read('cacert.pem',16384),certificate);assert.ok(contains(JSON.parse(state.read('clients.json',4*1024*1024)),identities.client.cert));
     await exchange(control);assert.deepEqual((await controller.action('host-status')).requests,[]);
     assert.deepEqual((await nativePending()).pairings,[]);cases.push('restart-retains-approved-client-with-no-stale-requests');
-    stage='close';await controller.close();reaped();assert.equal(controller.snapshot().phase,'closed');cases.push('application-owner-close-reaps-both-processes');
+    stage='close-pending';const closing=await holdManagedPairing({jsonRequest,exchange,identity:identities.wrong,listNative:async()=>(await nativePending()).pairings});
+    waiterOwners.push(closing);waiters.push(closing.waiting);
+    stage='close';await controller.close();nativeCleanup.ownerCloseCompletedNativeResponse=await closing.verify();
+    reaped();assert.equal(controller.snapshot().phase,'closed');cases.push('application-owner-close-reaps-both-processes');
     assert.deepEqual(protectedDirectories.map(snapshot),before);assert.equal(process.env.HOME,originalHome);
   }catch(error){console.error(JSON.stringify({stage,code:error.code || 'PACKAGED_HOST_PAIRING_FAILED',host:controller.snapshot().phase,
     children:children.map((child,index)=>({role:index%2?'companion':'engine',exitCode:child.exitCode,signalCode:child.signalCode})),
     location:String(error.stack||'').split('\n').filter(line=>line.includes('test_macos_host_pairing.cjs:')).slice(0,3)}));throw error;}
   finally{
+    for(const owner of waiterOwners)owner.abort();await Promise.all(waiters);
     await controller.close();for(const child of children)assert.ok(child.exitCode!==null || child.signalCode!==null);
     assert.deepEqual(protectedDirectories.map(snapshot),before);assert.ok(base.startsWith(fs.realpathSync(os.tmpdir())+path.sep));
     assert.ok(path.basename(base).startsWith('cliprelay-packaged-host-pairing-'));fs.rmSync(base,{recursive:true,force:true});
   }
   process.stdout.write(JSON.stringify({protocol:1,passed:true,cases,actualChildStarts:children.length,realNativePairing:true,pairedClientPersisted:true,
-    remoteRejectionFeedback:true,remoteExpiryFeedback:true,rejectionFeedbackMs,expiryWaitMs,pendingNativeBeforeStop,pendingNativeResponsesReleased:true,
+    remoteRejectionFeedback:true,remoteExpiryFeedback:true,rejectionFeedbackMs,expiryWaitMs,nativeCleanup,pendingNativeBeforeStop,pendingNativeResponsesReleased:true,
     unauthorizedClientRefused:true,ownedChildrenReaped:true,defaultStateUnchanged:true,nativeWorkers:false,keychainValidated:false,
     nativeRequestsExecuted:false,streamStarted:false,systemInputInjected:false,
     scope:'Actual packaged main controller, private approval IPC and native certificate pairing with a disposable client on macOS CI. Fixture encryption; no user GUI, Keychain, permission request, video stream or system input.'})+'\n');

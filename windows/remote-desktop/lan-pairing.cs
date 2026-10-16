@@ -22,7 +22,7 @@ namespace ClipRelay.Remote {
         internal static void ValidateCommand(Dictionary<string, object> command) {
             if (command == null) throw Invalid();
             string op = Text(command, "op");
-            if (op == "host-pair-list" && Keys(command, "op")) return;
+            if ((op == "host-pair-list" || op == "host-pair-stop") && Keys(command, "op")) return;
             if ((op != "host-pair-approve" && op != "host-pair-reject") ||
                 !Keys(command, "op", "id", "generation", "verification")) throw Invalid();
             foreach (string key in new[] { "id", "generation" }) {

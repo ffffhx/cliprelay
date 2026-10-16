@@ -9,6 +9,7 @@ const installed=path.join(process.env.LOCALAPPDATA,'ClipRelay'),state=path.join(
 const {pairHost}=require(path.join(installed,'electron','mac','pairing.cjs'));
 const {jsonRequest,exchange}=require(path.join(installed,'electron','mac','paired-transport.cjs'));
 const {identities}=require('./mac-pairing-fixture.cjs');
+const {verifyNativeCleanup,holdManagedPairing}=require('../../scripts/test_native_pairing_cleanup.cjs');
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function control(command){
   return new Promise((resolve,reject)=>{
@@ -30,7 +31,7 @@ const decision=(action,value)=>({action,id:value.id,generation:value.generation,
 const bootstrap=()=>jsonRequest({address:'127.0.0.1',port:48792,path:'/v1/pair',identity:identities.client,trust:{bootstrap:true},
   headers:{'X-ClipRelay-Pairing-Feedback':'1'},body:{name:'Disposable installed pairing client',nonce:'a'.repeat(32),pin:'1234'},timeout:3000,limit:2048});
 async function main(){
-  const cases=[];let stage='initial-state',rejectionFeedbackMs,agent;
+  const cases=[];let stage='initial-state',rejectionFeedbackMs,agent,nativeCleanup,closing;
   const initial=await request({action:'status'});assert.equal(initial.enabled,false,'Fresh CI installation must start disabled');
   try{
     stage='start';await request({action:'enable'});
@@ -38,6 +39,11 @@ async function main(){
     await until(()=>control({action:'lanPairings'}),value=>value.ok===true,15000);
     assert.deepEqual((await request({action:'clients'})).named_certs,[]);
     cases.push('installed-system-service-started-native-host-and-managed-helper');
+    stage='native-cleanup';
+    nativeCleanup=await verifyNativeCleanup({jsonRequest,exchange,identity:identities.client,
+      listNative:async()=>(await request({action:'pairings'})).pairings.filter(value=>!value.automatic),
+      listManaged:async()=>(await request({action:'lanPairings'})).pairings,reject:value=>request(decision('lanPairReject',value))});
+    cases.push('installed-native-pairing-generation-cleanup-and-late-request-refusal');
     stage='generation';const firstTicket=await bootstrap();assert.equal(firstTicket.feedback.protocol,1);
     const first=(await request({action:'lanPairings'})).pairings[0];assert.ok(first);assert.equal(first.verification,firstTicket.verification);
     await request(decision('lanPairReject',first));
@@ -122,15 +128,19 @@ async function main(){
     assert.deepEqual((await request({action:'clients'})).named_certs,[]);
     await assert.rejects(exchange({...options,identity:identities.client}),refused);await assert.rejects(exchange({...options,identity:identities.wrong}),refused);
     cases.push('installed-new-pairing-identity-and-final-trust-removal');
+    stage='owner-close-pending';closing=await holdManagedPairing({jsonRequest,exchange,identity:identities.wrong,
+      listNative:async()=>(await request({action:'pairings'})).pairings.filter(value=>!value.automatic)});
+    await request({action:'disable'});nativeCleanup.ownerCloseCompletedNativeResponse=await closing.verify();
   }catch(error){process.stderr.write(JSON.stringify({stage,error:error.message,code:error.code})+'\n');throw error;}
   finally{
     agent?.destroy();
+    closing?.abort();if(closing)await closing.waiting;
     await request({action:'disable'});
     const stopped=await request({action:'status'});assert.equal(stopped.enabled,false);assert.equal(stopped.running,false);
     assert.deepEqual((await request({action:'lanPairings'})).pairings,[]);
   }
   cases.push('installed-owner-disable-stops-engine-and-withdraws-requests');
-  const report={protocol:1,passed:true,cases,rejectionFeedbackMs,installedSystemService:true,packagedDesktopConsumer:true,
+  const report={protocol:1,passed:true,cases,rejectionFeedbackMs,nativeCleanup,installedSystemService:true,packagedDesktopConsumer:true,
     realNativePairing:true,privateCurrentGenerationDecisions:true,pairedCertificateVerified:true,remoteRejectionFeedback:true,
     noApprovalFiles:true,disabledAfterTest:true,streamStarted:false,clipboardWritten:false,userGuiControlled:false,
     revokePreservesOtherClient:true,newTLSRefused:true,reusedTLSRefused:true,revocationPersisted:true,staleViewRefused:true,staleIdentityRefused:true,

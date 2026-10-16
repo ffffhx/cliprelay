@@ -239,6 +239,12 @@ namespace ClipRelay.Remote {
         }
         void StopFocus() {
             bool hadFocus = focusJob != IntPtr.Zero || focusChild != null;
+            // Drain pairing while the native engine is still alive. Authenticate
+            // the actual helper process; one bounded request, never a replay.
+            try {
+                if (focusChild != null && !focusChild.HasExited)
+                    RelayIpc.RequestPairing(new Dictionary<string, object> {{ "op", "host-pair-stop" }}, focusChild);
+            } catch { /* Job teardown remains the bounded fallback for a failed helper. */ }
             if (focusJob != IntPtr.Zero) { Native.CloseHandle(focusJob); focusJob = IntPtr.Zero; }
             if (focusChild != null) {
                 try { if (!focusChild.HasExited) focusChild.Kill(); } catch { }

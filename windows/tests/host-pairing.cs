@@ -56,7 +56,7 @@ class HostPairingTests {
         Fails(()=>LanPairingControl.Decide(Decision(false),false,command=>Parse("{\"protocol\":1,\"ok\":false,\"code\":\"untrusted private text\"}")),"无法确认");
         Fails(()=>LanPairingControl.Decide(Decision(true),true,command=>Parse("{\"protocol\":1,\"ok\":true,\"requests\":[]}")),"无法确认");
     }
-    static void PipeIdentity(bool wrongIdentity) {
+    static void PipeIdentity(bool wrongIdentity, string operation="host-pair-list") {
         string name="ClipRelay.Test.Pairing."+Guid.NewGuid().ToString("N");int received=-1;Exception failure=null;
         using(var server=new NamedPipeServerStream(name,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous))
         using(var current=Process.GetCurrentProcess()) {
@@ -65,10 +65,10 @@ class HostPairingTests {
             var worker=new Thread(()=>{try {
                 server.WaitForConnection();var buffer=new MemoryStream();int ch;
                 while((ch=server.ReadByte())>=0 && ch!=10)buffer.WriteByte((byte)ch);received=(int)buffer.Length;
-                if(received>0) {Check(Encoding.UTF8.GetString(buffer.ToArray())=="{\"op\":\"host-pair-list\"}","Unexpected pipe payload");var bytes=Encoding.UTF8.GetBytes("{\"protocol\":1,\"ok\":true,\"requests\":[]}\n");server.Write(bytes,0,bytes.Length);}
+                if(received>0) {Check(Encoding.UTF8.GetString(buffer.ToArray())==Json.Serialize(new { op=operation }),"Unexpected pipe payload");var bytes=Encoding.UTF8.GetBytes("{\"protocol\":1,\"ok\":true"+(operation=="host-pair-list"?",\"requests\":[]":"")+"}\n");server.Write(bytes,0,bytes.Length);}
             }catch(Exception error){failure=error;}});worker.IsBackground=true;worker.Start();
             bool accepted=false;
-            try {RelayIpc.RequestPairing(new Dictionary<string,object>{{"op","host-pair-list"}},other??current,name,2000);accepted=true;}
+            try {RelayIpc.RequestPairing(new Dictionary<string,object>{{"op",operation}},other??current,name,2000);accepted=true;}
             catch(IOException){}
             finally {if(other!=null){other.StandardInput.WriteLine();if(!other.WaitForExit(2000))other.Kill();other.Dispose();}}
             Check(worker.Join(3000) && failure==null && accepted!=wrongIdentity && (wrongIdentity?received==0:received>0),"Pairing pipe accepted wrong process or leaked payload");
@@ -79,6 +79,7 @@ class HostPairingTests {
             Fails(()=>RelayIpc.Request(new Dictionary<string,object>{{"op","host-pair-list"}},current),"RELAY_BAD_REQUEST");
             Fails(()=>RelayIpc.RequestPairing(new Dictionary<string,object>{{"op","peers"}},current),"无法确认");
             Fails(()=>RelayIpc.RequestPairing(new Dictionary<string,object>{{"op","host-pair-list"},{"private",true}},current),"无法确认");
+            Fails(()=>RelayIpc.RequestPairing(new Dictionary<string,object>{{"op","host-pair-stop"},{"id",Id}},current),"无法确认");
             string name="ClipRelay.Test.Pairing."+Guid.NewGuid().ToString("N");
             using(var server=new NamedPipeServerStream(name,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous)) {
                 var connection=server.WaitForConnectionAsync();var clock=Stopwatch.StartNew();
@@ -89,7 +90,7 @@ class HostPairingTests {
     }
     static int Main(string[] args) {
         if(args.Length==1 && args[0]=="--idle"){Console.ReadLine();return 0;}
-        try {Lists();InvalidLists();Decisions();PipeIdentity(false);PipeIdentity(true);SeparatedRoutesAndTimeout();Console.WriteLine("PASS: 6 managed host pairing/real pipe scenarios");return 0;}
+        try {Lists();InvalidLists();Decisions();PipeIdentity(false);PipeIdentity(true);PipeIdentity(false,"host-pair-stop");PipeIdentity(true,"host-pair-stop");SeparatedRoutesAndTimeout();Console.WriteLine("PASS: 8 managed host pairing/real pipe scenarios");return 0;}
         catch(Exception error){Console.Error.WriteLine(error);return 1;}
     }
 }
