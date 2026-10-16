@@ -1,6 +1,7 @@
 export function mountClipboard(root,request){
   const node=(tag,text)=>{const item=document.createElement(tag);if(text)item.textContent=text;return item;};
   const section=node('section'),label=node('label','与这台电脑自动同步剪贴板'),enabled=node('input'),receive=node('button','取回电脑剪贴板'),resume=node('button','继续同步'),status=node('p');
+  section.className='clipboard-panel';label.className='clipboard-toggle';
   enabled.type='checkbox';label.prepend(enabled);status.setAttribute('aria-live','polite');
   section.append(node('h2','剪贴板'),label,node('p','开启后，只在远控连接期间同步新复制的文字和图片。开启或重连时保留两端原有内容；文件和清空操作不自动同步。'),receive,resume,status);root.append(section);
   let state={},viewId='',busy=false,error='',notice='';
