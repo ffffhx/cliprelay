@@ -257,6 +257,23 @@ async function main(){
     if(viewer)await until(()=>viewer.child,value=>!value,10000);
     for(const item of rawViewers)await closeRaw(item);
     await host.close();
+    if(report.failure?.stage==='production-video'&&viewStates.some(value=>value.progress?.received>0&&value.progress.rendered===0)){
+      // After the owned viewer closes, distinguish an unavailable runner
+      // presentation prerequisite from failures specific to the stream stack.
+      const probe=path.join(base,'metal-presentation-control');
+      const built=spawnSync('/usr/bin/xcrun',['swiftc','-parse-as-library',path.join(__dirname,'test_macos_metal_present.swift'),'-o',probe],
+        {encoding:'utf8',timeout:100000,maxBuffer:65536});
+      if(built.status===0){
+        const observed=spawnSync(probe,[],{encoding:'utf8',timeout:20000,maxBuffer:16384});
+        try{
+          const control=JSON.parse(observed.stdout);
+          assert.equal(control.protocol,1);assert.equal(control.testCommit,process.env.GITHUB_SHA);
+          report.failure.presentationControl=control;
+          if(control.submitted>=60&&control.displayed===0&&control.gpuErrors===0&&control.windowVisible&&control.windowOcclusionVisible&&control.applicationActive)
+            report.failure.presentationPrerequisite='unavailable-on-this-runner';
+        }catch{report.failure.presentationControl={exit:observed.status,signal:observed.signal};}
+      }else report.failure.presentationControl={buildExit:built.status};
+    }
     assert.deepEqual(protectedDirectories.map(snapshot),before);
     assert.ok(base.startsWith(fs.realpathSync(process.env.RUNNER_TEMP)+path.sep)&&path.basename(base).startsWith('cliprelay-native-mac-stream-'));
     fs.rmSync(base,{recursive:true,force:true});

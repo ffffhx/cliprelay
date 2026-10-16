@@ -3,6 +3,11 @@ name: Electron macOS build
 on:
   workflow_dispatch:
     inputs:
+      architecture:
+        description: 'Architecture to package; each selected package keeps all native acceptance gates'
+        type: choice
+        options: ['both', 'arm64', 'x64']
+        default: 'both'
       desktop_client_run_id:
         description: 'Successful Desktop Client Build run to embed (empty: clipboard-only package)'
         required: false
@@ -26,15 +31,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'x64' && 'macos-15-intel' || 'macos-26' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: arm64
-            runner: macos-26
-          - arch: x64
-            runner: macos-15-intel
+        arch: ${{ fromJSON(inputs.architecture == 'x64' && '["x64"]' || inputs.architecture == 'arm64' && '["arm64"]' || '["arm64","x64"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
