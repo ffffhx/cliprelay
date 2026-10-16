@@ -89,3 +89,11 @@ test('an OS spawn failure is reaped and leaves no occupied engine slot',async t=
   await assert.rejects(f.engine.start('Mac'),{code:'HOST_ENGINE_START_FAILED'});assert.equal(f.engine.current,null);
   assert.ok(child.exitCode!==null || child.signalCode!==null);
 });
+
+test('stop from the readiness notification cancels the pending start and reaps its child',async t=>{
+  const f=fixture(t);
+  f.engine.onUpdate=value=>{if(value.phase==='running')void f.engine.stop();};
+  await assert.rejects(f.engine.start('Mac'),{code:'HOST_ENGINE_CANCELLED'});
+  assert.equal(f.engine.current,null);assert.equal(f.engine.snapshot().phase,'stopped');
+  assert.equal(f.children[0].exitCode,0);
+});

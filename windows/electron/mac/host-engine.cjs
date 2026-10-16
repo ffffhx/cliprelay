@@ -73,6 +73,7 @@ class HostEngine{
         const status=await this.probe({state:this.state,signal:op.abort.signal,timeout:Math.min(this.probeTimeout,deadline-Date.now())});
         this.assertCurrent(op);this.acceptStatus(op,status);
         op.started=true;this.publish('running',null,op.child.pid,status);
+        this.assertCurrent(op);
         op.monitor=this.monitor(op);return this.snapshot();
       }catch(error){if(!retryable.has(error.code))throw error;}
       await delay(Math.min(this.pollMs,Math.max(1,deadline-Date.now())),op.abort.signal);
