@@ -106,7 +106,13 @@ async function main(){
     report.revocationMs=Date.now()-revokedAt;assert.ok(report.revocationMs<15000);
     report.engineUnchanged=true;report.receiverStoppedByHost=true;
     assert.deepEqual((await control({action:'clients'})).named_certs,[other]);
-    await assert.rejects(nvhttp(identities.client,'serverinfo'),error=>error.code==='UNPAIRED'||error.code==='ECONNRESET'||/^ERR_SSL_/.test(error.code||''));
+    stage='revoked-certificate-denial';
+    // Native GameStream reports certificate denial as XML status_code=401
+    // inside HTTP 200; the transport promise itself therefore resolves.
+    const denied=await nvhttp(identities.client,'applist');
+    assert.match(denied,/^\s*(?:<\?xml[^?]*\?>\s*)?<root\b[^>]*\bstatus_code="401"[^>]*(?:\/>|>\s*<\/root>)\s*$/);
+    assert.match(denied,/\bquery="\/applist"/);assert.doesNotMatch(denied,/<!|<App(?:\s|>)/);
+    report.revokedNativeStatus=401;
     report.cases.push('service-revocation-terminates-active-video-without-local-stop-or-engine-restart');
     stage='preserved-client-real-frames';second=await begin(identities.wrong);
     assert.equal(second.sample.native.instance,first.sample.native.instance);assert.notEqual(second.sample.native.streams[0].id,report.firstStreamId);
