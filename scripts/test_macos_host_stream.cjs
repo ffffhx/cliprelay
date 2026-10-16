@@ -137,12 +137,14 @@ async function main(){
     const admin=()=>jsonRequest({address:'127.0.0.1',port:48790,path:'/api/cliprelay/displays',method:'GET',identity:identities.wrong,
       trust:{cert:second.certificate},headers:{Authorization:hostState.authorization()},timeout:3000,limit:65536});
     const store={data:{legacySelected:false},selected:()=>first,identity:async()=>identities.client};
-    viewer=new StreamViewer({directory:viewerDirectory,store,spawnProcess:launchViewer,onUpdate:()=>display?.reconcile()});
+    viewer=new StreamViewer({directory:viewerDirectory,store,spawnProcess:launchViewer,onUpdate:()=>display?.reconcile(),
+      startupMs:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'?180000:45000});
     display=new DisplayController({store,viewer});
     stage='production-video';await viewer.open(options);
     const visible=await until(()=>{
       const value=viewer.snapshot();assert.notEqual(value.phase,'error',value.error);return value;
-    },value=>value.phase==='running'&&value.progress?.rendered>=60&&value.progress.renderedAgeMs<2000&&value.input.phase==='active',60000);
+    },value=>value.phase==='running'&&value.progress?.rendered>=60&&value.progress.renderedAgeMs<2000&&value.input.phase==='active',
+      process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'?240000:60000);
     const native=await admin();assert.equal(native.phase,'active');assert.equal(native.streams.length,1);
     const binding=native.streams[0];assert.ok(binding.firstFrame>0&&visible.progress.rendered>=binding.firstFrame);
     assert.equal(binding.owner,new crypto.X509Certificate(identities.client.cert).fingerprint256.replaceAll(':','').toLowerCase());

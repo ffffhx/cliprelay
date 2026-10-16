@@ -385,7 +385,7 @@ index 2b701d71..22f9047f 100644
      switch (commandLineParserResult) {
      case GlobalCommandLineParser::ListRequested:
          // Don't log to the console since it will jumble the command output
-@@ -995,10 +1010,27 @@ int main(int argc, char *argv[])
+@@ -995,10 +1010,32 @@ int main(int argc, char *argv[])
          {
              initialView = "qrc:/gui/CliStartStreamSegue.qml";
              StreamingPreferences* preferences = StreamingPreferences::get();
@@ -400,6 +400,11 @@ index 2b701d71..22f9047f 100644
 +            preferences->bitrateKbps = input.bitrate;
 +            preferences->windowMode = input.fullscreen ? StreamingPreferences::WM_FULLSCREEN_DESKTOP : StreamingPreferences::WM_WINDOWED;
 +            preferences->videoCodecConfig = StreamingPreferences::VCC_AUTO;
++#ifdef Q_OS_DARWIN
++            // Keep Mac sessions on native Metal. Automatic MoltenVK selection
++            // can crash inside the driver before a stream is established.
++            preferences->rendererSelection = StreamingPreferences::RS_METAL;
++#endif
 +            preferences->audioConfig = StreamingPreferences::AC_STEREO;
 +            preferences->enableMdns = false;
 +            preferences->quitAppAfter = false;
