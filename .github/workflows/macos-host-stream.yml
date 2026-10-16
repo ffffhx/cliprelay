@@ -1,0 +1,63 @@
+name: macOS Packaged Host Stream
+on:
+  push:
+    branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
+    paths: ['scripts/test_macos_host_stream.cjs', '.github/workflows/macos-host-stream.yml']
+  workflow_dispatch:
+    inputs:
+      app_run_id:
+        description: 'Successful complete Electron macOS build to test'
+        type: string
+        default: '38959885824'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  stream:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Build disposable certificate identity generator
+        run: |
+          go build -o "$RUNNER_TEMP/cliprelay-pairing-fixture" windows/tests/mac-pairing-fixture/main.go
+          echo "CLIPRELAY_PAIRING_TEST_FIXTURE=$RUNNER_TEMP/cliprelay-pairing-fixture" >> "$GITHUB_ENV"
+      - name: Select successful immutable application build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_RUN_ID: ${{ inputs.app_run_id || '38959885824' }}
+          APP_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PY'
+          import json,os,re,subprocess
+          run=os.environ['APP_RUN_ID']; assert re.fullmatch(r'[0-9]+',run)
+          metadata=json.loads(subprocess.check_output(['gh','run','view',run,'--json','name,headSha,status,conclusion']))
+          assert metadata['name']=='Electron macOS build' and metadata['status']=='completed' and metadata['conclusion']=='success'
+          assert re.fullmatch(r'[a-f0-9]{40}',metadata['headSha'])
+          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('APP_SOURCE_COMMIT='+metadata['headSha']+'\n')
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-macOS-'+os.environ['APP_ARCH'],'-D','app-download'],check=True)
+          PY
+          ditto -x -k app-download/ClipRelay-macOS-${{ matrix.arch }}-*.zip app-unpacked
+      - name: Real packaged capture, Qt presentation, input receipts and revocation
+        run: node scripts/test_macos_host_stream.cjs app-unpacked/ClipRelay.app/Contents/Resources/app/mac native-stream-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Mac-Native-Stream-${{ matrix.arch }}
+          path: native-stream-report.json
+          if-no-files-found: ignore
