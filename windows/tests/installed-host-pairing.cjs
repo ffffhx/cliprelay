@@ -2,7 +2,7 @@
 // Run only after the real package installer on a disposable Windows CI runner.
 // The installed SYSTEM service owns the native engine and host helper. This
 // test opens no GUI, starts no stream and never writes to the clipboard.
-const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),net=require('node:net');
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),net=require('node:net'),https=require('node:https'),crypto=require('node:crypto');
 assert.equal(process.platform,'win32');assert.equal(process.env.GITHUB_ACTIONS,'true');assert.ok(process.env.RUNNER_TEMP);
 const reportPath=path.resolve(process.argv[2]);
 const installed=path.join(process.env.LOCALAPPDATA,'ClipRelay'),state=path.join(process.env.ProgramData,'ClipRelay','Remote');
@@ -30,7 +30,7 @@ const decision=(action,value)=>({action,id:value.id,generation:value.generation,
 const bootstrap=()=>jsonRequest({address:'127.0.0.1',port:48792,path:'/v1/pair',identity:identities.client,trust:{bootstrap:true},
   headers:{'X-ClipRelay-Pairing-Feedback':'1'},body:{name:'Disposable installed pairing client',nonce:'a'.repeat(32),pin:'1234'},timeout:3000,limit:2048});
 async function main(){
-  const cases=[];let stage='initial-state',rejectionFeedbackMs;
+  const cases=[];let stage='initial-state',rejectionFeedbackMs,agent;
   const initial=await request({action:'status'});assert.equal(initial.enabled,false,'Fresh CI installation must start disabled');
   try{
     stage='start';await request({action:'enable'});
@@ -78,8 +78,53 @@ async function main(){
     await assert.rejects(exchange({...options,identity:identities.wrong}),error=>
       error.code==='UNPAIRED' || error.code==='ECONNRESET' || /^ERR_SSL_/.test(error.code || ''));
     cases.push('paired-certificate-admitted-and-unpaired-certificate-refused');
+    stage='pair-second-client';
+    const pair=identity=>pairHost({address:'127.0.0.1',name:identity===identities.wrong?'Preserved installed client':'Rejoined installed client',identity,
+      onVerification:async value=>{
+        const pending=await until(()=>request({action:'pairings'}),result=>result.pairings.some(item=>item.verification===value.verification));
+        await request(decision('lanPairApprove',pending.pairings.find(item=>item.verification===value.verification)));
+      }});
+    await pair(identities.wrong);
+    const current=await request({action:'clients'});assert.equal(current.named_certs.length,2);
+    const firstDevice=current.named_certs.find(value=>value.name==='Approved installed client'),secondDevice=current.named_certs.find(value=>value.name==='Preserved installed client');
+    assert.ok(firstDevice?.enabled);assert.ok(secondDevice?.enabled);assert.match(current.viewId,/^[0-9a-f]{32}$/);
+    cases.push('installed-two-client-native-list-and-current-engine-view');
+    const expected=new crypto.X509Certificate(paired.certificate).raw;
+    agent=new https.Agent({keepAlive:true,maxSockets:1,maxCachedSessions:0,cert:identities.client.cert,key:identities.client.key,ca:paired.certificate,
+      minVersion:'TLSv1.2',checkServerIdentity:(_host,cert)=>cert.raw?.equals(expected)?undefined:Error('HOST_CERT_CHANGED')});
+    const reused=()=>new Promise((resolve,reject)=>{
+      const req=https.request({host:'127.0.0.1',port:48791,path:'/not-a-command',method:'GET',agent},res=>{
+        const socket=res.socket;res.resume();res.once('end',()=>resolve({status:res.statusCode,socket}));res.once('error',reject);
+      });req.once('error',reject);req.setTimeout(3000,()=>req.destroy(Error('CONTROL_REQUEST_TIMEOUT')));req.end();
+    });
+    const before=await reused();assert.equal(before.status,404);
+    stage='revoke-first';await request({action:'unpair',uuid:firstDevice.uuid,viewId:current.viewId});
+    assert.deepEqual((await request({action:'clients'})).named_certs,[secondDevice]);
+    await exchange({...options,identity:identities.wrong});
+    const after=await reused();assert.equal(after.status,403);assert.equal(after.socket,before.socket);agent.destroy();
+    const refused=error=>error.code==='UNPAIRED' || error.code==='ECONNRESET' || /^ERR_SSL_/.test(error.code || '');
+    await assert.rejects(exchange({...options,identity:identities.client}),refused);
+    cases.push('installed-revocation-denies-new-and-reused-tls-and-preserves-other-client');
+    stage='restart-client-view';await request({action:'disable'});await request({action:'enable'});
+    await until(()=>request({action:'status'}),value=>value.ready===true,65000);
+    await until(()=>control({action:'lanPairings'}),value=>value.ok===true,15000);
+    const restarted=await request({action:'clients'});assert.notEqual(restarted.viewId,current.viewId);assert.deepEqual(restarted.named_certs,[secondDevice]);
+    assert.equal((await control({action:'unpair',uuid:secondDevice.uuid,viewId:current.viewId})).ok,false);
+    await exchange({...options,identity:identities.wrong});await assert.rejects(exchange({...options,identity:identities.client}),refused);
+    cases.push('installed-restart-persists-revocation-and-refuses-old-view');
+    stage='re-pair-and-stale-identity';await pair(identities.client);
+    const rejoined=await request({action:'clients'}),replacement=rejoined.named_certs.find(value=>value.name==='Rejoined installed client');
+    assert.ok(replacement?.enabled);assert.notEqual(replacement.uuid,firstDevice.uuid);
+    assert.equal((await control({action:'unpair',uuid:firstDevice.uuid,viewId:rejoined.viewId})).ok,false);
+    await exchange({...options,identity:identities.client});
+    await request({action:'unpair',uuid:replacement.uuid,viewId:rejoined.viewId});
+    await request({action:'unpair',uuid:secondDevice.uuid,viewId:rejoined.viewId});
+    assert.deepEqual((await request({action:'clients'})).named_certs,[]);
+    await assert.rejects(exchange({...options,identity:identities.client}),refused);await assert.rejects(exchange({...options,identity:identities.wrong}),refused);
+    cases.push('installed-new-pairing-identity-and-final-trust-removal');
   }catch(error){process.stderr.write(JSON.stringify({stage,error:error.message,code:error.code})+'\n');throw error;}
   finally{
+    agent?.destroy();
     await request({action:'disable'});
     const stopped=await request({action:'status'});assert.equal(stopped.enabled,false);assert.equal(stopped.running,false);
     assert.deepEqual((await request({action:'lanPairings'})).pairings,[]);
@@ -88,6 +133,7 @@ async function main(){
   const report={protocol:1,passed:true,cases,rejectionFeedbackMs,installedSystemService:true,packagedDesktopConsumer:true,
     realNativePairing:true,privateCurrentGenerationDecisions:true,pairedCertificateVerified:true,remoteRejectionFeedback:true,
     noApprovalFiles:true,disabledAfterTest:true,streamStarted:false,clipboardWritten:false,userGuiControlled:false,
+    revokePreservesOtherClient:true,newTLSRefused:true,reusedTLSRefused:true,revocationPersisted:true,staleViewRefused:true,staleIdentityRefused:true,
     scope:'Real installed Windows SYSTEM service, helper pipe, native certificate pairing and packaged desktop consumer on a disposable CI runner. No video stream, real phone or GUI acceptance.'};
   fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n');process.stdout.write(JSON.stringify(report)+'\n');
 }

@@ -25,12 +25,14 @@ jobs:
       - name: Validate installation and feature protocols
         run: |
           New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
-          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','host-pairing','remote-lan-pair-ui','authentication-protocol','image-protocol','multi-peer-broadcast')) {
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','host-pairing','host-clients','remote-lan-pair-ui','authentication-protocol','image-protocol','multi-peer-broadcast')) {
             $testOptions = @()
             if ($test -eq 'multi-peer-broadcast') { $testOptions = @('-Clipboard') }
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1" @testOptions
             if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
           }
+          powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File windows/tests/remote-lan-pair-ui.ps1 -ClientManagement
+          if ($LASTEXITCODE -ne 0) { throw 'Client management settings failed' }
           npm run test:electron
           if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
           node --test windows/tests/paired-renderer-routing.test.cjs

@@ -25,6 +25,7 @@ namespace ClipRelay.Remote {
         static readonly string StateRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ClipRelay", "Remote");
         static readonly string SettingsPath = Path.Combine(StateRoot, "service.json");
         readonly object gate = new object();
+        string clientViewId = Guid.NewGuid().ToString("N");
         readonly ManualResetEvent stopped = new ManualResetEvent(false);
         Dictionary<string, object> settings;
         Process child;
@@ -202,6 +203,7 @@ namespace ClipRelay.Remote {
             }
         }
         void StopEngine() {
+            clientViewId = Guid.NewGuid().ToString("N");
             StopFocus();
             if (IsRunning) {
                 try {
@@ -356,7 +358,12 @@ namespace ClipRelay.Remote {
                 }
                 return new { pairings = entries.ToArray() };
             }
-            if (action == "clients") return EngineRequest("GET", "/api/clients/list", null);
+            if (action == "clients") {
+                lock (gate) {
+                    if (!Enabled || !IsReady) throw new InvalidOperationException("远控服务尚未就绪，请稍后重试。");
+                    return HostClientsControl.Snapshot(clientViewId, ClientRequests());
+                }
+            }
             if (action == "pairReject") {
                 string id = Text(request, "id");
                 if (request.Count != 2 || !System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-fA-F]{32}\\z"))
@@ -375,9 +382,14 @@ namespace ClipRelay.Remote {
                 return EngineRequest("POST", "/api/pin", new { pairing_id = id, pin = pin, name = name });
             }
             if (action == "unpair") {
-                string uuid = Text(request, "uuid");
-                if (uuid.Length < 1 || uuid.Length > 128) throw new ArgumentException("Invalid client identifier");
-                return EngineRequest("POST", "/api/clients/unpair", new { uuid = uuid });
+                // Do not queue mutations behind a long stop or another revoke.
+                // The bounded policy holds the lifecycle gate so its requests
+                // cannot reach a replacement engine with the same stored cert.
+                if (!Monitor.TryEnter(gate, 100)) throw new InvalidOperationException("远控服务正在处理其他操作，请稍后重试。");
+                try {
+                    if (!Enabled || !IsReady) throw new InvalidOperationException("远控服务尚未就绪，请稍后重试。");
+                    return HostClientsControl.Revoke(request, clientViewId, ClientRequests());
+                } finally { Monitor.Exit(gate); }
             }
             if (action == "disconnect") return EngineRequest("POST", "/api/apps/close", new { });
             throw new ArgumentException("Unknown action");
@@ -399,15 +411,24 @@ namespace ClipRelay.Remote {
             using (expected) return RelayIpc.RequestPairing(command, expected);
         }
 
-        object EngineRequest(string method, string path, object body) {
+        Func<string, string, object, object> ClientRequests() {
+            var clock = Stopwatch.StartNew();
+            return delegate(string method, string path, object body) {
+                int remaining = 15000 - (int)clock.ElapsedMilliseconds;
+                if (remaining <= 0) throw new System.TimeoutException("Device authorization operation timed out");
+                return EngineRequest(method, path, body, Math.Min(3000, remaining), 65536);
+            };
+        }
+        object EngineRequest(string method, string path, object body, int timeoutMs = 20000, int replyLimit = 1024 * 1024) {
             string password;
             lock (gate) { if (!Enabled || !IsRunning) throw new InvalidOperationException("Remote desktop is not running"); password = Text(settings, "adminPassword"); }
             var request = (HttpWebRequest)WebRequest.Create("https://127.0.0.1:48790" + path);
-            request.Proxy = null; request.Method = method; request.Timeout = 20000; request.ReadWriteTimeout = 20000;
+            request.Proxy = null; request.Method = method; request.Timeout = timeoutMs; request.ReadWriteTimeout = timeoutMs;
             request.Headers["Authorization"] = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("cliprelay:" + password));
             string pem = File.ReadAllText(Path.Combine(StateRoot, "cacert.pem"));
             string base64 = pem.Replace("-----BEGIN CERTIFICATE-----", "").Replace("-----END CERTIFICATE-----", "").Trim();
-            using (var expected = new X509Certificate2(Convert.FromBase64String(base64))) {
+            using (var expected = new X509Certificate2(Convert.FromBase64String(base64)))
+            using (var timeout = new Timer(delegate { try { request.Abort(); } catch { } }, null, timeoutMs, Timeout.Infinite)) {
                 string thumb = expected.Thumbprint;
                 request.ServerCertificateValidationCallback = delegate(object sender, X509Certificate cert, X509Chain chain, System.Net.Security.SslPolicyErrors errors) {
                     return cert != null && String.Equals(cert.GetCertHashString(), thumb, StringComparison.OrdinalIgnoreCase);
@@ -418,7 +439,15 @@ namespace ClipRelay.Remote {
                     using (var stream = request.GetRequestStream()) stream.Write(data, 0, data.Length);
                 }
                 using (var response = request.GetResponse())
-                using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) return Json().DeserializeObject(reader.ReadToEnd());
+                using (var stream = response.GetResponseStream())
+                using (var bytes = new MemoryStream()) {
+                    byte[] buffer = new byte[4096]; int count;
+                    while ((count = stream.Read(buffer, 0, buffer.Length)) > 0) {
+                        if (bytes.Length + count > replyLimit) throw new InvalidDataException("Remote engine reply exceeded limit");
+                        bytes.Write(buffer, 0, count);
+                    }
+                    return Json().DeserializeObject(new UTF8Encoding(false, true).GetString(bytes.ToArray()));
+                }
             }
         }
         public static int Main(string[] args) {

@@ -90,7 +90,7 @@
     $license.ForeColor=[Drawing.Color]::DimGray
     $close = & $addButton '完成' 'RemoteDesktopClose' 550 554 100
     $close.Add_Click({ $form.Close() }.GetNewClosure())
-    $ui = @{ Task=$null; Action=''; Enabled=$false; Running=$false; Next=[DateTime]::MinValue; Poll=0; Pairings=''; Clients='' }
+    $ui = @{ Task=$null; Action=''; Enabled=$false; Running=$false; Next=[DateTime]::MinValue; Poll=0; Pairings=''; Clients=''; ClientView='' }
     $submit = {
         param($request)
         if ($null -ne $ui.Task) { return }
@@ -131,8 +131,8 @@
         $confirmed.Checked=$false
     }.GetNewClosure())
     $revoke.Add_Click({
-        if ($null -eq $clients.SelectedItem -or $null -ne $ui.Task) { return }
-        & $submit @{action='unpair';uuid=$clients.SelectedItem.uuid}
+        if ($null -eq $clients.SelectedItem -or $null -ne $ui.Task -or $ui.ClientView -cnotmatch '^[a-f0-9]{32}$') { return }
+        & $submit @{action='unpair';uuid=$clients.SelectedItem.uuid;viewId=$ui.ClientView}
     }.GetNewClosure())
     $disconnect.Add_Click({ & $submit @{action='disconnect'} }.GetNewClosure())
     $timer = New-Object Windows.Forms.Timer
@@ -148,7 +148,7 @@
                 switch ($action) {
                     'status' {
                         $ui.Enabled=$data.enabled; $ui.Running=$data.ready
-                        if (!$ui.Running) {$ui.Pairings='';$pending.Items.Clear();$confirmed.Checked=$false}
+                        if (!$ui.Running) {$ui.Pairings='';$pending.Items.Clear();$confirmed.Checked=$false;$ui.Clients='';$ui.ClientView='';$clients.Items.Clear()}
                         $toggle.Text=if ($ui.Enabled) {'关闭远控'} else {'开启远控'}
                         $status.Text=if ($ui.Running) {'远控已开启 · 等待手机连接或正在串流'} elseif ($ui.Enabled) {'引擎正在启动…'} else {'远控已关闭'}
                     }
@@ -168,11 +168,14 @@
                         }
                     }
                     'clients' {
-                        $signature=$data.named_certs | ConvertTo-Json -Compress
+                        if ($null -eq $data.PSObject.Properties['viewId'] -or $data.viewId -cnotmatch '^[a-f0-9]{32}$') { throw '请更新电脑端服务后再管理设备授权。' }
+                        $ui.ClientView=$data.viewId
+                        $signature=$data | ConvertTo-Json -Compress -Depth 5
                         if ($signature -ne $ui.Clients) {
                             $ui.Clients=$signature; $clients.Items.Clear()
                             foreach ($entry in $data.named_certs) {
-                                [void]$clients.Items.Add([PSCustomObject]@{uuid=$entry.uuid;label=$entry.name})
+                                $label=$entry.name+$(if ($entry.enabled -eq $false) {'（已停用）'} else {''})
+                                [void]$clients.Items.Add([PSCustomObject]@{uuid=$entry.uuid;label=$label})
                             }
                             if ($clients.Items.Count -gt 0) {$clients.SelectedIndex=0}
                         }
@@ -184,7 +187,10 @@
                     'lanPairApprove' { $message.Text='已允许这台手机，正在完成配对。' }
                     'lanPairReject' { $message.Text='已拒绝本次配对请求。' }
                     'pairReject' { $message.Text='已拒绝本次配对请求。' }
-                    'unpair' { $message.Text='已撤销选中的手机授权。' }
+                    'unpair' {
+                        if ($data.status -ne $true) { throw '撤销结果尚未确认，请刷新后重试。' }
+                        $ui.Clients='';$ui.ClientView='';$clients.Items.Clear();$message.Text='已撤销选中的手机授权。'
+                    }
                     'disconnect' { $message.Text='已请求断开当前远控。' }
                     'enable' { $message.Text='正在准备远控。就绪后，在手机“连接电脑”列表中点选本机即可。' }
                     'disable' { $message.Text='远控已关闭。' }
@@ -192,6 +198,7 @@
             } catch {
                 $message.Text='操作未完成：'+$_.Exception.Message
                 if ($action -in @('status','pairings','lanPairApprove','lanPairReject')) {$ui.Pairings='';$pending.Items.Clear();$confirmed.Checked=$false}
+                if ($action -in @('status','clients','unpair')) {$ui.Clients='';$ui.ClientView='';$clients.Items.Clear()}
                 if ($action -eq 'status') { $ui.Running=$false;$status.Text='后台服务未就绪，请重新运行 ClipRelay 安装程序。' }
             } finally { $ui.Task=$null; $ui.Action='' }
         }
@@ -200,7 +207,7 @@
         $waiting=$null -ne $selected -and (!$selected.automatic -or ($selected.state -ceq 'waiting' -and $selected.generation -cmatch '^[a-f0-9]{32}$'))
         $toggle.Enabled=!$busy; $pair.Enabled=!$busy -and $ui.Running -and $waiting -and (!$selected.automatic -or $confirmed.Checked)
         $reject.Enabled=!$busy -and $ui.Running -and $waiting; $confirmed.Enabled=!$busy -and $ui.Running -and $waiting
-        $revoke.Enabled=!$busy -and $ui.Running; $disconnect.Enabled=!$busy -and $ui.Running
+        $revoke.Enabled=!$busy -and $ui.Running -and $null -ne $clients.SelectedItem -and $ui.ClientView -cmatch '^[a-f0-9]{32}$'; $disconnect.Enabled=!$busy -and $ui.Running
         if (!$busy -and [DateTime]::UtcNow -ge $ui.Next) {
             $ui.Poll=($ui.Poll+1)%3
             $action=if (!$ui.Running -or $ui.Poll -eq 0) {'status'} elseif ($ui.Poll -eq 1) {'pairings'} else {'clients'}
