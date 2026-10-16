@@ -87,12 +87,15 @@ async function build(){
         if(result.manifest.fileTransfer===1){
           const reportPath=path.join(output,`host-files-${architecture}.json`);
           execFileSync('python3',[path.join(repo,'scripts','test_host_companion.py'),path.join(appDirectory,'host-companion','runtime','cliprelay-host-network'),
-            '--app-directory',appDirectory,'--report',reportPath],{stdio:'inherit',timeout:180000});
+            '--app-directory',appDirectory,'--report',reportPath],{stdio:'inherit',timeout:240000});
           files=JSON.parse(fs.readFileSync(reportPath,'utf8'));
           const clipboardCases=result.manifest.clipboardExchange===1?['tls-clipboard-text-image-and-idempotence','tls-clipboard-owner-and-live-revocation',
             'clipboard-worker-crash-recovery','clipboard-eof-joins-worker','clipboard-parent-loss-with-writer-held','clipboard-owner-admission','tls-clipboard-desktop-client']:[];
-          const expected=[...clipboardCases,'tls-files-desktop-resume-and-no-overwrite','tls-files-owner-and-live-revocation','files-eof-joins-worker','files-parent-loss-with-writer-held','files-owner-admission'];
-          if(files.fileTransfer!==1 || files.passed!==17+clipboardCases.length || (clipboardCases.length && files.clipboardExchange!==1) || JSON.stringify(files.cases.slice(0,expected.length))!==JSON.stringify(expected) ||
+          const terminalCases=result.manifest.terminalControl===1?['tls-terminal-shells-sessions-and-lost-replies','tls-terminal-native-mouse-lease-and-resize',
+            'tls-terminal-desktop-client','tls-terminal-android-protocol','tls-terminal-owner-isolation-and-live-revocation','tls-terminal-output-gap-and-worker-restart','terminal-eof-reaps-owned-sessions']:[];
+          const expected=[...terminalCases,...clipboardCases,'tls-files-desktop-resume-and-no-overwrite','tls-files-owner-and-live-revocation','files-eof-joins-worker','files-parent-loss-with-writer-held','files-owner-admission'];
+          if(files.fileTransfer!==1 || files.passed!==17+clipboardCases.length+terminalCases.length || (clipboardCases.length && files.clipboardExchange!==1) ||
+              (terminalCases.length && files.terminalControl!==1) || JSON.stringify(files.cases.slice(0,expected.length))!==JSON.stringify(expected) ||
               files.executableSha256!==result.manifest.files['runtime/cliprelay-host-network'])throw new Error('Packaged Mac file acceptance failed');
         }
         fs.writeFileSync(path.join(output,`host-companion-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:companionPin,
