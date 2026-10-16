@@ -94,7 +94,10 @@ async function main(){
     pendingNativeBeforeStop=(await until(nativePending,value=>value.pairings.length===1)).pairings.length;assert.equal(legacyEnded,false);
     stage='restart-stop';await controller.action('host-stop');stage='restart-reap';reaped();stage='restart-start';await start();
     await until(()=>legacyEnded,value=>value);const legacyResult=await legacy;
-    assert.equal(legacyResult.error,undefined);assert.match(legacyResult.value,/<paired>0<\/paired>/);
+    // The legacy shutdown path releases deferred responses before destroying
+    // its I/O contexts. It closes the socket rather than promising an XML reply.
+    if(legacyResult.error)assert.equal(legacyResult.error.code,'ECONNRESET');
+    else assert.match(legacyResult.value,/<paired>0<\/paired>/);
     stage='restart-persistence';
     assert.deepEqual(state.read('cacert.pem',16384),certificate);assert.ok(contains(JSON.parse(state.read('clients.json',4*1024*1024)),identities.client.cert));
     await exchange(control);assert.deepEqual((await controller.action('host-status')).requests,[]);

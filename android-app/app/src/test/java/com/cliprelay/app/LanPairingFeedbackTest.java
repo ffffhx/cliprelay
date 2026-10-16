@@ -58,6 +58,7 @@ public class LanPairingFeedbackTest {
         final SSLServerSocket server;final ExecutorService executor=Executors.newCachedThreadPool();
         final Set<SSLSocket> sockets=ConcurrentHashMap.newKeySet();
         final AtomicInteger statusReads=new AtomicInteger(),bootstrapReads=new AtomicInteger(),deletes=new AtomicInteger();
+        final AtomicInteger completedStatusReads=new AtomicInteger();
         volatile String state="waiting",id;final String receipt="cccccccccccccccccccccccccccccccc";final long expires=System.currentTimeMillis()/1000+120;
         volatile boolean legacy,notFound,stall,invalid,nativeTicket;volatile int transientFailures;volatile String deleteReceipt;
         final String nativeId="dddddddddddddddddddddddddddddddd";
@@ -105,6 +106,7 @@ public class LanPairingFeedbackTest {
                         if(nativeTicket)result.put("native",new JSONObject().put("protocol",1).put("id",nativeId));
                     }
                     respond(socket,200,result.toString());
+                    if(route.equals("/v1/pair/status"))completedStatusReads.incrementAndGet();
                 } catch(IOException cancelled) { /* A cancelled client may close its TLS socket mid-response. */ }
                 catch(Throwable error){failure=error;}
                 finally{sockets.remove(socket);}});
@@ -228,7 +230,7 @@ public class LanPairingFeedbackTest {
             try {
                 LanPairing pairing=host.begin(http::ownLanPairing);http.setLanPairingSession(pairing);
                 assertEquals(host.nativeId,pairing.sessionId());assertEquals("ClipRelay-"+host.nativeId,pairing.sessionName());
-                until(()->host.statusReads.get()>0);
+                until(()->host.completedStatusReads.get()>0);
                 if(terminalState==null)assertTrue(nativePairing(http).contains("400"));
                 else {
                     String expected=terminalState.equals("rejected")?"拒绝":terminalState.equals("expired")?"过期":"结束";
