@@ -872,7 +872,7 @@ index 2852d437..2c64bc45 100644
  
  #import <Cocoa/Cocoa.h>
  #import <VideoToolbox/VideoToolbox.h>
-@@ -564,6 +565,27 @@ public:
+@@ -564,9 +565,30 @@ public:
  
          [renderEncoder endEncoding];
  
@@ -902,6 +902,9 @@ index 2852d437..2c64bc45 100644
 +            [commandBuffer presentDrawable:drawable];
 +            [commandBuffer commit];
 +        }
+ 
+         // Wait for the command buffer to complete and free our CVMetalTextureCache references
+         [commandBuffer waitUntilCompleted];
 diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
 index c20d3126..f7dd6021 100644
 --- a/app/streaming/video/ffmpeg.cpp
