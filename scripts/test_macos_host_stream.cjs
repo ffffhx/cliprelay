@@ -75,13 +75,14 @@ function launchViewer(file,args,settings){
   for(const key of ['ELECTRON_RUN_AS_NODE','QT_QPA_PLATFORM','QT_PLUGIN_PATH','QML2_IMPORT_PATH'])delete env[key];
   const child=spawn(file,args,{...settings,env,stdio:['pipe','pipe','pipe']});nativeChildren.push(child);
   if(process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'){
+    assert.equal(child.kill('SIGSTOP'),true);
     const debuggerChild=spawn('/usr/bin/lldb',['--no-lldbinit','--batch','--attach-pid',String(child.pid),
       '--one-line','continue','--one-line-on-crash','thread backtrace'],{stdio:['ignore','pipe','pipe']});
     const debug={child:debuggerChild,output:'',exit:null};debuggers.push(debug);
     const collect=data=>{debug.output+=data.toString('utf8');if(debug.output.length>1024*1024)debuggerChild.kill('SIGKILL');};
     debuggerChild.stdout.on('data',collect);debuggerChild.stderr.on('data',collect);
     debuggerChild.once('error',error=>{debug.output+='\nDebugger error: '+error.code;});
-    debuggerChild.once('close',(code,signal)=>{debug.exit={code,signal};});
+    debuggerChild.once('close',(code,signal)=>{debug.exit={code,signal};if(child.exitCode===null&&child.signalCode===null)child.kill('SIGCONT');});
   }
   let count=0,tail='';
   child.stderr.on('data',data=>{
