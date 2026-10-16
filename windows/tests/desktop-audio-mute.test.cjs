@@ -7,7 +7,7 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(check){for(let i=0;i<300;i++){if(check())return;await delay(10);}throw Error('test deadline');}
 const instance='12345678-1234-1234-1234-123456789012';
 const off=()=>({ok:true,supported:true,active:false,expiresMs:0,recovering:false,outputs:2});
-async function fixture(t,{handler,wrongPin=false,request,renewMs=100,pollMs=20}={}){
+async function fixture(t,{handler,wrongPin=false,request,now,renewMs=100,pollMs=20}={}){
   const display={protocol:1,supported:true,instance,phase:'active',generation:2,capture:{id:'display'},streams:[{id:3,generation:2,firstFrame:10,width:1280,height:720,audio:{capture:'process',generation:7,ready:true}}]};
   const calls=[],s={active:'',recovering:false,blocked:false};
   const server=https.createServer({key:identities.host.key,cert:identities.host.cert,requestCert:true,rejectUnauthorized:false},async(req,res)=>{
@@ -25,7 +25,7 @@ async function fixture(t,{handler,wrongPin=false,request,renewMs=100,pollMs=20}=
   const port=await listen(server),host={id:'a',clientId:'b',certificate:wrongPin?identities.wrong.cert:identities.host.cert,address:'127.0.0.1',port:port-2,enabled:true};
   const store={host,selected(){return this.host;},async identity(){return identities.client;}};
   const viewer={session:{host:{...host},telemetry:true},progress:{received:100,rendered:100,width:1280,height:720,receivedAgeMs:0,renderedAgeMs:0},currentSession(){return this.session;},snapshot(){return {progress:this.progress};},reconcile(code){this.stopped=code;this.session=null;}};
-  const controller=new AudioMuteController({store,viewer,pollMs,renewMs,...(request?{request}: {})});
+  const controller=new AudioMuteController({store,viewer,pollMs,renewMs,...(request?{request}: {}),...(now?{now}: {})});
   t.after(async()=>{s.recovering=false;await controller.close();await close(server);});controller.reconcile();
   return {s,display,calls,store,viewer,controller,host,set(enabled){return controller.setEnabled({viewId:controller.snapshot().viewId,enabled});}};
 }
@@ -103,12 +103,16 @@ test('route replacement cleans up using the old audio generation without adoptin
 });
 
 test('expired in-flight audio renewal cannot reopen the confirmed state',async t=>{
-  let release;const f=await fixture(t,{pollMs:5,renewMs:5,handler:async({body,res,s})=>{
-    if(body.op==='start'){s.active=body.lease;res.end(JSON.stringify({...off(),active:true,lease:body.lease,expiresMs:80}));return true;}
-    if(body.op==='renew'){await new Promise(resolve=>release=resolve);res.end(JSON.stringify({...off(),active:true,lease:body.lease,expiresMs:15000}));return true;}
+  let now=1000,release,renewalPending=false;const gate=new Promise(resolve=>release=resolve);t.after(release);
+  const f=await fixture(t,{now:()=>now,pollMs:5,renewMs:5,handler:async({body,res})=>{
+    if(body.op==='renew'){renewalPending=true;await gate;res.end(JSON.stringify({...off(),active:true,lease:body.lease,expiresMs:15000}));return true;}
   }});
-  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>release);await delay(100);
+  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.controller.snapshot().active);
+  // Advance the monotonic clock only after admission, then hold the real TLS
+  // response across expiry. Runner speed cannot expire the initial lease first.
+  now+=6;await until(()=>renewalPending);now+=15000;
   assert.equal(f.controller.snapshot().active,false);release();await until(()=>f.controller.snapshot().canEnable);assert.equal(f.s.active,'');
+  assert.equal(f.calls.filter(c=>c.op==='start').length,1);assert.equal(f.calls.filter(c=>c.op==='renew').length,1);
 });
 
 test('certificate pin and pairing revocation gate audio requests',async t=>{
