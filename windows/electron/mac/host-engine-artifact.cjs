@@ -7,13 +7,13 @@ const SOURCES=[
   ...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
     'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h',
-    'macos_capture_test.mm','macos-dependencies.json'].map(name=>'engine/sunshine/'+name),
+    'macos_capture_test.mm','macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp'].map(name=>'engine/sunshine/'+name),
   'scripts/prepare_sunshine.py','scripts/package_sunshine_macos.py',
-  'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml'
+  'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py'
 ];
 const REQUIRED=[EXECUTABLE,'Sunshine.app/Contents/Info.plist','Sunshine.app/Contents/Resources/assets/apps.json',
   'Sunshine.app/Contents/Resources/assets/web/index.html','SUNSHINE-LICENSE','LIBVIRTUALHID-LICENSE',
-  'input-tests.xml','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
+  'input-tests.xml','permission-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
   'dependency-licenses/icu/LICENSE','dependency-licenses/icu/license.html','dependency-licenses/miniupnpc/LICENSE',
   'dependency-licenses/openssl/LICENSE.txt','dependency-licenses/opus/COPYING',...SOURCES.map(name=>'source/'+name)];
 const hash=data=>crypto.createHash('sha256').update(data).digest('hex');
@@ -72,6 +72,7 @@ function verify(directory,pin){
   if(manifest.protocol!==1 || manifest.platform!=='darwin' || manifest.arch!==pin.arch || manifest.sourceCommit!==pin.commit ||
       manifest.upstreamCommit!==UPSTREAM || manifest.libvirtualhidCommit!==HID || manifest.executable!==EXECUTABLE ||
       manifest.deploymentTarget!=='14.2' || manifest.signature!=='ad-hoc' || manifest.notarized!==false ||
+      manifest.permissionCommand!==1 ||
       !object(manifest.files) || !sameKeys(manifest.sourceHashes,SOURCES) || !sameKeys(manifest.symlinks,[]) ||
       !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
@@ -125,6 +126,11 @@ function verify(directory,pin){
     }
   }
   if(!sameKeys(manifest.nativeDependencies,actualNative) || JSON.stringify(expectedTests.sort())!==JSON.stringify([...manifest.inputTests].sort()))reject();
+  const permissions=JSON.parse(readFile(path.join(root,'permission-tests.json'),16384));
+  if(permissions.protocol!==1 || permissions.passed!==true || permissions.applicationStateUnchanged!==true || permissions.nativeRequestsExecuted!==false ||
+      JSON.stringify(permissions.cases)!==JSON.stringify(['status','invalid-action','misplaced-option','repeat-status']) ||
+      !sameKeys(permissions.lastStatus,['protocol','screenRecording','inputControl','requested']) || permissions.lastStatus.protocol!==1 ||
+      permissions.lastStatus.requested!=='none' || typeof permissions.lastStatus.screenRecording!=='boolean' || typeof permissions.lastStatus.inputControl!=='boolean')reject();
   return manifest;
 }
 function stage(source,destination,pin){

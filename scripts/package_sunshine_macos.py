@@ -10,6 +10,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 
@@ -105,6 +106,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     # an ad-hoc signature for this internal build, not a distribution identity.
     subprocess.run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
     subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+    subprocess.run([sys.executable, str(root / 'scripts/test_sunshine_macos_permissions.py'),
+                    '--engine', str(binary), '--report', str(artifact / 'permission-tests.json')], check=True)
     native, minimum_versions = {}, {}
     for path in sorted(app.rglob('*')):
         if path.is_symlink():
@@ -146,10 +149,10 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'upstream.json', 'control.patch', 'cliprelay_control.h', 'cliprelay_audio.h',
         'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md',
         'macos-control.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp',
-        'cliprelay_capture.h', 'macos_capture_test.mm']]
+        'cliprelay_capture.h', 'macos_capture_test.mm', 'cliprelay_permissions.h', 'permissions_test.cpp']]
     tracked += ['engine/sunshine/macos-dependencies.json', 'scripts/prepare_sunshine.py',
                 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py',
-                '.github/workflows/sunshine-macos.yml']
+                '.github/workflows/sunshine-macos.yml', 'scripts/test_sunshine_macos_permissions.py']
     source_hashes = {}
     for name in tracked:
         dest = artifact / 'source' / name
@@ -178,6 +181,7 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'inputTests': expected, 'nativeDependencies': native,
         'deploymentTarget': dependency_pins['deploymentTarget'], 'nativeMinimumOS': minimum_versions,
         'signature': 'ad-hoc', 'notarized': False,
+        'permissionCommand': 1,
         'scope': 'Internal engine build only. No ClipRelay host UI, permission grant, capture, network listener or hardware streaming acceptance.',
         'files': {}, 'symlinks': {}
     }

@@ -44,6 +44,7 @@ jobs:
       - run: node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
       - run: node --test windows/tests/mac-host-engine-artifact.test.cjs
       - run: python3 -m unittest discover -s scripts/tests -p test_fetch_sunshine_macos.py
+      - run: python3 -m unittest discover -s scripts/tests -p test_sunshine_permission_checker.py
       - run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
       - run: node --test windows/tests/desktop-privacy.test.cjs windows/tests/desktop-privacy-ui.test.cjs
       - run: node --test windows/tests/desktop-audio-mute.test.cjs windows/tests/desktop-audio-mute-ui.test.cjs windows/tests/desktop-session-lock.test.cjs windows/tests/desktop-session-lock-ui.test.cjs windows/tests/desktop-wake-protocol.test.cjs windows/tests/desktop-wake-store.test.cjs windows/tests/desktop-wake.test.cjs windows/tests/desktop-wake-ui.test.cjs

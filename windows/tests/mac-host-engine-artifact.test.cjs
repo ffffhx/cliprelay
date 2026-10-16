@@ -22,11 +22,11 @@ function fixture(t,arch='arm64'){
   const sources=[...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
     'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h','macos_capture_test.mm',
-    'macos-dependencies.json'].map(name=>'engine/sunshine/'+name),'scripts/prepare_sunshine.py',
-    'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml'];
+    'macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp'].map(name=>'engine/sunshine/'+name),'scripts/prepare_sunshine.py',
+    'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py'];
   const manifest={protocol:1,platform:'darwin',arch,sourceCommit:commit,
     upstreamCommit:'63d35f702ee9e362e43263742981836ec0710384',libvirtualhidCommit:'53e1a949fc0784af716b782ddfa6c647cafd1f05',
-    executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,files:{},symlinks:{},sourceHashes:{},
+    executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,permissionCommand:1,files:{},symlinks:{},sourceHashes:{},
     nativeMinimumOS:{[EXECUTABLE]:'14.2.0'},nativeDependencies:{[EXECUTABLE]:['/usr/lib/libSystem.B.dylib']},inputTests:[]};
   function put(name,data){const file=path.join(source,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,data);manifest.files[name]=sha(data);}
   for(const name of sources){const data=fs.readFileSync(path.join(root,name));put('source/'+name,data);manifest.sourceHashes[name]=sha(data);
@@ -37,6 +37,8 @@ function fixture(t,arch='arm64'){
     'dependency-licenses/icu/license.html','dependency-licenses/miniupnpc/LICENSE','dependency-licenses/openssl/LICENSE.txt',
     'dependency-licenses/opus/COPYING'])put(name,Buffer.from('fixture'));
   put(EXECUTABLE,native({arch}));
+  put('permission-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,applicationStateUnchanged:true,nativeRequestsExecuted:false,
+    cases:['status','invalid-action','misplaced-option','repeat-status'],lastStatus:{protocol:1,screenRecording:false,inputControl:false,requested:'none'}})));
   function pin(){const bytes=Buffer.from(JSON.stringify(manifest));fs.writeFileSync(path.join(source,'manifest.json'),bytes);return {arch,commit,manifestSha256:sha(bytes)};}
   return {directory,source,manifest,put,pin};
 }
@@ -93,4 +95,9 @@ test('directory links cannot bypass inventory checks',t=>{
 test('source receipts must match the actual included source',t=>{
   const f=fixture(t),name='engine/sunshine/cliprelay_capture.h';
   f.put('source/'+name,Buffer.from('changed'));assert.throws(()=>verify(f.source,f.pin()));
+});
+test('permission-query evidence must cover the exact non-requesting native commands',t=>{
+  const f=fixture(t),file=path.join(f.source,'permission-tests.json'),receipt=JSON.parse(fs.readFileSync(file,'utf8'));
+  receipt.nativeRequestsExecuted=true;f.put('permission-tests.json',Buffer.from(JSON.stringify(receipt)));assert.throws(()=>verify(f.source,f.pin()));
+  receipt.nativeRequestsExecuted=false;receipt.cases.pop();f.put('permission-tests.json',Buffer.from(JSON.stringify(receipt)));assert.throws(()=>verify(f.source,f.pin()));
 });

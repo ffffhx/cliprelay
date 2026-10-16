@@ -306,6 +306,23 @@ pending. Physical hotplug, capture permissions and monitor behavior remain
 unverified, as does a complete Mac hosting application. Host lifecycle and
 permission UI remain separate work.
 
+The engine handles `--cliprelay-permissions status` before configuration, logging,
+capture or listener initialization. It returns one JSON object with current
+`screenRecording` and `inputControl` preflights. Only the explicit
+`request-screen` and `request-input` actions invoke their corresponding native
+request API. Denial remains a false status; a completed request is never treated
+as an implicit grant. Malformed reserved commands fail before normal startup.
+`permissions_test.cpp` verifies this policy with injected callbacks, including
+revocation, denied requests, malformed arguments and unavailable functions.
+
+After signing, the packager runs four native status/invalid-command checks on
+the actual installed engine and records `permission-tests.json`. These checks
+never invoke a native permission request. They require clean JSON and unchanged
+application configuration and working directories. The engine archive includes
+the command header, policy test and native checker source; the application
+packager requires the permission-command receipt too. Native validation of
+these new commands and their final app integration remains pending.
+
 The Electron macOS packaging workflow accepts an explicit `host_engine_run_id`.
 It requires a successful native host workflow with all thirty-nine tests, verifies
 the archive checksum and every included source against that run's Git commit,
