@@ -14,6 +14,10 @@ on:
         description: 'Optional successful viewer component build for diagnosis; cannot pass complete app acceptance'
         type: string
         required: false
+      activate_viewer:
+        description: 'Diagnose CI window visibility by activating only the owned viewer'
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -84,6 +88,7 @@ jobs:
       - name: Real packaged capture, Qt presentation, input receipts and revocation
         env:
           CLIPRELAY_MAC_STREAM_DEBUG: ${{ inputs.debug_native && '1' || '' }}
+          CLIPRELAY_MAC_STREAM_ACTIVATE: ${{ inputs.activate_viewer && '1' || '' }}
         run: node scripts/test_macos_host_stream.cjs app-unpacked/ClipRelay.app/Contents/Resources/app/mac native-stream-report.json
       - uses: actions/upload-artifact@v4
         if: always()

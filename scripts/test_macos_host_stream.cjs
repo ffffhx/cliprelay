@@ -2,7 +2,7 @@
 // Real packaged Mac capture -> encoder -> encrypted loopback -> Qt presentation.
 // Disposable CI only. No frames, audio or user input are saved/injected.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
-const {spawn}=require('node:child_process');
+const {spawn,spawnSync}=require('node:child_process');
 const {snapshot,encryptedStorage}=require('./test_macos_host_state.cjs');
 assert.equal(process.platform,'darwin');assert.equal(process.env.GITHUB_ACTIONS,'true');assert.ok(process.env.RUNNER_TEMP);
 const directory=path.resolve(process.argv[2]),reportPath=path.resolve(process.argv[3]);
@@ -31,6 +31,22 @@ const protectedDirectories=[path.join(os.homedir(),'.config','sunshine'),path.jo
 const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
 const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cliprelay-native-mac-stream-')));
 const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[],debuggers=[],viewStates=[];
+const windowObservations=[];
+const windowHelper=path.join(base,'inspect-stream-window');
+if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'){
+  const built=spawnSync('/usr/bin/xcrun',['swiftc',path.join(__dirname,'test_macos_stream_window.swift'),'-o',windowHelper],{encoding:'utf8',timeout:120000});
+  assert.equal(built.status,0,'CI_WINDOW_HELPER_BUILD_FAILED');
+}
+async function activateViewer(child){
+  if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE!=='1')return;
+  assert.ok(nativeChildren.includes(child)&&Number.isInteger(child.pid)&&child.exitCode===null&&child.signalCode===null);
+  await new Promise((resolve,reject)=>{
+    const helper=spawn(windowHelper,[String(child.pid)],{stdio:['ignore','pipe','ignore']});let output='';
+    const timer=setTimeout(()=>helper.kill('SIGKILL'),5000);
+    helper.stdout.on('data',data=>{output+=data.toString('utf8');if(output.length>8192)helper.kill('SIGKILL');});
+    helper.once('error',reject);helper.once('close',code=>{clearTimeout(timer);try{assert.equal(code,0);windowObservations.push(JSON.parse(output));resolve();}catch(error){reject(error);}});
+  });
+}
 const testStarted=Date.now();
 function diagnosticLines(value){
   return value.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission|invalid|abort|fatal|exception|assert|library not loaded|reason:|screen|capture|video|vulkan|metal|molten|gpu/i.test(line)&&
@@ -123,6 +139,10 @@ function rawViewer(host,identity){
   return item;
 }
 async function presented(item){
+  if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'){
+    await until(()=>item.events.filter(e=>e.event==='progress').at(-1),value=>value?.received>0,60000);
+    await activateViewer(item.child);
+  }
   return until(()=>{assert.equal(item.error,null);assert.equal(item.exit,null);return item.events.filter(e=>e.event==='progress').at(-1);},
     value=>value?.rendered>=60&&value.received>=value.rendered&&value.renderedAgeMs<2000&&value.width===1280&&value.height===720,60000);
 }
@@ -134,8 +154,9 @@ async function closeRaw(item){
 }
 async function main(){
   const report={protocol:1,passed:false,testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.APP_SOURCE_COMMIT,
-    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER,
+    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1',
     diagnosticViewerCommit:process.env.DIAGNOSTIC_VIEWER_COMMIT||null,
+    windowObservations,
     physicalInputInjected:false,audioEnabled:false,screenContentSaved:false,keychainValidated:false};
   try{
     stage='host-start';await host.action('host-start');await host.startTask;assert.equal(host.snapshot().phase,'running');
@@ -149,6 +170,10 @@ async function main(){
       startupMs:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'?180000:45000});
     display=new DisplayController({store,viewer});
     stage='production-video';await viewer.open(options);
+    if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'){
+      await until(()=>viewer.snapshot().progress,value=>value?.received>0,60000);
+      await activateViewer(viewer.child);
+    }
     const visible=await until(()=>{
       const value=viewer.snapshot();assert.notEqual(value.phase,'error',value.error);return value;
     },value=>value.phase==='running'&&value.progress?.rendered>=60&&value.progress.renderedAgeMs<2000&&value.input.phase==='active',
@@ -212,6 +237,7 @@ async function main(){
     report.ownedChildrenReaped=true;
     assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_DEBUG,'1','DEBUGGER_RUN_NOT_ACCEPTANCE');
     assert.equal(process.env.CLIPRELAY_DIAGNOSTIC_VIEWER,undefined,'COMPONENT_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
+    assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE,'1','ACTIVATION_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
     report.passed=true;
   }catch(error){
     // ReportCrash writes asynchronously after the native process has exited.
