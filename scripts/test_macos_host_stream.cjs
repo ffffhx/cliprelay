@@ -82,7 +82,8 @@ const host=new HostController({directory,stateDirectory:path.join(base,'Host'),s
     const prepare=hostState.prepare.bind(hostState);
     hostState.prepare=name=>{
       const result=prepare(name);
-      hostState.write('sunshine.conf',configuration(name)+'bind_address = 127.0.0.1\nmouse = disabled\nkeyboard = disabled\nstream_audio = disabled\n');
+      hostState.write('sunshine.conf',configuration(name)+'bind_address = 127.0.0.1\nmouse = disabled\nkeyboard = disabled\nstream_audio = disabled\n'+
+        (process.env.CLIPRELAY_MAC_STREAM_H264==='1'?'hevc_mode = 1\nav1_mode = 1\n':''));
       return result;
     };
     const launch=(file,args,settings)=>{const child=spawn(file,args,settings);nativeChildren.push(child);return child;};
@@ -154,7 +155,8 @@ async function closeRaw(item){
 }
 async function main(){
   const report={protocol:1,passed:false,testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.APP_SOURCE_COMMIT,
-    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1',
+    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'||process.env.CLIPRELAY_MAC_STREAM_H264==='1',
+    diagnosticCodec:process.env.CLIPRELAY_MAC_STREAM_H264==='1'?'h264':'auto',
     diagnosticViewerCommit:process.env.DIAGNOSTIC_VIEWER_COMMIT||null,
     windowObservations,
     physicalInputInjected:false,audioEnabled:false,screenContentSaved:false,keychainValidated:false};
@@ -238,6 +240,7 @@ async function main(){
     assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_DEBUG,'1','DEBUGGER_RUN_NOT_ACCEPTANCE');
     assert.equal(process.env.CLIPRELAY_DIAGNOSTIC_VIEWER,undefined,'COMPONENT_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
     assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE,'1','ACTIVATION_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
+    assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_H264,'1','CODEC_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
     report.passed=true;
   }catch(error){
     // ReportCrash writes asynchronously after the native process has exited.

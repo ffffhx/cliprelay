@@ -163,6 +163,7 @@ async function build(){
         delete env.CLIPRELAY_DIAGNOSTIC_VIEWER;
         delete env.DIAGNOSTIC_VIEWER_COMMIT;
         delete env.CLIPRELAY_MAC_STREAM_ACTIVATE;
+        delete env.CLIPRELAY_MAC_STREAM_H264;
         execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_stream.cjs'),appDirectory,reportPath],{env,stdio:'inherit',timeout:240000});
         const report=JSON.parse(fs.readFileSync(reportPath,'utf8'));
         const expected=['packaged-Mac-capture-encode-encrypted-transport-and-Qt-present',

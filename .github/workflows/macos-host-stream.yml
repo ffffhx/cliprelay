@@ -23,6 +23,10 @@ on:
         type: choice
         options: ['macos-26', 'macos-15']
         default: 'macos-26'
+      h264_only:
+        description: 'Diagnose codec differences with native host H.264-only advertisement'
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -94,6 +98,7 @@ jobs:
         env:
           CLIPRELAY_MAC_STREAM_DEBUG: ${{ inputs.debug_native && '1' || '' }}
           CLIPRELAY_MAC_STREAM_ACTIVATE: ${{ inputs.activate_viewer && '1' || '' }}
+          CLIPRELAY_MAC_STREAM_H264: ${{ inputs.h264_only && '1' || '' }}
         run: node scripts/test_macos_host_stream.cjs app-unpacked/ClipRelay.app/Contents/Resources/app/mac native-stream-report.json
       - uses: actions/upload-artifact@v4
         if: always()
