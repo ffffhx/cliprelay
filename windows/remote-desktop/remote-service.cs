@@ -422,33 +422,11 @@ namespace ClipRelay.Remote {
         object EngineRequest(string method, string path, object body, int timeoutMs = 20000, int replyLimit = 1024 * 1024) {
             string password;
             lock (gate) { if (!Enabled || !IsRunning) throw new InvalidOperationException("Remote desktop is not running"); password = Text(settings, "adminPassword"); }
-            var request = (HttpWebRequest)WebRequest.Create("https://127.0.0.1:48790" + path);
-            request.Proxy = null; request.Method = method; request.Timeout = timeoutMs; request.ReadWriteTimeout = timeoutMs;
-            request.Headers["Authorization"] = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("cliprelay:" + password));
-            string pem = File.ReadAllText(Path.Combine(StateRoot, "cacert.pem"));
+            string certificatePath = Path.Combine(StateRoot, "cacert.pem");
+            if (new FileInfo(certificatePath).Length > 16384) throw new InvalidDataException("Invalid local engine certificate");
+            string pem = File.ReadAllText(certificatePath);
             string base64 = pem.Replace("-----BEGIN CERTIFICATE-----", "").Replace("-----END CERTIFICATE-----", "").Trim();
-            using (var expected = new X509Certificate2(Convert.FromBase64String(base64)))
-            using (var timeout = new Timer(delegate { try { request.Abort(); } catch { } }, null, timeoutMs, Timeout.Infinite)) {
-                string thumb = expected.Thumbprint;
-                request.ServerCertificateValidationCallback = delegate(object sender, X509Certificate cert, X509Chain chain, System.Net.Security.SslPolicyErrors errors) {
-                    return cert != null && String.Equals(cert.GetCertHashString(), thumb, StringComparison.OrdinalIgnoreCase);
-                };
-                if (body != null) {
-                    byte[] data = Encoding.UTF8.GetBytes(Json().Serialize(body));
-                    request.ContentType = "application/json"; request.ContentLength = data.Length;
-                    using (var stream = request.GetRequestStream()) stream.Write(data, 0, data.Length);
-                }
-                using (var response = request.GetResponse())
-                using (var stream = response.GetResponseStream())
-                using (var bytes = new MemoryStream()) {
-                    byte[] buffer = new byte[4096]; int count;
-                    while ((count = stream.Read(buffer, 0, buffer.Length)) > 0) {
-                        if (bytes.Length + count > replyLimit) throw new InvalidDataException("Remote engine reply exceeded limit");
-                        bytes.Write(buffer, 0, count);
-                    }
-                    return Json().DeserializeObject(new UTF8Encoding(false, true).GetString(bytes.ToArray()));
-                }
-            }
+            return EngineAdmin.Request(password, Convert.FromBase64String(base64), method, path, body, timeoutMs, replyLimit);
         }
         public static int Main(string[] args) {
             if (args.Length == 1 && args[0] == "--clipboard-probe") return ClipboardExchange.Run();

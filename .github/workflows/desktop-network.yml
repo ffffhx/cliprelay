@@ -51,6 +51,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: '& windows/tests/host-clients.ps1'
+      - name: Windows pinned native administration deadlines
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& windows/tests/engine-admin.ps1'
       - name: Desktop live bitrate and presentation confirmation
         run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
       - name: Desktop input ownership and presentation gating
