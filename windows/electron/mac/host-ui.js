@@ -3,16 +3,19 @@ export function mount(root,api,cancel,initial){
   const confirmations=new Map();let revocation=null;
   const element=(tag,text='')=>{const node=document.createElement(tag);node.textContent=text;return node;};
   const title=element('h1','本机远程访问'),status=element('p'),controls=element('div'),start=element('button','启动远程访问'),stop=element('button','停止远程访问');
-  const permissions=element('button','检查系统权限'),close=element('button','关闭'),notice=element('p'),requests=element('div'),clients=element('div');
+  const permissions=element('button','检查系统权限'),close=element('button','关闭'),notice=element('p'),requests=element('div'),clients=element('div'),capabilities=element('p');
   const startupLabel=element('label'),startup=element('input');startup.type='checkbox';startup.name='host-auto-start';
   startupLabel.className='host-startup';startupLabel.append(startup,element('span','打开 ClipRelay 时自动启动远程访问'));
   status.setAttribute('role','status');notice.setAttribute('aria-live','polite');controls.className='host-actions';
   controls.append(start,stop,permissions,close);root.append(title,status,controls,startupLabel,
     element('p','自动启动设置在下次打开应用时生效。当前远程访问使用上方的启动、停止按钮控制。'),
     element('p','启动后，可在同一局域网的另一台设备中添加这台 Mac，再在此处核对验证码。关闭此窗口后仍允许连接，点击“停止远程访问”可结束连接。'),
-    element('p','当前支持远程画面与键鼠控制。本机作为被控端时，文件、剪贴板同步、远程终端、语音及隐私控制暂不可用。'),notice,requests,clients);
+    capabilities,element('p','本机暂不支持剪贴板同步、远程终端、语音及隐私控制。'),notice,requests,clients);
   const errors={HOST_UNAVAILABLE:'此安装包未包含完整的本机远程访问组件。',HOST_PERMISSION_REQUIRED:'请先允许屏幕录制和键鼠控制。',HOST_KEYCHAIN_UNAVAILABLE:'系统钥匙串不可用，请稍后重试。',HOST_PAIR_STALE:'这次请求已过期或已处理，请核对当前请求。',HOST_PAIR_CLOSED:'远程访问已停止。',HOST_PAIR_TIMEOUT:'读取配对请求超时，请重试。',HOST_PAIR_UNAVAILABLE:'暂时无法读取配对请求，请重试。',HOST_ENGINE_EXITED:'远程画面组件已退出。',HOST_COMPANION_EXITED:'远程连接组件已退出。'};
   function render(){
+    capabilities.textContent=state.phase!=='running'?'远程访问启动后会显示文件传输的可用状态。':state.fileTransfer===true?
+      '当前支持远程画面、键鼠控制与文件传输。允许连接的设备可浏览、上传和下载个人目录中的文件；系统限制的目录需要相应权限。':
+      '当前支持远程画面与键鼠控制，此安装版本尚未提供文件传输。';
     status.textContent=({stopped:'远程访问已停止',starting:'正在启动远程访问…',running:'远程访问已启动',stopping:'正在停止远程访问…',failed:'远程访问未能运行',closed:'应用正在退出'})[state.phase] || '无法确认远程访问状态';
     start.disabled=pending || !state.available || !['stopped','failed'].includes(state.phase);
     stop.disabled=pending || !state.available || !['starting','running'].includes(state.phase);

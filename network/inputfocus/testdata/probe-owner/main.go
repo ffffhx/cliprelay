@@ -47,6 +47,9 @@ func main() {
 		}{os.Getpid(), command}) != nil {
 			os.Exit(4)
 		}
+		if command == "reply-exit" {
+			return
+		}
 	}
 	if ignoreEOF {
 		time.Sleep(time.Hour)

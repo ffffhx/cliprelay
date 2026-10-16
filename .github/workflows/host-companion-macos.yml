@@ -2,7 +2,7 @@ name: macOS Host Companion Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', '.github/workflows/host-companion-macos.yml']
+    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,12 +40,15 @@ jobs:
       - name: Host companion channel and ownership tests
         working-directory: network
         run: go test -v -count=1 -timeout=90s ./hostcompanion ./cmd/cliprelay-host-network
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
       - name: Native file transfer, recovery and filesystem boundaries
         working-directory: network
         run: go test -race -v -count=1 -timeout=120s ./hostfiles
       - name: Host listener and worker lifetime regression
         working-directory: network
-        run: go test -v -count=1 -timeout=90s ./inputfocus -run 'TestHostListeners|TestProbeOwner|TestEngineAccess|TestLANPairing'
+        run: go test -race -v -count=1 -timeout=120s ./inputfocus -run 'TestHostListeners|TestProbeOwner|TestEngineAccess|TestLANPairing'
       - name: Build universal companion
         run: python3 scripts/build_host_companion.py --output .tools/host-companion
       - name: Native packaged companion process acceptance

@@ -15,6 +15,8 @@ CASES = ['tls-pairing-ipc-and-eof-cleanup', 'managed-pairing-generation-and-reje
          'extra-byte-without-newline-stops-service', 'parent-exit-with-inherited-writer-held',
          'parent-crash-with-inherited-writer-held', 'invalid-frame', 'oversized-frame',
          'initialization-timeout', 'required-listener-conflict-rolls-back-runtime', 'wrong-parent', 'regular-input']
+FILE_CASES = ['tls-files-desktop-resume-and-no-overwrite', 'tls-files-owner-and-live-revocation',
+              'files-eof-joins-worker', 'files-parent-loss-with-writer-held', 'files-owner-admission']
 
 
 def entries(archive, *, limit=96*1024*1024):
@@ -58,10 +60,14 @@ def verify_sources(source_path, commit):
     if exists.returncode:
         subprocess.run(['git', 'fetch', '--depth=1', 'origin', commit], cwd=ROOT, check=True)
     paths = output('git', 'ls-tree', '-r', '--name-only', commit, 'network/inputfocus',
-                   'network/hostcompanion', 'network/cmd/cliprelay-host-network').decode().splitlines()
+                   'network/hostcompanion', 'network/hostfiles', 'network/cmd/cliprelay-host-network').decode().splitlines()
     expected = {name for name in paths if name.endswith('.go')}
     expected |= {'LICENSE', 'network/go.mod', 'network/go.sum', 'scripts/build_host_companion.py',
                  'scripts/network_notices.py', 'scripts/test_host_companion.py'}
+    if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_files.py').strip():
+        expected |= {'scripts/test_host_files.py', 'scripts/test_host_files_client.cjs'}
+        expected |= {'windows/electron/mac/'+name for name in ['file-controller.cjs', 'file-protocol.cjs', 'file-storage.cjs', 'paired-store.cjs', 'paired-transport.cjs', 'paired-crypto.cjs',
+                                                             'routed-store.cjs', 'paired-controller.cjs', 'pairing.cjs', 'paired-relay.cjs', 'pairing-feedback.cjs']}
     with tarfile.open(source_path) as archive:
         members = entries(archive, limit=8*1024*1024)
         if any(not member.isfile() for member in members) or {member.name for member in members} != expected:
@@ -90,8 +96,11 @@ def fetch(run, arch, directory):
                     str(artifact), json.dumps(pin)], cwd=ROOT, check=True)
     source_files = verify_sources(artifact/'cliprelay-host-source.tar.gz', commit)
     report = json.loads((artifact/'process-report.json').read_bytes())
+    file_transfer = json.loads((artifact/'manifest.json').read_bytes()).get('fileTransfer') == 1
+    expected_cases = (FILE_CASES if file_transfer else []) + CASES
     executable_hash = hashlib.sha256((artifact/'runtime/cliprelay-host-network').read_bytes()).hexdigest()
-    if (report['cases'] != CASES or report['passed'] != len(CASES) or report['nativeWorkers'] is not False
+    if (report['cases'] != expected_cases or report['passed'] != len(expected_cases) or report['nativeWorkers'] is not False
+            or (file_transfer and report.get('fileTransfer') != 1)
             or report['architecture'] != arch or report['executableSha256'] != executable_hash):
         raise ValueError('Companion process receipt does not match the selected architecture and executable')
     result = {'run': int(run), 'architecture': arch, 'pin': pin, 'sourceFilesVerified': source_files,

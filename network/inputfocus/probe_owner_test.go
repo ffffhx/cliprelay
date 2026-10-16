@@ -60,6 +60,51 @@ func TestProbeOwnerProcessLifecycle(t *testing.T) {
 		}
 	})
 
+	t.Run("observed idle death is reaped before a new command and restart retains ownership", func(t *testing.T) {
+		p := newProbe(t, nil)
+		p.observeExit = true
+		first := probeOwnerReply(t, p, "pid", false)
+		if err := first.Process.Kill(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-p.exitDone:
+		case <-time.After(3 * time.Second):
+			t.Fatal("idle child was not reaped")
+		}
+		if first.ProcessState == nil || first.ProcessState.Success() {
+			t.Fatal("missing killed child receipt")
+		}
+		second := probeOwnerReply(t, p, "pid", false)
+		if first.Process.Pid == second.Process.Pid {
+			t.Fatal("dead worker was reused")
+		}
+		p.close()
+		probeOwnerReaped(t, p, second, true)
+	})
+
+	t.Run("exit observation preserves final replies and never replays a blocked command", func(t *testing.T) {
+		p := newProbe(t, nil)
+		p.observeExit = true
+		for i := 0; i < 20; i++ {
+			cmd := probeOwnerReply(t, p, "reply-exit", false)
+			select {
+			case <-p.exitDone:
+			case <-time.After(3 * time.Second):
+				t.Fatal("worker did not exit")
+			}
+			p.stop()
+			probeOwnerReaped(t, p, cmd, true)
+		}
+		cmd := probeOwnerReply(t, p, "pid", false)
+		p.timeout = 100 * time.Millisecond
+		marker := filepath.Join(t.TempDir(), "observed-blocked")
+		if _, err := p.read("wait:" + marker); err == nil || err.Error() != "focus timeout" {
+			t.Fatalf("unexpected result: %v", err)
+		}
+		probeOwnerReaped(t, p, cmd, false)
+	})
+
 	t.Run("blocked command cancellation joins then permits restoration", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

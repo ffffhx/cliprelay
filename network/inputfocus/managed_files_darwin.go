@@ -11,6 +11,7 @@ func configureManagedFiles(worker *probe, stateDirectory string) error {
 		return err
 	}
 	worker.executable = executable
+	worker.observeExit = true
 	worker.arguments = []string{"--managed-files", "--owner-pid", strconv.Itoa(os.Getpid()), "--state-dir", stateDirectory}
 	return nil
 }

@@ -82,3 +82,15 @@ test('failed preference writes restore the saved checkbox and an unavailable ins
   const checkbox=f.root.all(node=>node.name==='host-auto-start')[0];assert.equal(checkbox.disabled,false);checkbox.checked=false;await checkbox.onchange();assert.equal(checkbox.checked,true);
   assert.ok(f.root.all(node=>node.textContent==='设置未能保存，请重试。').length);f.ui.close();
 });
+
+test('file availability follows the current running package capability',async()=>{
+  let state={available:true,phase:'running',requests:[],fileTransfer:true};
+  const f=fixture({initial:state,request:()=>state});await f.ui.ready;
+  assert.ok(f.root.all(node=>node.textContent.includes('浏览、上传和下载个人目录')).length);
+  assert.ok(f.root.all(node=>node.textContent.includes('暂不支持剪贴板同步')).length);
+  state={...state,fileTransfer:false};await f.ui.refresh();
+  assert.ok(f.root.all(node=>node.textContent.includes('尚未提供文件传输')).length);
+  state={...state,phase:'stopped',fileTransfer:true};await f.ui.refresh();
+  assert.equal(f.root.all(node=>node.textContent.includes('浏览、上传和下载个人目录')).length,0);
+  assert.ok(f.root.all(node=>node.textContent.includes('启动后会显示文件传输')).length);f.ui.close();
+});

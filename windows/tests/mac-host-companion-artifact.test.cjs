@@ -37,6 +37,12 @@ test('alternate platform, native-worker claims and file sets are rejected even w
     const f=fixture(t);mutation(f.manifest);f.update();assert.throws(()=>verify(f.source,f.pin));
   }
 });
+
+test('legacy and version-one file manifests are accepted but unknown capability versions fail admission',t=>{
+  const f=fixture(t);assert.equal(verify(f.source,f.pin).manifest.fileTransfer,undefined);
+  f.manifest.fileTransfer=1;f.update();assert.equal(verify(f.source,f.pin).manifest.fileTransfer,1);
+  for(const version of [0,2,true,'1',null]){f.manifest.fileTransfer=version;f.update();assert.throws(()=>verify(f.source,f.pin));}
+});
 test('Mach-O duplicate CPUs, overlap, type, platform and minimum-OS mismatches are rejected',()=>{
   for(const mutate of [b=>b.writeUInt32BE(0x01000007,28),b=>b.writeUInt32BE(64,36),b=>b.writeUInt32LE(6,76),
     b=>b.writeUInt32LE(2,104),b=>b.writeUInt32LE(0x000f0000,108),b=>b.writeUInt32LE(0xffffffff,84),b=>b.writeUInt32BE(0xffffffff,20)]){

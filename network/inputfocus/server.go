@@ -93,17 +93,20 @@ func pairingEnabled(raw json.RawMessage) bool {
 }
 
 type probe struct {
-	mu         sync.Mutex
-	ctx        context.Context
-	closed     bool
-	executable string
-	argument   string
-	arguments  []string
-	cmd        *exec.Cmd
-	in         io.WriteCloser
-	out        *bufio.Reader
-	maxOutput  int
-	timeout    time.Duration
+	mu          sync.Mutex
+	ctx         context.Context
+	closed      bool
+	executable  string
+	argument    string
+	arguments   []string
+	observeExit bool
+	exitDone    chan struct{}
+	outputPipe  io.ReadCloser
+	cmd         *exec.Cmd
+	in          io.WriteCloser
+	out         *bufio.Reader
+	maxOutput   int
+	timeout     time.Duration
 }
 
 // Close independent workers concurrently, while retaining each owner until Wait
@@ -138,8 +141,12 @@ func (p *probe) stopLocked() {
 	if p.cmd != nil {
 		p.in.Close()
 		// Let the voice helper cancel recording and restore the microphone on stdin EOF.
-		done := make(chan struct{})
-		go func() { p.cmd.Wait(); close(done) }()
+		done := p.exitDone
+		if done == nil {
+			done = make(chan struct{})
+			cmd := p.cmd
+			go func() { cmd.Wait(); close(done) }()
+		}
 		select {
 		case <-done:
 		case <-time.After(3500 * time.Millisecond):
@@ -147,6 +154,11 @@ func (p *probe) stopLocked() {
 			<-done
 		}
 		p.cmd = nil
+		p.exitDone = nil
+		if p.outputPipe != nil {
+			p.outputPipe.Close()
+			p.outputPipe = nil
+		}
 	}
 }
 
@@ -177,6 +189,15 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 	if p.executable == "" {
 		return nil, errors.New("native worker unsupported")
 	}
+	// Reap idle file workers promptly, and replace an already dead worker before
+	// writing a new command. A failure after a write is never replayed.
+	if p.exitDone != nil {
+		select {
+		case <-p.exitDone:
+			p.stopLocked()
+		default:
+		}
+	}
 	if p.cmd == nil {
 		argument := p.argument
 		if argument == "" {
@@ -192,7 +213,16 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 		if err != nil {
 			return nil, err
 		}
-		out, err := cmd.StdoutPipe()
+		var out io.ReadCloser
+		var writer *os.File
+		if p.observeExit {
+			// Own the reader ourselves: concurrent Cmd.Wait must not close an
+			// unread final response, as it would with Cmd.StdoutPipe.
+			out, writer, err = os.Pipe()
+			cmd.Stdout = writer
+		} else {
+			out, err = cmd.StdoutPipe()
+		}
 		if err != nil {
 			in.Close()
 			return nil, err
@@ -200,7 +230,17 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 		if err = cmd.Start(); err != nil {
 			in.Close()
 			out.Close()
+			if writer != nil {
+				writer.Close()
+			}
 			return nil, err
+		}
+		if writer != nil {
+			writer.Close()
+			p.outputPipe = out
+			done := make(chan struct{})
+			p.exitDone = done
+			go func() { cmd.Wait(); close(done) }()
 		}
 		bufferSize := 4096
 		if p.maxOutput > 0 {

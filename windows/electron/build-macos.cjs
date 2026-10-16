@@ -80,8 +80,18 @@ async function build(){
         if(session.passed!==true || session.actualChildStarts!==8 || session.ownedChildrenReaped!==true || session.runtimeDirectoriesRemoved!==true ||
             session.stateFilesPrivate!==true || session.defaultStateUnchanged!==true || session.homeChanged!==false || session.nativeWorkers!==false ||
             session.keychainValidated!==false || session.nativeRequestsExecuted!==false || session.streamStarted!==false || session.systemInputInjected!==false)throw new Error('Packaged host session check failed');
+        let files;
+        if(result.manifest.fileTransfer===1){
+          const reportPath=path.join(output,`host-files-${architecture}.json`);
+          execFileSync('python3',[path.join(repo,'scripts','test_host_companion.py'),path.join(appDirectory,'host-companion','runtime','cliprelay-host-network'),
+            '--app-directory',appDirectory,'--report',reportPath],{stdio:'inherit',timeout:180000});
+          files=JSON.parse(fs.readFileSync(reportPath,'utf8'));
+          const expected=['tls-files-desktop-resume-and-no-overwrite','tls-files-owner-and-live-revocation','files-eof-joins-worker','files-parent-loss-with-writer-held','files-owner-admission'];
+          if(files.fileTransfer!==1 || files.passed!==17 || JSON.stringify(files.cases.slice(0,5))!==JSON.stringify(expected) ||
+              files.executableSha256!==result.manifest.files['runtime/cliprelay-host-network'])throw new Error('Packaged Mac file acceptance failed');
+        }
         fs.writeFileSync(path.join(output,`host-companion-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:companionPin,
-          verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session},null,2));
+          verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session,...(files?{files}:{})},null,2));
         // Includes three independent production two-minute expiry checks.
         const pairing=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_pairing.cjs'),appDirectory],{encoding:'utf8',timeout:480000,maxBuffer:65536}));
         if(pairing.passed!==true || pairing.actualChildStarts!==4 || pairing.realNativePairing!==true || pairing.pairedClientPersisted!==true ||

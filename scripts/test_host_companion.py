@@ -92,9 +92,10 @@ def owner_launcher(binary, state):
     os._exit(17 if action == b'crash' else 0)
 
 
-def main(binary, report):
+def main(binary, report, app_directory=None):
     assert sys.platform == 'darwin', 'Run positive native ownership cases only on disposable macOS CI'
     cases = []
+    file_transfer = json.loads((binary.parent.parent/'manifest.json').read_bytes()).get('fileTransfer') == 1
     def passed(name):
         cases.append(name)
         print(json.dumps({'case': name, 'passed': True}), flush=True)
@@ -138,6 +139,10 @@ def main(binary, report):
                 if process.poll() is None:
                     process.kill()
                     process.wait()
+
+        if file_transfer:
+            from test_host_files import run
+            run(binary, state, payload, tls, start, read_status, finish, wait_absent, passed, app_directory)
 
         process = start(binary, state, payload)
         status = read_status(process)
@@ -303,7 +308,9 @@ def main(binary, report):
         assert_state()
     result = {'cases': cases, 'passed': len(cases), 'nativeWorkers': False,
               'architecture': platform.machine(), 'executableSha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
-              'limits': 'Disposable CI certificates/listeners only; no native desktop providers, streaming client, user Keychain or production installation.'}
+              'limits': 'Disposable CI certificates/listeners/files only; no other native desktop providers, streaming client, user Keychain or production installation.'}
+    if file_transfer:
+        result['fileTransfer'] = 1
     report.write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result))
 
@@ -313,8 +320,9 @@ if __name__ == '__main__':
     parser.add_argument('binary', type=Path)
     parser.add_argument('--report', type=Path)
     parser.add_argument('--owner-launcher', type=Path)
+    parser.add_argument('--app-directory', type=Path)
     args = parser.parse_args()
     if args.owner_launcher:
         owner_launcher(args.binary.resolve(), args.owner_launcher.resolve())
     else:
-        main(args.binary.resolve(), args.report.resolve())
+        main(args.binary.resolve(), args.report.resolve(), args.app_directory.resolve() if args.app_directory else None)
