@@ -20,6 +20,19 @@ test('removing or pausing a paired host never selects plaintext or reads the cli
     f.controller.selectLegacy();assert.equal(f.store.data.legacySelected,true);
   }finally{f.close();}
 });
+
+test('clipboard automation is opt-in per host, durable, strict boolean and reset by re-pairing',()=>{
+  const f=fixture();try{
+    f.store.add(host);assert.notEqual(f.store.selected().clipboardSync,true);f.store.setClipboardSync(host.id,true);
+    const other={...host,id:crypto.createHash('sha256').update(new crypto.X509Certificate(identities.client.cert).raw).digest('hex'),certificate:identities.client.cert,clientId:'b'.repeat(32)};
+    f.store.add(other);assert.notEqual(f.store.selected().clipboardSync,true);assert.equal(f.store.hosts().find(h=>h.id===host.id).clipboardSync,true);
+    const loaded=new PairedStore(f.store.directory,{});assert.equal(loaded.hosts().find(h=>h.id===host.id).clipboardSync,true);
+    assert.throws(()=>loaded.validateHost({...host,clipboardSync:'true'}),{code:'INVALID_HOST'});
+    assert.throws(()=>loaded.setClipboardSync(host.id,'true'));assert.equal(loaded.hosts().find(h=>h.id===host.id).clipboardSync,true);
+    loaded.add({...host,clientId:'c'.repeat(32)});assert.notEqual(loaded.selected().clipboardSync,true);
+    loaded.write=()=>{throw new Error('disk unavailable');};assert.throws(()=>loaded.setClipboardSync(host.id,true),/disk unavailable/);assert.notEqual(loaded.selected().clipboardSync,true);
+  }finally{f.close();}
+});
 test('selected-text hotkey restores local text and sends through the selected paired route',async()=>{
   const f=fixture();try{
     f.store.add(host);assert.equal(await f.controller.sendCurrent(true),true);assert.deepEqual(f.writes,['old']);assert.equal(f.sent.length,1);assert.equal(f.sent[0][0].id,host.id);assert.deepEqual(f.sent[0][2],{kind:'text',text:'selection 中文'});

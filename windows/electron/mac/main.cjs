@@ -1,5 +1,5 @@
 'use strict';
-const {app,Tray,Menu,nativeImage,globalShortcut,clipboard,ClipboardItem,Notification,BrowserWindow,ipcMain,screen,systemPreferences,safeStorage,dialog,shell}=require('electron');
+const {app,Tray,Menu,nativeImage,globalShortcut,clipboard,ClipboardItem,powerMonitor,Notification,BrowserWindow,ipcMain,screen,systemPreferences,safeStorage,dialog,shell}=require('electron');
 const {Bonjour}=require('bonjour-service');
 const path=require('node:path');
 const {pathToFileURL}=require('node:url');
@@ -21,27 +21,28 @@ const {DisplayController,message:displayMessage}=require('./display-controller.c
 const {PrivacyController,message:privacyMessage}=require('./privacy-controller.cjs');
 const {AudioMuteController,message:audioMuteMessage}=require('./audio-mute-controller.cjs');
 const {SessionLockController,message:sessionLockMessage}=require('./session-lock-controller.cjs');
+const {ClipboardSync,message:clipboardMessage}=require('./clipboard-sync.cjs');
 const {WakeController,message:wakeMessage}=require('./wake-controller.cjs');
 const {HostPermissionController,message:hostPermissionMessage}=require('./host-permission-controller.cjs');
 const {HostController,message:hostMessage}=require('./host-controller.cjs');
 const {HostNotices}=require('./host-notices.cjs');
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
-let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake,hostPermissions,host,hostNotices,permissionQuit=false,permissionQuitReady=false;
+let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake,clipboardSync,hostPermissions,host,hostNotices,permissionQuit=false,permissionQuitReady=false;
 const windows=new Map();
 const page=path.join(__dirname,'ui.html');const pageURL=pathToFileURL(page).href;
-const pairedSnapshot=()=>{bitrate.reconcile();displays.reconcile();privacy.reconcile();audioMute.reconcile();sessionLock.reconcile();wake.reconcile();return {...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot(),files:files.snapshot(),bitrate:bitrate.snapshot(),displays:displays.snapshot(),privacy:privacy.snapshot(),audioMute:audioMute.snapshot(),sessionLock:sessionLock.snapshot(),wake:wake.snapshot()};};
+const pairedSnapshot=()=>{bitrate.reconcile();displays.reconcile();privacy.reconcile();audioMute.reconcile();sessionLock.reconcile();wake.reconcile();clipboardSync.reconcile();return {...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot(),files:files.snapshot(),bitrate:bitrate.snapshot(),displays:displays.snapshot(),privacy:privacy.snapshot(),audioMute:audioMute.snapshot(),sessionLock:sessionLock.snapshot(),wake:wake.snapshot(),clipboardSync:clipboardSync.snapshot()};};
 if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('window-all-closed',()=>{});
   app.on('before-quit',event=>{
     if((!hostPermissions && !host) || permissionQuitReady)return;
     event.preventDefault();if(permissionQuit)return;permissionQuit=true;
-    hostNotices?.close();
+    clipboardSync?.close();hostNotices?.close();
     Promise.all([hostPermissions?.close(),host?.close()]).then(()=>{permissionQuitReady=true;app.quit();});
   });
   app.whenReady().then(start).catch(error=>{require('electron').dialog.showErrorBox('ClipRelay',error.code==='EADDRINUSE'?'ClipRelay 端口已被占用。请先停用 Hammerspoon 中的 ClipRelay，再重新打开。':error.message);app.quit();});
-  app.on('will-quit',()=>{scanning++;wake?.close();sessionLock?.close();audioMute?.close();privacy?.close();displays?.close();bitrate?.close();terminal?.close();files?.close();viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
+  app.on('will-quit',()=>{scanning++;clipboardSync?.close();wake?.close();sessionLock?.close();audioMute?.close();privacy?.close();displays?.close();bitrate?.close();terminal?.close();files?.close();viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
 }
 function openWindow(kind,data,options){
   const window=new BrowserWindow({frame:false,show:false,resizable:false,skipTaskbar:true,backgroundColor:'#00000000',transparent:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true},...options});
@@ -50,7 +51,8 @@ function openWindow(kind,data,options){
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
   if(kind==='host-permissions')window.webContents.on('render-process-gone',()=>{void hostPermissions?.releaseWindow();});
   if(kind==='host')window.webContents.on('render-process-gone',()=>host?.releaseWindow());
-  window.on('closed',()=>{windows.delete(id);if(kind==='host-permissions')void hostPermissions?.releaseWindow();if(kind==='host')host?.releaseWindow();if(kind==='paired'){paired?.cancelPair();network?.cancelPair();files?.releaseWindow();}});
+  if(kind==='paired')for(const event of ['did-start-loading','render-process-gone'])window.webContents.on(event,()=>clipboardSync?.cancelReceive());
+  window.on('closed',()=>{windows.delete(id);if(kind==='host-permissions')void hostPermissions?.releaseWindow();if(kind==='host')host?.releaseWindow();if(kind==='paired'){clipboardSync?.cancelReceive();paired?.cancelPair();network?.cancelPair();files?.releaseWindow();}});
   window.once('ready-to-show',()=>{if(kind==='alert')window.showInactive();else window.show();});
   window.loadFile(page,{query:{kind}});return window;
 }
@@ -95,7 +97,7 @@ function menu(){
 }
 async function startReceiver(){
   if(config.legacyEnabled!==true || receiver?.listening)return;
-  receiver=createReceiver({clipboard,getConfig:()=>config,withClipboard:operation=>paired.withClipboard(operation),notify:(title,body)=>new Notification({title,body}).show()});
+  receiver=createReceiver({clipboard,getConfig:()=>config,withClipboard:operation=>paired.withClipboard(operation),onClipboardApplied:()=>clipboardSync?.externalApplied(),notify:(title,body)=>new Notification({title,body}).show()});
   const current=receiver;
   await new Promise((resolve,reject)=>{
     current.once('error',reject);
@@ -147,9 +149,9 @@ async function start(){
   const directory=path.join(app.getPath('userData'),'paired');
   const base=new PairedStore(directory,safeStorage,{legacySelected:config.legacyEnabled===true,generate:createClientIdentity});
   network=new NetworkController({catalog:new NetworkCatalog(path.join(directory,'network'),safeStorage),store:base,directory:path.join(__dirname,'network-helper'),localName,
-    canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();files?.reconcile();terminal?.reconcile();wake?.reconcile();if(tray)menu();}});
+    canPair:()=>!paired?.pairController,onUpdate:()=>{paired?.reconcileRoutes();viewer?.reconcile();files?.reconcile();terminal?.reconcile();wake?.reconcile();clipboardSync?.reconcile();if(tray)menu();}});
   const store=new RoutedStore(base,id=>network.route(id),id=>network.streamPolicy(id));
-  viewer=new StreamViewer({directory:path.join(__dirname,'stream-viewer'),store,onUpdate:()=>{bitrate?.reconcile();displays?.reconcile();privacy?.reconcile();audioMute?.reconcile();sessionLock?.reconcile();}});
+  viewer=new StreamViewer({directory:path.join(__dirname,'stream-viewer'),store,onUpdate:()=>{bitrate?.reconcile();displays?.reconcile();privacy?.reconcile();audioMute?.reconcile();sessionLock?.reconcile();clipboardSync?.reconcile();}});
   bitrate=new BitrateController({store,viewer});
   displays=new DisplayController({store,viewer});
   privacy=new PrivacyController({store,viewer});
@@ -158,7 +160,8 @@ async function start(){
   wake=new WakeController({store,directory:path.join(directory,'wake')});
   files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
   terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard,withClipboard:operation=>paired.withClipboard(operation)});
-  paired=new PairedController({store,clipboard,ClipboardItem,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);files?.reconcile(paired?.status);terminal?.reconcile(paired?.status);wake?.reconcile();if(tray)menu();}});
+  paired=new PairedController({store,clipboard,ClipboardItem,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),onClipboardApplied:()=>clipboardSync?.externalApplied(),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);files?.reconcile(paired?.status);terminal?.reconcile(paired?.status);wake?.reconcile();clipboardSync?.reconcile();if(tray)menu();}});
+  clipboardSync=new ClipboardSync({store,viewer,paired,nativeImage,powerMonitor});
   await startReceiver();
   bonjour=new Bonjour({},error=>alert('ClipRelay 局域网声明失败：'+error.message));
   tray=new Tray(nativeImage.createEmpty());tray.setTitle('ClipRelay');menu();publish();
@@ -170,6 +173,8 @@ async function start(){
     if(Buffer.byteLength(JSON.stringify(data ?? {}))>32768)throw new Error('Invalid request');
     if(action==='initial')return entry.kind==='paired'?pairedSnapshot():entry.kind==='host-permissions'?hostPermissions.snapshot():entry.kind==='host'?host.snapshot():entry.data;
     if(action==='cancel'){entry.window.close();return;}
+    if(['clipboard-set-enabled','clipboard-resume','clipboard-receive'].includes(action) &&
+      (entry.kind!=='paired' || event.sender!==entry.window.webContents || event.senderFrame.url!==pageURL+'?kind=paired'))throw new Error('Unknown renderer');
     if(entry.kind==='host-permissions'){
       try{return await hostPermissions.action(action,data);}catch(error){throw new Error(hostPermissionMessage(error));}
     }
@@ -180,6 +185,14 @@ async function start(){
     if(entry.kind==='paired'){
       try{
         if(action==='paired-status')return pairedSnapshot();
+        if(['clipboard-set-enabled','clipboard-resume','clipboard-receive'].includes(action)){
+          try{
+            if(action==='clipboard-set-enabled')clipboardSync.setEnabled(data);
+            else if(action==='clipboard-resume')clipboardSync.resume(data);
+            else await clipboardSync.receive(data,()=>windows.get(event.sender.id)===entry && !entry.window.isDestroyed() && event.senderFrame===entry.window.webContents.mainFrame && event.senderFrame.url===pageURL+'?kind=paired');
+          }catch(error){throw Object.assign(new Error(clipboardMessage(error)),{clipboardMessage:true});}
+          return pairedSnapshot();
+        }
         if(action==='bitrate-apply'){try{bitrate.apply(data);}catch(error){throw Object.assign(new Error(bitrateMessage(error)),{bitrateMessage:true});}return pairedSnapshot();}
         if(action==='display-select'){try{displays.apply(data);}catch(error){throw Object.assign(new Error(displayMessage(error)),{displayMessage:true});}return pairedSnapshot();}
         if(action==='input-set-paused'){try{displays.setInput(data);}catch(error){throw Object.assign(new Error(displayMessage(error)),{displayMessage:true});}return pairedSnapshot();}
@@ -204,7 +217,7 @@ async function start(){
         else if(action==='paired-send'){const sent=await paired.sendCurrent();return {message:sent?'已加密发送':'没有可发送的内容'};}
         else throw new Error('Unknown action');
         network.reconcile();paired.reconcileRoutes();viewer.reconcile();files.reconcile();terminal.reconcile();return pairedSnapshot();
-      }catch(error){throw new Error(error.fileMessage||error.bitrateMessage||error.displayMessage||error.privacyMessage||error.audioMuteMessage||error.sessionLockMessage||error.wakeMessage?error.message:pairedMessage(error));}
+      }catch(error){throw new Error(error.clipboardMessage||error.fileMessage||error.bitrateMessage||error.displayMessage||error.privacyMessage||error.audioMuteMessage||error.sessionLockMessage||error.wakeMessage?error.message:pairedMessage(error));}
     }
     if(action==='select' && entry.kind==='chooser'){
       const peer=entry.data.peers.find(value=>value.id===data.id);if(!peer)throw new Error('Unknown device');

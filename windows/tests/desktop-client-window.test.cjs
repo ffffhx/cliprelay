@@ -24,6 +24,7 @@ function fixture(){
   imports['./mac/audio-mute-controller.cjs']={AudioMuteController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}setEnabled(data){this.actions.push(data);}},message:()=> 'Audio mute operation failed'};
   imports['./mac/session-lock-controller.cjs']={SessionLockController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}setEnabled(data){this.actions.push(data);}},message:()=> 'Audio mute operation failed'};
   imports['./mac/wake-controller.cjs']={WakeController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}action(action,data){this.actions.push(data);}},message:()=> 'Wake operation failed'};
+  imports['./mac/clipboard-sync.cjs']={ClipboardSync:class{constructor(){this.actions=[];this.cancelled=0;}snapshot(){return {phase:'off'};}reconcile(){}close(){this.closed=true;}cancelReceive(){this.cancelled++;}externalApplied(){}setEnabled(data){this.actions.push(data);}resume(data){this.actions.push(data);}async receive(data,authorized){assert.ok(authorized());this.actions.push(data);}},message:()=> 'Clipboard operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),module,require:name=>imports[name] || require(name),Buffer},{filename});
   const client=new module.exports.DesktopClient('.');client.open();const event={sender:client.window.webContents,senderFrame:client.window.webContents.mainFrame};
   return {client,event,viewer,controller,network,files,handlers};
@@ -45,6 +46,12 @@ test('only the owned top-level pairing page can open a viewer or change pairings
   await f.client.request(f.event,'audio-mute-set-enabled',{viewId:'owned',enabled:true});assert.equal(f.client.audioMute.actions.length,1);
   await f.client.request(f.event,'session-lock-set-enabled',{viewId:'owned',enabled:true});assert.equal(f.client.sessionLock.actions.length,1);
   await f.client.request(f.event,'wake-send',{viewId:'owned'});assert.equal(f.client.wake.actions.length,1);
+  for(const action of ['clipboard-set-enabled','clipboard-resume','clipboard-receive']){
+    await f.client.request(f.event,action,{viewId:'owned',enabled:true});
+    const calls=f.client.clipboardSync.actions.length;
+    await assert.rejects(f.client.request({...f.event,senderFrame:{}},action,{viewId:'owned',enabled:true}),/Unknown renderer/);assert.equal(f.client.clipboardSync.actions.length,calls);
+  }
+  const cancelled=f.client.clipboardSync.cancelled;f.client.window.webContents.emit('did-start-loading');f.client.window.webContents.emit('render-process-gone');assert.equal(f.client.clipboardSync.cancelled,cancelled+2);
   await assert.rejects(f.client.request({...f.event,senderFrame:{}},'audio-mute-set-enabled',{viewId:'owned',enabled:false}),/Unknown renderer/);assert.equal(f.client.audioMute.actions.length,1);
   await assert.rejects(f.client.request({...f.event,senderFrame:{}},'session-lock-set-enabled',{viewId:'owned',enabled:false}),/Unknown renderer/);assert.equal(f.client.sessionLock.actions.length,1);
   await assert.rejects(f.client.request({...f.event,senderFrame:{}},'wake-send',{viewId:'owned'}),/Unknown renderer/);assert.equal(f.client.wake.actions.length,1);

@@ -29,13 +29,20 @@ function clipboardAccess({clipboard,nativeImage,ClipboardItem}){
           const bytes=Buffer.from(await blob.arrayBuffer());check(active);
           if(bytes.length!==blob.size)throw fault('INVALID_CLIPBOARD');
           if(type==='image/png'){const expected=pngSize(bytes),image=nativeImage.createFromBuffer(bytes),size=image.getSize();if(image.isEmpty() || size.width!==expected.width || size.height!==expected.height)throw fault('INVALID_IMAGE');return {kind:'png',bytes};}
-          return {kind:'text',text:new TextDecoder('utf-8',{fatal:true}).decode(bytes)};
+          const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);return text?{kind:'text',text}:{kind:'empty'};
         }
         return {kind:'empty'};
       }
       const image=clipboard.readImage();
       if(!image.isEmpty()){const bytes=image.toPNG();pngSize(bytes);return {kind:'png',bytes};}
       const text=await access.readText(active);return text?{kind:'text',text}:{kind:'empty'};
+    },
+    async writePayload(value,active=()=>true){
+      if(value.kind==='text')return access.writeText(value.text,active);
+      if(value.kind!=='png')throw fault('INVALID_CLIPBOARD');
+      const expected=pngSize(value.bytes),image=nativeImage.createFromBuffer(value.bytes),size=image.getSize();
+      if(image.isEmpty() || size.width!==expected.width || size.height!==expected.height)throw fault('INVALID_IMAGE');
+      return access.writeImage(image,active);
     },
     async writeImage(image,active=()=>true){
       if(image.isEmpty())throw fault('INVALID_IMAGE');check(active);

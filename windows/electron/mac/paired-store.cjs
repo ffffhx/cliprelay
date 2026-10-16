@@ -58,6 +58,7 @@ class PairedStore{
   }
   commit(next){this.write(this.directory,this.file,next);this.data=next;}
   validateHost(host){
+    if(host?.clipboardSync!==undefined && typeof host.clipboardSync!=='boolean')throw fault('INVALID_HOST');
     if(!host || !/^[a-f0-9]{64}$/.test(host.id) || typeof host.name!=='string' || !host.name || host.name.length>128 || typeof host.enabled!=='boolean' || !/^[a-f0-9]{32}$/.test(host.clientId) || typeof host.certificate!=='string' || host.certificate.length>16384)throw fault('INVALID_HOST');
     if(host.networkId!==undefined){
       if(!/^[a-f0-9]{32}$/.test(host.networkId) || ['address','port','overlay','overlayPort','routeId','routeReady'].some(key=>host[key]!==undefined))throw fault('INVALID_HOST');
@@ -93,6 +94,7 @@ class PairedStore{
   select(id){if(id!==null && !this.data.hosts.some(host=>host.id===id))throw fault('UNKNOWN_HOST');this.commit({...this.data,selected:id,legacySelected:false});}
   selectLegacy(){this.commit({...this.data,selected:null,legacySelected:true});}
   enable(id,value){if(typeof value!=='boolean' || !this.data.hosts.some(host=>host.id===id))throw fault('UNKNOWN_HOST');this.commit({...this.data,hosts:this.hosts().map(host=>host.id===id?{...host,enabled:value}:host)});}
+  setClipboardSync(id,value){if(typeof value!=='boolean' || !this.data.hosts.some(host=>host.id===id))throw fault('UNKNOWN_HOST');this.commit({...this.data,hosts:this.hosts().map(host=>host.id===id?{...host,clipboardSync:value}:host)});}
   remove(id){
     this.commit({...this.data,selected:this.data.selected===id?null:this.data.selected,hosts:this.hosts().filter(host=>host.id!==id),receipts:Object.fromEntries(Object.entries(this.data.receipts).filter(([key])=>!key.startsWith(id+':')))});
   }

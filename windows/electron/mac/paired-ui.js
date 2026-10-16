@@ -6,6 +6,7 @@ import {mountPrivacy} from './privacy-ui.js';
 import {mountAudioMute} from './audio-mute-ui.js';
 import {mountSessionLock} from './session-lock-ui.js';
 import {mountWake} from './wake-ui.js';
+import {mountClipboard} from './clipboard-ui.js';
 export async function mount(root,api,close,initial){
   root.className='paired';let state=initial,closed=false,busy=false,feedbackText='',feedbackUntil=0;
   const element=(tag,text)=>{const item=document.createElement(tag);if(text)item.textContent=text;return item;};
@@ -13,6 +14,7 @@ export async function mount(root,api,close,initial){
   const list=element('div');list.className='paired-hosts';list.setAttribute('aria-label','已配对电脑');root.append(list);
   const status=element('p'),send=element('button','发送当前剪贴板');send.onclick=()=>run(async()=>{const result=await api.request('paired-send');feedback(result.message);});root.append(send,status);
   function feedback(value){feedbackText=value;feedbackUntil=Date.now()+5000;status.textContent=value;}
+  const clipboardSync=mountClipboard(root,async(action,data)=>{const next=await api.request(action,data);if(state.clipboardSync?.viewId===data.viewId){state=next;render();}return state;});
   const remote=element('section');remote.append(element('h2','远程桌面'));
   const resolutionLabel=element('label','画面质量'),resolution=element('select');
   for(const [value,title] of [['720','流畅 · 720p / 30 帧'],['1080','清晰 · 1080p / 60 帧'],['2160','超清 · 4K / 60 帧']]){const option=element('option',title);option.value=value;resolution.append(option);}resolution.value='1080';resolutionLabel.append(resolution);remote.append(resolutionLabel);
@@ -45,6 +47,7 @@ export async function mount(root,api,close,initial){
   const footer=element('div');footer.className='actions';const done=element('button','关闭');done.onclick=close;footer.append(done);root.append(footer);
   let roster='',networkRoster='';
   function render(){
+    clipboardSync.render(state);
     bitrate.render(state);
     displays.render(state);
     input.render(state);

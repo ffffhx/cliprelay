@@ -23,6 +23,8 @@ async function fixture({autoStart=false}={}){
   Object.assign(imports,{'./network-catalog.cjs':{NetworkCatalog:class{}},'./network-controller.cjs':{NetworkController:Network},'./routed-store.cjs':{RoutedStore:class{constructor(base){return base;}}},'./client-identity.cjs':{createClientIdentity:()=>{}}});
   const fileActions=[];imports['./file-controller.cjs']={FileController:class{snapshot(){return {tasks:[]};}reconcile(){}releaseWindow(){}close(){}async action(action,data,window){fileActions.push({action,data,window});}},message:()=> 'File operation failed'};
   imports['./terminal-window.cjs']={DesktopTerminal:class{open(){}reconcile(){}close(){}}};
+  const clipboardActions=[];let clipboardCancels=0,clipboardAuthorized;
+  imports['./clipboard-sync.cjs']={ClipboardSync:class{snapshot(){return {phase:'off'};}reconcile(){}close(){}cancelReceive(){clipboardCancels++;}externalApplied(){}setEnabled(data){clipboardActions.push(['set',data]);}resume(data){clipboardActions.push(['resume',data]);}async receive(data,authorized){assert.ok(authorized());clipboardAuthorized=authorized;clipboardActions.push(['receive',data]);}},message:()=> 'Clipboard operation failed'};
   const bitrateActions=[];imports['./bitrate-controller.cjs']={BitrateController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}apply(data){bitrateActions.push(data);}},message:()=> 'Bitrate operation failed'};
   const displayActions=[],inputActions=[];imports['./display-controller.cjs']={DisplayController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}apply(data){displayActions.push(data);}setInput(data){inputActions.push(data);}},message:()=> 'Display operation failed'};
   const privacyActions=[];imports['./privacy-controller.cjs']={PrivacyController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}setEnabled(data){privacyActions.push(data);}},message:()=> 'Privacy operation failed'};
@@ -32,7 +34,7 @@ async function fixture({autoStart=false}={}){
   const hostActions=[];let hostOwner;imports['./host-permission-controller.cjs']={HostPermissionController:class{constructor(){hostOwner=this;this.releases=0;this.closes=0;this.stop=Promise.resolve();}snapshot(){return {available:true,screenRecording:null,inputControl:null};}async action(action,data){hostActions.push({action,data});return this.snapshot();}releaseWindow(){this.releases++;return this.stop;}close(){this.closes++;return this.stop;}},message:()=> 'Permission operation failed'};
   const hostingActions=[];let hostingOwner;imports['./host-controller.cjs']={HostController:class{constructor(options){hostingOwner=this;this.options=options;this.releases=0;this.closes=0;this.launches=0;this.state={available:true,phase:'idle',requests:[],nativeWorkers:false};}snapshot(){return this.state;}emit(value){this.state={...this.state,...value};this.options.onUpdate(this.state);}async launch(){this.launches++;}async action(action,data){hostingActions.push({action,data});return this.snapshot();}releaseWindow(){this.releases++;}async close(){this.closes++;}},message:()=> 'Hosting operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),require:name=>imports[name] || require(name),setTimeout:()=>0,Buffer,URLSearchParams},{filename});await ready;
-  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},openPermissions:()=>{menuItems.find(item=>item.label==='本机远程访问权限…').click();return windows.at(-1);},openHost:()=>{menuItems.find(item=>item.label==='允许其他设备连接这台 Mac…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},get quits(){return quits;},get trayTitle(){return trayTitle;},controller,windows,fileActions,bitrateActions,displayActions,inputActions,privacyActions,audioActions,lockActions,wakeActions,hostActions,hostOwner,hostingActions,hostingOwner,appEvents,notifications,accessibility,savedConfigs};
+  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},openPermissions:()=>{menuItems.find(item=>item.label==='本机远程访问权限…').click();return windows.at(-1);},openHost:()=>{menuItems.find(item=>item.label==='允许其他设备连接这台 Mac…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},get quits(){return quits;},get trayTitle(){return trayTitle;},clipboardActions,get clipboardCancels(){return clipboardCancels;},get clipboardAuthorized(){return clipboardAuthorized;},controller,windows,fileActions,bitrateActions,displayActions,inputActions,privacyActions,audioActions,lockActions,wakeActions,hostActions,hostOwner,hostingActions,hostingOwner,appEvents,notifications,accessibility,savedConfigs};
 }
 test('Mac pairing IPC is restricted to its owned top-level window and never returns key material',async()=>{
   const f=await fixture(),window=f.open(),event=f.event(window);
@@ -70,6 +72,20 @@ test('Mac pairing IPC is restricted to its owned top-level window and never retu
   await assert.rejects(f.request({...event,senderFrame:{}},'input-set-paused',{}),/Unknown renderer/);
   await assert.rejects(f.request(f.event(alert),'input-set-paused',{}),/Unknown action/);assert.equal(f.inputActions.length,1);
 });
+test('Mac clipboard IPC requires its exact paired document and releases manual requests on reload, crash and close',async()=>{
+  const f=await fixture(),window=f.open(),event=f.event(window),url=event.senderFrame.url;
+  for(const action of ['clipboard-set-enabled','clipboard-resume','clipboard-receive']){
+    await f.request(event,action,{viewId:'owned',enabled:true});
+    await assert.rejects(f.request({...event,senderFrame:{}},action,{}),/Unknown renderer/);
+    event.senderFrame.url=url+'#wrong';await assert.rejects(f.request(event,action,{}));event.senderFrame.url=url;
+  }
+  assert.deepEqual(f.clipboardActions.map(action=>action[0]),['set','resume','receive']);assert.equal(f.clipboardAuthorized(),true);
+  const other=f.openPermissions();await assert.rejects(f.request(f.event(other),'clipboard-receive',{}));
+  window.webContents.emit('did-start-loading');window.webContents.emit('render-process-gone');window.close();
+  assert.equal(f.clipboardCancels,3);assert.equal(f.clipboardAuthorized(),false);
+  await assert.rejects(f.request(event,'clipboard-receive',{}));assert.equal(f.clipboardActions.length,3);
+});
+
 test('Mac hotkey never falls back to enabled legacy HTTP after a paired send failure',async()=>{
   const f=await fixture();f.hotkey();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.encryptedSends,1);assert.equal(f.legacySends,0);
 });

@@ -46,7 +46,7 @@ function authorize(config,remoteAddress,headers={}){
   if(expected && (typeof supplied!=='string' || !timingSafeEqual(hash(expected),hash(supplied))))return {status:401,body:'unauthorized'};
   return null;
 }
-async function receive(method,path,body,{clipboard,notify,getConfig=()=>({}),withClipboard=operation=>operation()},context={}){
+async function receive(method,path,body,{clipboard,notify,getConfig=()=>({}),withClipboard=operation=>operation(),onClipboardApplied=()=>{}},context={}){
   const denied=authorize(getConfig(),context.remoteAddress,context.headers);if(denied)return denied;
   if(Buffer.byteLength(body,'utf8')>MAX_BODY)return {status:413,body:'too large'};
   if(method==='POST' && path==='/push'){
@@ -58,6 +58,7 @@ async function receive(method,path,body,{clipboard,notify,getConfig=()=>({}),wit
             const denied=authorize(getConfig(),context.remoteAddress,context.headers);if(denied)return denied;
             if(context.active && !context.active())return {status:503,body:'request cancelled'};
             await clipboard.writeText(data.text);
+            onClipboardApplied();
             try{notify('ClipRelay 收到文本',Buffer.from(data.text,'utf8').subarray(0,80).toString('utf8'));}catch{}
             return {status:200,body:'ok'};
           });

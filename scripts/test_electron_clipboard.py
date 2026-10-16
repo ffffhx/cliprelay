@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--runtime', type=Path, required=True)
     parser.add_argument('--modules', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--native-worker', type=Path)
     args = parser.parse_args()
     runtime, modules, report = args.runtime.resolve(), args.modules.resolve(), args.report.resolve()
     assert runtime.exists() and (modules/'clipboard-access.cjs').is_file()
@@ -34,7 +35,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix='cliprelay-native-clipboard-') as temporary:
         directory = Path(temporary).resolve()
         (directory/'user-data').mkdir()
-        env['CLIPRELAY_NATIVE_CLIPBOARD_OPTIONS'] = json.dumps(dict(userData=str(directory/'user-data'), modules=str(modules), report=str(report), png=base64.b64encode(png).decode()))
+        worker = args.native_worker.resolve() if args.native_worker else modules/'host-companion/runtime/cliprelay-host-network'
+        if args.native_worker:
+            assert worker.is_file(), 'Requested native worker missing'
+        options = dict(userData=str(directory/'user-data'), modules=str(modules), report=str(report), png=base64.b64encode(png).decode())
+        if worker.is_file():
+            options['nativeWorker'] = str(worker)
+        env['CLIPRELAY_NATIVE_CLIPBOARD_OPTIONS'] = json.dumps(options)
         if sys.platform == 'darwin':
             assert runtime.suffix == '.app'
             resources = runtime/'Contents/Resources'
@@ -57,7 +64,7 @@ def main():
         if result.returncode:
             raise RuntimeError('Native Electron clipboard fixture failed:\n'+result.stderr.decode(errors='replace')[-6000:])
     data = json.loads(report.read_text())
-    assert len(data['cases']) == (10 if sys.platform == 'darwin' else 9)
+    assert len(data['cases']) == (15 if sys.platform == 'darwin' else 14)+(1 if worker.is_file() else 0)
     assert data['syntheticOnly'] and data['windowsCreated'] == 0 and data['electron'] == '44.4.3'
     print(json.dumps(data, indent=2))
 

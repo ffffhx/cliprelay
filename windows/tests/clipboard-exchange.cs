@@ -40,6 +40,10 @@ class ClipboardExchangeTests {
     }
     [STAThread] static int Main(string[] args) {
         if (args.Length==1 && args[0]=="--native-clipboard-fixture") return NativeAcceptance();
+        if (args.Length==1 && args[0]=="--native-clipboard-probe") {
+            Check(Environment.GetEnvironmentVariable("CI")=="true" && Environment.GetEnvironmentVariable("GITHUB_ACTIONS")=="true" && Environment.GetEnvironmentVariable("CLIPRELAY_NATIVE_CLIPBOARD_FIXTURE")=="1","Native clipboard probe requires disposable CI");
+            return ClipboardExchange.Serve(new ClipboardExchange(new DesktopClipboard()));
+        }
         var clipboard=new Fake(); var worker=new ClipboardExchange(clipboard);
         if (args.Length==1 && args[0]=="--clipboard-probe") return ClipboardExchange.Serve(worker);
         string text="Unicode 中文 👩‍💻\nquote \" & < >";

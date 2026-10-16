@@ -20,6 +20,7 @@ class RoutedStore{
   select(id){return this.base.select(id);}
   selectLegacy(){return this.base.selectLegacy();}
   enable(id,enabled){return this.base.enable(id,enabled);}
+  setClipboardSync(id,enabled){return this.base.setClipboardSync(id,enabled);}
   remove(id){return this.base.remove(id);}
   receipts(id){return this.base.receipts(id);}
 }
