@@ -82,6 +82,9 @@ def owner_launcher(binary, state):
 def main(binary, report):
     assert sys.platform == 'darwin', 'Run positive native ownership cases only on disposable macOS CI'
     cases = []
+    def passed(name):
+        cases.append(name)
+        print(json.dumps({'case': name, 'passed': True}), flush=True)
     with tempfile.TemporaryDirectory(prefix='cliprelay-companion-ci-') as temporary:
         root = Path(temporary).resolve()
         state = root/'state'
@@ -145,7 +148,7 @@ def main(binary, report):
         ipc.settimeout(1)
         assert ipc.recv(1) == b''
         ipc.close()
-        cases.append('tls-pairing-ipc-and-eof-cleanup')
+        passed('tls-pairing-ipc-and-eof-cleanup')
 
         child_input, parent_input = socket.socketpair()
         process = start(binary, state, payload, child_input)
@@ -155,13 +158,13 @@ def main(binary, report):
         parent_input.shutdown(socket.SHUT_WR)
         finish(process, status)
         parent_input.close()
-        cases.append('inherited-unix-stream-owner')
+        passed('inherited-unix-stream-owner')
 
         process = start(binary, state, payload)
         status = read_status(process)
         process.stdin.write(b'x')
         finish(process, status, 1, b'HOST_PROTOCOL_INVALID')
-        cases.append('extra-byte-without-newline-stops-service')
+        passed('extra-byte-without-newline-stops-service')
 
         for action in ['exit', 'crash']:
             launcher = subprocess.Popen([sys.executable, __file__, str(binary), '--owner-launcher', str(state)],
@@ -186,7 +189,7 @@ def main(binary, report):
                         os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-            cases.append('parent-'+action+'-with-inherited-writer-held')
+            passed('parent-'+action+'-with-inherited-writer-held')
 
         for name, frame in [('invalid-frame', b'{"password":"not-a-complete-init"}\n'),
                             ('oversized-frame', b'x'*(96*1024+2)), ('initialization-timeout', None)]:
@@ -202,22 +205,41 @@ def main(binary, report):
             process.stdin.close()
             assert_state()
             ports_free()
-            cases.append(name)
+            passed(name)
 
         before_runtime = {str(path) for path in Path('/private/tmp').glob('cliprelay-host-*')}
-        with socket.socket() as conflict:
+        # Occupy the same wildcard dual-stack address used by Go. This fixture
+        # must not rely on conflicts between different address families.
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as conflict:
             conflict.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            conflict.bind(('127.0.0.1', 48792))
+            conflict.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            conflict.bind(('::', 48792))
             conflict.listen()
             process = start(binary, state, payload)
-            assert process.wait(timeout=5) == 1
-            assert process.stdout.read() == b''
-            assert process.stderr.read().strip() == b'HOST_SERVICE_UNAVAILABLE'
-            process.stdin.close()
+            try:
+                try:
+                    code = process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    observed = 'no-output'
+                    if select.select([process.stdout], [], [], 0)[0]:
+                        line = process.stdout.readline(2049)
+                        observed = json.loads(line).get('type', 'unknown') if line else 'eof'
+                    raise RuntimeError('Required-listener conflict did not stop companion; status='+observed) from None
+                assert code == 1
+                assert process.stdout.read() == b''
+                assert process.stderr.read().strip() == b'HOST_SERVICE_UNAVAILABLE'
+            finally:
+                process.stdin.close()
+                if process.poll() is None:
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
         assert {str(path) for path in Path('/private/tmp').glob('cliprelay-host-*')} == before_runtime
         ports_free()
         assert_state()
-        cases.append('required-listener-conflict-rolls-back-runtime')
+        passed('required-listener-conflict-rolls-back-runtime')
 
         for name, stdin, owner in [('wrong-parent', subprocess.PIPE, os.getpid()+1),
                                    ('regular-input', open(state/'cacert.pem', 'rb'), None)]:
@@ -228,7 +250,7 @@ def main(binary, report):
             finally:
                 if hasattr(stdin, 'close'):
                     stdin.close()
-            cases.append(name)
+            passed(name)
         assert_state()
     result = {'cases': cases, 'passed': len(cases), 'nativeWorkers': False,
               'architecture': platform.machine(), 'executableSha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
