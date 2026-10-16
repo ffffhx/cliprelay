@@ -78,7 +78,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     expected_cases = []
     for suite, filename in [('ClipRelayInputTest', 'input_integration_test.cpp'),
                             ('ClipRelayMacMouseTest', 'macos_mouse_test.cpp'),
-                            ('ClipRelayMacCaptureTest', 'macos_capture_test.mm')]:
+                            ('ClipRelayMacCaptureTest', 'macos_capture_test.mm'),
+                            ('ClipRelayMacOwnerTest', 'macos_owner_test.cpp')]:
         expected_cases.extend((suite, name) for name in re.findall(r'TEST_F\('+suite+r',\s*(\w+)\)',
                               (root / 'engine/sunshine' / filename).read_text()))
     expected = [name for _, name in expected_cases]
@@ -121,6 +122,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
                     '--engine', str(binary), '--report', str(artifact / 'permission-tests.json')], check=True)
     subprocess.run([sys.executable, str(root / 'scripts/test_sunshine_macos_state.py'),
                     '--engine', str(binary), '--report', str(artifact / 'state-tests.json')], check=True)
+    subprocess.run([sys.executable, str(root / 'scripts/test_sunshine_macos_owner.py'),
+                    '--engine', str(binary), '--report', str(artifact / 'owner-tests.json')], check=True)
     native, minimum_versions = {}, {}
     for path in sorted(app.rglob('*')):
         if path.is_symlink():
@@ -163,10 +166,10 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md',
         'macos-control.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp',
         'cliprelay_capture.h', 'macos_capture_test.mm', 'cliprelay_permissions.h', 'permissions_test.cpp',
-        'cliprelay_state.h', 'state_test.cpp']]
+        'cliprelay_state.h', 'state_test.cpp', 'cliprelay_owner.h', 'owner_test.cpp', 'macos_owner_test.cpp']]
     tracked += ['engine/sunshine/macos-dependencies.json', 'scripts/prepare_sunshine.py',
                 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py',
-                '.github/workflows/sunshine-macos.yml', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py']
+                '.github/workflows/sunshine-macos.yml', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py']
     source_hashes = {}
     for name in tracked:
         dest = artifact / 'source' / name
@@ -197,6 +200,7 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'signature': 'ad-hoc', 'notarized': False,
         'permissionCommand': 1,
         'stateCommand': 1,
+        'ownerCommand': 1,
         'bundleIdentifier': plist['CFBundleIdentifier'],
         'scope': 'Internal engine build only. No ClipRelay host UI, permission grant, capture, network listener or hardware streaming acceptance.',
         'files': {}, 'symlinks': {}

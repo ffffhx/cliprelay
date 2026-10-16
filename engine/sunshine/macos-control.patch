@@ -15,10 +15,44 @@ index 4bea96b..a78461d 100644
      }
  #endif
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index c364049..8471aef 100644
+index c364049..eb4804b 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
-@@ -2346,11 +2346,15 @@ namespace confighttp {
+@@ -35,6 +35,12 @@
+   #include <Windows.h>
+ #endif
+ 
++#ifdef __APPLE__
++  #include "cliprelay_owner.h"
++
++  #include <CoreGraphics/CoreGraphics.h>
++#endif
++
+ // local includes
+ #include "config.h"
+ #include "cliprelay_control.h"
+@@ -1254,6 +1260,20 @@ namespace confighttp {
+     }
+   }
+ 
++#ifdef __APPLE__
++  /**
++   * @brief Identify the managed engine process after local admin authentication.
++   * @param response HTTPS response containing process ownership and current grants.
++   * @param request Authenticated read-only request; no permission prompt is opened.
++   */
++  void cliprelayHost(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) {
++      return;
++    }
++    send_response(response, nlohmann::json {{"protocol", 1}, {"pid", getpid()}, {"ownerPid", getppid()}, {"owned", cliprelay::macos::owner_admitted(STDIN_FILENO, getenv("CLIPRELAY_HOST_OWNER_PID"))}, {"screenRecording", CGPreflightScreenCaptureAccess()}, {"inputControl", CGPreflightPostEventAccess()}});
++  }
++#endif
++
+   /**
+    * @brief Get the list of paired clients.
+    * @param response The HTTP response object.
+@@ -2346,11 +2366,15 @@ namespace confighttp {
  
    void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
      if (!authenticate(response, request)) return;
@@ -35,20 +69,31 @@ index c364049..8471aef 100644
      } else if (!request->query_string.empty()) {
        bad_request(response, request, "Invalid display query"); return;
      }
+@@ -2520,6 +2544,9 @@ namespace confighttp {
+     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
+     server.resource["^/api/apps/close$"]["POST"] = closeApp;
+     server.resource["^/api/clients/list$"]["GET"] = getClients;
++#ifdef __APPLE__
++    server.resource["^/api/cliprelay/host$"]["GET"] = cliprelayHost;
++#endif
+     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
+     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
+     server.resource["^/api/clients/update$"]["POST"] = updateClient;
 diff --git a/src/main.cpp b/src/main.cpp
-index f349a23..aa20683 100644
+index f349a23..601aaaa 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -13,6 +13,8 @@
+@@ -13,6 +13,9 @@
  
  // platform includes
  #ifdef __APPLE__
++  #include "cliprelay_owner.h"
 +  #include "platform/macos/misc.h"
 +
    #include <mach-o/dyld.h>
  #endif
  #ifdef __linux__
-@@ -182,6 +184,16 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event)
+@@ -182,6 +185,19 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event)
   * @return Process or platform callback exit code.
   */
  int main(int argc, char *argv[]) {
@@ -58,6 +103,9 @@ index f349a23..aa20683 100644
 +  if (auto code = platf::cliprelay_permission_command(argc, argv, std::cout)) {
 +    return *code;
 +  }
++  if (auto code = platf::cliprelay_owner_command(argc, argv, std::cout)) {
++    return *code;
++  }
 +  if (auto code = platf::cliprelay_state_command(argc, argv, std::cout)) {
 +    return *code;
 +  }
@@ -65,6 +113,50 @@ index f349a23..aa20683 100644
  #ifdef __linux__
    const bool privileged_execution = getauxval(AT_SECURE) != 0 || platf::has_elevated_privileges(true);
    if (privileged_execution && !platf::sanitize_process_environment()) {
+@@ -291,6 +307,31 @@ int main(int argc, char *argv[]) {
+   config::select_all_gamepad_drivers_if_licensed(lvh::get_license_status().license.licensed());
+ #endif
+ 
++#ifdef __APPLE__
++  // Configuration-only commands above remain usable without hosting. Every
++  // actual host must retain its original parent and the application's pipe.
++  const int owner_parent = getppid();
++  if (!cliprelay::macos::owner_admitted(STDIN_FILENO, getenv("CLIPRELAY_HOST_OWNER_PID"), owner_parent)) {
++    BOOST_LOG(error) << "ClipRelay host requires a live application owner";
++    return 2;
++  }
++  auto owner_shutdown_event = mail::man->event<bool>(mail::shutdown);
++  std::unique_ptr<cliprelay::macos::owner_monitor> owner;
++  try {
++    owner = std::make_unique<cliprelay::macos::owner_monitor>(STDIN_FILENO, owner_parent, [owner_shutdown_event] {
++      owner_shutdown_event->raise(true);
++    },
++                                                              [] {
++                                                                std::_Exit(70);
++                                                              });
++  } catch (...) {
++    return 2;
++  }
++  if (!owner->connected() || owner_shutdown_event->peek()) {
++    return 0;
++  }
++#endif
++
+   // Adding guard here first as it also performs recovery after crash,
+   // otherwise people could theoretically end up without display output.
+   // It also should be destroyed before forced shutdown to expedite the cleanup.
+@@ -436,6 +477,11 @@ int main(int argc, char *argv[]) {
+   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+ #endif
+ 
++#ifdef __APPLE__
++  if (!owner->connected() || owner_shutdown_event->peek()) {
++    return 0;
++  }
++#endif
+   proc::refresh(config::stream.file_apps);
+ 
+   // If any of the following fail, we log an error and continue event though sunshine will not function correctly.
 diff --git a/src/platform/common.h b/src/platform/common.h
 index f9e144e..9caefb1 100644
 --- a/src/platform/common.h
@@ -765,10 +857,10 @@ index d5fe3d0..09a3db0 100644
      // Print all displays available with their names and ids
      BOOST_LOG(debug) << "Detecting displays"sv;
 diff --git a/src/platform/macos/misc.h b/src/platform/macos/misc.h
-index 0af5d1a..21fc64a 100644
+index 0af5d1a..2d43beb 100644
 --- a/src/platform/macos/misc.h
 +++ b/src/platform/macos/misc.h
-@@ -5,12 +5,33 @@
+@@ -5,12 +5,42 @@
  #pragma once
  
  // standard includes
@@ -781,6 +873,15 @@ index 0af5d1a..21fc64a 100644
  #include <CoreGraphics/CoreGraphics.h>
  
  namespace platf {
++  /**
++   * @brief Handle ownership diagnostics without configuration or host startup.
++   * @param argc Argument count.
++   * @param argv Process arguments.
++   * @param output Bounded JSON replies for check or wait diagnostics.
++   * @return Command status, or no value when no ownership command is present.
++   */
++  std::optional<int> cliprelay_owner_command(int argc, const char *const *argv, std::ostream &output);
++
 +  /**
 +   * @brief Handle explicit permission commands before any host initialization.
 +   * @param argc Process argument count.
@@ -803,7 +904,7 @@ index 0af5d1a..21fc64a 100644
     * @brief Check whether macOS has granted screen-capture permission.
     *
 diff --git a/src/platform/macos/misc.mm b/src/platform/macos/misc.mm
-index 7c3127d..77169b9 100644
+index 7c3127d..c456f19 100644
 --- a/src/platform/macos/misc.mm
 +++ b/src/platform/macos/misc.mm
 @@ -24,6 +24,7 @@
@@ -814,19 +915,64 @@ index 7c3127d..77169b9 100644
  
  // lib includes
  #include <boost/asio/ip/address.hpp>
-@@ -32,6 +33,8 @@
+@@ -32,6 +33,9 @@
  
  // local includes
  #include "misc.h"
++#include "src/cliprelay_owner.h"
 +#include "src/cliprelay_permissions.h"
 +#include "src/cliprelay_state.h"
  #include "src/entry_handler.h"
  #include "src/logging.h"
  #include "src/platform/common.h"
-@@ -42,6 +45,33 @@ namespace bp = boost::process::v1;
+@@ -42,6 +46,77 @@ namespace bp = boost::process::v1;
  
  namespace platf {
  
++  std::optional<int> cliprelay_owner_command(int argc, const char *const *argv, std::ostream &output) {
++    constexpr std::string_view option = "--cliprelay-owner";
++    bool reserved = false;
++    for (int index = 1; argv && index < argc; ++index) {
++      reserved |= argv[index] && std::string_view(argv[index]).starts_with(option);
++    }
++    if (!reserved) {
++      return std::nullopt;
++    }
++    const auto error = [&](const char *code) {
++      output << "{\"protocol\":1,\"error\":\"" << code << "\"}\n";
++      return 2;
++    };
++    if (argc != 3 || !argv[1] || !argv[2] || argv[1] != option || (std::string_view(argv[2]) != "check" && std::string_view(argv[2]) != "wait")) {
++      return error("invalid_command");
++    }
++    const auto *parent = getenv("CLIPRELAY_HOST_OWNER_PID");
++    if (!parent) {
++      return error("owner_required");
++    }
++    const int owner_parent = getppid();
++    if (!cliprelay::macos::owner_admitted(STDIN_FILENO, parent, owner_parent)) {
++      return error("invalid_owner");
++    }
++    if (std::string_view(argv[2]) == "check") {
++      output << "{\"protocol\":1,\"ready\":true}\n";
++      return 0;
++    }
++    std::atomic<bool> stopped {false};
++    cliprelay::macos::owner_monitor owner(STDIN_FILENO, owner_parent, [&] {
++      stopped.store(true);
++    },
++                                          [] {
++                                            std::_Exit(70);
++                                          });
++    output << "{\"protocol\":1,\"ready\":true}\n"
++           << std::flush;
++    while (!stopped.load()) {
++      std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    }
++    output << "{\"protocol\":1,\"stopped\":true}\n";
++    return 0;
++  }
++
 +  std::optional<int> cliprelay_permission_command(int argc, const char *const *argv, std::ostream &output) {
 +    const cliprelay::macos::permission_api api {
 +      CGPreflightScreenCaptureAccess,
@@ -857,7 +1003,7 @@ index 7c3127d..77169b9 100644
  // Even though the following two functions are available starting in macOS 10.15, they weren't
  // actually in the Mac SDK until Xcode 12.2, the first to include the SDK for macOS 11
  #if __MAC_OS_X_VERSION_MAX_ALLOWED < 110000  // __MAC_11_0
-@@ -93,7 +123,7 @@ namespace platf {
+@@ -93,7 +168,7 @@ namespace platf {
          CGPreflightScreenCaptureAccess != nullptr && CGRequestScreenCaptureAccess != nullptr && !CGPreflightScreenCaptureAccess()) {
        BOOST_LOG(error) << "No screen capture permission!"sv;
        BOOST_LOG(error) << "Please activate it in 'System Preferences' -> 'Privacy' -> 'Screen Recording'"sv;
@@ -866,7 +1012,7 @@ index 7c3127d..77169b9 100644
        return nullptr;
      }
  #pragma clang diagnostic pop
-@@ -103,12 +133,13 @@ namespace platf {
+@@ -103,12 +178,13 @@ namespace platf {
    }
  
    fs::path appdata() {
@@ -885,6 +1031,106 @@ index 7c3127d..77169b9 100644
    }
  
    using ifaddr_t = util::safe_ptr<ifaddrs, freeifaddrs>;
+@@ -269,96 +345,13 @@ namespace platf {
+     // Nothing to do
+   }
+ 
+-  static pid_t g_restart_child_pid = 0;  ///< PID of the restarted child process for signal forwarding.
+-
+   /**
+-   * @brief Forward a signal to the restarted child process.
+-   *
+-   * This handler is installed in the parent (supervisor) process after forking
+-   * the new Sunshine instance. It ensures that signals like SIGINT (Ctrl+C)
+-   * are delivered to the child.
++   * @brief Stop the managed engine; only ClipRelay may launch its replacement.
+    *
+-   * @param sig The signal number to forward.
++   * Native self-restart must not fork a process that escapes the application's
++   * child handle and ownership pipe. Existing signal handlers perform cleanup.
+    */
+-  static void forward_signal_to_child(int sig) {
+-    if (g_restart_child_pid > 0) {
+-      kill(g_restart_child_pid, sig);
+-    }
+-  }
+-
+-  /**
+-   * @brief Request a Sunshine process restart on exit.
+-   *
+-   * This is registered as an atexit handler by restart(). It forks a child
+-   * process with a fresh PID so that macOS WindowServer treats it as a new
+-   * application (required for the system tray icon to reinitialize).
+-   *
+-   * The parent process stays alive as a transparent supervisor: it forwards
+-   * signals (SIGINT, SIGTERM, SIGHUP) to the child and blocks in waitpid().
+-   * This keeps the shell tracking the original PID as its foreground job,
+-   * preserving Ctrl+C and terminal log output.
+-   */
+-  void restart_on_exit() {
+-    char executable[2048];
+-    uint32_t size = sizeof(executable);
+-    if (_NSGetExecutablePath(executable, &size) < 0) {
+-      BOOST_LOG(fatal) << "NSGetExecutablePath() failed: "sv << errno;
+-      return;
+-    }
+-
+-    // ASIO doesn't use O_CLOEXEC, so we have to close all fds ourselves.
+-    int openmax = (int) sysconf(_SC_OPEN_MAX);
+-    for (int fd = STDERR_FILENO + 1; fd < openmax; fd++) {
+-      close(fd);
+-    }
+-
+-    // Fork a child process to get a fresh PID.
+-    // A new PID is required on macOS because WindowServer associates GUI state
+-    // (tray icons, activation policy) with the PID. After execv with the same PID,
+-    // WindowServer retains stale state and silently refuses to show new tray icons.
+-    pid_t child = fork();
+-    if (child < 0) {
+-      BOOST_LOG(fatal) << "fork() failed: "sv << errno;
+-      return;
+-    }
+-
+-    if (child == 0) {
+-      // Child: create a new process group so that the parent's signal
+-      // forwarding targets only this child, not the parent itself.
+-      setpgid(0, 0);
+-
+-      // Replace this child with the new Sunshine instance
+-      execv(executable, lifetime::get_argv());
+-
+-      // If execv fails, exit the child immediately without running atexit handlers
+-      _exit(1);
+-    }
+-
+-    // Parent: become a transparent supervisor.
+-    // The parent stays alive so the shell continues to track it as the
+-    // foreground job, keeping Ctrl+C and terminal output working.
+-    g_restart_child_pid = child;
+-
+-    struct sigaction sa;
+-    memset(&sa, 0, sizeof(sa));
+-    sa.sa_handler = forward_signal_to_child;
+-    sigemptyset(&sa.sa_mask);
+-    sa.sa_flags = 0;
+-    sigaction(SIGINT, &sa, nullptr);
+-    sigaction(SIGTERM, &sa, nullptr);
+-    sigaction(SIGHUP, &sa, nullptr);
+-
+-    int status;
+-    waitpid(child, &status, 0);
+-
+-    // Exit immediately without running additional atexit handlers or
+-    // static destructors. The child has already taken over.
+-    _exit(WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+-  }
+-
+   void restart() {
+-    // Gracefully clean up and restart ourselves instead of exiting
+-    atexit(restart_on_exit);
+     lifetime::exit_sunshine(0, true);
+   }
+ 
 diff --git a/src/platform/virtualhid_input.cpp b/src/platform/virtualhid_input.cpp
 index 362f50a..ee3dcc5 100644
 --- a/src/platform/virtualhid_input.cpp

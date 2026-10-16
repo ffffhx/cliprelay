@@ -328,7 +328,7 @@ still requires runtime validation. Its bundle minimum system version is macOS
 remain ad-hoc; this does not establish Developer ID distribution or notarization.
 
 The Electron macOS packaging workflow accepts an explicit `host_engine_run_id`.
-It requires a successful native host workflow with all thirty-nine tests, verifies
+It requires a successful native host workflow with all forty-five tests, verifies
 the archive checksum and every included source against that run's Git commit,
 then stages the matching arm64 or x86_64 engine. The application packager checks
 the pinned manifest, complete file inventory, included licenses, native machine
@@ -353,8 +353,25 @@ real configuration/log initialization with an intentionally unknown command
 that exits before capture, permissions or network initialization. The receipt
 proves default application directories are unchanged and created state stays
 private. The state header, policy test and native checker are included in the
-archive, and application staging requires this receipt. Complete host service
-configuration, lifecycle, pairing and network integration remain separate work.
+archive, and application staging requires this receipt. Private application
+configuration is verified separately in both complete application packages.
+
+Actual Mac hosting also requires `CLIPRELAY_HOST_OWNER_PID` to match its direct
+parent and stdin to be an idle pipe or connected Unix stream socket. A monitor
+requests shutdown on EOF, unexpected input or parent death, even when another
+process holds the pipe open. Cleanup has a ten-second hard deadline. The monitor
+is joined on normal exit and never closes a descriptor it does not own. Native
+self-restart exits instead of forking a supervisor; ClipRelay owns replacements.
+
+`--cliprelay-owner check` and `--cliprelay-owner wait` exercise this ownership
+without capture or listeners. Packaging requires six native pipe/monitor tests
+and sixteen signed-engine command/process cases, including owner exit/crash and
+rejection of full startup without an owner. `/api/cliprelay/host` is a read-only,
+authenticated Mac endpoint returning the actual engine PID, parent PID and
+current system grants. An application owner must pin its certificate and match
+both PIDs before treating the admin connection as its own engine; this endpoint
+alone does not prove streaming or network readiness. Application lifecycle,
+pairing and network integration remain separate work.
 
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers

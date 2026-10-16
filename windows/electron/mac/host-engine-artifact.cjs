@@ -7,13 +7,13 @@ const SOURCES=[
   ...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
     'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h',
-    'macos_capture_test.mm','macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp'].map(name=>'engine/sunshine/'+name),
+    'macos_capture_test.mm','macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp','cliprelay_owner.h','owner_test.cpp','macos_owner_test.cpp'].map(name=>'engine/sunshine/'+name),
   'scripts/prepare_sunshine.py','scripts/package_sunshine_macos.py',
-  'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py'
+  'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py'
 ];
 const REQUIRED=[EXECUTABLE,'Sunshine.app/Contents/Info.plist','Sunshine.app/Contents/Resources/assets/apps.json',
   'Sunshine.app/Contents/Resources/assets/web/index.html','SUNSHINE-LICENSE','LIBVIRTUALHID-LICENSE',
-  'input-tests.xml','permission-tests.json','state-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
+  'input-tests.xml','permission-tests.json','state-tests.json','owner-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
   'dependency-licenses/icu/LICENSE','dependency-licenses/icu/license.html','dependency-licenses/miniupnpc/LICENSE',
   'dependency-licenses/openssl/LICENSE.txt','dependency-licenses/opus/COPYING',...SOURCES.map(name=>'source/'+name)];
 const hash=data=>crypto.createHash('sha256').update(data).digest('hex');
@@ -72,11 +72,11 @@ function verify(directory,pin){
   if(manifest.protocol!==1 || manifest.platform!=='darwin' || manifest.arch!==pin.arch || manifest.sourceCommit!==pin.commit ||
       manifest.upstreamCommit!==UPSTREAM || manifest.libvirtualhidCommit!==HID || manifest.executable!==EXECUTABLE ||
       manifest.deploymentTarget!=='14.2' || manifest.signature!=='ad-hoc' || manifest.notarized!==false ||
-      manifest.permissionCommand!==1 || manifest.stateCommand!==1 || manifest.bundleIdentifier!=='com.cliprelay.host-engine' ||
+      manifest.permissionCommand!==1 || manifest.stateCommand!==1 || manifest.ownerCommand!==1 || manifest.bundleIdentifier!=='com.cliprelay.host-engine' ||
       !object(manifest.files) || !sameKeys(manifest.sourceHashes,SOURCES) || !sameKeys(manifest.symlinks,[]) ||
       !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
-      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==39 || new Set(manifest.inputTests).size!==39)reject();
+      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==45 || new Set(manifest.inputTests).size!==45)reject();
   const expected=Object.keys(manifest.files);
   if(expected.length>4096 || REQUIRED.some(name=>!Object.hasOwn(manifest.files,name)))reject();
   const names=new Set(['manifest.json']);
@@ -102,7 +102,8 @@ function verify(directory,pin){
   const actualNative=[],expectedTests=[];
   const testSuites={'source/engine/sunshine/input_integration_test.cpp':'ClipRelayInputTest',
     'source/engine/sunshine/macos_mouse_test.cpp':'ClipRelayMacMouseTest',
-    'source/engine/sunshine/macos_capture_test.mm':'ClipRelayMacCaptureTest'};
+    'source/engine/sunshine/macos_capture_test.mm':'ClipRelayMacCaptureTest',
+    'source/engine/sunshine/macos_owner_test.cpp':'ClipRelayMacOwnerTest'};
   for(const name of expected){
     const data=readFile(path.join(root,name),128*1024*1024);total+=data.length;
     if(total>256*1024*1024 || hash(data)!==manifest.files[name])reject();
@@ -138,6 +139,12 @@ function verify(directory,pin){
         'permissive-directory-startup','readonly-directory-check','file-check','symlink-check','parent-symlink-check','malformed-command','private-check','private-config-startup']) ||
       !Array.isArray(state.createdPrivateEntries) || !['sunshine.conf','sunshine.log','apps.json'].every(name=>state.createdPrivateEntries.includes(name)) ||
       state.createdPrivateEntries.some(name=>!validName(name)))reject();
+  const owner=JSON.parse(readFile(path.join(root,'owner-tests.json'),16384));
+  if(owner.protocol!==1 || owner.passed!==true || owner.defaultStateUnchanged!==true || owner.ownedChildrenReaped!==true ||
+      owner.homeChanged!==false || owner.nativeRequestsExecuted!==false || owner.hostStarted!==false ||
+      JSON.stringify(owner.cases)!==JSON.stringify(['missing-owner','malformed-owner','different-parent','init-parent','null-input','file-input',
+        'tcp-input','datagram-input','malformed-command','pipe-check','unix-stream-check','pipe-eof','unexpected-input',
+        'parent-exit-pipe-held','parent-crash-pipe-held','full-host-missing-owner']))reject();
   return manifest;
 }
 function stage(source,destination,pin){

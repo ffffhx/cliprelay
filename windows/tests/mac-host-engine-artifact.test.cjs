@@ -22,15 +22,15 @@ function fixture(t,arch='arm64'){
   const sources=[...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
     'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h','macos_capture_test.mm',
-    'macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp'].map(name=>'engine/sunshine/'+name),'scripts/prepare_sunshine.py',
-    'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py'];
+    'macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp','cliprelay_owner.h','owner_test.cpp','macos_owner_test.cpp'].map(name=>'engine/sunshine/'+name),'scripts/prepare_sunshine.py',
+    'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py'];
   const manifest={protocol:1,platform:'darwin',arch,sourceCommit:commit,
     upstreamCommit:'63d35f702ee9e362e43263742981836ec0710384',libvirtualhidCommit:'53e1a949fc0784af716b782ddfa6c647cafd1f05',
-    executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,permissionCommand:1,stateCommand:1,bundleIdentifier:'com.cliprelay.host-engine',files:{},symlinks:{},sourceHashes:{},
+    executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,permissionCommand:1,stateCommand:1,ownerCommand:1,bundleIdentifier:'com.cliprelay.host-engine',files:{},symlinks:{},sourceHashes:{},
     nativeMinimumOS:{[EXECUTABLE]:'14.2.0'},nativeDependencies:{[EXECUTABLE]:['/usr/lib/libSystem.B.dylib']},inputTests:[]};
   function put(name,data){const file=path.join(source,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,data);manifest.files[name]=sha(data);}
   for(const name of sources){const data=fs.readFileSync(path.join(root,name));put('source/'+name,data);manifest.sourceHashes[name]=sha(data);
-    for(const match of data.toString().matchAll(/TEST_F\(ClipRelay(?:Input|MacMouse|MacCapture)Test,\s*(\w+)\)/g))manifest.inputTests.push(match[1]);}
+    for(const match of data.toString().matchAll(/TEST_F\(ClipRelay(?:Input|MacMouse|MacCapture|MacOwner)Test,\s*(\w+)\)/g))manifest.inputTests.push(match[1]);}
   for(const name of ['Sunshine.app/Contents/Info.plist','Sunshine.app/Contents/Resources/assets/apps.json',
     'Sunshine.app/Contents/Resources/assets/web/index.html','SUNSHINE-LICENSE','LIBVIRTUALHID-LICENSE','input-tests.xml',
     'dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt','dependency-licenses/icu/LICENSE',
@@ -42,12 +42,14 @@ function fixture(t,arch='arm64'){
   put('state-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,defaultStateUnchanged:true,stateFilesPrivate:true,homeChanged:false,nativeRequestsExecuted:false,hostStarted:false,
     cases:['missing-state-startup','relative-state-startup','root-state-startup','missing-directory-startup','permissive-directory-startup','readonly-directory-check','file-check','symlink-check','parent-symlink-check','malformed-command','private-check','private-config-startup'],createdPrivateEntries:['sunshine.conf','sunshine.log','apps.json']})));
   function pin(){const bytes=Buffer.from(JSON.stringify(manifest));fs.writeFileSync(path.join(source,'manifest.json'),bytes);return {arch,commit,manifestSha256:sha(bytes)};}
+  put('owner-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,defaultStateUnchanged:true,ownedChildrenReaped:true,homeChanged:false,nativeRequestsExecuted:false,hostStarted:false,
+    cases:['missing-owner','malformed-owner','different-parent','init-parent','null-input','file-input','tcp-input','datagram-input','malformed-command','pipe-check','unix-stream-check','pipe-eof','unexpected-input','parent-exit-pipe-held','parent-crash-pipe-held','full-host-missing-owner']})));
   return {directory,source,manifest,put,pin};
 }
 test('stages a complete pinned engine without starting it or replacing a destination',t=>{
   const f=fixture(t),pin=f.pin(),destination=path.join(f.directory,'staged');
   const result=stage(f.source,destination,pin);
-  assert.equal(result.inputTests.length,39);assert.equal(verify(destination,pin).sourceCommit,commit);
+  assert.equal(result.inputTests.length,45);assert.equal(verify(destination,pin).sourceCommit,commit);
   assert.deepEqual(fs.readFileSync(path.join(destination,EXECUTABLE)),fs.readFileSync(path.join(f.source,EXECUTABLE)));
   assert.throws(()=>stage(f.source,destination,pin),{code:'EEXIST'});
 });
@@ -111,4 +113,11 @@ test('host state evidence must prove private config initialization without chang
     f.put('state-tests.json',Buffer.from(JSON.stringify({...receipt,[field]:true})));assert.throws(()=>verify(f.source,f.pin()));
   }
   f.put('state-tests.json',Buffer.from(JSON.stringify({...receipt,createdPrivateEntries:['../escape']})));assert.throws(()=>verify(f.source,f.pin()));
+});
+
+test('owner evidence must include parent death with an open pipe and complete cleanup',t=>{
+  const f=fixture(t),receipt=JSON.parse(fs.readFileSync(path.join(f.source,'owner-tests.json'),'utf8'));
+  for(const patch of [{ownedChildrenReaped:false},{hostStarted:true},{cases:receipt.cases.filter(name=>name!=='parent-crash-pipe-held')}]){
+    f.put('owner-tests.json',Buffer.from(JSON.stringify({...receipt,...patch})));assert.throws(()=>verify(f.source,f.pin()));
+  }
 });

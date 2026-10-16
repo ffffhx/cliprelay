@@ -22,7 +22,7 @@ def prepare(source: Path, check: bool = False, macos_host: bool = False) -> None
         raise RuntimeError("Refusing to patch an already modified Sunshine source tree")
     headers = ["cliprelay_control.h", "cliprelay_audio.h", "cliprelay_input.h"]
     if macos_host:
-        headers.extend(["cliprelay_macos.h", "cliprelay_capture.h", "cliprelay_permissions.h", "cliprelay_state.h"])
+        headers.extend(["cliprelay_macos.h", "cliprelay_capture.h", "cliprelay_permissions.h", "cliprelay_state.h", "cliprelay_owner.h"])
     if any((source / "src" / name).exists() for name in headers):
         raise RuntimeError("Refusing to replace an existing ClipRelay header")
     input_test = source / "tests/unit/test_cliprelay_input.cpp"
@@ -34,6 +34,9 @@ def prepare(source: Path, check: bool = False, macos_host: bool = False) -> None
     capture_test = source / "tests/unit/test_cliprelay_macos_capture.mm"
     if macos_host and capture_test.exists():
         raise RuntimeError("Refusing to replace an existing ClipRelay macOS capture test")
+    owner_test = source / "tests/unit/test_cliprelay_macos_owner.cpp"
+    if macos_host and owner_test.exists():
+        raise RuntimeError("Refusing to replace an existing ClipRelay macOS owner test")
     patches = [(source, "control.patch")]
     if macos_host:
         hid = source / "third-party/libvirtualhid"
@@ -70,6 +73,7 @@ def prepare(source: Path, check: bool = False, macos_host: bool = False) -> None
             if macos_host:
                 shutil.copyfile(extension / "macos_mouse_test.cpp", macos_test)
                 shutil.copyfile(extension / "macos_capture_test.mm", capture_test)
+                shutil.copyfile(extension / "macos_owner_test.cpp", owner_test)
 
 
 if __name__ == "__main__":
