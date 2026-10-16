@@ -195,7 +195,11 @@ async function main(){
     assert.deepEqual(receiver.exit,{code:0,signal:null});
     assert.equal(ended.length,1);assert.equal(ended[0].reason,'host');
     await until(admin,value=>value.streams.length===0);
-    await assert.rejects(exchange({address:'127.0.0.1',port:48784,path:'/serverinfo',method:'GET',identity:identities.client,trust:{cert:first.certificate},timeout:3000,limit:16384}));
+    // Sunshine reports certificate authorization failures as XML status 401
+    // over HTTP 200, after the pinned TLS connection has been established.
+    const refusal=await exchange({address:'127.0.0.1',port:48784,path:'/serverinfo',method:'GET',identity:identities.client,trust:{cert:first.certificate},timeout:3000,limit:16384});
+    assert.ok(!/<!/.test(refusal));assert.match(refusal,/<root\b[^>]*\bstatus_code="401"(?:\s|\/|>)/);
+    report.revocation.nativeAuthorizationStatus=401;
     report.cases.push('native-host-termination-after-revocation-without-client-control-polling');
     stage='preserved-client';const preserved=rawViewer(second,identities.wrong);report.preservedPresentation=await presented(preserved);
     await closeRaw(preserved);assert.deepEqual(preserved.exit,{code:0,signal:null});
