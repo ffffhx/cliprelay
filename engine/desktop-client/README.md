@@ -5,6 +5,14 @@ GPL-3.0-or-later. This directory contains the ClipRelay modifications, not a
 separate proprietary implementation of Moonlight. Preserve LICENSE and the
 corresponding-source archive when distributing the component.
 
+Mac imported sessions select native VideoToolbox/Metal rendering. Capability
+probes and explicit native renderer selections also exclude MoltenVK from
+software-decoder and alternate-renderer fallbacks. Native packaged CI exposed
+driver aborts during MoltenVK initialization on Intel and texture allocation on
+Apple Silicon virtual GPUs; successful compilation alone does not validate this
+video path. `macos-host-stream.yml` exercises real packaged frame presentation,
+input receipts and active host revocation; debugger runs are diagnostic only.
+
 `scripts/prepare_desktop_client.py SOURCE` verifies the exact upstream commit
 and an unmodified application tree, then applies the patch and session importer.
 The `Desktop Client Build` workflow builds the production Qt protocol probe,
