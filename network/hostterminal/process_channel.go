@@ -164,7 +164,6 @@ func ServeProcess(parent context.Context, input io.ReadCloser, output io.WriteCl
 		return errProcessChannel
 	}
 	readDone, writeDone := make(chan struct{}), make(chan error, 1)
-	eventsClosed := false
 	commands := make(chan processCommand)
 	go func() {
 		defer close(readDone)
@@ -222,15 +221,8 @@ func ServeProcess(parent context.Context, input io.ReadCloser, output io.WriteCl
 			result = errors.New("TERMINAL_SHUTDOWN_TIMEOUT")
 		}
 		<-readDone
-		// The producer has stopped before events is closed, including native I/O.
-		// Do not close on a broken native process that could still invoke output.
-		select {
-		case <-process.Done():
-			if !eventsClosed {
-				close(events)
-			}
-		default:
-		}
+		// Cancellation wakes the writer directly. Do not close a channel that a
+		// cancelled output callback could still be leaving during shutdown.
 		select {
 		case <-writeDone:
 		case <-time.After(time.Second):
@@ -255,9 +247,8 @@ func ServeProcess(parent context.Context, input io.ReadCloser, output io.WriteCl
 				return errProcessChannel
 			}
 			close(events)
-			eventsClosed = true
 			writeErr := <-writeDone
-			// Keep the common shutdown/join path from closing the channel twice.
+			// Preserve the writer's completion for the common join path.
 			writeDone <- writeErr
 			return writeErr
 		case <-ticker.C:

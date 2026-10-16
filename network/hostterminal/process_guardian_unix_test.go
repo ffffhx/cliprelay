@@ -139,6 +139,13 @@ func guardianFixture(t *testing.T, shell string) (Process, *Buffer) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		if t.Failed() {
+			value := contents(buffer)
+			if len(value) > 1800 {
+				value = value[:300] + " ... " + value[len(value)-1500:]
+			}
+			t.Logf("guardian state: %+v; synthetic output: %q", process.Status(), value)
+		}
 		process.Close()
 		select {
 		case <-process.Done():
