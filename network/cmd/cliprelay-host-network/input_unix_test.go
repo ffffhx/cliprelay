@@ -6,6 +6,7 @@ import (
 	"golang.org/x/sys/unix"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestHostCompanionInheritedInputBoundary(t *testing.T) {
@@ -50,5 +51,38 @@ func TestHostCompanionInheritedInputBoundary(t *testing.T) {
 		if allowed {
 			t.Fatal("unconnected or network socket admitted")
 		}
+	}
+}
+
+func TestHostCompanionInheritedReadCanBeCancelledWithWriterHeld(t *testing.T) {
+	read, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	defer writer.Close()
+	input, err := pollableChannel(read, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { _, err := input.Read(make([]byte, 1)); finished <- err }()
+	closed := make(chan struct{})
+	go func() { input.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("close retained blocking inherited read")
+	}
+	select {
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("closed read succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inherited reader survived close")
+	}
+	if !ownedOutput(writer) || ownedOutput(read) {
+		t.Fatal("output direction not checked")
 	}
 }

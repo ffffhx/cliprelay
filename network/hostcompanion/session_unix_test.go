@@ -45,6 +45,7 @@ func TestHostCompanionOwnerEOFAndProtocolViolationJoinService(t *testing.T) {
 			defer cancel()
 			var retained inputfocus.EngineAccess
 			cancelled, release := make(chan struct{}), make(chan struct{})
+			serving := make(chan struct{})
 			defer func() {
 				select {
 				case <-release:
@@ -80,6 +81,7 @@ func TestHostCompanionOwnerEOFAndProtocolViolationJoinService(t *testing.T) {
 					if err := listening(); err != nil {
 						return err
 					}
+					close(serving)
 					<-ctx.Done()
 					close(cancelled)
 					<-release
@@ -104,6 +106,13 @@ func TestHostCompanionOwnerEOFAndProtocolViolationJoinService(t *testing.T) {
 			}
 			if _, err := os.Stat(status.IPC); err != nil {
 				t.Fatal(err)
+			}
+			// Reading the pipe's bytes can precede the writer's completion
+			// notification. Admit the test service before testing active shutdown.
+			select {
+			case <-serving:
+			case <-time.After(time.Second):
+				t.Fatal("fixture did not finish listening acknowledgement")
 			}
 			switch action {
 			case "eof":
@@ -146,6 +155,45 @@ func TestHostCompanionOwnerEOFAndProtocolViolationJoinService(t *testing.T) {
 				t.Fatal("session wrote credentials into persistent state", err)
 			}
 		})
+	}
+}
+
+func TestHostCompanionCancellationDuringListeningAcknowledgement(t *testing.T) {
+	state := privateFixture(t)
+	input, parentInput := io.Pipe()
+	parentOutput, output := io.Pipe()
+	defer parentInput.Close()
+	defer parentOutput.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, input, output, state, 2345, func(_ context.Context, _, runtimeDir string, _ inputfocus.EngineAccess, listening func() error) error {
+			entered <- runtimeDir
+			return listening() // Deliberately blocked because the owner is not reading.
+		})
+	}()
+	if _, err := parentInput.Write(credentialFixture(t)); err != nil {
+		t.Fatal(err)
+	}
+	var runtimeDir string
+	select {
+	case runtimeDir = <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("fixture did not enter readiness")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("owner cancellation changed into startup failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readiness write prevented shutdown")
+	}
+	if _, err := os.Lstat(runtimeDir); !os.IsNotExist(err) {
+		t.Fatal("cancelled startup retained runtime directory", err)
 	}
 }
 

@@ -170,15 +170,17 @@ def main(binary, report):
             owned = json.loads(launcher.stdout.readline())
             launcher.stdin.write(action.encode()+b'\n')
             assert launcher.wait(timeout=5) == (17 if action == 'crash' else 0)
+            child_exited = False
             try:
                 os.kill(owned['holder'], 0)  # A live process still owns the writer.
                 wait_absent(owned['pid'])
+                child_exited = True
                 os.kill(owned['holder'], 0)
                 assert not Path(owned['ipc']).parent.exists()
                 ports_free()
                 assert_state()
             finally:
-                for pid in [owned['holder'], owned['pid']]:
+                for pid in [owned['holder']] + ([] if child_exited else [owned['pid']]):
                     try:
                         os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:
