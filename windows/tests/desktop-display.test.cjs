@@ -56,8 +56,25 @@ test('manual pause survives display selection and explicit resume requires a new
   f.apply();await until(()=>f.posts.length===1);assert.equal(f.posts[0].inputEpoch,3);f.encoded();f.viewer.progress.received=f.viewer.progress.rendered=25;
   await until(()=>f.controller.snapshot().result?.kind==='applied');assert.equal(f.input.phase,'paused');assert.equal(f.input.epoch,3);
   assert.equal(f.commands.some(([epoch])=>epoch===4),false);f.setInput(false);
-  await until(()=>f.controller.snapshot().input.phase==='resuming');await delay(40);assert.equal(f.input.epoch,3);assert.equal(f.viewer.manualPaused,true);
+  // The controller reports resuming before its metadata read has completed.
+  // Wait for InputSession to begin the guarded resume before advancing video.
+  await until(()=>f.input.busy);assert.equal(f.controller.snapshot().input.phase,'resuming');assert.equal(f.input.epoch,3);assert.equal(f.viewer.manualPaused,true);
   f.viewer.progress.received=f.viewer.progress.rendered=26;await until(()=>f.input.phase==='active');
+  assert.equal(f.viewer.manualPaused,false);assert.deepEqual(f.commands.slice(-2),[[4,2],[4,3]]);
+});
+
+test('a frame arriving before delayed resume metadata is not a new resume frame',{timeout:5000},async t=>{
+  const f=await fixture(t);await until(()=>f.controller.snapshot().input.canPause);f.setInput(true);await until(()=>f.controller.snapshot().input.canResume);
+  const request=f.controller.request,readDisplay=f.input.readDisplay;let release,arrived,observed,reads=0;
+  const gate=new Promise(resolve=>release=resolve),metadata=new Promise(resolve=>arrived=resolve);t.after(release);
+  const checkedUnchangedFrame=new Promise(resolve=>observed=resolve);
+  f.input.readDisplay=(...args)=>{if(++reads===2)observed();return readDisplay(...args);};
+  f.controller.request=async(...args)=>{const result=await request(...args);arrived();await gate;return result;};
+  f.setInput(false);await metadata;
+  assert.equal(f.controller.snapshot().input.phase,'resuming');assert.equal(f.input.busy,false);
+  f.viewer.progress.received=f.viewer.progress.rendered=21;release();await checkedUnchangedFrame;
+  assert.equal(f.input.phase,'paused');assert.equal(f.input.epoch,3);assert.equal(f.viewer.manualPaused,true);
+  f.viewer.progress.received=f.viewer.progress.rendered=22;await until(()=>f.input.phase==='active');
   assert.equal(f.viewer.manualPaused,false);assert.deepEqual(f.commands.slice(-2),[[4,2],[4,3]]);
 });
 test('a manual pause requested during automatic display switching suppresses its automatic resume',async t=>{
