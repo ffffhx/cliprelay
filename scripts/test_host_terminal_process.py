@@ -155,7 +155,7 @@ def run(binary, report):
                 write(worker, session, 3, "printf '%s' '"+body+"' | shasum -a 256\r", paste=True)
                 digest = hashlib.sha256(body.encode()).hexdigest()
                 try:
-                    eventually(lambda: digest in read(worker, session), 20)
+                    eventually(lambda: digest in read(worker, session), 35)
                 except AssertionError:
                     output = read(worker, session)
                     snapshot = worker.rpc(dict(session, op='read', offset=0))['session']

@@ -217,7 +217,7 @@ func TestGuardianWholePasteAndOutputRing(t *testing.T) {
 			body := strings.Repeat("a", 14000)
 			want := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
 			nativeWrite(t, p, 1, "printf '%s' '"+body+"' | shasum -a 256\r", true)
-			eventually(t, 20*time.Second, func() bool { return strings.Contains(contents(b), want) && p.Status().Written == 1 })
+			eventually(t, 35*time.Second, func() bool { return strings.Contains(contents(b), want) && p.Status().Written == 1 })
 			marker := "guarded-output-end"
 			nativeWrite(t, p, 2, "head -c 1200000 /dev/zero | tr '\\000' a; printf '\\n"+octal(marker)+"\\n'\r", false)
 			eventually(t, 10*time.Second, func() bool { return strings.Contains(contents(b), marker) && p.Status().Written == 2 })

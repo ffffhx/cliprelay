@@ -116,10 +116,14 @@ func (b *Buffer) Append(data []byte) {
 func (b *Buffer) bounds() (int64, int64) { return max(0, b.end-int64(len(b.data))), b.end }
 func (b *Buffer) Bounds() (int64, int64) { b.mu.Lock(); defer b.mu.Unlock(); return b.bounds() }
 func (b *Buffer) Read(requested int64) ([]byte, int64, bool, error) {
+	data, offset, gap, _, _, err := b.readSnapshot(requested)
+	return data, offset, gap, err
+}
+func (b *Buffer) readSnapshot(requested int64) ([]byte, int64, bool, int64, int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if requested < 0 || requested > b.end {
-		return nil, 0, false, errors.New("TERMINAL_OFFSET")
+		return nil, 0, false, 0, 0, errors.New("TERMINAL_OFFSET")
 	}
 	start, end := b.bounds()
 	offset := max(start, requested)
@@ -127,7 +131,7 @@ func (b *Buffer) Read(requested int64) ([]byte, int64, bool, error) {
 	position := int(offset % int64(len(b.data)))
 	first := copy(data, b.data[position:])
 	copy(data[first:], b.data)
-	return data, offset, offset != requested, nil
+	return data, offset, offset != requested, start, end, nil
 }
 
 type session struct {
@@ -377,11 +381,16 @@ func (m *Manager) Handle(r Request) Reply {
 		m.stop(s, "closed")
 		return m.reply(s)
 	case "read":
-		data, offset, gap, err := s.output.Read(r.Offset)
+		// Observe native mode/receipt state before taking the output lock. Output
+		// callbacks take that lock while publishing modes, so reversing the order
+		// can deadlock. Read bytes and their bounds in one buffer snapshot: output
+		// arriving afterward belongs to the next response, including ring wraps.
+		result := m.reply(s)
+		data, offset, gap, start, end, err := s.output.readSnapshot(r.Offset)
 		if err != nil {
 			return m.failure("TERMINAL_OFFSET")
 		}
-		result := m.reply(s)
+		result.Session.Start, result.Session.End = start, end
 		result.Offset = offset
 		result.Next = offset + int64(len(data))
 		result.Gap = gap

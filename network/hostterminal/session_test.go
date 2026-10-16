@@ -228,6 +228,37 @@ func TestOutputRingGapAndResume(t *testing.T) {
 	r.Offset = int64(len(data)) + 1
 	check(t, f.m.Handle(r), "TERMINAL_OFFSET")
 }
+
+type outputDuringSnapshot struct {
+	*fakeProcess
+	append []byte
+}
+
+func (p *outputDuringSnapshot) MouseState() MouseState {
+	p.output(p.append)
+	p.append = nil
+	return initialMouseState()
+}
+
+func TestReadKeepsBytesAndBoundsConsistentWithConcurrentOutput(t *testing.T) {
+	for _, size := range []int{7, OutputLimit + 7} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			f := setup(t)
+			open, _ := f.open(t, 0)
+			s := f.m.sessions[open.Owner+":"+open.ID]
+			// Deterministically publish between the old implementation's data
+			// read and state snapshot, including overwriting the entire ring.
+			s.process = &outputDuringSnapshot{fakeProcess: f.processes[0], append: bytes.Repeat([]byte("x"), size)}
+			read := f.m.Handle(command(open, "read"))
+			check(t, read, "")
+			data, err := base64.StdEncoding.DecodeString(read.Data)
+			if err != nil || read.Offset < read.Session.Start || read.Next > read.Session.End ||
+				read.Next-read.Offset != int64(len(data)) || len(data) == 0 && read.Next != read.Session.End {
+				t.Fatalf("inconsistent read snapshot: %+v session=%+v error=%v", read, read.Session, err)
+			}
+		})
+	}
+}
 func TestRevocationAuthorizationLeaseAndIdleExpiry(t *testing.T) {
 	t.Run("owner-revocation", func(t *testing.T) {
 		f := setup(t)

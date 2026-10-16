@@ -179,7 +179,7 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
             assert read_all(tls, session)[0].count(marker) == 1
             text = 'a'*14000
             write(tls, session, 3, "printf '%s' '"+text+"' | shasum -a 256\r", paste=True)
-            eventually(lambda: hashlib.sha256(text.encode()).hexdigest() in read_all(tls, session)[0], 20)
+            eventually(lambda: hashlib.sha256(text.encode()).hexdigest() in read_all(tls, session)[0], 35)
         passed(CASES[0])
         for session in sessions:
             run_mouse(tls, session, 4)

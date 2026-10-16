@@ -22,7 +22,7 @@ jobs:
           cache-dependency-path: network/go.sum
       - name: Session ownership and real pseudo-terminal acceptance
         working-directory: network
-        run: go test -mod=readonly -race -count=1 -v -timeout=90s ./hostterminal
+        run: go test -mod=readonly -race -count=1 -v -timeout=180s ./hostterminal
       - uses: actions/setup-node@v4
         with:
           node-version: '22.14.0'

@@ -215,7 +215,10 @@ func (p *nativeProcess) write() {
 		}
 		budget := 3 * time.Second
 		if item.Paste {
-			budget = 15 * time.Second
+			// Unbracketed readline/ZLE redraw can continue making progress for
+			// more than 15s on a busy host. Keep the 3s no-progress deadline below
+			// and cancellable I/O while allowing the bounded whole paste to finish.
+			budget = 30 * time.Second
 		}
 		deadline := time.Now().Add(budget)
 		if needsLineEditor(item.Data) && !p.waitLineEditor() {
