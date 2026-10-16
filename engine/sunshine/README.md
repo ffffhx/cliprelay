@@ -279,8 +279,10 @@ coordinates, invalid bounds and events without a target once targeting begins.
 backend with posting, cursor and display boundaries replaced. It also exercises
 the production capture registry, video input transform and libvirtualhid adapter.
 These tests do not inject system input or start capture. The original fourteen
-mouse cases and twelve input integration cases pass in the arm64 job of
+mouse cases and twelve input integration cases pass on arm64 and x86_64 in
 [build 38824743508](https://github.com/ffffhx/cliprelay/actions/runs/38824743508).
+Both downloaded archives pass independent source, file inventory, architecture
+and actual macOS 14.2 minimum-version checks.
 
 The capture overlay keeps AVFoundation callbacks short: each output owns one
 latest retained sample, a serial callback queue and an independent stop path.
@@ -300,6 +302,18 @@ two-minute test-process deadline. Native validation of the capture changes is
 pending. Physical hotplug, capture permissions and monitor behavior remain
 unverified, as does a complete Mac hosting application. Host lifecycle and
 permission UI remain separate work.
+
+The Electron macOS packaging workflow accepts an explicit `host_engine_run_id`.
+It requires a successful native host workflow with all thirty-nine tests, verifies
+the archive checksum and every included source against that run's Git commit,
+then stages the matching arm64 or x86_64 engine. The application packager checks
+the pinned manifest, complete file inventory, included licenses, native machine
+type, actual minimum OS and contained dependencies before and after packaging.
+It also verifies the engine's signature using macOS `codesign` in both locations.
+Packages containing the engine require macOS 14.2. A `host-engine-bundle-*.json`
+receipt records the exact selection. This packages the engine only; it does not
+enable hosting, grant permissions or launch the engine. Native validation of
+this application packaging path is pending the capture build.
 
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers

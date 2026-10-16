@@ -15,6 +15,15 @@ async function build(){
   try{
     const source=path.join(staging,'source');fs.mkdirSync(source);
     fs.cpSync(path.join(__dirname,'mac'),path.join(source,'mac'),{recursive:true});
+    let hostPin=null;
+    if(process.env.CLIPRELAY_HOST_ENGINE_ARTIFACT || process.env.CLIPRELAY_HOST_ENGINE_PIN){
+      hostPin=JSON.parse(process.env.CLIPRELAY_HOST_ENGINE_PIN || 'null');
+      if(!hostPin || hostPin.arch!==(architecture==='x64'?'x86_64':'arm64') || !process.env.CLIPRELAY_HOST_ENGINE_ARTIFACT)throw new Error('Host engine selection must match the application architecture');
+      const artifact=path.resolve(process.env.CLIPRELAY_HOST_ENGINE_ARTIFACT);
+      require('./mac/host-engine-artifact.cjs').stage(artifact,path.join(source,'mac','host-engine'),hostPin);
+      execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',path.join(source,'mac','host-engine','Sunshine.app')],{stdio:'inherit'});
+      fs.writeFileSync(path.join(source,'mac','host-engine-pin.json'),JSON.stringify(hostPin,null,2)+'\n',{flag:'wx'});
+    }
     if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
       require('./network-artifact.cjs').stage(path.resolve(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT),path.join(source,'mac','network-helper'),'darwin');
     }
@@ -40,8 +49,17 @@ async function build(){
     const output=path.resolve(repo,'.tools','mac-electron');
     // npm ci --omit=dev already created the production-only dependency tree.
     // A second prune incorrectly resolves intentionally absent build tools.
-    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp']}});
+    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp'],...(hostPin?{LSMinimumSystemVersion:'14.2'}:{})}});
     for(const bundle of built){
+      if(hostPin){
+        const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','host-engine');
+        const manifest=require('./mac/host-engine-artifact.cjs').verify(packaged,hostPin);
+        if(JSON.stringify(JSON.parse(fs.readFileSync(path.join(path.dirname(packaged),'host-engine-pin.json'),'utf8')))!==JSON.stringify(hostPin))throw new Error('Packaged host engine pin changed');
+        const minimum=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :LSMinimumSystemVersion',path.join(bundle,'ClipRelay.app','Contents','Info.plist')],{encoding:'utf8'}).trim();
+        if(minimum!=='14.2')throw new Error('Host application must require macOS 14.2');
+        execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',path.join(packaged,'Sunshine.app')],{stdio:'inherit'});
+        fs.writeFileSync(path.join(output,`host-engine-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:hostPin,verifiedFiles:Object.keys(manifest.files).length,nativeMinimumOS:manifest.nativeMinimumOS,signatureVerified:true,scope:'Engine packaging only; host startup, permissions and streaming are not exercised.'},null,2));
+      }
       if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
         const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','network-helper');
         const manifest=require('./network-artifact.cjs').verify(packaged,'darwin');
