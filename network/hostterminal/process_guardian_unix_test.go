@@ -217,7 +217,7 @@ func TestGuardianWholePasteAndOutputRing(t *testing.T) {
 			body := strings.Repeat("a", 14000)
 			want := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
 			nativeWrite(t, p, 1, "printf '%s' '"+body+"' | shasum -a 256\r", true)
-			eventually(t, 8*time.Second, func() bool { return strings.Contains(contents(b), want) && p.Status().Written == 1 })
+			eventually(t, 20*time.Second, func() bool { return strings.Contains(contents(b), want) && p.Status().Written == 1 })
 			marker := "guarded-output-end"
 			nativeWrite(t, p, 2, "head -c 1200000 /dev/zero | tr '\\000' a; printf '\\n"+octal(marker)+"\\n'\r", false)
 			eventually(t, 10*time.Second, func() bool { return strings.Contains(contents(b), marker) && p.Status().Written == 2 })
@@ -245,6 +245,22 @@ func TestGuardianRejectsImpossibleWrittenReceipt(t *testing.T) {
 	}
 	if s := p.Status(); !s.Failed || s.Written != 0 {
 		t.Fatalf("accepted impossible receipt: %+v", s)
+	}
+}
+
+func TestGuardianStalledPasteStillHasShortIdleTimeout(t *testing.T) {
+	p, b := guardianFixture(t, "bash")
+	marker := "guarded-stall-ready"
+	nativeWrite(t, p, 1, "printf '\\n"+octal(marker)+"\\n'; sleep 60\r", false)
+	eventually(t, time.Second, func() bool { return strings.Contains(contents(b), marker) && p.Status().Written == 1 })
+	nativeWrite(t, p, 2, strings.Repeat("x", 16384), true)
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled paste exceeded idle write deadline")
+	}
+	if state := p.Status(); !state.Failed || state.Written != 1 {
+		t.Fatalf("partial paste claimed written: %+v", state)
 	}
 }
 func TestGuardianSurvivesOwnerKillOnlyUntilShellIsReaped(t *testing.T) {

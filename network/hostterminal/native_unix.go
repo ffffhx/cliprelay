@@ -45,6 +45,7 @@ import (
 type queuedInput struct {
 	data     []byte
 	sequence int64
+	paste    bool
 }
 type nativeProcess struct {
 	mu                              sync.Mutex
@@ -159,13 +160,26 @@ func (p *nativeProcess) write() {
 			if closing {
 				return
 			}
-			if p.terminal.SetWriteDeadline(time.Now().Add(3*time.Second)) != nil {
-				p.fail()
-				return
+			budget := 3 * time.Second
+			if item.paste {
+				budget = 15 * time.Second
 			}
+			deadline := time.Now().Add(budget)
 			offset := 0
 			for offset < len(item.data) {
-				n, err := p.terminal.Write(item.data[offset:])
+				// A line editor can redraw while consuming a large unbracketed
+				// paste. Bound both total time and each blocked chunk, preserving
+				// one ordered item and acknowledging only the complete payload.
+				step := min(len(item.data)-offset, 512)
+				idleDeadline := time.Now().Add(3 * time.Second)
+				if deadline.Before(idleDeadline) {
+					idleDeadline = deadline
+				}
+				if p.terminal.SetWriteDeadline(idleDeadline) != nil {
+					p.fail()
+					return
+				}
+				n, err := p.terminal.Write(item.data[offset : offset+step])
 				offset += n
 				if err != nil || n == 0 {
 					p.fail()
@@ -186,7 +200,7 @@ func (p *nativeProcess) Queue(data []byte, sequence int64, paste bool) bool {
 		return false
 	}
 	select {
-	case p.queue <- queuedInput{append([]byte(nil), data...), sequence}:
+	case p.queue <- queuedInput{data: append([]byte(nil), data...), sequence: sequence, paste: paste}:
 		p.queued += len(data)
 		return true
 	default:
