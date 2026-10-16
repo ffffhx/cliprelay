@@ -13,6 +13,7 @@
 #include "opus_multistream.h"
 
 static volatile LONG frames, last_frame, last_keyframe, keyframes, terminated, stop_watchdog;
+static volatile LONG host_termination_received, host_termination_code;
 static volatile LONG64 bytes_received;
 static volatile LONG64 last_received_ms, maximum_gap_ms;
 static volatile LONG pattern_ready;
@@ -184,6 +185,10 @@ static int receive_frame(PDECODE_UNIT unit) {
 }
 
 static void connection_terminated(int error) {
+    // Multiple native workers can report shutdown. Preserve the first cause.
+    if (InterlockedCompareExchange(&host_termination_received, -1, 0) != 0) return;
+    InterlockedExchange(&host_termination_code, error);
+    InterlockedExchange(&host_termination_received, 1);
     InterlockedExchange(&terminated, error == 0 ? 1 : error);
 }
 
@@ -221,7 +226,7 @@ static int report(const char *path, int connected) {
     FILE *file = fopen(temporary, "wb");
     if (!file) { perror("Opening receiver state"); return 0; }
     EnterCriticalSection(&audio_gate); double tone = audio_tone; LeaveCriticalSection(&audio_gate);
-    fprintf(file, "{\"connected\":%s,\"frames\":%ld,\"lastFrame\":%lu,\"lastKeyframe\":%lu,\"keyframes\":%ld,\"bytes\":%lld,\"termination\":%ld,\"maxGapMs\":%lld,\"pattern\":%s,\"audioPackets\":%ld,\"audioSamples\":%lld,\"audioErrors\":%ld,\"audioTone\":%.9f,\"inputLocalAcknowledged\":%u}",
+    fprintf(file, "{\"connected\":%s,\"frames\":%ld,\"lastFrame\":%lu,\"lastKeyframe\":%lu,\"keyframes\":%ld,\"bytes\":%lld,\"termination\":%ld,\"maxGapMs\":%lld,\"pattern\":%s,\"audioPackets\":%ld,\"audioSamples\":%lld,\"audioErrors\":%ld,\"audioTone\":%.9f,\"inputLocalAcknowledged\":%u,\"hostTerminationReceived\":%s,\"terminationCode\":%ld}",
         connected ? "true" : "false", InterlockedCompareExchange(&frames, 0, 0),
         (unsigned long)InterlockedCompareExchange(&last_frame, 0, 0),
         (unsigned long)InterlockedCompareExchange(&last_keyframe, 0, 0), InterlockedCompareExchange(&keyframes, 0, 0),
@@ -229,7 +234,8 @@ static int report(const char *path, int connected) {
         (long long)InterlockedCompareExchange64(&maximum_gap_ms, 0, 0),
         InterlockedCompareExchange(&pattern_ready, 0, 0) ? "true" : "false",
         InterlockedCompareExchange(&audio_packets, 0, 0), (long long)InterlockedCompareExchange64(&audio_samples, 0, 0),
-        InterlockedCompareExchange(&audio_errors, 0, 0), tone, input_local_acknowledged);
+        InterlockedCompareExchange(&audio_errors, 0, 0), tone, input_local_acknowledged,
+        InterlockedCompareExchange(&host_termination_received, 0, 0) ? "true" : "false", InterlockedCompareExchange(&host_termination_code, 0, 0));
     if (fclose(file) != 0) { perror("Writing receiver state"); return 0; }
     // The Python reader can briefly hold the old file without delete sharing.
     // Keep atomic publication, but do not stop the stream for that read race.

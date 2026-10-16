@@ -96,12 +96,15 @@ async function main(){
     stage='revoke-active-stream';const revokedAt=Date.now();await control({action:'unpair',uuid:target.uuid,viewId:clients.viewId});
     await until(()=>first.item.ended,value=>value!==null,10000);
     assert.deepEqual(first.item.ended,{code:1,signal:null});
-    const final=first.item.read();assert.ok(final);assert.equal(final.connected,false);assert.equal(final.termination,1);assert.ok(final.frames>=report.firstFrames);
+    const final=first.item.read();assert.ok(final);
+    report.termination=final.termination;report.terminationCode=final.terminationCode;report.hostTerminationReceived=final.hostTerminationReceived;
+    assert.equal(final.connected,false);assert.equal(final.termination,1);assert.ok(final.frames>=report.firstFrames);
+    assert.equal(final.hostTerminationReceived,true);assert.equal(final.terminationCode,0);
     assert.equal(fs.existsSync(first.item.stopFile),false,'Receiver was locally stopped before revocation evidence');
     const idle=await until(admin,value=>value.phase==='idle'&&value.streams.length===0,10000);
     assert.equal(idle.instance,first.sample.native.instance);assert.equal((await control({action:'status'})).pid,enginePid);
     report.revocationMs=Date.now()-revokedAt;assert.ok(report.revocationMs<15000);
-    report.termination=final.termination;report.engineUnchanged=true;report.receiverStoppedByHost=true;
+    report.engineUnchanged=true;report.receiverStoppedByHost=true;
     assert.deepEqual((await control({action:'clients'})).named_certs,[other]);
     await assert.rejects(nvhttp(identities.client,'serverinfo'),error=>error.code==='UNPAIRED'||error.code==='ECONNRESET'||/^ERR_SSL_/.test(error.code||''));
     report.cases.push('service-revocation-terminates-active-video-without-local-stop-or-engine-restart');
