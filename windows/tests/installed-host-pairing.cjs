@@ -36,6 +36,7 @@ async function main(){
     stage='start';await request({action:'enable'});
     await until(()=>request({action:'status'}),value=>value.ready===true,65000);
     await until(()=>control({action:'lanPairings'}),value=>value.ok===true,15000);
+    assert.deepEqual((await request({action:'clients'})).named_certs,[]);
     cases.push('installed-system-service-started-native-host-and-managed-helper');
     stage='generation';const firstTicket=await bootstrap();assert.equal(firstTicket.feedback.protocol,1);
     const first=(await request({action:'lanPairings'})).pairings[0];assert.ok(first);assert.equal(first.verification,firstTicket.verification);
@@ -70,9 +71,12 @@ async function main(){
     assert.ok(paired.certificate);assert.ok((await request({action:'clients'})).named_certs.length>0);
     cases.push('installed-approval-completes-real-native-certificate-pairing');
     stage='authorization';
-    const options={address:'127.0.0.1',port:48792,path:'/v1/installed-pairing-fixture',method:'GET',trust:{cert:paired.certificate},timeout:3000,limit:2048,acceptStatuses:[404]};
+    // 48792 admits unpaired bootstrap clients; authorization is enforced by
+    // the separate paired control listener on 48791 before HTTP dispatch.
+    const options={address:'127.0.0.1',port:48791,path:'/v1/installed-pairing-fixture',method:'GET',trust:{cert:paired.certificate},timeout:3000,limit:2048,acceptStatuses:[404]};
     await exchange({...options,identity:identities.client});
-    await assert.rejects(exchange({...options,identity:identities.wrong}),{code:'UNPAIRED'});
+    await assert.rejects(exchange({...options,identity:identities.wrong}),error=>
+      error.code==='UNPAIRED' || error.code==='ECONNRESET' || /^ERR_SSL_/.test(error.code || ''));
     cases.push('paired-certificate-admitted-and-unpaired-certificate-refused');
   }catch(error){process.stderr.write(JSON.stringify({stage,error:error.message,code:error.code})+'\n');throw error;}
   finally{
