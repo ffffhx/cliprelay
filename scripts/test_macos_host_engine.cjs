@@ -21,7 +21,7 @@ async function main(){
   const protectedBefore=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
   const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-packaged-host-engine-')));
   const directory=path.join(base,'Owned Mac host #1'),state=new HostState({directory,safeStorage:encryptedStorage()});
-  const children=[],phases=[],cases=[];let stage='prepare',identity,certificate,authorization,privateFiles;
+  const children=[],phases=[],cases=[];let stage='prepare',identity,certificate,authorization,privateFiles,unexpectedExit;
   // Fixed CI-only loopback configuration. All state validation, permission
   // preflight, process ownership, HTTPS authentication and monitoring are real.
   const fixtureState={
@@ -53,7 +53,14 @@ async function main(){
     stage='explicit-restart';await start();assert.equal(state.id,identity);assert.deepEqual(state.read('cacert.pem',16384),certificate);
     assert.equal(state.authorization(),authorization);assert.notEqual(children[0].pid,children[1].pid);cases.push('packaged-explicit-restart');
     stage='unexpected-exit';assert.equal(children[1].kill('SIGTERM'),true);await until(()=>engine.current===null);reaped(children[1]);
-    assert.equal(engine.snapshot().phase,'failed');assert.equal(engine.snapshot().error,'HOST_ENGINE_EXITED');cases.push('packaged-unexpected-exit');
+    // Native SIGTERM closes listeners before completing cleanup. Either the
+    // connection check or the child close event can observe the failure first.
+    // Both must withdraw readiness and retain ownership until actual reaping.
+    unexpectedExit={phase:engine.snapshot().phase,error:engine.snapshot().error,
+      exitCode:children[1].exitCode,signalCode:children[1].signalCode};
+    assert.equal(unexpectedExit.phase,'failed');
+    assert.ok(['HOST_ENGINE_EXITED','HOST_ADMIN_UNAVAILABLE'].includes(unexpectedExit.error));
+    assert.equal(unexpectedExit.exitCode,0);assert.equal(unexpectedExit.signalCode,null);cases.push('packaged-unexpected-exit');
     stage='close';await start();await engine.close();reaped(children[2]);
     assert.equal(children[2].exitCode,0);assert.equal(children[2].signalCode,null);assert.equal(engine.snapshot().phase,'closed');
     await assert.rejects(engine.start('Closed'),{code:'HOST_ENGINE_CLOSED'});cases.push('packaged-close');
@@ -71,7 +78,7 @@ async function main(){
     assert.ok(path.basename(base).startsWith('cliprelay-packaged-host-engine-'));
     fs.rmSync(base,{recursive:true,force:true});
   }
-  process.stdout.write(JSON.stringify({protocol:1,passed:true,cases,privateFiles,hostStarted:true,ownedChildrenReaped:true,
+  process.stdout.write(JSON.stringify({protocol:1,passed:true,cases,privateFiles,unexpectedExit,hostStarted:true,ownedChildrenReaped:true,
     stateFilesPrivate:true,defaultStateUnchanged:true,homeChanged:false,nativeRequestsExecuted:false,
     streamStarted:false,systemInputInjected:false,keychainValidated:false,
     scope:'Actual packaged engine startup, pinned authenticated process identity, EOF stop, explicit restart, unexpected exit and final close on disposable macOS CI. Startup display/encoder probes may run; no streaming client, system input, permission request, Keychain or user GUI acceptance.'})+'\n');
