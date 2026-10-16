@@ -50,16 +50,25 @@ type runtime struct {
 func main() {
 	stateDir := flag.String("state-dir", "", "ACL-protected persistent directory")
 	focusProbe := flag.String("input-focus-probe", "", "serve paired input-focus metadata using this local probe")
+	localPairing := flag.Bool("local-pairing", false, "require current-generation pairing decisions from the installed service")
 	flag.Parse()
 	if *stateDir == "" {
 		fmt.Fprintln(os.Stderr, "state directory required")
+		os.Exit(2)
+	}
+	if *localPairing && *focusProbe == "" {
+		fmt.Fprintln(os.Stderr, "local pairing requires an input-focus probe")
 		os.Exit(2)
 	}
 	if err := os.MkdirAll(*stateDir, 0700); err != nil {
 		os.Exit(2)
 	}
 	if *focusProbe != "" {
-		if inputfocus.Serve(context.Background(), *stateDir, *focusProbe) != nil {
+		serve := inputfocus.Serve
+		if *localPairing {
+			serve = inputfocus.ServeWithLocalPairing
+		}
+		if serve(context.Background(), *stateDir, *focusProbe) != nil {
 			os.Exit(1)
 		}
 		return

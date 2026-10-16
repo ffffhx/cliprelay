@@ -30,6 +30,17 @@ namespace ClipRelay.Remote {
             foreach (string key in command.Keys)
                 if (Array.IndexOf(new[] { "op", "owner", "id", "kind", "size", "offset", "sha256", "data" }, key) < 0)
                     throw new InvalidDataException("RELAY_BAD_REQUEST");
+            return Exchange(command, expected, pipeName, timeoutMs);
+        }
+        internal static object RequestPairing(Dictionary<string, object> command, Process expected) {
+            return RequestPairing(command, expected, PipeName, 5000);
+        }
+        internal static object RequestPairing(Dictionary<string, object> command, Process expected, string pipeName, int timeoutMs) {
+            LanPairingControl.ValidateCommand(command);
+            return Exchange(command, expected, pipeName, timeoutMs);
+        }
+        static object Exchange(Dictionary<string, object> command, Process expected, string pipeName, int timeoutMs) {
+            if (expected == null) throw new InvalidDataException("RELAY_BAD_REQUEST");
             var json = new JavaScriptSerializer { MaxJsonLength = ReplyLimit, RecursionLimit = 16 };
             byte[] bytes = new UTF8Encoding(false, true).GetBytes(json.Serialize(command) + "\n");
             if (bytes.Length > RequestLimit) throw new InvalidDataException("RELAY_BAD_REQUEST");

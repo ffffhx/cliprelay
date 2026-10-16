@@ -62,19 +62,28 @@
     $verification = & $addLabel '' 462 244 188 30
     $verification.Name='RemoteDesktopVerification'; $verification.Visible=$false
     $verification.Font=New-Object Drawing.Font('Consolas',12,[Drawing.FontStyle]::Bold)
+    $confirmed=New-Object Windows.Forms.CheckBox
+    $confirmed.Name='RemoteDesktopConfirm'; $confirmed.Text='两端确认标识一致'
+    $confirmed.Location=New-Object Drawing.Point(462,276); $confirmed.Size=New-Object Drawing.Size(188,26)
+    $confirmed.Visible=$false; $form.Controls.Add($confirmed)
+    $pairContext=@{Key=''}
     $pending.Add_SelectedIndexChanged({
         $automatic=$null -ne $pending.SelectedItem -and $pending.SelectedItem.automatic
+        $key=if ($null -ne $pending.SelectedItem) { @($pending.SelectedItem.id,$pending.SelectedItem.generation,$pending.SelectedItem.verification) -join ':' } else {''}
+        if ($key -cne $pairContext.Key) { $confirmed.Checked=$false; $pairContext.Key=$key }
+        $confirmed.Visible=$automatic
         $pin.Visible=!$automatic; $verification.Visible=$automatic
         $verification.Text=if ($automatic) {$pending.SelectedItem.verification} else {''}
     }.GetNewClosure())
-    $pair = & $addButton '授权这台手机' 'RemoteDesktopPair' 462 282 188
-    $clientTitle = & $addLabel '已授权的手机' 24 337 600 26
+    $pair = & $addButton '允许连接' 'RemoteDesktopPair' 462 306 90
+    $reject = & $addButton '拒绝' 'RemoteDesktopReject' 560 306 90
+    $clientTitle = & $addLabel '已授权的手机' 24 353 420 26
     $clients = New-Object Windows.Forms.ListBox
     $clients.Name='RemoteDesktopClients'; $clients.DisplayMember='label'
-    $clients.Location=New-Object Drawing.Point(24,370); $clients.Size=New-Object Drawing.Size(420,96)
+    $clients.Location=New-Object Drawing.Point(24,384); $clients.Size=New-Object Drawing.Size(420,82)
     $form.Controls.Add($clients)
-    $revoke = & $addButton '撤销选中授权' 'RemoteDesktopRevoke' 462 370 188
-    $disconnect = & $addButton '断开当前远控' 'RemoteDesktopDisconnect' 462 422 188
+    $revoke = & $addButton '撤销选中授权' 'RemoteDesktopRevoke' 462 384 188
+    $disconnect = & $addButton '断开当前远控' 'RemoteDesktopDisconnect' 462 430 188
     $message = & $addLabel '配对授权后，手机下次可直接连接。关闭远控会停止接收连接。' 24 486 626 50
     $message.Name='RemoteDesktopMessage'
     $license = & $addLabel '内置 Sunshine 远控引擎 · GPLv3 开源组件' 24 562 465 26
@@ -100,13 +109,26 @@
         if ($null -ne $ui.Task) { return }
         $selected=$pending.SelectedItem
         if ($selected.automatic) {
+            if (!$confirmed.Checked -or $selected.state -cne 'waiting' -or $selected.generation -cnotmatch '^[a-f0-9]{32}$') {
+                $message.Text='请核对两端确认标识，再允许当前请求。'; return
+            }
             $message.Text='正在允许这台手机…'
-            & $submit @{action='lanPairApprove';id=$selected.id}
+            & $submit @{action='lanPairApprove';id=$selected.id;generation=$selected.generation;verification=$selected.verification}
+            $confirmed.Checked=$false
             return
         }
         if ($pin.Text -notmatch '^\d{4}$') { $message.Text='旧版手机需要输入手机显示的四位 PIN。'; return }
         $message.Text='正在确认配对…'
         & $submit @{action='pair';id=$selected.id;pin=$pin.Text;name=$selected.name}
+    }.GetNewClosure())
+    $reject.Add_Click({
+        if ($null -eq $pending.SelectedItem -or $null -ne $ui.Task) { return }
+        $selected=$pending.SelectedItem
+        if ($selected.automatic) {
+            if ($selected.state -cne 'waiting' -or $selected.generation -cnotmatch '^[a-f0-9]{32}$') { return }
+            & $submit @{action='lanPairReject';id=$selected.id;generation=$selected.generation;verification=$selected.verification}
+        } else { & $submit @{action='pairReject';id=$selected.id} }
+        $confirmed.Checked=$false
     }.GetNewClosure())
     $revoke.Add_Click({
         if ($null -eq $clients.SelectedItem -or $null -ne $ui.Task) { return }
@@ -126,6 +148,7 @@
                 switch ($action) {
                     'status' {
                         $ui.Enabled=$data.enabled; $ui.Running=$data.ready
+                        if (!$ui.Running) {$ui.Pairings='';$pending.Items.Clear();$confirmed.Checked=$false}
                         $toggle.Text=if ($ui.Enabled) {'关闭远控'} else {'开启远控'}
                         $status.Text=if ($ui.Running) {'远控已开启 · 等待手机连接或正在串流'} elseif ($ui.Enabled) {'引擎正在启动…'} else {'远控已关闭'}
                     }
@@ -137,7 +160,9 @@
                                 $name=if ([string]::IsNullOrWhiteSpace($entry.name)) {'ClipRelay 手机'} else {$entry.name}
                                 $automatic=$null -ne $entry.PSObject.Properties['automatic'] -and [bool]$entry.automatic
                                 $code=if ($automatic) {[string]$entry.verification} else {''}
-                                [void]$pending.Items.Add([PSCustomObject]@{id=$entry.id;name=$name;automatic=$automatic;verification=$code;label=($name+' · '+$entry.address)})
+                                $generation=if ($null -ne $entry.PSObject.Properties['generation']) {[string]$entry.generation} else {''}
+                                $state=if ($null -ne $entry.PSObject.Properties['state']) {[string]$entry.state} else {''}
+                                [void]$pending.Items.Add([PSCustomObject]@{id=$entry.id;generation=$generation;state=$state;name=$name;automatic=$automatic;verification=$code;label=($name+' · '+$entry.address)})
                             }
                             if ($pending.Items.Count -gt 0) {$pending.SelectedIndex=0}
                         }
@@ -156,7 +181,9 @@
                         if (!$data.status) { throw '配对未完成，请确认 PIN 后重新发起。' }
                         $pin.Clear(); $message.Text='配对成功。现在可以在手机上打开电脑桌面。'
                     }
-                    'lanPairApprove' { $message.Text='已允许这台手机，正在自动完成配对；以后无需输入地址或 PIN。' }
+                    'lanPairApprove' { $message.Text='已允许这台手机，正在完成配对。' }
+                    'lanPairReject' { $message.Text='已拒绝本次配对请求。' }
+                    'pairReject' { $message.Text='已拒绝本次配对请求。' }
                     'unpair' { $message.Text='已撤销选中的手机授权。' }
                     'disconnect' { $message.Text='已请求断开当前远控。' }
                     'enable' { $message.Text='正在准备远控。就绪后，在手机“连接电脑”列表中点选本机即可。' }
@@ -164,11 +191,16 @@
                 }
             } catch {
                 $message.Text='操作未完成：'+$_.Exception.Message
-                if ($action -eq 'status') { $status.Text='后台服务未就绪，请重新运行 ClipRelay 安装程序。' }
+                if ($action -in @('status','pairings','lanPairApprove','lanPairReject')) {$ui.Pairings='';$pending.Items.Clear();$confirmed.Checked=$false}
+                if ($action -eq 'status') { $ui.Running=$false;$status.Text='后台服务未就绪，请重新运行 ClipRelay 安装程序。' }
             } finally { $ui.Task=$null; $ui.Action='' }
         }
         $busy=$null -ne $ui.Task
-        $toggle.Enabled=!$busy; $pair.Enabled=!$busy -and $ui.Running; $revoke.Enabled=!$busy -and $ui.Running; $disconnect.Enabled=!$busy -and $ui.Running
+        $selected=$pending.SelectedItem
+        $waiting=$null -ne $selected -and (!$selected.automatic -or ($selected.state -ceq 'waiting' -and $selected.generation -cmatch '^[a-f0-9]{32}$'))
+        $toggle.Enabled=!$busy; $pair.Enabled=!$busy -and $ui.Running -and $waiting -and (!$selected.automatic -or $confirmed.Checked)
+        $reject.Enabled=!$busy -and $ui.Running -and $waiting; $confirmed.Enabled=!$busy -and $ui.Running -and $waiting
+        $revoke.Enabled=!$busy -and $ui.Running; $disconnect.Enabled=!$busy -and $ui.Running
         if (!$busy -and [DateTime]::UtcNow -ge $ui.Next) {
             $ui.Poll=($ui.Poll+1)%3
             $action=if (!$ui.Running -or $ui.Poll -eq 0) {'status'} elseif ($ui.Poll -eq 1) {'pairings'} else {'clients'}
@@ -294,7 +326,7 @@ function Start-RemotePairingNotifier {
                 $reply=$state.Task.GetAwaiter().GetResult() | ConvertFrom-Json
                 if ($reply.ok) {
                     $pending=@($reply.data.pairings)
-                    $signature=($pending | ForEach-Object { $_.id }) -join ','
+                    $signature=($pending | ForEach-Object { $_.id+':'+$_.generation }) -join ','
                     if ($signature -ne $state.Seen -and $pending.Count -gt 0 -and $null -eq [Windows.Forms.Application]::OpenForms['RemoteDesktopSettings']) {
                         $script:relayUpdateBalloon=$false
                         $NotifyIcon.BalloonTipTitle='ClipRelay · 配对请求'

@@ -221,7 +221,7 @@ namespace ClipRelay.Remote {
             StopFocus();
             string executable = Path.Combine(Root, "cliprelay-network.exe");
             Native.StartInSession(executable, Quote(executable) + " --state-dir " + Quote(StateRoot) +
-                " --input-focus-probe " + Quote(typeof(HostService).Assembly.Location), Root, childSession, out focusChild, out focusJob);
+                " --local-pairing --input-focus-probe " + Quote(typeof(HostService).Assembly.Location), Root, childSession, out focusChild, out focusJob);
         }
         bool RecoverAudioMute(uint session) {
             Process recovery = null; IntPtr recoveryJob = IntPtr.Zero;
@@ -341,16 +341,8 @@ namespace ClipRelay.Remote {
                 return new { enabled = action == "enable" };
             }
             if (action == "lanPairings") return new { pairings = LanPairings() };
-            if (action == "lanPairApprove") {
-                string id = Text(request, "id");
-                if (!System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-f]{32}\\z")) throw new ArgumentException("Invalid pairing ID");
-                lock (gate) { if (!Enabled || !IsReady) throw new InvalidOperationException("Remote desktop is not ready"); }
-                bool found = false;
-                foreach (var pending in LanPairings()) if (Text(pending, "id") == id) found = true;
-                if (!found) throw new InvalidOperationException("配对请求已取消或过期，请从手机重新发起。");
-                File.WriteAllText(Path.Combine(StateRoot, "lan-pairing", id + ".approved"), "approved", new UTF8Encoding(false));
-                return new { status = true };
-            }
+            if (action == "lanPairApprove" || action == "lanPairReject")
+                return LanPairingControl.Decide(request, action == "lanPairApprove", PairingRequest);
             if (action == "pairings") {
                 var result = (Dictionary<string, object>)EngineRequest("GET", "/api/pin", null);
                 var entries = new List<object>();
@@ -365,6 +357,16 @@ namespace ClipRelay.Remote {
                 return new { pairings = entries.ToArray() };
             }
             if (action == "clients") return EngineRequest("GET", "/api/clients/list", null);
+            if (action == "pairReject") {
+                string id = Text(request, "id");
+                if (request.Count != 2 || !System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-fA-F]{32}\\z"))
+                    throw new ArgumentException("Invalid pairing request");
+                var result = EngineRequest("DELETE", "/api/pin", new { pairing_id = id }) as Dictionary<string, object>;
+                object status;
+                if (result == null || !result.TryGetValue("status", out status) || !(status is bool) || !(bool)status)
+                    throw new InvalidOperationException("配对请求已改变或结束，请刷新后重试。");
+                return new { status = true };
+            }
             if (action == "pair") {
                 string id = Text(request, "id"), pin = Text(request, "pin"), name = Text(request, "name");
                 if (!System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-fA-F]{32}\\z") ||
@@ -381,27 +383,20 @@ namespace ClipRelay.Remote {
             throw new ArgumentException("Unknown action");
         }
         List<Dictionary<string, object>> LanPairings() {
-            var entries = new List<Dictionary<string, object>>();
-            lock (gate) { if (!Enabled || !IsRunning) return entries; }
-            string directory = Path.Combine(StateRoot, "lan-pairing");
-            if (!Directory.Exists(directory)) return entries;
+            lock (gate) { if (!Enabled || !IsRunning) return new List<Dictionary<string, object>>(); }
             long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
-            foreach (string path in Directory.GetFiles(directory, "*.json")) {
-                if (entries.Count >= 8) break;
-                string id = Path.GetFileNameWithoutExtension(path);
-                if (!System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-f]{32}\\z")) continue;
-                try {
-                    if (new FileInfo(path).Length > 2048) continue;
-                    var value = Json().Deserialize<Dictionary<string, object>>(File.ReadAllText(path));
-                    if (Text(value, "id") != id || Convert.ToInt64(value["expires"]) <= now ||
-                        File.Exists(Path.Combine(directory, id + ".approved"))) continue;
-                    string verification = Text(value, "verification"), name = Text(value, "name");
-                    if (!System.Text.RegularExpressions.Regex.IsMatch(verification, "\\A[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}\\z")) continue;
-                    entries.Add(new Dictionary<string, object> { { "id", id }, { "name", name },
-                        { "address", verification }, { "verification", verification }, { "automatic", true } });
-                } catch (IOException) { } catch (ArgumentException) { } catch (KeyNotFoundException) { }
+            return LanPairingControl.List(PairingRequest, now);
+        }
+        object PairingRequest(Dictionary<string, object> command) {
+            Process expected;
+            lock (gate) {
+                if (!Enabled || !IsReady || focusChild == null || focusChild.HasExited)
+                    throw new InvalidOperationException("远控服务尚未就绪，请稍后重试。");
+                expected = Process.GetProcessById(focusChild.Id);
+                try { IntPtr handle = expected.Handle; }
+                catch { expected.Dispose(); throw; }
             }
-            return entries;
+            using (expected) return RelayIpc.RequestPairing(command, expected);
         }
 
         object EngineRequest(string method, string path, object body) {

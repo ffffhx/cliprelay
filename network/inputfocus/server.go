@@ -408,6 +408,21 @@ func Serve(ctx context.Context, dir, executable string) error {
 	return ServeWithEngineAccess(ctx, dir, executable, fileEngineAccess(dir))
 }
 
+// ServeWithLocalPairing retains the installed Windows host's native workers,
+// while admitting decisions only through the SYSTEM-only local relay pipe.
+// Older callers keep Serve and its legacy file protocol until explicitly moved.
+func ServeWithLocalPairing(ctx context.Context, dir, executable string) error {
+	return serveWithLocalPairing(ctx, dir, executable, fileEngineAccess(dir), bindHostListeners)
+}
+
+func serveWithLocalPairing(ctx context.Context, dir, executable string, access EngineAccess,
+	bind func(context.Context, string) (*hostListeners, error), onListening ...func() error) error {
+	if executable == "" {
+		return errors.New("native worker executable required")
+	}
+	return serveHostWithEngineAccess(ctx, dir, executable, access, true, bind, onListening...)
+}
+
 // ServeWithEngineAccess uses credentials supplied by the owning local process.
 // Unlike Serve it does not require a plaintext service.json. Callers still own
 // context cancellation, native provider capabilities and complete host readiness.

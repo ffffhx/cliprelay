@@ -25,7 +25,7 @@ jobs:
       - name: Validate installation and feature protocols
         run: |
           New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
-          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','authentication-protocol','image-protocol','multi-peer-broadcast')) {
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','host-pairing','remote-lan-pair-ui','authentication-protocol','image-protocol','multi-peer-broadcast')) {
             $testOptions = @()
             if ($test -eq 'multi-peer-broadcast') { $testOptions = @('-Clipboard') }
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1" @testOptions
@@ -35,6 +35,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
           node --test windows/tests/paired-renderer-routing.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Paired clipboard renderer routing tests failed' }
+          node --test windows/tests/windows-host-pairing-ui.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Windows host pairing settings failed' }
           node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Desktop recovery tests failed' }
           node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
@@ -73,6 +75,14 @@ jobs:
       - name: Verify independent installed processes and pipe lifetime
         run: |
           & windows/tests/installed-package.ps1 -ReportPath dist/installed-package-report.json
+      - name: Verify installed SYSTEM host pairing and remote rejection
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'cliprelay-pairing-fixture.exe'
+          go build -o $fixture windows/tests/mac-pairing-fixture/main.go
+          if ($LASTEXITCODE -ne 0) { throw 'Pairing identity fixture build failed' }
+          $env:CLIPRELAY_PAIRING_TEST_FIXTURE = $fixture
+          node windows/tests/installed-host-pairing.cjs dist/installed-host-pairing-report.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed host pairing failed' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:

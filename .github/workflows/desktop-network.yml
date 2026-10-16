@@ -41,6 +41,12 @@ jobs:
         run: node --test windows/tests/network-controller.test.cjs windows/tests/network-artifact.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-pairing.test.cjs windows/tests/stream-viewer.test.cjs
       - name: Pairing rejection, expiry and joined cancellation
         run: node --test --test-timeout=30000 windows/tests/mac-pair-feedback.test.cjs
+      - name: Windows managed host pairing settings
+        run: node --test windows/tests/windows-host-pairing-ui.test.cjs
+      - name: Windows managed pairing pipe ownership
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& windows/tests/host-pairing.ps1'
       - name: Desktop live bitrate and presentation confirmation
         run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
       - name: Desktop input ownership and presentation gating

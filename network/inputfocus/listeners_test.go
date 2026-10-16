@@ -439,3 +439,105 @@ func TestHostListenersManagedRuntimeAndUnsupportedWorkers(t *testing.T) {
 		}
 	}
 }
+
+func TestHostListenersLocalPairingRetainsNativeWorkers(t *testing.T) {
+	executable := buildProbeOwnerFixture(t)
+	directory, cert, access := hostServerFixture(t)
+	started, exited := filepath.Join(directory, "worker-started"), filepath.Join(directory, "worker-exited")
+	t.Setenv("CLIPRELAY_PROBE_FIXTURE_STARTED", started)
+	t.Setenv("CLIPRELAY_PROBE_FIXTURE_EXITED", exited)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listeners, err := listenHost(ctx, hostLoopbackConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listeners.close()
+	ready, finished := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		defer close(finished)
+		done <- serveWithLocalPairing(ctx, directory, executable, access,
+			func(context.Context, string) (*hostListeners, error) { return listeners, nil },
+			func() error { close(ready); return nil })
+	}()
+	t.Cleanup(func() { cancel(); waitHostSignal(t, finished, "managed Windows worker cleanup") })
+	waitHostSignal(t, ready, "managed Windows service readiness")
+	client := hostFixtureClient(t, cert)
+	request, _ := http.NewRequest("POST", "https://"+listeners.pairing.Addr().String()+"/v1/pair",
+		strings.NewReader(`{"name":"disposable Windows client","nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pin":"1234"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-ClipRelay-Pairing-Feedback", "1")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending lanRequest
+	err = json.NewDecoder(response.Body).Decode(&pending)
+	response.Body.Close()
+	if err != nil || response.StatusCode != 200 || pending.Feedback == nil {
+		t.Fatal("local pairing did not advertise feedback", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "lan-pairing")); !os.IsNotExist(err) {
+		t.Fatal("new local pairing wrote legacy approval files", err)
+	}
+	local := func(command map[string]string) map[string]any {
+		t.Helper()
+		connection, err := net.DialTimeout("tcp", listeners.relay.Addr().String(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+		if err := json.NewEncoder(connection).Encode(command); err != nil {
+			t.Fatal(err)
+		}
+		var reply map[string]any
+		if err := json.NewDecoder(connection).Decode(&reply); err != nil {
+			t.Fatal(err)
+		}
+		return reply
+	}
+	list := local(map[string]string{"op": "host-pair-list"})
+	entries, ok := list["requests"].([]any)
+	if list["ok"] != true || !ok || len(entries) != 1 {
+		t.Fatal("local request list unavailable")
+	}
+	current := entries[0].(map[string]any)
+	decision := map[string]string{"op": "host-pair-reject", "id": pending.ID,
+		"generation": current["generation"].(string), "verification": pending.Verification}
+	if reply := local(decision); reply["ok"] != true {
+		t.Fatal("live local rejection failed", reply)
+	}
+	response, err = client.Post("https://"+listeners.pairing.Addr().String()+"/v1/pair/status", "application/json",
+		strings.NewReader(`{"id":"`+pending.ID+`","receipt":"`+pending.Feedback.Receipt+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status pairFeedbackStatus
+	err = json.NewDecoder(response.Body).Decode(&status)
+	response.Body.Close()
+	if err != nil || status.State != "rejected" {
+		t.Fatal("remote client did not observe local rejection", err)
+	}
+	pid, err := os.ReadFile(started)
+	if err != nil || len(pid) == 0 {
+		t.Fatal("managed Windows mode disabled its native worker", err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("managed Windows service did not join")
+	}
+	if value, err := os.ReadFile(exited); err != nil || string(value) != string(pid) {
+		t.Fatal("native worker survived managed Windows service", err)
+	}
+	assertHostPortsFree(t, listeners)
+	if err := ServeWithLocalPairing(context.Background(), directory, ""); err == nil {
+		t.Fatal("missing Windows native provider admitted")
+	}
+}

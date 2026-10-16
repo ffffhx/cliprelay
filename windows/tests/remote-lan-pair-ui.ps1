@@ -21,10 +21,10 @@ namespace ClipRelayLanQa {
 }
 namespace ClipRelay.Remote {
     public static class ControlClient {
-        public static string LastAction="";
+        public static string LastAction="", LastRequest="";
         public static Task<string> RequestAsync(string json) {
-            if(json.Contains("lanPairApprove")) {LastAction="lanPairApprove";return Task.FromResult("{\"ok\":true,\"data\":{\"status\":true}}");}
-            if(json.Contains("pairings")) return Task.FromResult("{\"ok\":true,\"data\":{\"pairings\":[{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"Test phone\",\"address\":\"0123 4567 89AB\",\"automatic\":true,\"verification\":\"0123 4567 89AB\"}]}}");
+            if(json.Contains("lanPairApprove")) {LastAction="lanPairApprove";LastRequest=json;return Task.FromResult("{\"ok\":true,\"data\":{\"status\":true}}");}
+            if(json.Contains("pairings")) return Task.FromResult("{\"ok\":true,\"data\":{\"pairings\":[{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"state\":\"waiting\",\"name\":\"Test phone\",\"address\":\"0123 4567 89AB\",\"automatic\":true,\"verification\":\"0123 4567 89AB\"}]}}");
             if(json.Contains("clients")) return Task.FromResult("{\"ok\":true,\"data\":{\"named_certs\":[]}}");
             return Task.FromResult("{\"ok\":true,\"data\":{\"enabled\":true,\"ready\":true}}");
         }
@@ -37,7 +37,7 @@ $source=$source.Replace('New-Object Windows.Forms.Form','New-Object ClipRelayLan
 $source=$source.Replace("`$form.StartPosition = 'CenterScreen'", "`$form.StartPosition = 'Manual'; `$form.Location = New-Object Drawing.Point(-30000,-30000); `$form.ShowInTaskbar = `$false")
 [IO.File]::WriteAllText($temporary,$source,[Text.UTF8Encoding]::new($true))
 . $temporary
-$state=@{Sent=$false;Passed=$false;Error='';Deadline=[DateTime]::UtcNow.AddSeconds(18)}
+$state=@{Sent=$false;Confirmed=$false;Passed=$false;Error='';Deadline=[DateTime]::UtcNow.AddSeconds(18)}
 $timer=New-Object Windows.Forms.Timer
 $timer.Interval=100
 $timer.Add_Tick({
@@ -47,6 +47,11 @@ $timer.Add_Tick({
         if([DateTime]::UtcNow -gt $state.Deadline){throw 'UI test timed out'}
         $pending=$form.Controls.Find('RemoteDesktopPairings',$true)[0]
         $button=$form.Controls.Find('RemoteDesktopPair',$true)[0]
+        if (!$state.Confirmed -and $pending.Items.Count -eq 1) {
+            if ($button.Enabled) {throw 'Approval enabled before matching-code confirmation'}
+            $form.Controls.Find('RemoteDesktopConfirm',$true)[0].Checked=$true
+            $state.Confirmed=$true
+        }
         if(!$state.Sent -and $pending.Items.Count -eq 1 -and $button.Enabled){
             if($form.Controls.Find('RemoteDesktopPin',$true)[0].Visible){throw 'Manual PIN is still visible for automatic pairing'}
             if($form.Controls.Find('RemoteDesktopVerification',$true)[0].Text -cne '0123 4567 89AB'){throw 'Verification code missing'}
@@ -55,6 +60,8 @@ $timer.Add_Tick({
         $message=$form.Controls.Find('RemoteDesktopMessage',$true)[0].Text
         if($state.Sent -and $message -like '已允许这台手机*'){
             if([ClipRelay.Remote.ControlClient]::LastAction -ne 'lanPairApprove'){throw 'Wrong authorization action'}
+            $decision=[ClipRelay.Remote.ControlClient]::LastRequest | ConvertFrom-Json
+            if ($decision.generation -cne 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' -or $decision.verification -cne '0123 4567 89AB') {throw 'Approval lost its current generation or verification'}
             if($ScreenshotPath){
                 $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
                 try{$form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$form.Width,$form.Height));$bitmap.Save([IO.Path]::GetFullPath($ScreenshotPath))}finally{$bitmap.Dispose()}
@@ -66,4 +73,4 @@ $timer.Add_Tick({
 try{$timer.Start();Show-RemoteDesktopSettings}finally{$timer.Stop();$timer.Dispose();Remove-Item -LiteralPath $temporary -Force}
 if($state.Error){throw $state.Error}
 if(!$state.Passed){throw 'LAN pairing UI did not finish'}
-'PASS: matching code, no manual PIN, one approval action (off-screen, no activation).'
+'PASS: explicit matching-code confirmation and one generation-bound approval (off-screen, no activation).'
