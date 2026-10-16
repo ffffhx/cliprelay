@@ -26,7 +26,26 @@ async function until(read,predicate,timeout=30000){
 const protectedDirectories=[path.join(os.homedir(),'.config','sunshine'),path.join(os.homedir(),'Library/Application Support/ClipRelay/host')];
 const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
 const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cliprelay-native-mac-stream-')));
-const nativeChildren=[],rawViewers=[],diagnostics=[];
+const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[];
+const testStarted=Date.now();
+function diagnosticLines(value){
+  return value.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission|invalid|abort|fatal|exception|library not loaded|reason:|screen|capture|video/i.test(line)&&
+    !/rikey|pin=|uniqueid|PRIVATE KEY|certificate|authorization|credential|password|secret|token/i.test(line)).slice(-40).map(line=>line.slice(0,400));
+}
+function fileDiagnostics(){
+  const result=[];
+  for(const folder of [os.tmpdir(),path.join(os.homedir(),'Library/Logs/DiagnosticReports')]){
+    if(!fs.existsSync(folder))continue;
+    for(const name of fs.readdirSync(folder)){
+      if(!/^ClipRelayStream-.*\.log$|^Moonlight.*\.(ips|crash)$/.test(name))continue;
+      const file=path.join(folder,name),stat=fs.lstatSync(file);
+      if(stat.isFile()&&!stat.isSymbolicLink()&&stat.mtimeMs>=testStarted&&stat.size<=2*1024*1024)
+        result.push({kind:name.endsWith('.log')?'viewer':'crash',lines:diagnosticLines(fs.readFileSync(file,'utf8'))});
+    }
+  }
+  try{result.push({kind:'engine',lines:diagnosticLines(hostState.read('engine.log',2*1024*1024).toString('utf8'))});}catch{}
+  return result;
+}
 let hostState,viewer,display,stage='prepare';
 const host=new HostController({directory,stateDirectory:path.join(base,'Host'),safeStorage:encryptedStorage(),localName:'Native stream CI',
   create({stateDirectory,safeStorage,enginePin,companionPin,onUpdate}){
@@ -51,7 +70,7 @@ function launchViewer(file,args,settings){
     count+=data.length;if(count>4*1024*1024){child.kill('SIGKILL');return;}
     tail+=data.toString('utf8');if(tail.length>16384)tail=tail.slice(-8192);
   });
-  child.once('close',()=>diagnostics.push(...tail.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission/i.test(line)&&!/[?&](rikey|pin|uniqueid)=|PRIVATE KEY|certificate/i.test(line)).slice(-12).map(line=>line.slice(0,240))));
+  child.once('close',(code,signal)=>{viewerExits.push({code,signal});diagnostics.push(...diagnosticLines(tail));});
   return child;
 }
 async function pair(identity,name){
@@ -151,7 +170,8 @@ async function main(){
     report.cases.push('all-owned-native-processes-reaped-and-default-state-preserved');
     report.ownedChildrenReaped=true;report.passed=true;
   }catch(error){
-    report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),diagnostics:diagnostics.slice(-24)};
+    report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),viewerExits,
+      diagnostics:diagnostics.slice(-24),files:fileDiagnostics()};
     process.exitCode=1;
   }finally{
     display?.close();viewer?.stop();
