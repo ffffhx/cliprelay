@@ -49,6 +49,7 @@ jobs:
       - run: node --test windows/tests/mac-host-engine-artifact.test.cjs
       - run: node --test windows/tests/mac-host-permissions.test.cjs windows/tests/mac-host-permissions-process.test.cjs
       - run: node --test windows/tests/mac-host-permission-controller.test.cjs windows/tests/mac-host-permission-ui.test.cjs
+      - run: node --test windows/tests/mac-host-state.test.cjs
       - run: python3 -m unittest discover -s scripts/tests -p test_fetch_sunshine_macos.py
       - run: python3 -m unittest discover -s scripts/tests -p test_sunshine_permission_checker.py
       - run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
