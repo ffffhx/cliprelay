@@ -87,10 +87,22 @@ test('file availability follows the current running package capability',async()=
   let state={available:true,phase:'running',requests:[],fileTransfer:true};
   const f=fixture({initial:state,request:()=>state});await f.ui.ready;
   assert.ok(f.root.all(node=>node.textContent.includes('浏览、上传和下载个人目录')).length);
-  assert.ok(f.root.all(node=>node.textContent.includes('暂不支持剪贴板同步')).length);
+  assert.ok(f.root.all(node=>node.textContent.includes('尚未提供远程剪贴板读写')).length);
   state={...state,fileTransfer:false};await f.ui.refresh();
   assert.ok(f.root.all(node=>node.textContent.includes('尚未提供文件传输')).length);
   state={...state,phase:'stopped',fileTransfer:true};await f.ui.refresh();
   assert.equal(f.root.all(node=>node.textContent.includes('浏览、上传和下载个人目录')).length,0);
   assert.ok(f.root.all(node=>node.textContent.includes('启动后会显示文件传输')).length);f.ui.close();
+});
+
+test('clipboard availability describes explicit exchange and local system permission only for the running package',async()=>{
+  let state={available:true,phase:'running',requests:[],clipboardExchange:true};
+  const f=fixture({initial:state,request:()=>state});await f.ui.ready;
+  assert.ok(f.root.all(node=>node.textContent.includes('主动发送或读取')).length);
+  assert.ok(f.root.all(node=>node.textContent.includes('在这台 Mac 上确认')).length);
+  state={...state,clipboardExchange:false};await f.ui.refresh();
+  assert.ok(f.root.all(node=>node.textContent.includes('尚未提供远程剪贴板读写')).length);
+  assert.equal(f.root.all(node=>node.textContent.includes('主动发送或读取')).length,0);
+  state={...state,phase:'stopped',clipboardExchange:true};await f.ui.refresh();
+  assert.ok(f.root.all(node=>node.textContent.includes('启动后会显示剪贴板')).length);f.ui.close();
 });

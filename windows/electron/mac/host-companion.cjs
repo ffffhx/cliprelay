@@ -38,10 +38,10 @@ class HostCompanion{
   constructor({directory,pin,state,platform=process.platform,arch=process.arch,launch=spawn,verify=artifact.verify,
     checkSocket=verifySocket,onUpdate=()=>{},readyTimeout=15000,stopGraceMs=20000,killDelayMs=1000}){
     Object.assign(this,{directory,pin:Object.freeze({...pin}),state,platform,arch,launch,verify,checkSocket,onUpdate,readyTimeout,stopGraceMs,killDelayMs});
-    this.current=null;this.closed=false;this.value={phase:'stopped',error:null,nativeWorkers:false,fileTransfer:false};
+    this.current=null;this.closed=false;this.value={phase:'stopped',error:null,nativeWorkers:false,fileTransfer:false,clipboardExchange:false};
   }
   snapshot(){return {...this.value};}
-  publish(phase,error=null){this.value={phase,error,nativeWorkers:false,fileTransfer:phase==='running'&&this.current?.fileTransfer===true};try{this.onUpdate(this.snapshot());}catch{}}
+  publish(phase,error=null){this.value={phase,error,nativeWorkers:false,fileTransfer:phase==='running'&&this.current?.fileTransfer===true,clipboardExchange:phase==='running'&&this.current?.clipboardExchange===true};try{this.onUpdate(this.snapshot());}catch{}}
   ipcPath(){if(this.value.phase!=='running' || !this.#ipc)throw fault('HOST_COMPANION_UNAVAILABLE');return this.checkSocket(this.#ipc);}
   assertCurrent(op){if(this.current!==op || op.stopping || this.closed)throw fault('HOST_COMPANION_CANCELLED');}
   start(){
@@ -60,7 +60,7 @@ class HostCompanion{
     this.assertCurrent(op);
     if(this.platform!=='darwin' || !['arm64','x64'].includes(this.arch))throw fault('HOST_PLATFORM_UNSUPPORTED');
     if(typeof this.directory!=='string' || !path.isAbsolute(this.directory) || !path.isAbsolute(this.state.directory))throw fault('HOST_COMPANION_INVALID');
-    try{op.fileTransfer=this.verify(this.directory,this.pin)?.manifest?.fileTransfer===1;}catch{throw fault('HOST_COMPANION_INVALID');}
+    try{const manifest=this.verify(this.directory,this.pin)?.manifest;op.fileTransfer=manifest?.fileTransfer===1;op.clipboardExchange=manifest?.clipboardExchange===1;}catch{throw fault('HOST_COMPANION_INVALID');}
     this.assertCurrent(op);op.frame=this.state.companionInitialization();
     if(!Buffer.isBuffer(op.frame) || !op.frame.length || op.frame.length>96*1024)throw fault('HOST_STATE_INVALID');
     const executable=path.join(this.directory,artifact.EXECUTABLE);

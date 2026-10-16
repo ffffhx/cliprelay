@@ -53,6 +53,7 @@ class HostController{
     return {available:!!this.owner && !this.closed,phase:this.closed?'closed':state.phase,error:state.error || this.error,
       requests:state.phase==='running' && !this.closed?this.requests.map(request=>({...request})):[],nativeWorkers:false,autoStart:this.autoStart,
       fileTransfer:!this.closed&&state.phase==='running'&&state.fileTransfer===true,
+      clipboardExchange:!this.closed&&state.phase==='running'&&state.clipboardExchange===true,
       clients:this.clients?.snapshot() || {viewId:null,phase:'unavailable',error:null,devices:[],revoking:null}};
   }
   changed(){

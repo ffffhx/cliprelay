@@ -4,11 +4,11 @@ const fault=code=>Object.assign(new Error(code),{code});
 // the engine's credentials before engine.close() releases their shared state.
 class HostSession{
   constructor({engine,companion,onUpdate=()=>{}}){
-    Object.assign(this,{engine,companion,onUpdate});this.current=null;this.closed=false;this.value={phase:'stopped',error:null,nativeWorkers:false,fileTransfer:false};
+    Object.assign(this,{engine,companion,onUpdate});this.current=null;this.closed=false;this.value={phase:'stopped',error:null,nativeWorkers:false,fileTransfer:false,clipboardExchange:false};
     for(const owner of [engine,companion])owner.onUpdate=value=>this.ownerChanged(owner,value);
   }
   snapshot(){return {...this.value};}
-  publish(phase,error=null){this.value={phase,error,nativeWorkers:false,fileTransfer:phase==='running'&&this.companion.snapshot().fileTransfer===true};try{this.onUpdate(this.snapshot());}catch{}}
+  publish(phase,error=null){this.value={phase,error,nativeWorkers:false,fileTransfer:phase==='running'&&this.companion.snapshot().fileTransfer===true,clipboardExchange:phase==='running'&&this.companion.snapshot().clipboardExchange===true};try{this.onUpdate(this.snapshot());}catch{}}
   ownerChanged(owner,value){
     const op=this.current;if(!op || op.stopping)return;
     if(value.phase==='failed' || (value.phase==='stopping' && value.error) ||

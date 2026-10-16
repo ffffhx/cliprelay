@@ -23,7 +23,7 @@ async function start(f){const status=await f.controller.action('host-start');ass
 test('opening settings is read-only; start uses the trusted device name and exposes no owner internals',async t=>{
   const f=fixture(t);assert.deepEqual(f.calls,[]);assert.equal((await f.controller.action('host-status')).phase,'stopped');assert.deepEqual(f.calls,[]);
   await start(f);const status=await f.controller.action('host-status');assert.deepEqual(f.calls[0],['start','Trusted fixture name']);
-  assert.deepEqual(Object.keys(status).sort(),['autoStart','available','clients','error','fileTransfer','nativeWorkers','phase','requests']);assert.equal(status.requests.length,1);assert.equal(status.clients.phase,'ready');
+  assert.deepEqual(Object.keys(status).sort(),['autoStart','available','clients','clipboardExchange','error','fileTransfer','nativeWorkers','phase','requests']);assert.equal(status.requests.length,1);assert.equal(status.clients.phase,'ready');
   status.requests[0].name='mutated';assert.equal(f.controller.snapshot().requests[0].name,'Fixture device');
   f.controller.releaseWindow();assert.equal(f.session.phase,'running');assert.ok(!f.calls.some(([op])=>op==='stop'));
 });
@@ -34,11 +34,14 @@ test('partial package and unsupported platform never construct a host session',a
   }
 });
 
-test('controller withdraws the file capability on stop and close',async t=>{
-  const f=fixture(t);f.session.snapshot=function(){return {phase:this.phase,error:null,fileTransfer:true};};
+test('controller withdraws file and clipboard capabilities on stop and close',async t=>{
+  const f=fixture(t);f.session.snapshot=function(){return {phase:this.phase,error:null,fileTransfer:true,clipboardExchange:true};};
   assert.equal(f.controller.snapshot().fileTransfer,false);await start(f);assert.equal(f.controller.snapshot().fileTransfer,true);
+  assert.equal(f.controller.snapshot().clipboardExchange,true);
   await f.controller.action('host-stop');assert.equal(f.controller.snapshot().fileTransfer,false);
+  assert.equal(f.controller.snapshot().clipboardExchange,false);
   await start(f);await f.controller.close();assert.equal(f.controller.snapshot().fileTransfer,false);
+  assert.equal(f.controller.snapshot().clipboardExchange,false);
 });
 test('actions reject arbitrary filenames, executable arguments and unregistered commands',async t=>{
   const f=fixture(t);

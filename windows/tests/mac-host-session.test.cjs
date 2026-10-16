@@ -14,7 +14,7 @@ function fixture(t){
 }
 test('host readiness requires both owners; stop and permanent close preserve credential lifetime',async t=>{
   const f=fixture(t);await f.session.start('Mac');assert.deepEqual(f.trace,['engine-start','companion-start']);
-  assert.deepEqual(f.session.snapshot(),{phase:'running',error:null,nativeWorkers:false,fileTransfer:false});
+  assert.deepEqual(f.session.snapshot(),{phase:'running',error:null,nativeWorkers:false,fileTransfer:false,clipboardExchange:false});
   await assert.rejects(f.session.start('Mac'),{code:'HOST_SESSION_BUSY'});await f.session.stop();
   assert.deepEqual(f.trace.slice(-2),['companion-stop','engine-stop']);
   await f.session.start('Mac');await f.session.close();assert.deepEqual(f.trace.slice(-4),['companion-stop','engine-stop','companion-close','engine-close']);
@@ -26,13 +26,14 @@ test('companion startup failure shuts down the engine and reports its fixed erro
   assert.equal(f.session.snapshot().phase,'failed');assert.equal(f.engine.phase,'stopped');assert.equal(f.session.current,null);
 });
 
-test('file transfer is advertised only while the verified companion session is running',async t=>{
+test('file and clipboard capabilities are advertised only while the verified companion session is running',async t=>{
   const f=fixture(t),states=[];f.session.onUpdate=value=>states.push(value);
-  f.companion.snapshot=function(){return {phase:this.phase,fileTransfer:true};};
+  f.companion.snapshot=function(){return {phase:this.phase,fileTransfer:true,clipboardExchange:true};};
   assert.equal(f.session.snapshot().fileTransfer,false);await f.session.start('Mac');
-  assert.equal(f.session.snapshot().fileTransfer,true);await f.session.stop();
+  assert.equal(f.session.snapshot().fileTransfer,true);assert.equal(f.session.snapshot().clipboardExchange,true);await f.session.stop();
   assert.ok(states.some(value=>value.phase==='running'&&value.fileTransfer));
   assert.ok(states.filter(value=>value.phase!=='running').every(value=>value.fileTransfer===false));
+  assert.ok(states.filter(value=>value.phase!=='running').every(value=>value.clipboardExchange===false));
 });
 test('either owner failure withdraws readiness and joins both owners',async t=>{
   for(const name of ['engine','companion'])await t.test(name,async t=>{

@@ -26,7 +26,7 @@ test('companion starts with fixed arguments and pipe-only credentials; EOF waits
   assert.match(launch.file,/cliprelay-host-network$/);assert.deepEqual(launch.args,['--state-dir',f.companion.state.directory,'--owner-pid',String(process.pid)]);
   assert.deepEqual(launch.settings.stdio,['pipe','pipe','ignore']);assert.equal(launch.settings.detached,false);assert.equal(launch.settings.shell,false);
   assert.ok(!JSON.stringify(launch).includes('fixture-only-password'));assert.equal(f.companion.ipcPath(),'/fixture/clipboard-relay.sock');
-  assert.deepEqual(f.companion.snapshot(),{phase:'running',error:null,nativeWorkers:false,fileTransfer:false});
+  assert.deepEqual(f.companion.snapshot(),{phase:'running',error:null,nativeWorkers:false,fileTransfer:false,clipboardExchange:false});
   await until(()=>f.messages.length===1);assert.equal(f.messages[0].passwordMatches,true);assert.ok(f.frames[0].every(byte=>byte===0));
   await f.companion.stop();reaped(f);assert.equal(f.children[0].exitCode,0);
   assert.throws(()=>f.companion.ipcPath(),{code:'HOST_COMPANION_UNAVAILABLE'});
@@ -37,12 +37,14 @@ test('invalid artifact or unavailable initialization never launches a child',asy
   }
 });
 
-test('verified file capability becomes available only after readiness and disappears on child exit',async t=>{
-  const states=[],f=fixture(t,{verify:()=>({manifest:{fileTransfer:1}}),onUpdate:value=>states.push(value)});
+test('verified file and clipboard capabilities become available only after readiness and disappear on child exit',async t=>{
+  const states=[],f=fixture(t,{verify:()=>({manifest:{fileTransfer:1,clipboardExchange:1}}),onUpdate:value=>states.push(value)});
+  assert.equal(f.companion.snapshot().clipboardExchange,false);
   assert.equal(f.companion.snapshot().fileTransfer,false);await f.companion.start();
-  assert.equal(f.companion.snapshot().fileTransfer,true);f.children[0].kill();await until(()=>f.companion.current===null);
+  assert.equal(f.companion.snapshot().fileTransfer,true);assert.equal(f.companion.snapshot().clipboardExchange,true);f.children[0].kill();await until(()=>f.companion.current===null);
   assert.equal(f.companion.snapshot().fileTransfer,false);
   assert.ok(states.filter(value=>value.phase!=='running').every(value=>value.fileTransfer===false));
+  assert.ok(states.filter(value=>value.phase!=='running').every(value=>value.clipboardExchange===false));
 });
 test('malformed, wrong-owner and excess replies cannot produce readiness',async t=>{
   for(const mode of ['wrong-pid','wrong-owner','workers','duplicate','extra-field','extra-byte','flood','bad-utf8'])await t.test(mode,async t=>{
