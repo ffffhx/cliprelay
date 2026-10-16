@@ -160,6 +160,8 @@ async function build(){
         const reportPath=path.join(output,`native-stream-bundle-${architecture}.json`);
         const env={...process.env,APP_SOURCE_COMMIT:process.env.GITHUB_SHA};
         delete env.CLIPRELAY_MAC_STREAM_DEBUG;
+        delete env.CLIPRELAY_DIAGNOSTIC_VIEWER;
+        delete env.DIAGNOSTIC_VIEWER_COMMIT;
         execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_stream.cjs'),appDirectory,reportPath],{env,stdio:'inherit',timeout:240000});
         const report=JSON.parse(fs.readFileSync(reportPath,'utf8'));
         const expected=['packaged-Mac-capture-encode-encrypted-transport-and-Qt-present',
