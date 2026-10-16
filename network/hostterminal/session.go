@@ -25,45 +25,54 @@ const (
 )
 
 type Request struct {
-	Op       string   `json:"op"`
-	Owner    string   `json:"owner,omitempty"`
-	Owners   []string `json:"owners,omitempty"`
-	Instance string   `json:"instance,omitempty"`
-	ID       string   `json:"id,omitempty"`
-	Shell    string   `json:"shell,omitempty"`
-	Columns  int      `json:"columns,omitempty"`
-	Rows     int      `json:"rows,omitempty"`
-	Sequence int64    `json:"sequence,omitempty"`
-	Offset   int64    `json:"offset,omitempty"`
-	Data     string   `json:"data,omitempty"`
+	Op        string   `json:"op"`
+	Owner     string   `json:"owner,omitempty"`
+	Owners    []string `json:"owners,omitempty"`
+	Instance  string   `json:"instance,omitempty"`
+	ID        string   `json:"id,omitempty"`
+	Shell     string   `json:"shell,omitempty"`
+	Columns   int      `json:"columns,omitempty"`
+	Rows      int      `json:"rows,omitempty"`
+	Sequence  int64    `json:"sequence,omitempty"`
+	Offset    int64    `json:"offset,omitempty"`
+	Data      string   `json:"data,omitempty"`
+	Action    string   `json:"action,omitempty"`
+	Epoch     int64    `json:"epoch,omitempty"`
+	Gesture   int64    `json:"gesture,omitempty"`
+	Column    int      `json:"column,omitempty"`
+	Row       int      `json:"row,omitempty"`
+	Button    int      `json:"button,omitempty"`
+	Modifiers int      `json:"modifiers,omitempty"`
 }
 type SessionState struct {
-	ID               string `json:"id"`
-	Shell            string `json:"shell"`
-	State            string `json:"state"`
-	Columns          int    `json:"columns"`
-	Rows             int    `json:"rows"`
-	ExitCode         int    `json:"exitCode"`
-	OpenSequence     int64  `json:"openSequence"`
-	AcceptedSequence int64  `json:"acceptedSequence"`
-	WrittenSequence  int64  `json:"writtenSequence"`
-	Start            int64  `json:"start"`
-	End              int64  `json:"end"`
-	RemainingMs      int64  `json:"remainingMs"`
+	ID               string      `json:"id"`
+	Shell            string      `json:"shell"`
+	State            string      `json:"state"`
+	Columns          int         `json:"columns"`
+	Rows             int         `json:"rows"`
+	ExitCode         int         `json:"exitCode"`
+	OpenSequence     int64       `json:"openSequence"`
+	AcceptedSequence int64       `json:"acceptedSequence"`
+	WrittenSequence  int64       `json:"writtenSequence"`
+	Start            int64       `json:"start"`
+	End              int64       `json:"end"`
+	RemainingMs      int64       `json:"remainingMs"`
+	Mouse            *MouseState `json:"mouse,omitempty"`
 }
 type Reply struct {
-	OK         bool           `json:"ok"`
-	Code       string         `json:"code,omitempty"`
-	Instance   string         `json:"instance"`
-	NextOpen   int64          `json:"nextOpen,omitempty"`
-	Shells     []string       `json:"shells,omitempty"`
-	PasteLimit int            `json:"pasteLimit,omitempty"`
-	Session    *SessionState  `json:"session,omitempty"`
-	Sessions   []SessionState `json:"sessions,omitempty"`
-	Offset     int64          `json:"offset"`
-	Next       int64          `json:"next"`
-	Gap        bool           `json:"gap"`
-	Data       string         `json:"data,omitempty"`
+	OK            bool           `json:"ok"`
+	Code          string         `json:"code,omitempty"`
+	Instance      string         `json:"instance"`
+	NextOpen      int64          `json:"nextOpen,omitempty"`
+	Shells        []string       `json:"shells,omitempty"`
+	PasteLimit    int            `json:"pasteLimit,omitempty"`
+	MouseProtocol int            `json:"mouseProtocol,omitempty"`
+	Session       *SessionState  `json:"session,omitempty"`
+	Sessions      []SessionState `json:"sessions,omitempty"`
+	Offset        int64          `json:"offset"`
+	Next          int64          `json:"next"`
+	Gap           bool           `json:"gap"`
+	Data          string         `json:"data,omitempty"`
 }
 type ProcessState struct {
 	Written  int64 `json:"written"`
@@ -77,6 +86,8 @@ type ProcessState struct {
 type Process interface {
 	Queue([]byte, int64, bool) bool
 	Resize(int, int) error
+	Mouse(MouseCommand) error
+	MouseState() MouseState
 	Status() ProcessState
 	Close()
 	Done() <-chan struct{}
@@ -165,10 +176,18 @@ func shellAllowed(shell string) bool         { return shell == "zsh" || shell ==
 func (m *Manager) failure(code string) Reply { return Reply{Code: code, Instance: m.instance} }
 func (m *Manager) snapshot(s *session) SessionState {
 	value := s.state
-	value.Start, value.End = s.output.Bounds()
+	mouse := initialMouseState()
 	if s.process != nil {
 		value.WrittenSequence = s.process.Status().Written
+		mouse = s.process.MouseState()
 	}
+	// Native/guardian mouse offsets are observed only after retaining output.
+	// Snapshot the ring afterward so a newer mode can never exceed this End.
+	value.Start, value.End = s.output.Bounds()
+	if value.State != "running" {
+		mouse.Phase, mouse.Buttons, mouse.RemainingMs = "closed", 0, 0
+	}
+	value.Mouse = &mouse
 	if value.State == "running" {
 		value.RemainingMs = max(0, IdleMs-(m.now()-s.lastAccess))
 	}
@@ -273,6 +292,7 @@ func (m *Manager) Handle(r Request) Reply {
 		result := m.reply(nil)
 		result.NextOpen = next
 		result.PasteLimit = PasteLimit
+		result.MouseProtocol = 1
 		result.Shells = []string{"zsh", "bash"}
 		for _, s := range m.sessions {
 			if s.owner == r.Owner {
@@ -376,11 +396,28 @@ func (m *Manager) Handle(r Request) Reply {
 			return m.failure("TERMINAL_BAD_REQUEST")
 		}
 		if err := s.process.Resize(r.Columns, r.Rows); err != nil {
+			if err.Error() == "TERMINAL_BUSY" {
+				return m.failure("TERMINAL_BUSY")
+			}
 			m.stop(s, "failed")
 			return m.failure("TERMINAL_UNAVAILABLE")
 		}
 		s.state.Columns = r.Columns
 		s.state.Rows = r.Rows
+		return m.reply(s)
+	}
+	if r.Op == "mouse" {
+		command := r.mouseCommand()
+		if !validMouseCommand(command) {
+			return m.failure("TERMINAL_BAD_REQUEST")
+		}
+		if err := s.process.Mouse(command); err != nil {
+			if mouseCode(err.Error()) {
+				return m.failure(err.Error())
+			}
+			m.stop(s, "failed")
+			return m.failure("TERMINAL_UNAVAILABLE")
+		}
 		return m.reply(s)
 	}
 	if r.Op != "write" && r.Op != "paste" {
@@ -410,6 +447,10 @@ func (m *Manager) Handle(r Request) Reply {
 	s.state.AcceptedSequence = r.Sequence
 	s.digest = digest
 	return m.reply(s)
+}
+
+func (r Request) mouseCommand() MouseCommand {
+	return MouseCommand{Action: r.Action, Sequence: r.Sequence, Epoch: r.Epoch, Gesture: r.Gesture, Column: r.Column, Row: r.Row, Button: r.Button, Modifiers: r.Modifiers}
 }
 
 // Close withdraws authority and initiates all stops together. The caller must

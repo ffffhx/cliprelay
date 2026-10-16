@@ -13,18 +13,22 @@ import (
 // The session guardian's private channel is separate from the PTY. Shell output
 // can never be interpreted as a worker reply, and output is never persisted.
 type processCommand struct {
-	Op       string `json:"op"`
-	Sequence int64  `json:"sequence,omitempty"`
-	Data     string `json:"data,omitempty"`
-	Control  int64  `json:"control,omitempty"`
-	Columns  int    `json:"columns,omitempty"`
-	Rows     int    `json:"rows,omitempty"`
+	Op       string        `json:"op"`
+	Sequence int64         `json:"sequence,omitempty"`
+	Data     string        `json:"data,omitempty"`
+	Control  int64         `json:"control,omitempty"`
+	Columns  int           `json:"columns,omitempty"`
+	Rows     int           `json:"rows,omitempty"`
+	Mouse    *MouseCommand `json:"mouse,omitempty"`
 }
 type processEvent struct {
-	Op      string        `json:"op"`
-	State   *ProcessState `json:"state,omitempty"`
-	Data    string        `json:"data,omitempty"`
-	Control int64         `json:"control,omitempty"`
+	Op            string        `json:"op"`
+	State         *ProcessState `json:"state,omitempty"`
+	Data          string        `json:"data,omitempty"`
+	Control       int64         `json:"control,omitempty"`
+	MouseProtocol int           `json:"mouseProtocol,omitempty"`
+	Mouse         *MouseState   `json:"mouse,omitempty"`
+	Code          string        `json:"code,omitempty"`
 }
 
 var errProcessChannel = errors.New("TERMINAL_CHANNEL_UNAVAILABLE")
@@ -56,6 +60,14 @@ func decodeProcessCommand(raw []byte) (processCommand, error) {
 		if !exactFields(fields, "op,control,columns,rows") || command.Control < 1 || command.Control > MaxSequence || !dimensions(command.Columns, command.Rows) {
 			return command, errProcessChannel
 		}
+	case "mouse":
+		if !exactFields(fields, "op,control,mouse") || command.Control < 1 || command.Control > MaxSequence {
+			return command, errProcessChannel
+		}
+		command.Mouse, err = decodeMouseCommand(fields["mouse"])
+		if err != nil {
+			return command, err
+		}
 	default:
 		return command, errProcessChannel
 	}
@@ -69,7 +81,20 @@ func decodeProcessEvent(raw []byte) (processEvent, error) {
 	}
 	switch event.Op {
 	case "ready", "state":
-		if !exactFields(fields, "op,state") || event.State == nil {
+		allowed := "op,state"
+		if event.Op == "ready" {
+			if _, ok := fields["mouseProtocol"]; ok {
+				allowed += ",mouseProtocol"
+				if event.MouseProtocol != 1 {
+					return event, errProcessChannel
+				}
+			}
+		} else {
+			if _, ok := fields["mouse"]; ok {
+				allowed += ",mouse"
+			}
+		}
+		if !exactFields(fields, allowed) || event.State == nil {
 			return event, errProcessChannel
 		}
 		state, err := objectFields(fields["state"], 256)
@@ -84,11 +109,32 @@ func decodeProcessEvent(raw []byte) (processEvent, error) {
 			return event, err
 		}
 	case "resized":
-		if !exactFields(fields, "op,control") || event.Control < 1 || event.Control > MaxSequence {
+		allowed := "op,control"
+		if _, ok := fields["mouse"]; ok {
+			allowed += ",mouse"
+		}
+		if !exactFields(fields, allowed) || event.Control < 1 || event.Control > MaxSequence {
+			return event, errProcessChannel
+		}
+	case "mouse":
+		allowed := "op,control,mouse"
+		if _, ok := fields["code"]; ok {
+			allowed += ",code"
+			if !mouseCode(event.Code) {
+				return event, errProcessChannel
+			}
+		}
+		if !exactFields(fields, allowed) || event.Control < 1 || event.Control > MaxSequence {
 			return event, errProcessChannel
 		}
 	default:
 		return event, errProcessChannel
+	}
+	if raw, ok := fields["mouse"]; ok {
+		event.Mouse, err = decodeMouseState(raw)
+		if err != nil {
+			return event, err
+		}
 	}
 	return event, nil
 }
@@ -188,7 +234,9 @@ func ServeProcess(parent context.Context, input io.ReadCloser, output io.WriteCl
 	}()
 	go func() {
 		state := process.Status()
-		err := writeProcessFrame(output, processEvent{Op: "ready", State: &state}, ReplyLimit)
+		// Initial output may already be queued. Announce capability without
+		// exposing a mode offset before those bytes have crossed the channel.
+		err := writeProcessFrame(output, processEvent{Op: "ready", State: &state, MouseProtocol: 1}, ReplyLimit)
 		if err == nil {
 		writeLoop:
 			for {
@@ -233,6 +281,7 @@ func ServeProcess(parent context.Context, input io.ReadCloser, output io.WriteCl
 	defer ticker.Stop()
 	var sequence, control int64
 	last := process.Status()
+	lastMouse := initialMouseState()
 	for {
 		select {
 		case <-ctx.Done():
@@ -241,8 +290,9 @@ func ServeProcess(parent context.Context, input io.ReadCloser, output io.WriteCl
 			// Drain all output already produced before the final state. The writer
 			// owns stdout; the parent sees natural exit only after those frames.
 			state := process.Status()
+			mouse := process.MouseState()
 			select {
-			case events <- processEvent{Op: "state", State: &state}:
+			case events <- processEvent{Op: "state", State: &state, Mouse: &mouse}:
 			case <-ctx.Done():
 				return errProcessChannel
 			}
@@ -253,19 +303,38 @@ func ServeProcess(parent context.Context, input io.ReadCloser, output io.WriteCl
 			return writeErr
 		case <-ticker.C:
 			state := process.Status()
-			if !state.Exited && state != last {
-				if !emit(processEvent{Op: "state", State: &state}) {
+			mouse := process.MouseState()
+			if !state.Exited && (state != last || mouse != lastMouse) {
+				if !emit(processEvent{Op: "state", State: &state, Mouse: &mouse}) {
 					return errProcessChannel
 				}
 				last = state
+				lastMouse = mouse
 			}
 		case command := <-commands:
-			if command.Op == "resize" {
+			if command.Op == "mouse" {
+				if command.Control != control+1 {
+					return errProcessChannel
+				}
+				code := ""
+				if err := process.Mouse(*command.Mouse); err != nil {
+					code = err.Error()
+					if !mouseCode(code) {
+						return errProcessChannel
+					}
+				}
+				control = command.Control
+				mouse := process.MouseState()
+				if !emit(processEvent{Op: "mouse", Control: control, Code: code, Mouse: &mouse}) {
+					return errProcessChannel
+				}
+			} else if command.Op == "resize" {
 				if command.Control != control+1 || process.Resize(command.Columns, command.Rows) != nil {
 					return errProcessChannel
 				}
 				control = command.Control
-				if !emit(processEvent{Op: "resized", Control: control}) {
+				mouse := process.MouseState()
+				if !emit(processEvent{Op: "resized", Control: control, Mouse: &mouse}) {
 					return errProcessChannel
 				}
 			} else {

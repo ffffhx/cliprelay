@@ -99,7 +99,7 @@ func TestProcessGuardianHelper(t *testing.T) {
 		}
 	}()
 	if mode == "bad-state" {
-		_ = writeProcessFrame(output, processEvent{Op: "ready", State: &ProcessState{}}, ReplyLimit)
+		_ = writeProcessFrame(output, processEvent{Op: "ready", State: &ProcessState{}, MouseProtocol: 1}, ReplyLimit)
 		_, _ = bufio.NewReader(input).ReadString('\n')
 		_ = writeProcessFrame(output, processEvent{Op: "state", State: &ProcessState{Written: 99}}, ReplyLimit)
 		_, _ = bufio.NewReader(input).ReadString('\n')

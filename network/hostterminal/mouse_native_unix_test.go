@@ -47,6 +47,12 @@ func TestNativeMouseReceiver(t *testing.T) {
 }
 
 func TestNativeTypedMouseOrderedInputAndCleanup(t *testing.T) {
+	exerciseTypedMouse(t, nativeFixture)
+}
+func TestGuardianTypedMouseOrderedInputAndCleanup(t *testing.T) {
+	exerciseTypedMouse(t, guardianFixture)
+}
+func exerciseTypedMouse(t *testing.T, fixture func(*testing.T, string) (Process, *Buffer)) {
 	shells := []string{"bash"}
 	if runtime.GOOS == "darwin" {
 		shells = append(shells, "zsh")
@@ -54,8 +60,8 @@ func TestNativeTypedMouseOrderedInputAndCleanup(t *testing.T) {
 	for _, shell := range shells {
 		for _, reason := range []string{"expiry", "resize"} {
 			t.Run(shell+"/"+reason, func(t *testing.T) {
-				p, b := nativeFixture(t, shell)
-				native := p.(*nativeProcess)
+				p, b := fixture(t, shell)
+				native := p
 				executable, err := os.Executable()
 				if err != nil {
 					t.Fatal(err)

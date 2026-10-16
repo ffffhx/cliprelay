@@ -23,8 +23,12 @@ type guardedProcess struct {
 	queue                                  chan processCommand
 	pending                                []pendingProcessInput
 	queued                                 int
-	sequence, control, resizeControl       int64
-	resizeReply                            chan struct{}
+	sequence, control, outputEnd           int64
+	controlCommand                         processCommand
+	controlReply                           chan error
+	controlEpoch                           int64
+	mouse                                  MouseState
+	mouseAt                                time.Time
 	closing, readySeen                     bool
 	ready, stop, done, readDone, writeDone chan struct{}
 }
@@ -103,18 +107,45 @@ func (p *guardedProcess) Queue(data []byte, sequence int64, paste bool) bool {
 	}
 }
 func (p *guardedProcess) Resize(columns, rows int) error {
+	if !dimensions(columns, rows) {
+		return errors.New("TERMINAL_BAD_REQUEST")
+	}
+	return p.sendControl(processCommand{Op: "resize", Columns: columns, Rows: rows})
+}
+func (p *guardedProcess) Mouse(command MouseCommand) error {
+	if !validMouseCommand(command) {
+		return errors.New("TERMINAL_BAD_REQUEST")
+	}
+	return p.sendControl(processCommand{Op: "mouse", Mouse: &command})
+}
+func (p *guardedProcess) MouseState() MouseState {
 	p.mu.Lock()
-	if p.closing || !p.readySeen || p.state.Exited || !dimensions(columns, rows) || p.resizeReply != nil || p.control >= MaxSequence {
+	defer p.mu.Unlock()
+	state := p.mouse
+	state.RemainingMs = max(0, state.RemainingMs-time.Since(p.mouseAt).Milliseconds())
+	if p.state.Exited {
+		state.Phase, state.Buttons, state.RemainingMs = "closed", 0, 0
+	}
+	return state
+}
+func (p *guardedProcess) sendControl(command processCommand) error {
+	p.mu.Lock()
+	if p.closing || !p.readySeen || p.state.Exited || p.state.Failed || p.control >= MaxSequence {
 		p.mu.Unlock()
 		return errors.New("TERMINAL_CLOSED")
 	}
-	reply := make(chan struct{})
-	command := processCommand{Op: "resize", Control: p.control + 1, Columns: columns, Rows: rows}
+	if p.controlReply != nil {
+		p.mu.Unlock()
+		return errors.New("TERMINAL_BUSY")
+	}
+	reply := make(chan error, 1)
+	command.Control = p.control + 1
 	select {
 	case p.queue <- command:
 		p.control = command.Control
-		p.resizeControl = command.Control
-		p.resizeReply = reply
+		p.controlCommand = command
+		p.controlReply = reply
+		p.controlEpoch = p.mouse.Epoch
 	default:
 		p.mu.Unlock()
 		return errors.New("TERMINAL_BUSY")
@@ -123,8 +154,8 @@ func (p *guardedProcess) Resize(columns, rows int) error {
 	timer := time.NewTimer(3 * time.Second)
 	defer timer.Stop()
 	select {
-	case <-reply:
-		return nil
+	case err := <-reply:
+		return err
 	case <-p.stop:
 		return errProcessChannel
 	case <-timer.C:
@@ -166,10 +197,11 @@ func (p *guardedProcess) accept(event processEvent) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if event.Op == "ready" {
-		if p.readySeen || *event.State != (ProcessState{}) {
+		if p.readySeen || *event.State != (ProcessState{}) || event.MouseProtocol != 1 {
 			return false
 		}
 		p.readySeen = true
+		p.mouse, p.mouseAt = initialMouseState(), time.Now()
 		close(p.ready)
 		return true
 	}
@@ -179,16 +211,32 @@ func (p *guardedProcess) accept(event processEvent) bool {
 	switch event.Op {
 	case "output":
 		return true
-	case "resized":
-		if p.resizeReply == nil || event.Control != p.resizeControl {
+	case "resized", "mouse":
+		expectedOp := "resize"
+		if event.Op == "mouse" {
+			expectedOp = "mouse"
+		}
+		if p.controlReply == nil || event.Control != p.controlCommand.Control || p.controlCommand.Op != expectedOp || event.Mouse == nil {
 			return false
 		}
-		close(p.resizeReply)
-		p.resizeReply = nil
+		accepted := p.mouse.AcceptedSequence
+		if event.Op == "mouse" && event.Code == "" {
+			accepted = p.controlCommand.Mouse.Sequence
+		}
+		if event.Mouse.AcceptedSequence != accepted || !p.acceptMouse(*event.Mouse, accepted) || event.Op == "resized" && event.Mouse.Epoch <= p.controlEpoch {
+			return false
+		}
+		p.mouse, p.mouseAt = *event.Mouse, time.Now()
+		var err error
+		if event.Code != "" {
+			err = errors.New(event.Code)
+		}
+		p.controlReply <- err
+		p.controlReply = nil
 		return true
 	case "state":
 		state := *event.State
-		if state.Written < p.state.Written || state.Written > p.sequence || p.state.Failed && !state.Failed {
+		if state.Written < p.state.Written || state.Written > p.sequence || p.state.Failed && !state.Failed || event.Mouse == nil || !p.acceptMouse(*event.Mouse, p.mouse.AcceptedSequence) {
 			return false
 		}
 		for len(p.pending) > 0 && p.pending[0].sequence <= state.Written {
@@ -196,9 +244,16 @@ func (p *guardedProcess) accept(event processEvent) bool {
 			p.pending = p.pending[1:]
 		}
 		p.state = state
+		p.mouse, p.mouseAt = *event.Mouse, time.Now()
 		return true
 	}
 	return false
+}
+
+// Called under mu. A periodic snapshot cannot invent an acceptance: only the
+// matching synchronous native mouse receipt may advance AcceptedSequence.
+func (p *guardedProcess) acceptMouse(state MouseState, accepted int64) bool {
+	return validMouseState(state, p.outputEnd) && state.Epoch >= p.mouse.Epoch && state.Offset >= p.mouse.Offset && state.Gesture >= p.mouse.Gesture && state.NextGesture >= p.mouse.NextGesture && state.AcceptedSequence >= p.mouse.AcceptedSequence && state.AcceptedSequence <= accepted && state.WrittenSequence >= p.mouse.WrittenSequence
 }
 func (p *guardedProcess) read(output func([]byte)) {
 	defer close(p.readDone)
@@ -222,6 +277,9 @@ func (p *guardedProcess) read(output func([]byte)) {
 		if event.Op == "output" {
 			data, _ := processBytes(event.Data, ReadLimit)
 			output(data)
+			p.mu.Lock()
+			p.outputEnd += int64(len(data))
+			p.mu.Unlock()
 		}
 	}
 }

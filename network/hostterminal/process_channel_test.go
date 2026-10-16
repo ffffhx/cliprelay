@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -37,7 +38,9 @@ func (p *channelProcess) Resize(c, r int) error {
 	p.size = [2]int{c, r}
 	return nil
 }
-func (p *channelProcess) Status() ProcessState { p.mu.Lock(); defer p.mu.Unlock(); return p.state }
+func (p *channelProcess) Status() ProcessState     { p.mu.Lock(); defer p.mu.Unlock(); return p.state }
+func (p *channelProcess) Mouse(MouseCommand) error { return errors.New("TERMINAL_MOUSE_MODE") }
+func (p *channelProcess) MouseState() MouseState   { return initialMouseState() }
 func (p *channelProcess) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

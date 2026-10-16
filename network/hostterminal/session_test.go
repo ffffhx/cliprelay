@@ -32,6 +32,8 @@ func (p *fakeProcess) Queue(data []byte, sequence int64, paste bool) bool {
 	return true
 }
 func (p *fakeProcess) Resize(columns, rows int) error { return nil }
+func (p *fakeProcess) Mouse(MouseCommand) error       { return errors.New("TERMINAL_MOUSE_MODE") }
+func (p *fakeProcess) MouseState() MouseState         { return initialMouseState() }
 func (p *fakeProcess) Status() ProcessState           { p.mu.Lock(); defer p.mu.Unlock(); return p.state }
 func (p *fakeProcess) Close() {
 	p.mu.Lock()

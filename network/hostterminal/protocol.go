@@ -76,6 +76,13 @@ func Decode(raw []byte) (Request, error) {
 		allowed = "op,owner,instance,id,sequence,data"
 	case "resize":
 		allowed = "op,owner,instance,id,columns,rows"
+	case "mouse":
+		allowed = "op,owner,instance,id,sequence,action,epoch,gesture"
+		for _, key := range []string{"column", "row", "button", "modifiers"} {
+			if _, ok := fields[key]; ok {
+				allowed += "," + key
+			}
+		}
 	case "close":
 		allowed = "op,owner,instance,id"
 	default:
@@ -120,6 +127,9 @@ func Decode(raw []byte) (Request, error) {
 		}
 	}
 	if request.Op == "read" && (request.Offset < 0 || request.Offset > MaxSequence) {
+		return request, bad
+	}
+	if request.Op == "mouse" && !validMouseCommand(request.mouseCommand()) {
 		return request, bad
 	}
 	return request, nil
