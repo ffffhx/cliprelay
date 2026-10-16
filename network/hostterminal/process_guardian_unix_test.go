@@ -254,12 +254,15 @@ func TestGuardianStalledPasteStillHasShortIdleTimeout(t *testing.T) {
 	nativeWrite(t, p, 1, "printf '\\n"+octal(marker)+"\\n'; sleep 60\r", false)
 	eventually(t, time.Second, func() bool { return strings.Contains(contents(b), marker) && p.Status().Written == 1 })
 	nativeWrite(t, p, 2, strings.Repeat("x", 16384), true)
+	// Linux can retain the first 16 KB across its PTY/line-discipline buffers.
+	// Fill the bounded 32 KB input queue so the writer really has to wait.
+	nativeWrite(t, p, 3, strings.Repeat("y", 16384), true)
 	select {
 	case <-p.Done():
 	case <-time.After(5 * time.Second):
 		t.Fatal("stalled paste exceeded idle write deadline")
 	}
-	if state := p.Status(); !state.Failed || state.Written != 1 {
+	if state := p.Status(); !state.Failed || state.Written >= 3 {
 		t.Fatalf("partial paste claimed written: %+v", state)
 	}
 }
