@@ -37,19 +37,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type queuedInput struct {
-	data     []byte
-	sequence int64
-	paste    bool
-}
 type nativeProcess struct {
 	mu                              sync.Mutex
 	state                           ProcessState
 	command                         *exec.Cmd
 	terminal                        *os.File
 	fd                              int
-	queue                           chan queuedInput
-	queued                          int
+	input                           *InputQueue
 	closing                         bool
 	stop, done, readDone, writeDone chan struct{}
 }
@@ -119,7 +113,8 @@ func StartNative(shell string, columns, rows int, output func([]byte)) (Process,
 		_ = command.Wait()
 		return nil, err
 	}
-	p := &nativeProcess{command: command, terminal: pollable, fd: fd, queue: make(chan queuedInput, 8), stop: make(chan struct{}), done: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{})}
+	started := time.Now()
+	p := &nativeProcess{command: command, terminal: pollable, fd: fd, input: NewInputQueue(func() int64 { return time.Since(started).Milliseconds() }, columns, rows), stop: make(chan struct{}), done: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{})}
 	go p.read(output)
 	go p.write()
 	go p.monitor()
@@ -132,7 +127,7 @@ func (p *nativeProcess) read(output func([]byte)) {
 	for {
 		n, err := p.terminal.Read(buffer)
 		if n > 0 {
-			output(buffer[:n])
+			p.input.Observe(buffer[:n], output)
 		}
 		if err != nil {
 			return
@@ -189,75 +184,105 @@ func (p *nativeProcess) waitLineEditor() bool {
 
 func (p *nativeProcess) write() {
 	defer close(p.writeDone)
+	defer p.input.Stop()
+	ticker := time.NewTicker(30 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-p.stop:
 			return
-		case item := <-p.queue:
-			p.mu.Lock()
-			closing := p.closing
-			p.mu.Unlock()
-			if closing {
+		default:
+		}
+		if p.input.AbortRequired() {
+			p.fail()
+			return
+		}
+		item := p.input.Begin()
+		if item == nil {
+			select {
+			case <-p.stop:
 				return
+			case <-p.input.Changed:
+			case <-ticker.C:
 			}
-			budget := 3 * time.Second
-			if item.paste {
-				budget = 15 * time.Second
+			continue
+		}
+		p.mu.Lock()
+		closing := p.closing
+		p.mu.Unlock()
+		if closing {
+			return
+		}
+		budget := 3 * time.Second
+		if item.Paste {
+			budget = 15 * time.Second
+		}
+		deadline := time.Now().Add(budget)
+		if needsLineEditor(item.Data) && !p.waitLineEditor() {
+			p.fail()
+			return
+		}
+		offset := 0
+		for offset < len(item.Data) {
+			// A line editor can redraw while consuming a large unbracketed
+			// paste. Retain one ordered item and confirm only complete writes.
+			step := min(len(item.Data)-offset, 512)
+			idleDeadline := time.Now().Add(3 * time.Second)
+			if deadline.Before(idleDeadline) {
+				idleDeadline = deadline
 			}
-			deadline := time.Now().Add(budget)
-			if needsLineEditor(item.data) && !p.waitLineEditor() {
+			if p.terminal.SetWriteDeadline(idleDeadline) != nil {
 				p.fail()
 				return
 			}
-			offset := 0
-			for offset < len(item.data) {
-				// A line editor can redraw while consuming a large unbracketed
-				// paste. Bound both total time and each blocked chunk, preserving
-				// one ordered item and acknowledging only the complete payload.
-				step := min(len(item.data)-offset, 512)
-				idleDeadline := time.Now().Add(3 * time.Second)
-				if deadline.Before(idleDeadline) {
-					idleDeadline = deadline
-				}
-				if p.terminal.SetWriteDeadline(idleDeadline) != nil {
-					p.fail()
-					return
-				}
-				n, err := p.terminal.Write(item.data[offset : offset+step])
-				offset += n
-				if err != nil || n == 0 {
-					p.fail()
-					return
-				}
+			n, err := p.terminal.Write(item.Data[offset : offset+step])
+			offset += n
+			if err != nil || n == 0 {
+				p.fail()
+				return
 			}
-			p.mu.Lock()
-			p.state.Written = item.sequence
-			p.queued -= len(item.data)
-			p.mu.Unlock()
 		}
+		if p.input.Complete(item) != nil {
+			p.fail()
+			return
+		}
+		written := p.input.KeyboardWritten()
+		p.mu.Lock()
+		p.state.Written = written
+		p.mu.Unlock()
 	}
 }
 func (p *nativeProcess) Queue(data []byte, sequence int64, paste bool) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closing || p.state.Exited || p.state.Failed || p.queued+len(data) > 32768 {
+	if p.closing || p.state.Exited || p.state.Failed {
 		return false
 	}
-	select {
-	case p.queue <- queuedInput{data: append([]byte(nil), data...), sequence: sequence, paste: paste}:
-		p.queued += len(data)
-		return true
-	default:
-		return false
-	}
+	return p.input.Queue(data, sequence, paste)
 }
+func (p *nativeProcess) Mouse(command MouseCommand) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closing || p.state.Exited || p.state.Failed {
+		return errors.New("TERMINAL_CLOSED")
+	}
+	return p.input.Mouse(command)
+}
+func (p *nativeProcess) MouseState() MouseState { return p.input.State() }
 func (p *nativeProcess) Resize(columns, rows int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closing {
 		return errors.New("TERMINAL_CLOSED")
 	}
-	return unix.IoctlSetWinsize(p.fd, unix.TIOCSWINSZ, &unix.Winsize{Col: uint16(columns), Row: uint16(rows)})
+	if !dimensions(columns, rows) {
+		return errors.New("TERMINAL_BAD_REQUEST")
+	}
+	if err := unix.IoctlSetWinsize(p.fd, unix.TIOCSWINSZ, &unix.Winsize{Col: uint16(columns), Row: uint16(rows)}); err != nil {
+		return err
+	}
+	p.input.Resize(columns, rows)
+	return nil
 }
 func (p *nativeProcess) Status() ProcessState { p.mu.Lock(); defer p.mu.Unlock(); return p.state }
 func (p *nativeProcess) Close() {
@@ -281,6 +306,12 @@ wait:
 		case <-p.stop:
 			break wait
 		case <-ticker.C:
+			if p.input.AbortRequired() {
+				p.mu.Lock()
+				p.state.Failed = true
+				p.mu.Unlock()
+				break wait
+			}
 			status := int(C.terminal_child_exited(C.int(p.command.Process.Pid)))
 			if status == 1 {
 				observed = true
