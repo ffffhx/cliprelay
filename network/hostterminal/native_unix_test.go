@@ -168,6 +168,45 @@ func TestNativeForegroundCanonicalEditingAndEOF(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeCanonicalMultilinePasteAndCancellation(t *testing.T) {
+	shells := []string{"bash"}
+	if runtime.GOOS == "darwin" {
+		shells = append(shells, "zsh")
+	}
+	for _, shell := range shells {
+		t.Run(shell, func(t *testing.T) {
+			p, b := nativeFixture(t, shell)
+			ready, end := "canonical-multiline-ready", "canonical-multiline-end"
+			// Start cat with the shell's defaults; do not repair them with stty.
+			nativeWrite(t, p, 1, "printf '\\n"+octal(ready)+"\\n'; cat | shasum -a 256; printf '\\n"+octal(end)+"\\n'\r", false)
+			eventually(t, 5*time.Second, func() bool { return strings.Contains(contents(b), ready) })
+			body := strings.Repeat(strings.Repeat("a", 69)+"\n", 200)
+			want := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
+			nativeWrite(t, p, 2, body+"\x04", true)
+			eventually(t, 8*time.Second, func() bool { return strings.Contains(contents(b), end) })
+			if !strings.Contains(contents(b), want) || p.Status().Written != 2 {
+				t.Fatal("canonical multiline paste lost input or EOF", p.Status())
+			}
+			waiting := "canonical-waiting"
+			nativeWrite(t, p, 3, "printf '\\n"+octal(waiting)+"\\n'; sleep 60\r", false)
+			eventually(t, 5*time.Second, func() bool { return strings.Contains(contents(b), waiting) })
+			nativeWrite(t, p, 4, strings.Repeat("x", 14000), true)
+			// A long canonical line waits for a line editor. Closing must cancel
+			// that wait without writing or extending the ordinary cleanup bound.
+			time.Sleep(100 * time.Millisecond)
+			p.Close()
+			select {
+			case <-p.Done():
+			case <-time.After(time.Second):
+				t.Fatal("line-editor wait blocked close")
+			}
+			if p.Status().Written != 3 {
+				t.Fatal("unwritten long canonical line was acknowledged", p.Status())
+			}
+		})
+	}
+}
 func TestNativeManagerLostReplyRevocationAndReopen(t *testing.T) {
 	nativeOnly(t)
 	start := time.Now()

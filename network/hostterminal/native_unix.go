@@ -16,15 +16,10 @@ static int terminal_child_exited(int pid) {
     if (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT) != 0) return -errno;
     return info.si_pid == pid;
 }
-static int terminal_initial_mode(int fd) {
+static int terminal_canonical_mode(int fd) {
     struct termios settings;
-    if (tcgetattr(fd, &settings) != 0) return errno;
-    // Input can arrive before the login shell switches to readline's mode.
-    // Canonical line limits can silently discard a large accepted paste.
-    settings.c_lflag &= ~(ICANON | ECHO);
-    settings.c_cc[VMIN] = 1;
-    settings.c_cc[VTIME] = 0;
-    return tcsetattr(fd, TCSANOW, &settings) == 0 ? 0 : errno;
+    if (tcgetattr(fd, &settings) != 0) return -errno;
+    return (settings.c_lflag & ICANON) != 0;
 }
 */
 import "C"
@@ -86,12 +81,9 @@ func StartNative(shell string, columns, rows int, output func([]byte)) (Process,
 		return nil, err
 	}
 	defer slave.Close()
-	if err = pty.Setsize(terminal, &pty.Winsize{Cols: uint16(columns), Rows: uint16(rows)}); err == nil {
-		if code := int(C.terminal_initial_mode(C.int(slave.Fd()))); code != 0 {
-			err = syscall.Errno(code)
-		}
-	}
-	if err != nil {
+	// Preserve the ordinary terminal defaults. Readline saves these settings
+	// and restores them for foreground programs (including canonical EOF/editing).
+	if err = pty.Setsize(terminal, &pty.Winsize{Cols: uint16(columns), Rows: uint16(rows)}); err != nil {
 		_ = terminal.Close()
 		return nil, err
 	}
@@ -147,6 +139,54 @@ func (p *nativeProcess) read(output func([]byte)) {
 		}
 	}
 }
+
+// A large unbroken line must not enter the initial canonical input buffer:
+// kernels can discard excess bytes while still reporting successful writes.
+// Short lines, control keys and ordinary multiline input remain usable by
+// canonical foreground programs and startup scripts that prompt for input.
+func needsLineEditor(data []byte) bool {
+	line := 0
+	for _, b := range data {
+		if b == '\r' || b == '\n' {
+			line = 0
+		} else {
+			line++
+			if line >= 1024 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p *nativeProcess) waitLineEditor() bool {
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		p.mu.Lock()
+		if p.closing {
+			p.mu.Unlock()
+			return false
+		}
+		// Close uses the same lock; the numeric descriptor cannot be reused
+		// underneath tcgetattr. Observation never changes the program's mode.
+		mode := int(C.terminal_canonical_mode(C.int(p.fd)))
+		p.mu.Unlock()
+		if mode <= 0 {
+			return mode == 0
+		}
+		select {
+		case <-p.stop:
+			return false
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
 func (p *nativeProcess) write() {
 	defer close(p.writeDone)
 	for {
@@ -165,6 +205,10 @@ func (p *nativeProcess) write() {
 				budget = 15 * time.Second
 			}
 			deadline := time.Now().Add(budget)
+			if needsLineEditor(item.data) && !p.waitLineEditor() {
+				p.fail()
+				return
+			}
 			offset := 0
 			for offset < len(item.data) {
 				// A line editor can redraw while consuming a large unbracketed
