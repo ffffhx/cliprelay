@@ -15,7 +15,7 @@ import zlib
 
 CASES = ['tls-clipboard-text-image-and-idempotence', 'tls-clipboard-owner-and-live-revocation',
          'clipboard-worker-crash-recovery', 'clipboard-eof-joins-worker',
-         'clipboard-parent-loss-with-writer-held', 'clipboard-owner-admission']
+         'clipboard-parent-loss-with-writer-held', 'clipboard-owner-admission', 'tls-clipboard-desktop-client']
 
 
 def png():
@@ -67,7 +67,7 @@ def owner_launcher(binary, state):
     os._exit(17)
 
 
-def run(binary, state, payload, tls, start, read_status, finish, wait_absent, passed):
+def run(binary, state, payload, tls, start, read_status, finish, wait_absent, passed, app_directory=None):
     assert sys.platform == 'darwin' and os.environ.get('CI') == 'true', 'System clipboard fixtures require disposable CI'
     process = start(binary, state, payload)
     status = read_status(process)
@@ -123,6 +123,13 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
         assert replacement != worker
         worker = replacement
         passed(CASES[2])
+        desktop = subprocess.run(['node', str(Path(__file__).with_name('test_host_clipboard_client.cjs'))]
+                                 + ([str(app_directory)] if app_directory else []),
+                                 input=json.dumps({'cert': (state/'cacert.pem').read_text(), 'key': (state/'cakey.pem').read_text(),
+                                                   'png': base64.b64encode(png()).decode()}).encode(),
+                                 capture_output=True, timeout=30)
+        assert desktop.returncode == 0 and desktop.stderr == b'', 'Production desktop clipboard transport failed: '+desktop.stderr.decode()
+        assert json.loads(desktop.stdout) == {'passed': True, 'text': True, 'png': True}
         process.stdin.close()
         finish(process, status)
         wait_absent(worker)
@@ -157,6 +164,7 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
         rejected = subprocess.run(command, input=b'', capture_output=True, timeout=5)
         assert rejected.returncode == 2 and rejected.stdout == b'' and rejected.stderr.strip() == b'HOST_OWNER_INVALID'
     passed(CASES[5])
+    passed(CASES[6])
 
 
 if __name__ == '__main__':

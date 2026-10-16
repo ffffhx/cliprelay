@@ -143,7 +143,7 @@ def main(binary, report, app_directory=None):
 
         if clipboard_exchange:
             from test_host_clipboard import run as run_clipboard
-            run_clipboard(binary, state, payload, tls, start, read_status, finish, wait_absent, passed)
+            run_clipboard(binary, state, payload, tls, start, read_status, finish, wait_absent, passed, app_directory)
         if file_transfer:
             from test_host_files import run
             run(binary, state, payload, tls, start, read_status, finish, wait_absent, passed, app_directory)
@@ -312,7 +312,7 @@ def main(binary, report, app_directory=None):
         assert_state()
     result = {'cases': cases, 'passed': len(cases), 'nativeWorkers': False,
               'architecture': platform.machine(), 'executableSha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
-              'limits': 'Disposable CI certificates/listeners/files only; no other native desktop providers, streaming client, user Keychain or production installation.'}
+              'limits': 'Disposable CI certificates/listeners/files and synthetic clipboard only; no other native desktop providers, streaming client, user Keychain or production installation.'}
     if file_transfer:
         result['fileTransfer'] = 1
     if clipboard_exchange:

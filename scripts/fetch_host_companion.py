@@ -19,7 +19,7 @@ FILE_CASES = ['tls-files-desktop-resume-and-no-overwrite', 'tls-files-owner-and-
               'files-eof-joins-worker', 'files-parent-loss-with-writer-held', 'files-owner-admission']
 CLIPBOARD_CASES = ['tls-clipboard-text-image-and-idempotence', 'tls-clipboard-owner-and-live-revocation',
                    'clipboard-worker-crash-recovery', 'clipboard-eof-joins-worker',
-                   'clipboard-parent-loss-with-writer-held', 'clipboard-owner-admission']
+                   'clipboard-parent-loss-with-writer-held', 'clipboard-owner-admission', 'tls-clipboard-desktop-client']
 
 
 def entries(archive, *, limit=96*1024*1024):
@@ -69,6 +69,8 @@ def verify_sources(source_path, commit):
                  'scripts/network_notices.py', 'scripts/test_host_companion.py'}
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard.py').strip():
         expected.add('scripts/test_host_clipboard.py')
+    if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard_client.cjs').strip():
+        expected.add('scripts/test_host_clipboard_client.cjs')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_files.py').strip():
         expected |= {'scripts/test_host_files.py', 'scripts/test_host_files_client.cjs'}
         expected |= {'windows/electron/mac/'+name for name in ['file-controller.cjs', 'file-protocol.cjs', 'file-storage.cjs', 'paired-store.cjs', 'paired-transport.cjs', 'paired-crypto.cjs',
