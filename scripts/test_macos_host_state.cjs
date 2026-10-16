@@ -89,4 +89,7 @@ function main(){
     homeChanged:false,nativeRequestsExecuted:false,hostStarted:false,ownedChildrenReaped:true,keychainValidated:false,
     scope:'Actual packaged configuration writer and native config/log initialization with fixture encryption. No Keychain, permissions, capture, listeners or full host startup.'})+'\n');
 }
-try{main();}catch(error){console.error(error.code || 'PACKAGED_HOST_STATE_CHECK_FAILED');process.exitCode=1;}
+module.exports={snapshot,encryptedStorage};
+if(require.main===module){
+  try{main();}catch(error){console.error(error.code || 'PACKAGED_HOST_STATE_CHECK_FAILED');process.exitCode=1;}
+}
