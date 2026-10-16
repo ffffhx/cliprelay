@@ -34,7 +34,7 @@ function diagnosticLines(value){
 }
 function fileDiagnostics(){
   const result=[];
-  for(const folder of [os.tmpdir(),path.join(os.homedir(),'Library/Logs/DiagnosticReports')]){
+  for(const folder of new Set(['/tmp',os.tmpdir(),path.join(os.homedir(),'Library/Logs/DiagnosticReports')])){
     if(!fs.existsSync(folder))continue;
     for(const name of fs.readdirSync(folder)){
       if(!/^ClipRelayStream-.*\.log$|^Moonlight.*\.(ips|crash)$/.test(name))continue;
