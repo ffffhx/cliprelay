@@ -1427,7 +1427,7 @@ index 49c7039..9d6bcc9 100644
    /**
     * @brief Apply a PIN to an explicitly selected pairing request.
 diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
-index 8e33cad..a7615b1 100644
+index 8e33cad..d01d93a 100644
 --- a/src/nvhttp.cpp
 +++ b/src/nvhttp.cpp
 @@ -185,6 +185,14 @@ namespace nvhttp {
@@ -1544,7 +1544,24 @@ index 8e33cad..a7615b1 100644
    bool is_valid_pairing_pin(const std::string_view pin) {
      return pin.size() == 4 && std::ranges::all_of(pin, [](const char character) {
               return character >= '0' && character <= '9';
-@@ -659,6 +736,8 @@ namespace nvhttp {
+@@ -637,6 +714,16 @@ namespace nvhttp {
+     expire_pair_sessions_unlocked(now);
+   }
+ 
++  void maintain_pairing_expiry(const std::stop_token stop) {
++    std::mutex mutex;
++    std::condition_variable_any wake;
++    std::unique_lock lock {mutex};
++    while (!stop.stop_requested()) {
++      expire_pair_sessions();
++      wake.wait_for(lock, stop, std::chrono::seconds {1}, [] { return false; });
++    }
++  }
++
+   std::vector<pending_pairing_t> get_pending_pairings() {
+     std::scoped_lock lock {map_id_sess_mutex()};
+     expire_pair_sessions_unlocked(std::chrono::steady_clock::now());
+@@ -659,6 +746,8 @@ namespace nvhttp {
          .id = sess->async_insert_pin.id,
          .name = sess->async_insert_pin.device_name,
          .address = sess->async_insert_pin.address,
@@ -1553,7 +1570,7 @@ index 8e33cad..a7615b1 100644
        });
      }
      return result;
-@@ -973,6 +1052,7 @@ namespace nvhttp {
+@@ -973,6 +1062,7 @@ namespace nvhttp {
    ) {
      pair_session_t sess;
      sess.client.uniqueID = unique_id;
@@ -1561,7 +1578,7 @@ index 8e33cad..a7615b1 100644
      sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
      sess.async_insert_pin.salt = get_arg(args, "salt");
      sess.async_insert_pin.device_name = get_arg(args, "devicename");
-@@ -998,6 +1078,11 @@ namespace nvhttp {
+@@ -998,6 +1088,11 @@ namespace nvhttp {
          tree.put("root.<xmlattr>.status_code", 503);
          tree.put("root.<xmlattr>.status_message", "Too many pending pairing sessions");
          return false;
@@ -1573,11 +1590,59 @@ index 8e33cad..a7615b1 100644
        case ADDED:
          break;
      }
+@@ -1735,10 +1830,16 @@ namespace nvhttp {
+     };
+     std::jthread ssl {accept_and_run, &https_server};
+     std::jthread tcp {accept_and_run, &http_server};
++    std::jthread pairing_expiry {maintain_pairing_expiry};
+ 
+     // Wait for any event
+     shutdown_event->view();
+ 
++    // Expiry may release deferred HTTP responses. Join while the servers and
++    // their I/O contexts are still running, before shutting down either server.
++    pairing_expiry.request_stop();
++    pairing_expiry.join();
++
+     https_server.stop();
+     http_server.stop();
+ 
+@@ -1811,6 +1912,22 @@ namespace nvhttp {
+ 
+ #ifdef SUNSHINE_TESTS
+   namespace test_support {
++    bool set_managed_pairing_deadline(const std::string_view id, const std::chrono::steady_clock::time_point deadline) {
++      std::scoped_lock lock {map_id_sess_mutex()};
++      const auto registration = managed_pairings.find(std::string {id});
++      if (registration == managed_pairings.end()) return false;
++      registration->second.expires = std::min(registration->second.expires, deadline);
++      for (auto &[_, session] : map_id_sess) {
++        if (session.managed_id == id) session.async_insert_pin.expires_at = std::min(session.async_insert_pin.expires_at, deadline);
++      }
++      return true;
++    }
++
++    std::size_t managed_pairing_count() {
++      std::scoped_lock lock {map_id_sess_mutex()};
++      return managed_pairings.size();
++    }
++
+     void pair_http(
+       std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response> response,
+       std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Request> request
 diff --git a/src/nvhttp.h b/src/nvhttp.h
-index fe7e2c6..8c1e05d 100644
+index fe7e2c6..3feeb6e 100644
 --- a/src/nvhttp.h
 +++ b/src/nvhttp.h
-@@ -162,6 +162,8 @@ namespace nvhttp {
+@@ -12,6 +12,7 @@
+ #include <memory>
+ #include <mutex>
+ #include <optional>
++#include <stop_token>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -162,6 +163,8 @@ namespace nvhttp {
       */
      PAIR_PHASE last_phase = PAIR_PHASE::NONE;
      bool failed = false;  ///< Whether protocol validation failed and the session must be removed.
@@ -1586,7 +1651,7 @@ index fe7e2c6..8c1e05d 100644
    };
  
    /**
-@@ -171,6 +173,8 @@ namespace nvhttp {
+@@ -171,6 +174,8 @@ namespace nvhttp {
      std::string id;  ///< Unguessable approval identifier.
      std::string name;  ///< Untrusted device name reported by the pairing client.
      std::string address;  ///< Network address from which the request originated.
@@ -1595,7 +1660,7 @@ index fe7e2c6..8c1e05d 100644
    };
  
    /**
-@@ -179,7 +183,8 @@ namespace nvhttp {
+@@ -179,7 +184,8 @@ namespace nvhttp {
    enum class pair_session_insert_e {
      ADDED,  ///< The session was inserted successfully.
      ALREADY_EXISTS,  ///< A session with the same client unique ID is already active.
@@ -1605,7 +1670,20 @@ index fe7e2c6..8c1e05d 100644
    };
  
    /**
-@@ -237,6 +242,15 @@ namespace nvhttp {
+@@ -222,6 +228,12 @@ namespace nvhttp {
+    */
+   void expire_pair_sessions(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+ 
++  /**
++   * @brief Expire abandoned pairing requests until the HTTP server owner stops the worker.
++   * @param stop Stop token; the owner must join this worker before stopping HTTP servers.
++   */
++  void maintain_pairing_expiry(std::stop_token stop);
++
+   /**
+    * @brief List pairing requests that are waiting for operator PIN approval.
+    *
+@@ -237,6 +249,15 @@ namespace nvhttp {
     */
    bool cancel_pairing(std::string_view pairing_id);
  
@@ -1621,6 +1699,27 @@ index fe7e2c6..8c1e05d 100644
    /**
     * @brief removes the temporary pairing session
     * @param sess
+@@ -367,6 +388,20 @@ namespace nvhttp {
+    * @brief Test-only accessors for paired-client authorization state.
+    */
+   namespace test_support {
++    /**
++     * @brief Shorten one test registration and its session deadline without expiring either.
++     * @param id Managed pairing generation.
++     * @param deadline Monotonic deadline used by the production expiry worker.
++     * @return Whether the registration exists.
++     */
++    bool set_managed_pairing_deadline(std::string_view id, std::chrono::steady_clock::time_point deadline);
++
++    /**
++     * @brief Count registrations without running expiry as a side effect.
++     * @return Number of managed pairing registrations.
++     */
++    std::size_t managed_pairing_count();
++
+     /**
+      * @brief Dispatch a plain-HTTP pairing request through the production handler.
+      *
 diff --git a/tests/unit/test_confighttp.cpp b/tests/unit/test_confighttp.cpp
 index 29e5529..87494cd 100644
 --- a/tests/unit/test_confighttp.cpp
@@ -1671,10 +1770,10 @@ index 29e5529..87494cd 100644
    const std::string pairing_id = insert_pending_pairing();
    SimpleWeb::CaseInsensitiveMultimap headers;
 diff --git a/tests/unit/test_http_pairing.cpp b/tests/unit/test_http_pairing.cpp
-index 353180d..a2b75d4 100644
+index 353180d..e84ce24 100644
 --- a/tests/unit/test_http_pairing.cpp
 +++ b/tests/unit/test_http_pairing.cpp
-@@ -783,3 +783,117 @@ TEST_F(PairingSessionRegistryTest, ConcurrentInsertionAndCancellationLeaveConsis
+@@ -783,3 +783,201 @@ TEST_F(PairingSessionRegistryTest, ConcurrentInsertionAndCancellationLeaveConsis
    EXPECT_EQ(successful_cancellations, session_count);
    EXPECT_TRUE(get_pending_pairings().empty());
  }
@@ -1791,4 +1890,88 @@ index 353180d..a2b75d4 100644
 +  ASSERT_EQ(submitted.wait_for(std::chrono::seconds {1}), std::future_status::ready);
 +  EXPECT_FALSE(submitted.get());
 +  EXPECT_TRUE(get_pending_pairings().empty());
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedWorkerExpiresHTTPWithoutPollingPairingAPI) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'e');
++  ASSERT_TRUE(register_managed_pairing(id, pairing_certificate_fingerprint(PUBLIC_CERT)));
++  const auto target = server_certificate_target(id) + "&cliprelay_pairing=" + id;
++  auto response = std::async(std::launch::async, [this, target]() { return request(target); });
++  ASSERT_FALSE(wait_for_pending_pairing().empty());
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(id, std::chrono::steady_clock::now() + std::chrono::milliseconds {150}));
++  std::jthread worker {maintain_pairing_expiry};
++  // No GET/list/cancel/PIN call may trigger lazy expiry during this wait.
++  ASSERT_EQ(response.wait_for(std::chrono::seconds {2}), std::future_status::ready);
++  const auto body = response.get();
++  EXPECT_NE(body.find("status_code=\"408\""), std::string::npos);
++  EXPECT_NE(body.find("<paired>0</paired>"), std::string::npos);
++  EXPECT_EQ(nvhttp::test_support::managed_pairing_count(), 0);
++  EXPECT_NE(request(target).find("status_code=\"403\""), std::string::npos);
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedWorkerWakesPINBeforeCapturedTimeout) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'f');
++  ASSERT_TRUE(register_managed_pairing(id, pairing_certificate_fingerprint(PUBLIC_CERT)));
++  auto response = std::async(std::launch::async, [this, id]() { return request(server_certificate_target(id) + "&cliprelay_pairing=" + id); });
++  const auto pairing_id = wait_for_pending_pairing();
++  ASSERT_FALSE(pairing_id.empty());
++  config::stream.ping_timeout = std::chrono::seconds {3};
++  auto submitted = std::async(std::launch::async, [pairing_id]() { return pin(pairing_id, "5338", "Expiry test"); });
++  EXPECT_NE(response.get().find("status_code=\"200\""), std::string::npos);
++  // The PIN submitter has already captured its three-second deadline.
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(id, std::chrono::steady_clock::now() + std::chrono::milliseconds {150}));
++  std::jthread worker {maintain_pairing_expiry};
++  ASSERT_EQ(submitted.wait_for(std::chrono::seconds {2}), std::future_status::ready);
++  EXPECT_FALSE(submitted.get());
++  EXPECT_EQ(nvhttp::test_support::managed_pairing_count(), 0);
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedWorkerStopJoinsWithoutCancellingLiveHTTP) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'a');
++  const auto fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  ASSERT_TRUE(register_managed_pairing(id, fingerprint));
++  auto response = std::async(std::launch::async, [this, id]() { return request(server_certificate_target(id) + "&cliprelay_pairing=" + id); });
++  ASSERT_FALSE(wait_for_pending_pairing().empty());
++  for (int attempt = 0; attempt < 3; ++attempt) {
++    std::jthread worker {maintain_pairing_expiry};
++    std::this_thread::sleep_for(std::chrono::milliseconds {30});
++    const auto start = std::chrono::steady_clock::now();
++    worker.request_stop();
++    worker.join();
++    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds {750});
++    EXPECT_EQ(response.wait_for(std::chrono::milliseconds {0}), std::future_status::timeout);
++  }
++  EXPECT_TRUE(cancel_managed_pairing(id, fingerprint));
++  EXPECT_NE(response.get().find("status_code=\"400\""), std::string::npos);
++}
++
++TEST_F(ClipRelayManagedPairingTest, WorkerExpiresAbandonedRegistrationAndOnlyExpiredSession) {
++  const std::string abandoned(32, 'c');
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  ASSERT_TRUE(register_managed_pairing(second, fingerprint));
++  ASSERT_TRUE(register_managed_pairing(abandoned, fingerprint));
++  auto session = managed_session(first);
++  const auto completion = session.completion;
++  std::string expired_id, live_id;
++  ASSERT_EQ(insert_pair_session(std::move(session), expired_id), pair_session_insert_e::ADDED);
++  ASSERT_EQ(insert_pair_session(managed_session(second), live_id), pair_session_insert_e::ADDED);
++  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds {150};
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(first, deadline));
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(abandoned, deadline));
++  std::jthread worker {maintain_pairing_expiry};
++  {
++    std::unique_lock lock {completion->mutex};
++    ASSERT_TRUE(completion->condition.wait_for(lock, std::chrono::seconds {2}, [&] { return completion->result.has_value(); }));
++    EXPECT_FALSE(*completion->result);
++  }
++  // This accessor deliberately has no expiry side effect, unlike GET /api/pin.
++  EXPECT_EQ(nvhttp::test_support::managed_pairing_count(), 1);
++  worker.request_stop();
++  worker.join();
++  const auto pending = get_pending_pairings();
++  ASSERT_EQ(pending.size(), 1);
++  EXPECT_EQ(pending.front().id, live_id);
 +}
