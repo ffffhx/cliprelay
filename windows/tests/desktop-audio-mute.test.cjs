@@ -7,13 +7,13 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(check){for(let i=0;i<300;i++){if(check())return;await delay(10);}throw Error('test deadline');}
 const instance='12345678-1234-1234-1234-123456789012';
 const off=()=>({ok:true,supported:true,active:false,expiresMs:0,recovering:false,outputs:2});
-async function fixture(t,{handler,wrongPin=false,request,now,renewMs=100,pollMs=20}={}){
+async function fixture(t,{handler,displayHandler,wrongPin=false,request,now,renewMs=100,pollMs=20}={}){
   const display={protocol:1,supported:true,instance,phase:'active',generation:2,capture:{id:'display'},streams:[{id:3,generation:2,firstFrame:10,width:1280,height:720,audio:{capture:'process',generation:7,ready:true}}]};
   const calls=[],s={active:'',recovering:false,blocked:false};
   const server=https.createServer({key:identities.host.key,cert:identities.host.cert,requestCert:true,rejectUnauthorized:false},async(req,res)=>{
     assert.ok(req.socket.getPeerCertificate().raw);
     if(s.blocked){res.writeHead(403);res.end();return;}
-    if(req.url==='/v1/displays'){calls.push({op:'displays'});res.end(JSON.stringify(display));return;}
+    if(req.url==='/v1/displays'){calls.push({op:'displays'});if(displayHandler&&await displayHandler({res,s,display}))return;res.end(JSON.stringify(display));return;}
     assert.equal(req.url,'/v1/audio-mute');assert.equal(req.method,'POST');assert.equal(req.headers['content-type'],'application/json');
     let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls.push(body);
     if(handler&&await handler({body,res,s,display}))return;
@@ -49,6 +49,44 @@ test('missing, endpoint, not-ready and shared audio cannot be muted even if a ho
   }
   f.display.streams.push({...f.display.streams[0],id:4});await until(()=>!f.controller.snapshot().canEnable);assert.throws(()=>f.set(true));
   assert.equal(f.calls.filter(c=>c.op==='start').length,0);
+});
+
+test('brief HTTP display contention preserves an existing mute lease without repeating start',async t=>{
+  let busy=0,rejected=0;
+  const f=await fixture(t,{displayHandler:({res})=>{if(busy>0){busy--;rejected++;res.writeHead(429);res.end('busy');return true;}}});
+  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.controller.snapshot().active);
+  const lease=f.s.active,renewed=f.calls.filter(c=>c.op==='renew').length;busy=2;
+  await until(()=>rejected===2);await until(()=>f.calls.filter(c=>c.op==='renew').length>renewed);
+  assert.equal(f.controller.snapshot().active,true);assert.equal(f.s.active,lease);
+  assert.equal(f.calls.filter(c=>c.op==='start').length,1);assert.equal(f.calls.filter(c=>c.op==='stop').length,0);
+});
+
+test('persistent display contention exhausts the bounded read retry and restores sound',async t=>{
+  let busy=false,rejected=0;
+  const f=await fixture(t,{displayHandler:({res})=>{if(busy){rejected++;res.writeHead(429);res.end('busy');return true;}}});
+  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.controller.snapshot().active);busy=true;
+  await until(()=>f.calls.some(c=>c.op==='stop'));assert.ok(rejected>=3);assert.equal(f.controller.record.desired,false);
+  assert.equal(f.s.active,'');assert.equal(f.calls.filter(c=>c.op==='start').length,1);
+});
+
+test('a route change or elapsed lease during a busy-read wait cannot renew the old lease',async t=>{
+  for(const replacement of [false,true]){
+    let busy=false,rejected=0,clock=1000;
+    const f=await fixture(t,{now:()=>clock,renewMs:5000,displayHandler:({res})=>{if(busy){rejected++;res.writeHead(429);res.end('busy');return true;}}});
+    await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.controller.snapshot().active);busy=true;
+    await until(()=>rejected===1);
+    if(replacement){f.viewer.session=null;f.controller.reconcile();}else clock+=16000;
+    await until(()=>f.calls.some(c=>c.op==='stop'));
+    assert.equal(f.calls.filter(c=>c.op==='renew').length,0);assert.equal(f.calls.filter(c=>c.op==='start').length,1);
+    assert.equal(f.s.active,'');await f.controller.close();
+  }
+});
+
+test('a rejected mute mutation is never covered by the read-only retry policy',async t=>{
+  const f=await fixture(t,{handler:({body,res})=>{if(body.op==='start'){res.writeHead(429);res.end('busy');return true;}}});
+  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.calls.some(c=>c.op==='stop'));
+  await until(()=>f.controller.snapshot().canEnable);await delay(100);
+  assert.equal(f.calls.filter(c=>c.op==='start').length,1);assert.equal(f.s.active,'');
 });
 
 test('capture generation change restores the old lease and a new generation needs another explicit click',async t=>{

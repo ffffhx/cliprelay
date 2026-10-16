@@ -93,6 +93,25 @@ class ForegroundLeaseController{
     r.phase=r.lease?'restoring':'unavailable';
     if(terminal.has(error.code)){this.viewer.reconcile(error.code);this.reconcile();}
   }
+  async readDisplay(r){
+    // Independent foreground controls can overlap the host's single display
+    // query. Retry only an explicitly rejected read; never replay lease writes
+    // or extend the local expiry while waiting for fresh evidence.
+    for(let attempt=0;;attempt++){
+      if(!this.current(r))throw fault('CANCELLED');
+      if(r.lease&&this.now()>=r.expiresAt)throw this.fault('EXPIRED');
+      try{return await this.request(r.host,r.identity,'displays',null,r.abort.signal);}
+      catch(error){
+        if(error.code!=='HTTP_429'||attempt>=2)throw error;
+        await new Promise((resolve,reject)=>{
+          const abort=()=>{clearTimeout(timer);r.abort.signal.removeEventListener('abort',abort);reject(fault('CANCELLED'));};
+          const timer=setTimeout(()=>{r.abort.signal.removeEventListener('abort',abort);resolve();},50*(attempt+1));
+          r.abort.signal.addEventListener('abort',abort,{once:true});
+          if(r.abort.signal.aborted)abort();
+        });
+      }
+    }
+  }
   async poll(r){
     if(!this.current(r)){this.reconcile();return;}if(r.polling)return;
     r.polling=true;
@@ -100,7 +119,7 @@ class ForegroundLeaseController{
       if(!r.identity)r.identity=await this.store.identity();
       if(!this.current(r))return;
       if(r.lease&&!r.desired){await this.stop(r);return;}
-      const d=await this.request(r.host,r.identity,'displays',null,r.abort.signal);
+      const d=await this.readDisplay(r);
       if(!this.current(r))return;
       const previous=r.display;
       if(previous&&this.viewIdentity(previous)!==this.viewIdentity(d)){
