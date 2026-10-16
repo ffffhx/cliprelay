@@ -15,6 +15,10 @@ on:
         description: 'Successful Sunshine macOS Host Build with 46 native cases to embed (empty: no host engine)'
         required: false
         type: string
+      host_companion_run_id:
+        description: 'Successful macOS Host Companion Build to embed alongside the host engine'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -51,6 +55,8 @@ jobs:
       - run: node --test windows/tests/mac-host-permission-controller.test.cjs windows/tests/mac-host-permission-ui.test.cjs
       - run: node --test windows/tests/mac-host-state.test.cjs
       - run: node --test windows/tests/mac-host-admin.test.cjs windows/tests/mac-host-engine.test.cjs
+      - run: node --test windows/tests/mac-host-companion-artifact.test.cjs windows/tests/mac-host-companion.test.cjs windows/tests/mac-host-session.test.cjs
+      - run: python3 -m unittest discover -s scripts/tests -p test_fetch_host_companion.py
       - run: python3 -m unittest discover -s scripts/tests -p test_fetch_sunshine_macos.py
       - run: python3 -m unittest discover -s scripts/tests -p test_sunshine_permission_checker.py
       - run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
@@ -110,6 +116,17 @@ jobs:
           engine_arch="$APP_ARCH"
           if [ "$engine_arch" = x64 ]; then engine_arch=x86_64; fi
           python3 scripts/fetch_sunshine_macos.py --run "$HOST_RUN_ID" --arch "$engine_arch" --directory .tools/host-engine-download
+      - name: Fetch verified host companion
+        if: inputs.host_companion_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST_COMPANION_RUN_ID: ${{ inputs.host_companion_run_id }}
+          APP_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          companion_arch="$APP_ARCH"
+          if [ "$companion_arch" = x64 ]; then companion_arch=x86_64; fi
+          python3 scripts/fetch_host_companion.py --run "$HOST_COMPANION_RUN_ID" --arch "$companion_arch" --directory .tools/host-companion-download
       - run: npm run build:mac -- ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
@@ -119,4 +136,5 @@ jobs:
             .tools/mac-electron/viewer-bundle-*.json
             .tools/mac-electron/network-bundle-*.json
             .tools/mac-electron/host-engine-bundle-*.json
+            .tools/mac-electron/host-companion-bundle-*.json
           if-no-files-found: error

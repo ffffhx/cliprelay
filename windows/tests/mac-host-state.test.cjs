@@ -81,3 +81,17 @@ test('a corrupt ownership marker is preserved and cannot silently create a new i
   assert.throws(()=>f.state.prepare('Mac'),{code:'HOST_STATE_UNAVAILABLE'});
   assert.equal(fs.readFileSync(marker,'utf8'),'invalid fixture');assert.throws(()=>f.state.authorization(),{code:'HOST_STATE_NOT_PREPARED'});
 });
+
+test('companion initialization uses the private certificate and never writes the plaintext frame',native,t=>{
+  const {identities}=require('./mac-pairing-fixture.cjs');
+  const f=fixture(t);assert.throws(()=>f.state.companionInitialization(),{code:'HOST_STATE_NOT_PREPARED'});
+  f.state.prepare('Mac');assert.throws(()=>f.state.companionInitialization(),{code:'HOST_CERT_UNAVAILABLE'});
+  f.state.write('cacert.pem',identities.host.cert);
+  const frame=f.state.companionInitialization(),value=JSON.parse(frame.toString());
+  assert.deepEqual(Object.keys(value).sort(),['certificate','password','protocol']);assert.equal(value.protocol,1);
+  assert.equal(value.certificate,new crypto.X509Certificate(identities.host.cert).raw.toString('base64'));
+  assert.equal('Basic '+Buffer.from('cliprelay:'+value.password).toString('base64'),f.state.authorization());
+  for(const entry of fs.readdirSync(f.directory))assert.ok(!fs.readFileSync(path.join(f.directory,entry),'utf8').includes(value.password));
+  frame.fill(0);f.state.write('cacert.pem','invalid fixture');assert.throws(()=>f.state.companionInitialization(),{code:'HOST_CERT_UNAVAILABLE'});
+  f.state.close();assert.throws(()=>f.state.companionInitialization(),{code:'HOST_STATE_NOT_PREPARED'});
+});

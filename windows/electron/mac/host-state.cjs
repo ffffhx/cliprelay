@@ -124,6 +124,17 @@ class HostState{
     if(this.closed || !this.#secret)throw fault('HOST_STATE_NOT_PREPARED');
     this.check();return 'Basic '+Buffer.from('cliprelay:'+this.#secret,'utf8').toString('base64');
   }
+  companionInitialization(){
+    if(this.closed || !this.#secret)throw fault('HOST_STATE_NOT_PREPARED');
+    let certificate;
+    try{certificate=new crypto.X509Certificate(this.read('cacert.pem',16384)).raw;}
+    catch{throw fault('HOST_CERT_UNAVAILABLE');}
+    // Main-process pipe input only. No plaintext credential file, environment
+    // variable, command argument or renderer snapshot contains this frame.
+    const frame=Buffer.from(JSON.stringify({protocol:1,password:this.#secret,certificate:certificate.toString('base64')})+'\n');
+    if(frame.length>96*1024){frame.fill(0);throw fault('HOST_STATE_INVALID');}
+    return frame;
+  }
   close(){this.closed=true;this.#secret=null;}
 }
 module.exports={HostState,configuration,credentials};

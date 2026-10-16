@@ -15,7 +15,7 @@ async function build(){
   try{
     const source=path.join(staging,'source');fs.mkdirSync(source);
     fs.cpSync(path.join(__dirname,'mac'),path.join(source,'mac'),{recursive:true});
-    let hostPin=null;
+    let hostPin=null,companionPin=null;
     if(process.env.CLIPRELAY_HOST_ENGINE_ARTIFACT || process.env.CLIPRELAY_HOST_ENGINE_PIN){
       hostPin=JSON.parse(process.env.CLIPRELAY_HOST_ENGINE_PIN || 'null');
       if(!hostPin || hostPin.arch!==(architecture==='x64'?'x86_64':'arm64') || !process.env.CLIPRELAY_HOST_ENGINE_ARTIFACT)throw new Error('Host engine selection must match the application architecture');
@@ -23,6 +23,12 @@ async function build(){
       require('./mac/host-engine-artifact.cjs').stage(artifact,path.join(source,'mac','host-engine'),hostPin);
       execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',path.join(source,'mac','host-engine','Sunshine.app')],{stdio:'inherit'});
       fs.writeFileSync(path.join(source,'mac','host-engine-pin.json'),JSON.stringify(hostPin,null,2)+'\n',{flag:'wx'});
+    }
+    if(process.env.CLIPRELAY_HOST_COMPANION_ARTIFACT || process.env.CLIPRELAY_HOST_COMPANION_PIN){
+      companionPin=JSON.parse(process.env.CLIPRELAY_HOST_COMPANION_PIN || 'null');
+      if(!hostPin || !companionPin || !process.env.CLIPRELAY_HOST_COMPANION_ARTIFACT)throw new Error('Host companion requires an explicitly selected host engine and companion pin');
+      require('./mac/host-companion-artifact.cjs').stage(path.resolve(process.env.CLIPRELAY_HOST_COMPANION_ARTIFACT),path.join(source,'mac','host-companion'),companionPin);
+      fs.writeFileSync(path.join(source,'mac','host-companion-pin.json'),JSON.stringify(companionPin,null,2)+'\n',{flag:'wx'});
     }
     if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
       require('./network-artifact.cjs').stage(path.resolve(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT),path.join(source,'mac','network-helper'),'darwin');
@@ -65,6 +71,17 @@ async function build(){
         const engineLifecycle=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_engine.cjs'),packaged],{encoding:'utf8',timeout:150000,maxBuffer:65536}));
         if(engineLifecycle.passed!==true || engineLifecycle.hostStarted!==true || engineLifecycle.ownedChildrenReaped!==true || engineLifecycle.stateFilesPrivate!==true || engineLifecycle.defaultStateUnchanged!==true || engineLifecycle.homeChanged!==false || engineLifecycle.nativeRequestsExecuted!==false || engineLifecycle.streamStarted!==false || engineLifecycle.systemInputInjected!==false || engineLifecycle.keychainValidated!==false)throw new Error('Packaged host engine lifecycle check failed');
         fs.writeFileSync(path.join(output,`host-engine-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:hostPin,verifiedFiles:Object.keys(manifest.files).length,nativeMinimumOS:manifest.nativeMinimumOS,signatureVerified:true,permissionCommands,stateConfiguration,engineLifecycle,scope:'Engine packaging and actual authenticated startup/stop lifecycle on disposable macOS CI with fixture encryption. Startup display/encoder probes may run; Keychain, permission requests, streaming, system input and user GUI acceptance are not exercised.'},null,2));
+      }
+      if(companionPin){
+        const appDirectory=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac');
+        const result=require('./mac/host-companion-artifact.cjs').verify(path.join(appDirectory,'host-companion'),companionPin);
+        if(JSON.stringify(JSON.parse(fs.readFileSync(path.join(appDirectory,'host-companion-pin.json'),'utf8')))!==JSON.stringify(companionPin))throw new Error('Packaged host companion pin changed');
+        const session=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_session.cjs'),appDirectory],{encoding:'utf8',timeout:240000,maxBuffer:65536}));
+        if(session.passed!==true || session.actualChildStarts!==8 || session.ownedChildrenReaped!==true || session.runtimeDirectoriesRemoved!==true ||
+            session.stateFilesPrivate!==true || session.defaultStateUnchanged!==true || session.homeChanged!==false || session.nativeWorkers!==false ||
+            session.keychainValidated!==false || session.nativeRequestsExecuted!==false || session.streamStarted!==false || session.systemInputInjected!==false)throw new Error('Packaged host session check failed');
+        fs.writeFileSync(path.join(output,`host-companion-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:companionPin,
+          verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session},null,2));
       }
       if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
         const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','network-helper');
