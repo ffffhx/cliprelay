@@ -95,6 +95,7 @@ func (p *lanPairer) local(raw []byte) (any, bool) {
 	request.decision = "approving"
 	if !approved {
 		request.decision = "rejected"
+		request.finalState = "rejected"
 		request.cancel()
 	}
 	request.approval <- approved

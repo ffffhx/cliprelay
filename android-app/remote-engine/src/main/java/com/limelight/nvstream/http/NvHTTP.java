@@ -64,6 +64,9 @@ public class NvHTTP {
     private String uniqueId;
     private String pairingName = "roth";
     private volatile boolean pairingCancelled;
+    private volatile LanPairing lanPairing;
+    private volatile boolean pairingOwned;
+    private okhttp3.Call pairingCall;
     private PairingManager pm;
 
     private static final int DEFAULT_HTTPS_PORT = 47984;
@@ -880,6 +883,9 @@ public class NvHTTP {
     }
 
     private String openHttpConnectionToString(OkHttpClient client, HttpUrl baseUrl, String path, String query) throws IOException {
+        if (path.equals("pair") || path.equals("unpair") || (pairingOwned && path.equals("serverinfo"))) {
+            return ownedPairingRequest(client,baseUrl,path,query);
+        }
         try {
             ResponseBody resp = openHttpConnection(client, baseUrl, path, query);
             String respString = resp.string();
@@ -897,6 +903,32 @@ public class NvHTTP {
             }
             
             throw e;
+        }
+    }
+
+    private void checkPairingActive() throws IOException {
+        LanPairing pairing=lanPairing;
+        if (pairing!=null) pairing.checkCancelled();
+        if (pairingCancelled) throw new java.io.InterruptedIOException("配对已取消");
+    }
+
+    private String ownedPairingRequest(OkHttpClient client,HttpUrl baseUrl,String path,String query) throws IOException {
+        final okhttp3.Call call;
+        synchronized (this) {
+            checkPairingActive();
+            if (pairingCall!=null) throw new IOException("已有配对请求正在进行");
+            call=performAndroidTlsHack(client).newCall(new Request.Builder().url(getCompleteUrl(baseUrl,path,query)).get().build());
+            pairingCall=call;
+        }
+        try (Response response=call.execute()) {
+            if (response.code()==404) throw new FileNotFoundException("Pairing endpoint unavailable");
+            if (!response.isSuccessful()) throw new HostHttpResponseException(response.code(),response.message());
+            if (response.body()==null) throw new IOException("无效的配对响应");
+            String result=response.body().string();checkPairingActive();return result;
+        } catch (IOException error) {
+            checkPairingActive();throw error;
+        } finally {
+            synchronized (this) { if (pairingCall==call) pairingCall=null; }
         }
     }
 
@@ -1134,15 +1166,36 @@ public class NvHTTP {
                 baseUrlHttp, "pair", "devicename=" + pairingName + "&updateState=1&" + additionalArguments);
     }
 
-    public void setLanPairingSession(LanPairing pairing) {
+    public void ownLanPairing(LanPairing pairing) {
+        pairingOwned=true;
+        lanPairing=pairing;
+        if (pairingCancelled && pairing!=null) pairing.cancel();
+    }
+
+    public IOException pairingFailure() { LanPairing pairing=lanPairing;return pairing==null?null:pairing.failure(); }
+    public void beginPairing() { pairingOwned=true; }
+
+    public void closeLanPairing() {
+        LanPairing pairing=lanPairing;
+        if (pairing!=null) pairing.close();
+        lanPairing=null;
+    }
+
+    public void setLanPairingSession(LanPairing pairing) throws IOException {
         uniqueId = pairing.sessionId();
         pairingName = pairing.sessionName();
         httpClientLongConnectNoReadTimeout = httpClientLongConnectNoReadTimeout.newBuilder()
                 .readTimeout(125, TimeUnit.SECONDS).build();
+        ownLanPairing(pairing);
+        pairing.startFeedback(this::cancelPairing);
     }
 
     public void cancelPairing() {
-        pairingCancelled = true;
+        final okhttp3.Call call;
+        synchronized (this) { pairingCancelled = true;call=pairingCall; }
+        if (call!=null) call.cancel();
+        LanPairing pairing=lanPairing;
+        if (pairing!=null) pairing.cancel();
         httpClientLongConnectNoReadTimeout.dispatcher().cancelAll();
         httpClientLongConnectTimeout.dispatcher().cancelAll();
     }

@@ -24,6 +24,13 @@ jobs:
           go-version: '1.26.7'
           cache: true
           cache-dependency-path: network/go.sum
+      - name: Build native certificate fixture
+        shell: bash
+        run: |
+          fixture="$RUNNER_TEMP/cliprelay-pairing-fixture"
+          if [ "$RUNNER_OS" = Windows ]; then fixture="$fixture.exe"; fi
+          GOTOOLCHAIN=local go build -o "$fixture" windows/tests/mac-pairing-fixture/main.go
+          printf '%s\n' "CLIPRELAY_PAIRING_TEST_FIXTURE=$fixture" >> "$GITHUB_ENV"
       - name: Ownership and transport tests
         working-directory: network
         run: go test -count=1 -timeout=120s ./broker ./cmd/cliprelay-client-network ./desktopclient ./mobile ./transport
@@ -32,6 +39,8 @@ jobs:
         run: go test -v -count=1 -timeout=90s ./hostcompanion ./cmd/cliprelay-host-network
       - name: Desktop enrollment, ownership and route recovery
         run: node --test windows/tests/network-controller.test.cjs windows/tests/network-artifact.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-pairing.test.cjs windows/tests/stream-viewer.test.cjs
+      - name: Pairing rejection, expiry and joined cancellation
+        run: node --test --test-timeout=30000 windows/tests/mac-pair-feedback.test.cjs
       - name: Desktop live bitrate and presentation confirmation
         run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
       - name: Desktop input ownership and presentation gating

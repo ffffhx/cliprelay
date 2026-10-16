@@ -15,7 +15,7 @@ async function main(){
   const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
   const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-packaged-host-pairing-'))),stateDirectory=path.join(base,'Private CI host');
   const controller=new HostController({directory,stateDirectory,safeStorage:encryptedStorage(),localName:'Packaged pairing fixture'});
-  const cases=[],children=[],runtimes=[];let stage='start';
+  const cases=[],children=[],runtimes=[];let stage='start',rejectionFeedbackMs,expiryWaitMs;
   const data=request=>({id:request.id,generation:request.generation,verification:request.verification});
   async function start(){
     assert.equal((await controller.action('host-start')).phase,'starting');await controller.startTask;
@@ -38,6 +38,25 @@ async function main(){
     await assert.rejects(controller.action('host-pair-approve',{...data(second),verification:second.verification==='FFFF FFFF FFFF'?'AAAA AAAA AAAA':'FFFF FFFF FFFF'}),{code:'HOST_PAIR_STALE'});
     await controller.action('host-pair-reject',data(second));assert.equal(fs.existsSync(path.join(stateDirectory,'lan-pairing')),false);
     cases.push('private-rejection-and-stale-generation-refusal');
+    await until(()=>controller.action('host-status'),value=>value.requests.length===0);
+    stage='remote-rejection-feedback';let rejectedAt;
+    await assert.rejects(pairHost({address:'127.0.0.1',port:48789,name:'Rejected feedback client',identity:identities.client,
+      onVerification:async verification=>{
+        const status=await until(()=>controller.action('host-status'),value=>value.requests.some(request=>request.verification===verification.verification));
+        rejectedAt=Date.now();await controller.action('host-pair-reject',data(status.requests.find(request=>request.verification===verification.verification)));
+      }}),{code:'PAIRING_REJECTED'});
+    rejectionFeedbackMs=Date.now()-rejectedAt;assert.ok(rejectionFeedbackMs<5000);cases.push('remote-rejection-feedback-joins-waiting-client');
+    await until(()=>controller.action('host-status'),value=>value.requests.length===0);
+    stage='remote-expiry-feedback';let waitingAt;
+    // Exercise the production two-minute expiry, without shortening the host's
+    // deadline or replacing its actual public TLS/status implementation.
+    await assert.rejects(pairHost({address:'127.0.0.1',port:48789,name:'Expired feedback client',identity:identities.client,
+      onVerification:()=>{waitingAt=Date.now();}}),{code:'PAIRING_EXPIRED'});
+    expiryWaitMs=Date.now()-waitingAt;assert.ok(expiryWaitMs>=110000 && expiryWaitMs<130000);
+    await until(()=>controller.action('host-status'),value=>value.requests.length===0);
+    await assert.rejects(exchange({address:'127.0.0.1',port:48791,path:'/not-a-command',method:'GET',identity:identities.client,
+      trust:{cert:controller.owner.session.engine.state.read('cacert.pem',16384)},acceptStatuses:[404],timeout:3000,limit:2048}));
+    cases.push('remote-expiry-feedback-joins-waiting-client');
     stage='real-pairing';let compared=false,approved=false;
     const pairing=await pairHost({address:'127.0.0.1',port:48789,name:'Disposable packaged client',identity:identities.client,
       onVerification:async verification=>{
@@ -65,6 +84,7 @@ async function main(){
     assert.ok(path.basename(base).startsWith('cliprelay-packaged-host-pairing-'));fs.rmSync(base,{recursive:true,force:true});
   }
   process.stdout.write(JSON.stringify({protocol:1,passed:true,cases,actualChildStarts:children.length,realNativePairing:true,pairedClientPersisted:true,
+    remoteRejectionFeedback:true,remoteExpiryFeedback:true,rejectionFeedbackMs,expiryWaitMs,
     unauthorizedClientRefused:true,ownedChildrenReaped:true,defaultStateUnchanged:true,nativeWorkers:false,keychainValidated:false,
     nativeRequestsExecuted:false,streamStarted:false,systemInputInjected:false,
     scope:'Actual packaged main controller, private approval IPC and native certificate pairing with a disposable client on macOS CI. Fixture encryption; no user GUI, Keychain, permission request, video stream or system input.'})+'\n');

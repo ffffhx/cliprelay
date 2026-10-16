@@ -484,7 +484,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                NvHTTP httpConn;
+                NvHTTP httpConn = null;
                 String message;
                 boolean success = false;
                 com.limelight.nvstream.http.LanPairing lanPairing = null;
@@ -496,6 +496,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                             computer.httpsPort, managerBinder.getUniqueId(), computer.serverCert,
                             PlatformBinding.getCryptoProvider(PcView.this));
                     pairingHttp = httpConn;
+                    httpConn.beginPairing();
                     if (pairingCancelled) throw new IOException("配对已取消");
                     if (httpConn.getPairState() == PairState.PAIRED) {
                         // Don't display any toast, but open the app list
@@ -507,7 +508,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
                         String phoneName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
                         lanPairing = com.limelight.nvstream.http.LanPairing.begin(ServerHelper.getCurrentAddressFromComputer(computer),
-                                PlatformBinding.getCryptoProvider(PcView.this), computer.serverCert, phoneName, pinStr);
+                                PlatformBinding.getCryptoProvider(PcView.this), computer.serverCert, phoneName, pinStr, httpConn::ownLanPairing);
                         if (pairingCancelled) throw new IOException("配对已取消");
                         if (lanPairing != null) {
                             httpConn.setLanPairingSession(lanPairing);
@@ -516,7 +517,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                                 if (isFinishing() || isDestroyed() || pairingCancelled) return;
                                 lanPairDialog = new android.app.AlertDialog.Builder(PcView.this)
                                         .setTitle("请在电脑上允许这台手机")
-                                        .setMessage("确认两边显示的标识相同：\n\n" + code + "\n\n在电脑 ClipRelay 的“手机远控”中点击允许。配对后会记住电脑，以后不用输入 IP 或 PIN。")
+                                        .setMessage("确认两边显示的标识相同：\n\n" + code + "\n\n在电脑 ClipRelay 的待确认请求中允许连接。Mac 可从菜单“允许其他设备连接这台 Mac…”打开请求。配对后会记住电脑，以后不用输入 IP 或 PIN。")
                                         .setNegativeButton("取消配对", (d, which) -> cancelLanPairing())
                                         .setOnCancelListener(d -> cancelLanPairing()).create();
                                 lanPairDialog.setCanceledOnTouchOutside(false);
@@ -532,6 +533,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
                         PairState pairState = pm.pair(httpConn.getServerInfo(true), pinStr,
                                 lanPairing == null ? null : lanPairing.hostCertificate());
+                        if (lanPairing != null) lanPairing.checkCancelled();
+                        if (pairingCancelled) throw new IOException("配对已取消");
                         if (pairState == PairState.PIN_WRONG) {
                             message = getResources().getString(R.string.pair_incorrect_pin);
                         }
@@ -569,8 +572,10 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     message = getResources().getString(R.string.error_404);
                 } catch (XmlPullParserException | IOException e) {
                     e.printStackTrace();
-                    message = e.getMessage();
+                    IOException feedbackFailure=httpConn==null?null:httpConn.pairingFailure();
+                    message = feedbackFailure==null?e.getMessage():feedbackFailure.getMessage();
                 } finally {
+                    if (httpConn != null) httpConn.closeLanPairing();
                     pairingHttp = null;
                     if (lanPairing != null) lanPairing.close();
                     pairingActive.set(false);

@@ -84,6 +84,7 @@ async function build(){
           verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session},null,2));
         const pairing=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_pairing.cjs'),appDirectory],{encoding:'utf8',timeout:240000,maxBuffer:65536}));
         if(pairing.passed!==true || pairing.actualChildStarts!==4 || pairing.realNativePairing!==true || pairing.pairedClientPersisted!==true ||
+            pairing.remoteRejectionFeedback!==true || pairing.remoteExpiryFeedback!==true || !(pairing.rejectionFeedbackMs<5000) || !(pairing.expiryWaitMs>=110000 && pairing.expiryWaitMs<130000) ||
             pairing.unauthorizedClientRefused!==true || pairing.ownedChildrenReaped!==true || pairing.defaultStateUnchanged!==true ||
             pairing.nativeWorkers!==false || pairing.keychainValidated!==false || pairing.nativeRequestsExecuted!==false || pairing.streamStarted!==false || pairing.systemInputInjected!==false)throw new Error('Packaged host approval and pairing check failed');
         fs.writeFileSync(path.join(output,`host-pairing-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pairing},null,2));

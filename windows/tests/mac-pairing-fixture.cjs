@@ -20,18 +20,27 @@ async function listen(server,{maximumPort}={}){
   throw Error('Fixture port range unavailable');
 }
 async function close(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
-async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client}={}){
+async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client,feedback=false,onStatus}={}){
   const host=identities.host,client=clientIdentity,trace=[],writes=[];
   let pin,id,session,key,challenge,responseHash,authorized=false,approval=false,waiting,deleted=false;
+  const receipt=crypto.randomBytes(16).toString('hex');let expires,state='waiting',statusReads=0,cancelReceipt;
   const xml=(response,fields)=>response.end('<root status_code="200"><paired>1</paired>'+Object.entries(fields).map(([k,v])=>'<'+k+'>'+v+'</'+k+'>').join('')+'</root>');
   const server=https.createServer({key:host.key,cert:host.cert,requestCert:true,rejectUnauthorized:false},async(req,res)=>{
     if(!req.socket.getPeerCertificate().raw?.equals(der(client.cert))){res.writeHead(403);res.end();return;}
     if(req.url==='/v1/pair'){
       let raw='';for await(const chunk of req)raw+=chunk;const data=JSON.parse(raw);pin=data.pin;
       const hashed=digest('cliprelay-lan-pair-v1\n',der(host.cert),der(client.cert),data.nonce).toString('hex');id=hashed.slice(0,32);
-      res.end(JSON.stringify({id,verification:badCode?'FFFF FFFF FFFF':hashed.slice(0,12).toUpperCase().match(/.{4}/g).join(' '),expires:Math.floor(Date.now()/1000)+120}));return;
+      expires=Math.floor(Date.now()/1000)+120;
+      res.end(JSON.stringify({id,verification:badCode?'FFFF FFFF FFFF':hashed.slice(0,12).toUpperCase().match(/.{4}/g).join(' '),expires,
+        ...(feedback&&req.headers['x-cliprelay-pairing-feedback']==='1'?{feedback:{protocol:1,receipt}}:{})}));return;
     }
-    if(req.method==='DELETE'){deleted=true;res.end('{}');return;}
+    if(req.url==='/v1/pair/status'){
+      statusReads++;let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
+      if(body.id!==id || body.receipt!==receipt){res.writeHead(404);res.end();return;}
+      const value={protocol:1,id,receipt,state,expires};
+      if(onStatus){onStatus({req,res,value});return;}res.end(JSON.stringify(value));return;
+    }
+    if(req.method==='DELETE'){cancelReceipt=req.headers['x-cliprelay-pairing-receipt'];if(feedback&&cancelReceipt!==receipt){res.writeHead(404);res.end();return;}deleted=true;res.end('{}');return;}
     if(!authorized){res.writeHead(403);res.end();return;}
     if(req.url.startsWith('/pair?')){trace.push('secure-challenge');xml(res,{});return;}
     if(req.url==='/v1/clipboard'){let body='';for await(const chunk of req)body+=chunk;writes.push(JSON.parse(body));res.end('{"ok":true}');return;}
@@ -65,6 +74,8 @@ async function fixture({badSignature=false,badCode=false,badPin=false,clientIden
     res.writeHead(404);res.end();
   });
   const secure=await listen(server),httpPort=await listen(plain);
-  return {host,client,trace,writes,ports:{bootstrap:secure,http:httpPort,secure},approve:()=>{approval=true;waiting?.();},get authorized(){return authorized;},get deleted(){return deleted;},close:async()=>{await close(plain);await close(server);}};
+  return {host,client,trace,writes,receipt,ports:{bootstrap:secure,http:httpPort,secure},approve:()=>{approval=true;waiting?.();},
+    setFeedback(value){state=value;},replaceCertificate(value){server.setSecureContext({key:value.key,cert:value.cert});},get statusReads(){return statusReads;},get cancelReceipt(){return cancelReceipt;},
+    get authorized(){return authorized;},get deleted(){return deleted;},close:async()=>{await close(plain);await close(server);}};
 }
 module.exports={identities,fixture,listen,close};

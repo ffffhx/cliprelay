@@ -60,6 +60,7 @@
   "mac/paired-relay.cjs",
   "mac/paired-transport.cjs",
   "mac/pairing.cjs",
+  "mac/pairing-feedback.cjs",
   "mac/paired-ui.js",
   "mac/file-controller.cjs",
   "mac/file-storage.cjs",

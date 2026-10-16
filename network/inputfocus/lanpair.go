@@ -28,16 +28,18 @@ var pairNonce = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var pairPIN = regexp.MustCompile(`^[0-9]{4}$`)
 
 type lanRequest struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Verification string `json:"verification"`
-	Expires      int64  `json:"expires"`
+	ID           string              `json:"id"`
+	Name         string              `json:"name"`
+	Verification string              `json:"verification"`
+	Expires      int64               `json:"expires"`
+	Feedback     *pairFeedbackTicket `json:"feedback,omitempty"`
 	pin          string
 	client       []byte
 	cancel       context.CancelFunc
 	generation   string
 	decision     string
 	approval     chan bool
+	finalState   string
 }
 
 type lanPairer struct {
@@ -51,6 +53,7 @@ type lanPairer struct {
 	engine     func(context.Context, string, string, any) ([]byte, error)
 	ctx        context.Context
 	managed    bool
+	feedback   map[string]pairFeedbackResult
 }
 
 func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPairer {
@@ -126,16 +129,24 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientCert := r.TLS.PeerCertificates[0].Raw
+	if p.serveFeedback(w, r, clientCert) {
+		return
+	}
 	if r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/v1/pair/") {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/pair/")
 		p.mu.Lock()
 		request := p.requests[id]
-		p.mu.Unlock()
-		if request == nil || !bytes.Equal(request.client, clientCert) {
+		if request == nil || !bytes.Equal(request.client, clientCert) ||
+			(request.Feedback != nil && r.Header.Get("X-ClipRelay-Pairing-Receipt") != request.Feedback.Receipt) {
+			p.mu.Unlock()
 			http.Error(w, "unknown request", 404)
 			return
 		}
+		if request.finalState == "" {
+			request.finalState = "cancelled"
+		}
 		request.cancel()
+		p.mu.Unlock()
 		w.WriteHeader(204)
 		return
 	}
@@ -194,6 +205,11 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		request.generation = hex.EncodeToString(generation[:])
 		request.decision = "waiting"
 		request.approval = make(chan bool, 1)
+		if err == nil && r.Header.Get("X-ClipRelay-Pairing-Feedback") == "1" {
+			var receipt [16]byte
+			_, err = rand.Read(receipt[:])
+			request.Feedback = &pairFeedbackTicket{Protocol: 1, Receipt: hex.EncodeToString(receipt[:])}
+		}
 	} else {
 		data, _ := json.Marshal(request)
 		err = os.MkdirAll(p.dir, 0700)
@@ -221,7 +237,10 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 	defer func() {
 		request.cancel()
 		p.mu.Lock()
-		delete(p.requests, request.ID)
+		p.retainFeedbackLocked(request, ctx.Err())
+		if p.requests[request.ID] == request {
+			delete(p.requests, request.ID)
+		}
 		if !p.managed {
 			_ = os.Remove(filepath.Join(p.dir, request.ID+".json"))
 			_ = os.Remove(filepath.Join(p.dir, request.ID+".approved"))
@@ -271,10 +290,20 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 			if entry.Name != "ClipRelay-"+request.ID || !pairNonce.MatchString(entry.ID) {
 				continue
 			}
-			if ctx.Err() != nil || time.Now().Unix() >= request.Expires {
+			p.mu.Lock()
+			stopped := ctx.Err() != nil || time.Now().Unix() >= request.Expires || request.finalState != ""
+			p.mu.Unlock()
+			if stopped {
 				return
 			}
 			_, _ = p.engine(ctx, "POST", "/api/pin", map[string]string{"pairing_id": entry.ID, "pin": request.pin, "name": request.Name})
+			// A lost PIN reply is not proof of success or failure. Keep observing
+			// the native certificate proof; never replay this mutation.
+			p.mu.Lock()
+			if request.finalState == "" && ctx.Err() == nil {
+				request.finalState = "handshake"
+			}
+			p.mu.Unlock()
 			return
 		}
 	}
@@ -288,6 +317,9 @@ func (p *lanPairer) close() {
 	}
 	p.mu.Unlock()
 	p.pending.Wait()
+	p.mu.Lock()
+	p.feedback = nil
+	p.mu.Unlock()
 	if p.closeIdle != nil {
 		p.closeIdle()
 	}

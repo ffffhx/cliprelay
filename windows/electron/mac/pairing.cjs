@@ -2,22 +2,29 @@
 const crypto=require('node:crypto');
 const {exchange,jsonRequest,endpoint,fault}=require('./paired-transport.cjs');
 const {hash,fromHex,signature,aes,xmlValue}=require('./paired-crypto.cjs');
+const feedback=require('./pairing-feedback.cjs');
 
 async function pairHost({address,port=48789,name,identity,signal,onVerification=()=>{},expectedCert,ports={}}){
   const target=endpoint(address,port);
   if(typeof name!=='string' || !name.trim() || Buffer.byteLength(name)>128 || /[\r\n\0]/.test(name))throw fault('INVALID_NAME');
   const nonce=crypto.randomBytes(16).toString('hex'),pin=String(crypto.randomInt(10000)).padStart(4,'0');
   const trust={cert:expectedCert,bootstrap:!expectedCert};
-  const base={address:target.address,identity,trust,signal};
-  let id;
+  const owner=new AbortController(),cancel=()=>owner.abort();
+  signal?.addEventListener('abort',cancel,{once:true});if(signal?.aborted)cancel();
+  const base={address:target.address,identity,trust,signal:owner.signal};
+  let id,bound,monitorTask,feedbackError;
   try{
-    const bootstrap=await jsonRequest({...base,port:ports.bootstrap || port+3,path:'/v1/pair',body:{nonce,name,pin},timeout:6000,limit:2048});
+    const bootstrap=await jsonRequest({...base,port:ports.bootstrap || port+3,path:'/v1/pair',body:{nonce,name,pin},headers:{'X-ClipRelay-Pairing-Feedback':'1'},timeout:6000,limit:2048});
     const digest=hash('cliprelay-lan-pair-v1\n',new crypto.X509Certificate(trust.cert).raw,new crypto.X509Certificate(identity.cert).raw,nonce).toString('hex');
     const verification=digest.slice(0,12).toUpperCase().match(/.{4}/g).join(' ');
     id=digest.slice(0,32);
     if(bootstrap.id!==id || bootstrap.verification!==verification)throw fault('PAIRING_CODE_MISMATCH');
+    bound=feedback.ticket(bootstrap);
+    if(bound)monitorTask=feedback.monitor({bound,signal:owner.signal,read:()=>jsonRequest({...base,
+      port:ports.bootstrap || port+3,path:'/v1/pair/status',body:{id,receipt:bound.receipt},timeout:4000,limit:2048})})
+      .catch(error=>{if(!owner.signal.aborted){feedbackError=error;owner.abort();}});
     await onVerification({verification,expires:bootstrap.expires});
-    if(signal?.aborted)throw fault('CANCELLED');
+    if(owner.signal.aborted)throw fault('CANCELLED');
     const command=async(data,timeout=10000,secure=false)=>{
       const query=new URLSearchParams({uniqueid:id,uuid:crypto.randomUUID(),devicename:'ClipRelay-'+id,updateState:'1',...data});
       const reply=await exchange({...base,port:secure?(ports.secure || port-5):(ports.http || port),path:'/pair?'+query,method:'GET',plain:!secure,timeout,limit:32768});
@@ -38,10 +45,14 @@ async function pairHost({address,port=48789,name,identity,signal,onVerification=
     if(!crypto.timingSafeEqual(hash(challenge,signature(hostCert),serverSecret),decoded.subarray(0,32)))throw fault('PAIRING_PIN_MISMATCH');
     await command({clientpairingsecret:Buffer.concat([clientSecret,crypto.sign('sha256',clientSecret,identity.key)]).toString('hex')});
     await command({phrase:'pairchallenge'},10000,true);
-    if(signal?.aborted)throw fault('CANCELLED');
+    if(owner.signal.aborted)throw fault('CANCELLED');
     return {...target,id:hash(hostCert.raw).toString('hex'),name:target.address,certificate:hostCert.toString(),clientId:id,enabled:true};
+  }catch(error){
+    throw feedbackError || error;
   }finally{
-    if(id)await exchange({...base,signal:undefined,port:ports.bootstrap || port+3,path:'/v1/pair/'+id,method:'DELETE',timeout:2000,limit:2048}).catch(()=>{});
+    owner.abort();await monitorTask;signal?.removeEventListener('abort',cancel);
+    if(id)await exchange({...base,signal:undefined,port:ports.bootstrap || port+3,path:'/v1/pair/'+id,method:'DELETE',
+      headers:bound?{'X-ClipRelay-Pairing-Receipt':bound.receipt}:{},timeout:2000,limit:2048}).catch(()=>{});
   }
 }
 module.exports={pairHost};

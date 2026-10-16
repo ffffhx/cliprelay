@@ -12,7 +12,7 @@ function endpoint(address,port=48789){
 // An asynchronous Agent callback withholds the socket from HTTP until its pin
 // is checked. checkServerIdentity alone is NOT called with rejectUnauthorized:false.
 // https://nodejs.org/api/http.html#agentcreateconnectionoptions-callback
-function exchange({address,port,path,method='POST',body=null,identity,trust,signal,timeout=20000,limit=400*1024,plain=false,acceptStatuses=[200]}){
+function exchange({address,port,path,method='POST',body=null,identity,trust,signal,timeout=20000,limit=400*1024,plain=false,acceptStatuses=[200],headers={}}){
   if(signal?.aborted)return Promise.reject(fault('CANCELLED'));
   return new Promise((resolve,reject)=>{
     let socket,request,timer,done=false,agent;
@@ -49,7 +49,7 @@ function exchange({address,port,path,method='POST',body=null,identity,trust,sign
         if(method!=='GET' || !/^\/pair\?/.test(path) || bytes)throw fault('INVALID_PAIRING_REQUEST');
         agent=new http.Agent({keepAlive:false,maxSockets:1,proxyEnv:{}});
       }
-      request=(plain?http:https).request({host:address,port,path,method,agent,maxHeaderSize:16384,headers:{Connection:'close',...(bytes?{'Content-Type':'application/json','Content-Length':bytes.length}:{})}},response=>{
+      request=(plain?http:https).request({host:address,port,path,method,agent,maxHeaderSize:16384,headers:{...headers,Connection:'close',...(bytes?{'Content-Type':'application/json','Content-Length':bytes.length}:{})}},response=>{
         if(!acceptStatuses.includes(response.statusCode)){response.resume();finish(fault(response.statusCode===403?'UNPAIRED':response.statusCode===404?'UPDATE_HOST':'HTTP_'+response.statusCode));return;}
         let size=0;const chunks=[];
         response.on('error',error=>finish(error));
