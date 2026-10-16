@@ -53,7 +53,7 @@ jobs:
           printf '%s\n' "CLIPRELAY_PAIRING_TEST_FIXTURE=$RUNNER_TEMP/cliprelay-pairing-fixture" >> "$GITHUB_ENV"
       - run: npm run setup:electron
       - run: npm run test:electron
-      - run: node --test windows/tests/desktop-clipboard.test.cjs windows/tests/electron-mac-legacy.test.cjs
+      - run: node --test windows/tests/desktop-clipboard.test.cjs windows/tests/desktop-clipboard-protocol.test.cjs windows/tests/electron-mac-legacy.test.cjs
       - run: node --test --test-timeout=30000 windows/tests/mac-pairing.test.cjs windows/tests/mac-pair-feedback.test.cjs windows/tests/mac-controller.test.cjs
       - run: node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
       - run: node --test windows/tests/mac-host-engine-artifact.test.cjs

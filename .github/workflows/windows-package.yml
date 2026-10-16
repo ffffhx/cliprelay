@@ -37,7 +37,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Client management settings failed' }
           npm run test:electron
           if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
-          node --test windows/tests/desktop-clipboard.test.cjs windows/tests/mac-controller.test.cjs windows/tests/electron-mac-legacy.test.cjs windows/tests/desktop-terminal-window.test.cjs
+          node --test windows/tests/desktop-clipboard.test.cjs windows/tests/desktop-clipboard-protocol.test.cjs windows/tests/mac-controller.test.cjs windows/tests/electron-mac-legacy.test.cjs windows/tests/desktop-terminal-window.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Async clipboard tests failed' }
           node --test windows/tests/paired-renderer-routing.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Paired clipboard renderer routing tests failed' }

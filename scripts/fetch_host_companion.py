@@ -75,6 +75,8 @@ def verify_sources(source_path, commit):
         expected |= {'scripts/test_host_files.py', 'scripts/test_host_files_client.cjs'}
         expected |= {'windows/electron/mac/'+name for name in ['file-controller.cjs', 'file-protocol.cjs', 'file-storage.cjs', 'paired-store.cjs', 'paired-transport.cjs', 'paired-crypto.cjs',
                                                              'routed-store.cjs', 'paired-controller.cjs', 'pairing.cjs', 'paired-relay.cjs', 'pairing-feedback.cjs']}
+    if output('git', 'ls-tree', '--name-only', commit, 'windows/electron/mac/clipboard-protocol.cjs').strip():
+        expected |= {'windows/electron/mac/clipboard-access.cjs', 'windows/electron/mac/clipboard-protocol.cjs'}
     with tarfile.open(source_path) as archive:
         members = entries(archive, limit=8*1024*1024)
         if any(not member.isfile() for member in members) or {member.name for member in members} != expected:

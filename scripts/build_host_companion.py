@@ -48,7 +48,7 @@ def build(output):
         for name in ['build_host_companion.py', 'network_notices.py', 'test_host_companion.py', 'test_host_files.py', 'test_host_files_client.cjs', 'test_host_clipboard.py', 'test_host_clipboard_client.cjs']:
             archive.add(ROOT/'scripts'/name, arcname='scripts/'+name)
         for name in ['file-controller.cjs', 'file-protocol.cjs', 'file-storage.cjs', 'paired-store.cjs', 'paired-transport.cjs', 'paired-crypto.cjs',
-                     'routed-store.cjs', 'paired-controller.cjs', 'pairing.cjs', 'paired-relay.cjs', 'pairing-feedback.cjs']:
+                     'routed-store.cjs', 'paired-controller.cjs', 'pairing.cjs', 'paired-relay.cjs', 'pairing-feedback.cjs', 'clipboard-access.cjs', 'clipboard-protocol.cjs']:
             archive.add(ROOT/'windows/electron/mac'/name, arcname='windows/electron/mac/'+name)
     manifest = {'role': 'host-companion', 'platform': 'macos', 'protocol': 1, 'nativeWorkers': False, 'pairingControl': 1, 'fileTransfer': 1, 'clipboardExchange': 1,
                 'files': {file.relative_to(output).as_posix(): hashlib.sha256(file.read_bytes()).hexdigest()

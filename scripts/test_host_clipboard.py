@@ -111,6 +111,7 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
             assert reused.sock is connection
             assert request(tls, dict(value, id='4'*32), reused)[0] == 403
             assert request(tls, {'op': 'read'}, reused)[0] == 403
+            assert request(tls, {'op': 'observe'}, reused)[0] == 403
         finally:
             clients.write_bytes(original)
             reused.close()
