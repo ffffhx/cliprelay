@@ -40,7 +40,9 @@ def main():
         plist = isolated/'Contents/Info.plist'
         info = plistlib.loads(plist.read_bytes())
         info['CFBundleIdentifier'] = 'com.cliprelay.tests.login.fixture'+uuid.uuid4().hex
-        info['CFBundleName'] = 'ClipRelay Login Fixture'
+        # Electron resolves its existing helper executables from CFBundleName.
+        # Keep that runtime name; only the fixture's registration identity and
+        # user-visible display name differ from the production bundle.
         info['CFBundleDisplayName'] = 'ClipRelay Login Fixture'
         plist.write_bytes(plistlib.dumps(info))
         target = isolated/'Contents/Resources/app'
@@ -52,6 +54,7 @@ def main():
         env = dict(os.environ, CLIPRELAY_NATIVE_LOGIN_FIXTURE='1')
         env.pop('ELECTRON_RUN_AS_NODE', None)
         result['bundleIdentifier'] = info['CFBundleIdentifier']
+        result['productionRuntimeExecutableSha256'] = hashlib.sha256((runtime/'Contents/MacOS'/info['CFBundleExecutable']).read_bytes()).hexdigest()
         result['runtimeExecutableSha256'] = hashlib.sha256(executable.read_bytes()).hexdigest()
         (directory/'user-data').mkdir()
 
@@ -65,7 +68,7 @@ def main():
                 os.killpg(child.pid, signal.SIGKILL)
                 child.communicate()
                 raise RuntimeError('Owned login fixture timed out: '+phase)
-            data = json.loads(receipt.read_text()) if receipt.exists() else dict(passed=False, phase=phase)
+            data = json.loads(receipt.read_text()) if receipt.exists() else dict(passed=False, phase=phase, diagnostic=stderr.decode(errors='replace')[-2000:])
             result['phases'].append(data)
             if child.returncode or data['passed'] is not True:
                 raise RuntimeError('Native login phase failed: '+phase+'\n'+stderr.decode(errors='replace')[-3000:])
@@ -84,7 +87,7 @@ def main():
                 invoke('cleanup'); result['cleanupConfirmed'] = True
                 result['cases'].append('native-registration-removed-before-fixture-deletion')
             except Exception as error:
-                failure = error
+                failure = failure or error
             result['passed'] = failure is None
             result['scope'] = 'Actual packaged production login controller and Electron API in a unique ad-hoc-signed disposable CI app. Registers only the fixture, observes persistence across separate processes and removes it. No production installation, system login/logout, UI automation, host startup, clipboard or user state access.'
             report.write_text(json.dumps(result, indent=2)+'\n')
