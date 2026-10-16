@@ -153,4 +153,11 @@ jobs:
             .tools/mac-electron/host-clients-bundle-*.json
             .tools/mac-electron/host-background-bundle-*.json
             .tools/mac-electron/native-clipboard-bundle-*.json
+            .tools/mac-electron/native-stream-bundle-*.json
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ClipRelay-Mac-Native-Stream-Failure-${{ matrix.arch }}
+          path: .tools/mac-electron/native-stream-bundle-*.json
+          if-no-files-found: ignore

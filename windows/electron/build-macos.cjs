@@ -155,6 +155,22 @@ async function build(){
         for(const link of links){if(fs.readlinkSync(link.copied)!==link.target || !fs.realpathSync(link.copied).startsWith(packaged+path.sep))throw new Error('Viewer framework link escapes the packaged runtime');}
         fs.writeFileSync(path.join(output,`viewer-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,viewerArchitectures:architectures,verifiedFiles:Object.keys(manifest.files).length,verifiedSymlinks:links.length,viewerSha256:manifest.files['runtime/ClipRelayStream.app/Contents/MacOS/Moonlight']},null,2));
       }
+      if(hostPin && companionPin && process.env.CLIPRELAY_VIEWER_ARTIFACT && process.env.CI==='true' && process.env.GITHUB_ACTIONS==='true'){
+        const appDirectory=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac');
+        const reportPath=path.join(output,`native-stream-bundle-${architecture}.json`);
+        const env={...process.env,APP_SOURCE_COMMIT:process.env.GITHUB_SHA};
+        delete env.CLIPRELAY_MAC_STREAM_DEBUG;
+        execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_stream.cjs'),appDirectory,reportPath],{env,stdio:'inherit',timeout:240000});
+        const report=JSON.parse(fs.readFileSync(reportPath,'utf8'));
+        const expected=['packaged-Mac-capture-encode-encrypted-transport-and-Qt-present',
+          'production-input-ACK-pause-display-reconstruction-and-fresh-frame-resume','desktop-owner-EOF-releases-native-stream',
+          'native-host-termination-after-revocation-without-client-control-polling',
+          'other-paired-client-still-renders-and-EOF-releases-stream','all-owned-native-processes-reaped-and-default-state-preserved'];
+        if(report.protocol!==1 || report.passed!==true || report.architecture!==architecture ||
+          report.applicationCommit!==process.env.GITHUB_SHA || JSON.stringify(report.cases)!==JSON.stringify(expected) ||
+          report.ownedChildrenReaped!==true || report.revocation?.ownerPipeStayedOpen!==true)
+          throw new Error('Packaged native Mac streaming acceptance did not complete');
+      }
       const zip=path.join(output,`ClipRelay-macOS-${architecture}-${version.versionName}.zip`);execFileSync('/usr/bin/ditto',['-c','-k','--sequesterRsrc','--keepParent',path.join(bundle,'ClipRelay.app'),zip]);console.log(zip);
     }
   }finally{
