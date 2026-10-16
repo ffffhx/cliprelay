@@ -93,10 +93,14 @@ func NewBuffer() *Buffer { return &Buffer{data: make([]byte, OutputLimit)} }
 func (b *Buffer) Append(data []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for _, value := range data {
-		b.data[b.end%int64(len(b.data))] = value
-		b.end++
+	if excess := len(data) - len(b.data); excess > 0 {
+		b.end += int64(excess)
+		data = data[excess:]
 	}
+	position := int(b.end % int64(len(b.data)))
+	first := copy(b.data[position:], data)
+	copy(b.data, data[first:])
+	b.end += int64(len(data))
 }
 func (b *Buffer) bounds() (int64, int64) { return max(0, b.end-int64(len(b.data))), b.end }
 func (b *Buffer) Bounds() (int64, int64) { b.mu.Lock(); defer b.mu.Unlock(); return b.bounds() }
@@ -109,9 +113,9 @@ func (b *Buffer) Read(requested int64) ([]byte, int64, bool, error) {
 	start, end := b.bounds()
 	offset := max(start, requested)
 	data := make([]byte, min(ReadLimit, end-offset))
-	for index := range data {
-		data[index] = b.data[(offset+int64(index))%int64(len(b.data))]
-	}
+	position := int(offset % int64(len(b.data)))
+	first := copy(data, b.data[position:])
+	copy(data[first:], b.data)
 	return data, offset, offset != requested, nil
 }
 
