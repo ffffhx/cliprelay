@@ -7,7 +7,7 @@ const appDirectory=process.argv[2]||path.resolve(__dirname,'../windows/electron/
 const {FileController}=require(path.join(appDirectory,'file-controller.cjs'));
 const protocol=require(path.join(appDirectory,'file-protocol.cjs'));
 const {fault}=require(path.join(appDirectory,'paired-transport.cjs'));
-const input=readline.createInterface({input:process.stdin,crlfDelay:Infinity})[Symbol.asyncIterator]();
+const lines=readline.createInterface({input:process.stdin,crlfDelay:Infinity}),input=lines[Symbol.asyncIterator]();
 async function read(){const value=await input.next();assert.equal(value.done,false);return JSON.parse(value.value);}
 const emit=value=>process.stdout.write(JSON.stringify(value)+'\n');
 async function main(){
@@ -40,6 +40,6 @@ async function main(){
     assert.deepEqual(await fs.readFile(path.join(destination,downloaded.finalName)),content);
     await controller.mkdir('created-directory');
     emit({stage:'complete',id:completed.id,finalName:completed.finalName,size:content.length,sha256:protocol.sha(content),downloadId:downloaded.id});
-  }finally{controller.close();await controller.running;await input.return();}
+  }finally{controller.close();await controller.running;lines.close();process.stdin.destroy();await input.return();}
 }
 main().catch(error=>{process.stderr.write(String(error.stack)+'\n');process.exitCode=1;});

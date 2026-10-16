@@ -82,6 +82,7 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
             client.stdin.write(b'{"op":"resume"}\n')
             complete = stage(client)
             assert complete['stage'] == 'complete' and complete['id'] == receipt['id']
+            client.stdin.close()
             assert client.wait(timeout=10) == 0, 'Desktop file client failed'
             assert client.stderr.read() == b''
             assert (remote/'fixture.bin').read_bytes() == b'preserved remote file'
