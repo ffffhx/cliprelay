@@ -130,6 +130,44 @@ func TestNativeWholePasteAndWriteReceipt(t *testing.T) {
 		t.Fatal("whole paste was not confirmed", p.Status())
 	}
 }
+
+func TestNativeForegroundCanonicalEditingAndEOF(t *testing.T) {
+	shells := []string{"bash"}
+	if runtime.GOOS == "darwin" {
+		shells = append(shells, "zsh")
+	}
+	for _, shell := range shells {
+		t.Run(shell, func(t *testing.T) {
+			p, b := nativeFixture(t, shell)
+			begin, ready, end := "foreground-mode-begin", "foreground-cat-ready", "foreground-cat-done"
+			nativeWrite(t, p, 1, "printf '\\n"+octal(begin)+"\\n'; stty -a; printf '\\n"+octal(ready)+"\\n'; cat | od -An -tx1; printf '\\n"+octal(end)+"\\n'\r", false)
+			eventually(t, 5*time.Second, func() bool { return strings.Contains(contents(b), ready) })
+			output := contents(b)
+			settings := output[strings.Index(output, begin)+len(begin) : strings.Index(output, ready)]
+			flags := strings.FieldsFunc(settings, func(r rune) bool { return r == ';' || r == '\r' || r == '\n' || r == ' ' || r == '\t' })
+			canonical, echo := false, false
+			for _, flag := range flags {
+				canonical = canonical || flag == "icanon"
+				echo = echo || flag == "echo"
+				if flag == "-icanon" || flag == "-echo" {
+					t.Fatalf("foreground program inherited disabled terminal mode: %s", settings)
+				}
+			}
+			if !canonical || !echo {
+				t.Fatalf("foreground program did not report canonical input and echo: %s", settings)
+			}
+			// DEL must edit the kernel's pending line; Ctrl+D on the empty next
+			// line must end cat. Raw input would pass both control bytes through.
+			nativeWrite(t, p, 2, "abc\x7fD\r\x04", false)
+			eventually(t, 5*time.Second, func() bool { return strings.Contains(contents(b), end) })
+			output = contents(b)
+			body := output[strings.Index(output, ready)+len(ready) : strings.Index(output, end)]
+			if !strings.Contains(strings.Join(strings.Fields(body), " "), "61 62 44 0a") {
+				t.Fatalf("canonical editing did not deliver exactly abD and newline: %q", body)
+			}
+		})
+	}
+}
 func TestNativeManagerLostReplyRevocationAndReopen(t *testing.T) {
 	nativeOnly(t)
 	start := time.Now()
