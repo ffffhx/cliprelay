@@ -32,7 +32,7 @@ async function fixture(t,options={}){
     res.end(JSON.stringify(req.url==='/v1/input-state'?input:{protocol:1,supported:true,instance,phase:'active',generation:2,capture:{id:'left'},
       streams:input.streams.map(s=>({id:s.id,generation:2,firstFrame:10,width:1280,height:720}))}));
   });
-  const port=await listen(server),cert=options.wrongPin?identities.wrong.cert:identities.host.cert;
+  const port=await listen(server,{maximumPort:65516}),cert=options.wrongPin?identities.wrong.cert:identities.host.cert;
   const host={id:crypto.createHash('sha256').update(new crypto.X509Certificate(cert).raw).digest('hex'),clientId:'a'.repeat(32),name:'Input fixture',enabled:true,address:'127.0.0.1',port:port-2,certificate:cert,routeId:'first'};
   const store={data:{legacySelected:false},host,selected(){return {...this.host};},async identity(){return identities.client;}};
   const viewer=new StreamViewer({directory:'.',store,resolveExecutable:()=>process.execPath,resolveTelemetry:()=>options.telemetry!==false,

@@ -8,7 +8,17 @@ const identities=JSON.parse(execFileSync(generator||'go',generator?[]:['run',pat
 const der=value=>new crypto.X509Certificate(value).raw;
 const digest=(...parts)=>crypto.createHash('sha256').update(Buffer.concat(parts.map(p=>Buffer.isBuffer(p)?p:Buffer.from(p)))).digest();
 const aes=(bytes,key,decrypt=false)=>{const c=(decrypt?crypto.createDecipheriv:crypto.createCipheriv)('aes-128-ecb',key,null);c.setAutoPadding(false);return Buffer.concat([c.update(bytes),c.final()]);};
-async function listen(server){server.listen(0,'127.0.0.1');await once(server,'listening');return server.address().port;}
+async function listen(server,{maximumPort}={}){
+  if(maximumPort===undefined){server.listen(0,'127.0.0.1');await once(server,'listening');return server.address().port;}
+  if(!Number.isInteger(maximumPort)||maximumPort<10240||maximumPort>65535)throw Error('Invalid fixture port range');
+  // A stream fixture derives a base port from this listener and must leave room
+  // for the production protocol offsets. OS-selected ports can be too high.
+  for(let attempt=0;attempt<32;attempt++){
+    try{server.listen(crypto.randomInt(10240,maximumPort+1),'127.0.0.1');await once(server,'listening');return server.address().port;}
+    catch(error){if(!['EADDRINUSE','EACCES'].includes(error.code))throw error;}
+  }
+  throw Error('Fixture port range unavailable');
+}
 async function close(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client}={}){
   const host=identities.host,client=clientIdentity,trace=[],writes=[];
