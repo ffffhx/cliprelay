@@ -571,6 +571,11 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	privacy := &probe{ctx: ctx, executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	audio := &probe{ctx: ctx, executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	wake := &probe{ctx: ctx, executable: executable, argument: "--wake-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	if managed {
+		if err := configureManagedWake(wake, dir); err != nil {
+			return err
+		}
+	}
 	terminal := &probe{ctx: ctx, executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
 	if managed {
 		if err := configureManagedTerminal(terminal, dir); err != nil {

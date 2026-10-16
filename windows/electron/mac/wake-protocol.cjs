@@ -30,7 +30,7 @@ function configuration(power,magic,armed){
 }
 function error(value){if(value?.ok===false&&errors.has(value.code))throw fault(value.code);}
 function inventory(value){
-  error(value);requireValue(value?.ok===true&&value.supported===true&&value.platform==='windows'&&value.wakeVerified===false&&Array.isArray(value.adapters)&&value.adapters.length<=32);
+  error(value);requireValue(value?.ok===true&&value.supported===true&&['windows','macos'].includes(value.platform)&&value.wakeVerified===false&&Array.isArray(value.adapters)&&value.adapters.length<=32);
   const ids=new Set(),settings=new Set(['enabled','disabled','unsupported','unknown']);
   const adapters=value.adapters.map(a=>{
     requireValue(a&&guid(a.id)&&!ids.has(a.id.toLowerCase())&&typeof a.name==='string'&&Buffer.byteLength(a.name,'utf8')<=512&&!/[\0\r\n]/.test(a.name)&&['ethernet','wifi'].includes(a.kind)&&typeof a.connected==='boolean');

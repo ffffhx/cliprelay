@@ -120,4 +120,16 @@ public class WakeStateTest {
         for(int i=0;i<2;i++)try {http.wakeRequest(WakeState.statusRequest());fail();}
         catch(IOException expected){assertEquals("WAKE_CANCELLED",expected.getMessage());}
     }
+    @Test public void macInventoryPreservesUnknownHardwareAndRejectsOtherPlatforms() throws Exception {
+        JSONObject item=adapter().put("powerManagement","unknown").put("magicPacket","unknown")
+                .put("wakeArmed","unknown").put("configuration","unknown");
+        JSONObject value=inventory().put("platform","macos").put("adapters",new JSONArray().put(item));
+        WakeState state=new WakeState(value);
+        assertEquals("unknown",state.adapters.get(0).configuration);
+        assertTrue(state.hasNetwork("192.168.0.0/24"));
+        for(String platform:new String[]{"darwin","linux","MACOS",""}) {
+            try {new WakeState(value.put("platform",platform));fail(platform);} catch(JSONException expected){}
+        }
+    }
+
 }

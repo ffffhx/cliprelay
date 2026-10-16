@@ -317,3 +317,69 @@ func TestWakeRealMutualTLSRevocationAndNativeDiscovery(t *testing.T) {
 	}
 	t.Log("Real TLS and native inventory verified; no wake packets or power changes")
 }
+
+func TestWakeMacHelperPreservesAuthorizationAndUnknownHardware(t *testing.T) {
+	f, h := newWakeFixture(t)
+	f.state.Platform = "macos"
+	f.state.Adapters[0].MagicPacket = "unknown"
+	f.state.Adapters[0].PowerManagement = "unknown"
+	f.state.Adapters[0].WakeArmed = "unknown"
+	if fileCall(h, []byte("unknown"), "POST", "/v1/wake", wakeBody()).Code != 403 || f.reads != 0 {
+		t.Fatal("unpaired Mac helper disclosure")
+	}
+	if fileCall(h, []byte("first"), "POST", "/v1/wake", wakeBody()).Code != 200 || f.sends != 1 {
+		t.Fatal("Mac helper unavailable")
+	}
+	if fileCall(h, []byte("first"), "POST", "/v1/wake", wakeBody()).Code != 200 || f.sends != 1 {
+		t.Fatal("Mac replay resent datagrams")
+	}
+	filePairing(t, f.control.clients, []byte("second"))
+	if fileCall(h, []byte("first"), "POST", "/v1/wake", wakeBody()).Code != 403 || f.sends != 1 {
+		t.Fatal("revoked Mac helper owner")
+	}
+	for _, platform := range []string{"darwin", "linux", "MACOS", ""} {
+		f.state.Platform = platform
+		if validWakeInventory(f.state) {
+			t.Fatal("unsupported platform accepted", platform)
+		}
+	}
+}
+
+// The paired API selects its Mac LAN route normally; only the final datagram
+// destination is redirected to an owned loopback receiver. Never a LAN broadcast.
+func TestWakeMacAuthenticatedUDPReceipt(t *testing.T) {
+	f, h := newWakeFixture(t)
+	f.state.Platform = "macos"
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	original := f.control.send
+	f.control.send = func(ctx context.Context, routes []wakeRoute, payload []byte, allowed func() bool) (int, error) {
+		if _, err := original(ctx, routes, payload, allowed); err != nil {
+			return 0, err
+		}
+		if err := writeWakeDatagram(netip.MustParseAddr("127.0.0.1"), receiver.LocalAddr().(*net.UDPAddr), payload); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	for i := 0; i < 2; i++ {
+		response := fileCall(h, []byte("first"), "POST", "/v1/wake", wakeBody())
+		var result wakeResult
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Sent != 1 || result.WakeVerified {
+			t.Fatal(response.Body.String())
+		}
+	}
+	if f.sends != 1 {
+		t.Fatal("duplicate datagram after replay")
+	}
+	_ = receiver.SetReadDeadline(time.Now().Add(time.Second))
+	buffer := make([]byte, 103)
+	n, _, err := receiver.ReadFromUDP(buffer)
+	expected, _ := wakePayload(wakeTestMAC)
+	if err != nil || !bytes.Equal(buffer[:n], expected) {
+		t.Fatal("wrong controlled datagram", n, err)
+	}
+}

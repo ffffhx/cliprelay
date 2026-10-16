@@ -46,7 +46,7 @@ public final class WakeState {
         }
     }
     public WakeState(JSONObject value) throws JSONException {
-        if(!bool(value,"ok") || !bool(value,"supported") || bool(value,"wakeVerified") || !string(value,"platform").equals("windows"))throw invalid();
+        if(!bool(value,"ok") || !bool(value,"supported") || bool(value,"wakeVerified") || !(string(value,"platform").equals("windows") || string(value,"platform").equals("macos")))throw invalid();
         JSONArray array=value.getJSONArray("adapters"); if(array.length()>32)throw invalid();
         ArrayList<Adapter> list=new ArrayList<>(); HashSet<String> ids=new HashSet<>();
         for(int i=0;i<array.length();i++) {

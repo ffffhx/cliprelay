@@ -16,6 +16,7 @@ import (
 	"cliprelay/network/hostclipboard"
 	"cliprelay/network/hostcompanion"
 	"cliprelay/network/hostterminal"
+	"cliprelay/network/hostwake"
 	"cliprelay/network/inputfocus"
 )
 
@@ -27,12 +28,13 @@ func main() {
 	managedFiles := flags.Bool("managed-files", false, "owned native file worker")
 	managedClipboard := flags.Bool("managed-clipboard", false, "owned native clipboard worker")
 	managedTerminal := flags.Bool("managed-terminal", false, "owned terminal session worker")
+	managedWake := flags.Bool("managed-wake", false, "owned read-only LAN inventory worker")
 	terminalShell := flags.String("terminal-session", "", "owned native terminal guardian")
 	terminalColumns := flags.Int("terminal-columns", 0, "owned terminal columns")
 	terminalRows := flags.Int("terminal-rows", 0, "owned terminal rows")
 	parseErr := flags.Parse(os.Args[1:])
 	workers := 0
-	for _, enabled := range []bool{*managedFiles, *managedClipboard, *managedTerminal, *terminalShell != ""} {
+	for _, enabled := range []bool{*managedFiles, *managedClipboard, *managedTerminal, *managedWake, *terminalShell != ""} {
 		if enabled {
 			workers++
 		}
@@ -108,6 +110,8 @@ func main() {
 		runtime.LockOSThread()
 		err = hostclipboard.Serve(ctx, input, output, hostclipboard.NewNative())
 		runtime.UnlockOSThread()
+	} else if *managedWake {
+		err = hostwake.Serve(ctx, input, output, hostwake.Read)
 	} else if *managedTerminal {
 		var factory hostterminal.Factory
 		factory, err = managedTerminalFactory(*directory)

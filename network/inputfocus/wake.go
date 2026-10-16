@@ -119,7 +119,7 @@ func wakeSetting(value string) bool {
 	return value == "enabled" || value == "disabled" || value == "unsupported" || value == "unknown"
 }
 func validWakeInventory(value wakeInventory) bool {
-	if !value.OK || !value.Supported || value.Platform != "windows" || value.WakeVerified || len(value.Adapters) > 32 {
+	if !value.OK || !value.Supported || (value.Platform != "windows" && value.Platform != "macos") || value.WakeVerified || len(value.Adapters) > 32 {
 		return false
 	}
 	ids := make(map[string]bool)

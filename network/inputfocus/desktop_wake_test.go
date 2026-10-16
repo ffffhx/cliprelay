@@ -18,12 +18,18 @@ import (
 // The real wake handler uses a simulated inventory and send callback. This test
 // verifies protocol interoperability and receipts without emitting UDP packets.
 func TestWakeDesktopProtocolInterop(t *testing.T) {
+	for _, platform := range []string{"windows", "macos"} {
+		t.Run(platform, func(t *testing.T) { testWakeDesktopProtocolInterop(t, platform) })
+	}
+}
+func testWakeDesktopProtocolInterop(t *testing.T, platform string) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("Node.js is required for desktop wake interoperability")
 	}
 	client := fileTestCertificate(t)
 	f, _ := newWakeFixture(t)
+	f.state.Platform = platform
 	filePairing(t, f.control.clients, client.Certificate[0])
 	seed := httptest.NewTLSServer(http.NotFoundHandler())
 	host := seed.TLS.Certificates[0]

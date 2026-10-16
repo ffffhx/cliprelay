@@ -36,3 +36,11 @@ test('wake inventory and send acknowledgment use pinned mutual TLS without emitt
   await assert.rejects(protocol.request({...host,certificate:identities.wrong.cert},identities.client,'status'),{code:'HOST_CERT_CHANGED'});assert.equal(calls.length,2);
   failure='WAKE_RATE_LIMITED';await assert.rejects(protocol.request(host,identities.client,'status'),{code:'WAKE_RATE_LIMITED'});
 });
+
+test('Mac inventory retains unknown hardware status and rejects unrecognized platforms',()=>{
+  const value=inventory();value.platform='macos';
+  Object.assign(value.adapters[0],{powerManagement:'unknown',magicPacket:'unknown',wakeArmed:'unknown',configuration:'unknown'});
+  const parsed=protocol.inventory(value);assert.equal(parsed.adapters[0].configuration,'unknown');
+  assert.deepEqual(parsed.adapters[0].networks,['192.168.12.0/24']);
+  for(const platform of ['darwin','linux','MACOS','',null]){value.platform=platform;assert.throws(()=>protocol.inventory(value),{code:'WAKE_INVALID_RESPONSE'});}
+});
