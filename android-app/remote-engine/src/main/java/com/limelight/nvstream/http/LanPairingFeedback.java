@@ -27,6 +27,16 @@ public final class LanPairingFeedback {
         try { return new JSONObject().put("id",id).put("receipt",receipt); }
         catch (org.json.JSONException error) { throw invalid(); }
     }
+    public static String nativeIdFromBootstrap(JSONObject value) throws IOException {
+        if (!value.has("native")) return null;
+        try {
+            JSONObject nativeTicket=value.getJSONObject("native");
+            Object protocol=nativeTicket.get("protocol");
+            if (!value.has("feedback") || nativeTicket.length()!=2 || !integer(protocol) ||
+                    ((Number)protocol).longValue()!=1 || !token(nativeTicket.get("id"))) throw invalid();
+            return nativeTicket.getString("id");
+        } catch (org.json.JSONException error) { throw invalid(); }
+    }
     public void observe(JSONObject value) throws IOException {
         final String state;
         try {

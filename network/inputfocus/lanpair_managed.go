@@ -75,7 +75,7 @@ func (p *lanPairer) local(raw []byte) (any, bool) {
 	if fields["op"] == "host-pair-list" && len(fields) == 1 {
 		requests := []managedPairRequest{}
 		for _, request := range p.requests {
-			if request.Expires > now && request.decision != "rejected" {
+			if request.Expires > now && request.finalState == "" && (request.Native == nil || request.nativeRegistered) {
 				requests = append(requests, managedPairRequest{request.ID, request.generation, request.Name, request.Verification, request.Expires, request.decision})
 			}
 		}
@@ -88,7 +88,8 @@ func (p *lanPairer) local(raw []byte) (any, bool) {
 	}
 	request := p.requests[fields["id"]]
 	if request == nil || request.Expires <= now || request.generation != fields["generation"] ||
-		request.Verification != fields["verification"] || request.decision != "waiting" {
+		request.Verification != fields["verification"] || request.decision != "waiting" || request.finalState != "" ||
+		(request.Native != nil && !request.nativeRegistered) {
 		return managedPairError("HOST_PAIR_STALE"), true
 	}
 	approved := fields["op"] == "host-pair-approve"

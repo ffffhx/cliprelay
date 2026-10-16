@@ -10,6 +10,13 @@ function ticket(value){
     !Number.isSafeInteger(value.expires) || value.expires<=0)throw fault('PAIRING_STATUS_INVALID');
   return {id:value.id,receipt:feedback.receipt,expires:value.expires};
 }
+function nativeTicket(value){
+  if(value.native===undefined)return null;
+  const native=value.native;
+  if(!native || typeof native!=='object' || Array.isArray(native) || Object.keys(native).sort().join(',')!=='id,protocol' ||
+    native.protocol!==1 || typeof native.id!=='string' || !/^[0-9a-f]{32}$/.test(native.id) || !value.feedback)throw fault('PAIRING_STATUS_INVALID');
+  return native.id;
+}
 function state(value,bound){
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).sort().join(',')!=='expires,id,protocol,receipt,state' ||
     value.protocol!==1 || value.id!==bound.id || value.receipt!==bound.receipt || value.expires!==bound.expires || !states.has(value.state))throw fault('PAIRING_STATUS_INVALID');
@@ -44,4 +51,4 @@ async function monitor({bound,read,signal,pollMs=750}){
     await delay(signal,pollMs);
   }
 }
-module.exports={ticket,state,monitor};
+module.exports={ticket,nativeTicket,state,monitor};

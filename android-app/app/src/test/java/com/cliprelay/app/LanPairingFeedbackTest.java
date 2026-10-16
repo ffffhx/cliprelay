@@ -59,7 +59,8 @@ public class LanPairingFeedbackTest {
         final Set<SSLSocket> sockets=ConcurrentHashMap.newKeySet();
         final AtomicInteger statusReads=new AtomicInteger(),bootstrapReads=new AtomicInteger(),deletes=new AtomicInteger();
         volatile String state="waiting",id;final String receipt="cccccccccccccccccccccccccccccccc";final long expires=System.currentTimeMillis()/1000+120;
-        volatile boolean legacy,notFound,stall,invalid;volatile int transientFailures;volatile String deleteReceipt;
+        volatile boolean legacy,notFound,stall,invalid,nativeTicket;volatile int transientFailures;volatile String deleteReceipt;
+        final String nativeId="dddddddddddddddddddddddddddddddd";
         final CountDownLatch release=new CountDownLatch(1);volatile Throwable failure;
         Host() throws Exception {
             X509Certificate host=cert("host"),client=cert("client");KeyStore keys=KeyStore.getInstance(KeyStore.getDefaultType());keys.load(null);
@@ -94,12 +95,14 @@ public class LanPairingFeedbackTest {
                         result=new JSONObject().put("protocol",1).put("id",id).put("receipt",invalid?"bad":receipt).put("expires",expires).put("state",state);
                     } else {
                         bootstrapReads.incrementAndGet();assertEquals("1",headers.get("X-ClipRelay-Pairing-Feedback"));
+                        assertEquals("1",headers.get("X-ClipRelay-Pairing-Native"));
                         if(notFound){respond(socket,404,null);return;}
                         MessageDigest hash=MessageDigest.getInstance("SHA-256");hash.update("cliprelay-lan-pair-v1\n".getBytes(StandardCharsets.UTF_8));hash.update(host.getEncoded());hash.update(client.getEncoded());
                         byte[] digest=hash.digest(body.getString("nonce").getBytes(StandardCharsets.UTF_8));StringBuilder hex=new StringBuilder();for(byte b:digest)hex.append(String.format(Locale.ROOT,"%02x",b&255));
                         id=hex.substring(0,32);String code=(hex.substring(0,4)+" "+hex.substring(4,8)+" "+hex.substring(8,12)).toUpperCase(Locale.ROOT);
                         result=new JSONObject().put("id",id).put("name","Fixture").put("verification",code).put("expires",expires);
                         if(!legacy)result.put("feedback",new JSONObject().put("protocol",1).put("receipt",receipt));
+                        if(nativeTicket)result.put("native",new JSONObject().put("protocol",1).put("id",nativeId));
                     }
                     respond(socket,200,result.toString());
                 } catch(IOException cancelled) { /* A cancelled client may close its TLS socket mid-response. */ }
@@ -193,6 +196,38 @@ public class LanPairingFeedbackTest {
         NvHTTP http=new NvHTTP(new ComputerDetails.AddressTuple("127.0.0.1",48789),0,"fixture",null,identity());
         http.beginPairing();http.cancelPairing();
         try{nativePairing(http);fail();}catch(IOException expected){assertTrue(expected.getMessage().contains("取消"));}
+    }
+    @Test public void nativeGenerationMetadataRequiresExactTypesAndFeedback() throws Exception {
+        assertNull(LanPairingFeedback.nativeIdFromBootstrap(new JSONObject()));
+        JSONObject value=new JSONObject().put("feedback",new JSONObject()).put("native",new JSONObject().put("protocol",1).put("id","d".repeat(32)));
+        assertEquals("d".repeat(32),LanPairingFeedback.nativeIdFromBootstrap(value));
+        for(Object bad:new Object[]{"1",2,1.5}) {
+            value.getJSONObject("native").put("protocol",bad);
+            try{LanPairingFeedback.nativeIdFromBootstrap(value);fail();}catch(IOException expected){}
+        }
+        value.getJSONObject("native").put("protocol",1);value.remove("feedback");
+        try{LanPairingFeedback.nativeIdFromBootstrap(value);fail();}catch(IOException expected){}
+    }
+    @Test public void nativeGenerationIsSentOnTheActualPairingRequest() throws Exception {
+        try(Host host=new Host();java.net.ServerSocket server=new java.net.ServerSocket(0,1,java.net.InetAddress.getByName("127.0.0.1"))) {
+            host.nativeTicket=true;
+            ExecutorService worker=Executors.newSingleThreadExecutor();
+            NvHTTP http=new NvHTTP(new ComputerDetails.AddressTuple("127.0.0.1",server.getLocalPort()),0,"fixture",null,identity());
+            Future<String> observed=worker.submit(()->{try(java.net.Socket socket=server.accept()){
+                socket.setSoTimeout(5000);BufferedInputStream input=new BufferedInputStream(socket.getInputStream());String line=Host.line(input);
+                while(!Host.line(input).isEmpty()){}
+                byte[] body="<root status_code=\"400\"/>".getBytes(StandardCharsets.US_ASCII);
+                socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Length: "+body.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                socket.getOutputStream().write(body);socket.getOutputStream().flush();return line;
+            }});
+            try {
+                LanPairing pairing=host.begin(http::ownLanPairing);http.setLanPairingSession(pairing);
+                assertEquals(host.nativeId,pairing.sessionId());assertEquals("ClipRelay-"+host.nativeId,pairing.sessionName());
+                assertTrue(nativePairing(http).contains("400"));String line=observed.get(5,TimeUnit.SECONDS);
+                assertTrue(line.contains("uniqueid="+host.nativeId));assertTrue(line.contains("cliprelay_pairing="+host.nativeId));
+                assertTrue(line.contains("devicename=ClipRelay-"+host.nativeId));
+            }finally{http.cancelPairing();http.closeLanPairing();server.close();worker.shutdownNow();assertTrue(worker.awaitTermination(3,TimeUnit.SECONDS));}
+        }
     }
     @Test public void remoteRejectionCancelsAnActualNativeResponseBodyAndPreservesItsReason() throws Exception {
         try(Host host=new Host();java.net.ServerSocket nativeServer=new java.net.ServerSocket(0,1,java.net.InetAddress.getByName("127.0.0.1"))){

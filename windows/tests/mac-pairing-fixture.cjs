@@ -20,10 +20,11 @@ async function listen(server,{maximumPort}={}){
   throw Error('Fixture port range unavailable');
 }
 async function close(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
-async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client,feedback=false,onStatus}={}){
+async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client,feedback=false,native=false,onStatus}={}){
   const host=identities.host,client=clientIdentity,trace=[],writes=[];
   let pin,id,session,key,challenge,responseHash,authorized=false,approval=false,waiting,deleted=false;
   const receipt=crypto.randomBytes(16).toString('hex');let expires,state='waiting',statusReads=0,cancelReceipt;
+  const nativeID=crypto.randomBytes(16).toString('hex');let nativeAdvertised=false;
   const xml=(response,fields)=>response.end('<root status_code="200"><paired>1</paired>'+Object.entries(fields).map(([k,v])=>'<'+k+'>'+v+'</'+k+'>').join('')+'</root>');
   const server=https.createServer({key:host.key,cert:host.cert,requestCert:true,rejectUnauthorized:false},async(req,res)=>{
     if(!req.socket.getPeerCertificate().raw?.equals(der(client.cert))){res.writeHead(403);res.end();return;}
@@ -31,8 +32,10 @@ async function fixture({badSignature=false,badCode=false,badPin=false,clientIden
       let raw='';for await(const chunk of req)raw+=chunk;const data=JSON.parse(raw);pin=data.pin;
       const hashed=digest('cliprelay-lan-pair-v1\n',der(host.cert),der(client.cert),data.nonce).toString('hex');id=hashed.slice(0,32);
       expires=Math.floor(Date.now()/1000)+120;
+      nativeAdvertised=native&&feedback&&req.headers['x-cliprelay-pairing-native']==='1';
       res.end(JSON.stringify({id,verification:badCode?'FFFF FFFF FFFF':hashed.slice(0,12).toUpperCase().match(/.{4}/g).join(' '),expires,
-        ...(feedback&&req.headers['x-cliprelay-pairing-feedback']==='1'?{feedback:{protocol:1,receipt}}:{})}));return;
+        ...(feedback&&req.headers['x-cliprelay-pairing-feedback']==='1'?{feedback:{protocol:1,receipt}}:{}),
+        ...(nativeAdvertised?{native:{protocol:1,id:nativeID}}:{})}));return;
     }
     if(req.url==='/v1/pair/status'){
       statusReads++;let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
@@ -49,10 +52,11 @@ async function fixture({badSignature=false,badCode=false,badPin=false,clientIden
   });
   const plain=http.createServer((req,res)=>{
     const query=new URL(req.url,'http://fixture').searchParams;
-    if(query.get('uniqueid')!==id){res.writeHead(400);res.end();return;}
+    const expectedID=nativeAdvertised?nativeID:id;
+    if(query.get('uniqueid')!==expectedID || (nativeAdvertised&&query.get('cliprelay_pairing')!==nativeID)){res.writeHead(400);res.end();return;}
     if(query.get('phrase')==='getservercert'){
       trace.push('get-cert');session=query.get('devicename');
-      if(session!=='ClipRelay-'+id || !Buffer.from(query.get('clientcert'),'hex').equals(Buffer.from(client.cert))){res.writeHead(400);res.end();return;}
+      if(session!=='ClipRelay-'+expectedID || !Buffer.from(query.get('clientcert'),'hex').equals(Buffer.from(client.cert))){res.writeHead(400);res.end();return;}
       key=digest(Buffer.from(query.get('salt'),'hex'),badPin?'99999':pin).subarray(0,16);
       const answer=()=>xml(res,{plaincert:Buffer.from(host.cert).toString('hex')});if(approval)answer();else waiting=answer;return;
     }
@@ -74,7 +78,7 @@ async function fixture({badSignature=false,badCode=false,badPin=false,clientIden
     res.writeHead(404);res.end();
   });
   const secure=await listen(server),httpPort=await listen(plain);
-  return {host,client,trace,writes,receipt,ports:{bootstrap:secure,http:httpPort,secure},approve:()=>{approval=true;waiting?.();},
+  return {host,client,trace,writes,receipt,nativeID,get bootstrapID(){return id;},ports:{bootstrap:secure,http:httpPort,secure},approve:()=>{approval=true;waiting?.();},
     setFeedback(value){state=value;},replaceCertificate(value){server.setSecureContext({key:value.key,cert:value.cert});},get statusReads(){return statusReads;},get cancelReceipt(){return cancelReceipt;},
     get authorized(){return authorized;},get deleted(){return deleted;},close:async()=>{await close(plain);await close(server);}};
 }

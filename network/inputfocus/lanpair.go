@@ -28,18 +28,21 @@ var pairNonce = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var pairPIN = regexp.MustCompile(`^[0-9]{4}$`)
 
 type lanRequest struct {
-	ID           string              `json:"id"`
-	Name         string              `json:"name"`
-	Verification string              `json:"verification"`
-	Expires      int64               `json:"expires"`
-	Feedback     *pairFeedbackTicket `json:"feedback,omitempty"`
-	pin          string
-	client       []byte
-	cancel       context.CancelFunc
-	generation   string
-	decision     string
-	approval     chan bool
-	finalState   string
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	Verification     string              `json:"verification"`
+	Expires          int64               `json:"expires"`
+	Feedback         *pairFeedbackTicket `json:"feedback,omitempty"`
+	Native           *nativePairTicket   `json:"native,omitempty"`
+	pin              string
+	client           []byte
+	cancel           context.CancelFunc
+	generation       string
+	decision         string
+	approval         chan bool
+	finalState       string
+	nativeReady      chan error
+	nativeRegistered bool
 }
 
 type lanPairer struct {
@@ -179,6 +182,11 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing := p.requests[id]; existing != nil {
+		if existing.finalState != "" || (existing.Native != nil && !existing.nativeRegistered) {
+			p.mu.Unlock()
+			http.Error(w, "pairing request is finishing or preparing", 409)
+			return
+		}
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(existing)
@@ -210,6 +218,16 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, err = rand.Read(receipt[:])
 			request.Feedback = &pairFeedbackTicket{Protocol: 1, Receipt: hex.EncodeToString(receipt[:])}
 		}
+		if err == nil && r.Header.Get("X-ClipRelay-Pairing-Native") == "1" {
+			if request.Feedback == nil {
+				err = errors.New("native pairing requires generation-bound feedback")
+			} else {
+				var nativeID [16]byte
+				_, err = rand.Read(nativeID[:])
+				request.Native = &nativePairTicket{Protocol: 1, ID: hex.EncodeToString(nativeID[:])}
+				request.nativeReady = make(chan error, 1)
+			}
+		}
 	} else {
 		data, _ := json.Marshal(request)
 		err = os.MkdirAll(p.dir, 0700)
@@ -228,6 +246,23 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.pending.Add(1)
 	p.mu.Unlock()
 	go p.run(ctx, request)
+	if request.Native != nil {
+		select {
+		case err := <-request.nativeReady:
+			if err != nil {
+				http.Error(w, "native pairing unavailable", 503)
+				return
+			}
+		case <-r.Context().Done():
+			p.mu.Lock()
+			if request.finalState == "" {
+				request.finalState = "cancelled"
+			}
+			request.cancel()
+			p.mu.Unlock()
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(request)
 }
@@ -236,6 +271,11 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 	defer p.pending.Done()
 	defer func() {
 		request.cancel()
+		// Keep this generation reserved until bounded native cleanup has joined.
+		// A fresh bootstrap receives another native ID, including nonce reuse.
+		if request.Native != nil {
+			p.finishNativePairing(request)
+		}
 		p.mu.Lock()
 		p.retainFeedbackLocked(request, ctx.Err())
 		if p.requests[request.ID] == request {
@@ -247,6 +287,23 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 		}
 		p.mu.Unlock()
 	}()
+	if request.Native != nil {
+		err := p.prepareNativePairing(ctx, request)
+		p.mu.Lock()
+		if err == nil && (p.closed || ctx.Err() != nil) {
+			err = context.Canceled
+		}
+		if err == nil {
+			request.nativeRegistered = true
+		} else if request.finalState == "" {
+			request.finalState = "cancelled"
+		}
+		p.mu.Unlock()
+		request.nativeReady <- err
+		if err != nil {
+			return
+		}
+	}
 	if p.managed {
 		select {
 		case <-ctx.Done():
@@ -276,8 +333,10 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 		}
 		var pending struct {
 			Pairings []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
+				ID                string `json:"id"`
+				Name              string `json:"name"`
+				ManagedID         string `json:"managed_id"`
+				ClientFingerprint string `json:"client_fingerprint"`
 			} `json:"pairings"`
 		}
 		if json.Unmarshal(b, &pending) != nil {
@@ -287,7 +346,14 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 			// The temporary name and unique ID isolate this handshake from other
 			// phones. A forged pending request cannot complete the PIN proof or
 			// client-key signature, and the phone also checks the server TLS key.
-			if entry.Name != "ClipRelay-"+request.ID || !pairNonce.MatchString(entry.ID) {
+			if !pairNonce.MatchString(entry.ID) {
+				continue
+			}
+			if request.Native != nil {
+				if entry.ManagedID != request.Native.ID || entry.ClientFingerprint != nativePairFingerprint(request) {
+					continue
+				}
+			} else if entry.Name != "ClipRelay-"+request.ID {
 				continue
 			}
 			p.mu.Lock()

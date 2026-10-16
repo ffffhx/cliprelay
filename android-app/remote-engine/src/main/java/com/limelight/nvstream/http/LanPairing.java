@@ -24,6 +24,7 @@ public final class LanPairing implements AutoCloseable {
     private volatile X509Certificate serverCert;
     private volatile boolean contactedHost;
     private String id;
+    private String nativeId;
     public String verification;
     private LanPairingFeedback feedback;
     private boolean cancelled, closed;
@@ -83,6 +84,7 @@ public final class LanPairing implements AutoCloseable {
             JSONObject data = new JSONObject().put("name",name).put("pin",pin).put("nonce",nonce);
             try (Response response = pairing.execute(new Request.Builder().url(pairing.url)
                     .header("X-ClipRelay-Pairing-Feedback","1")
+                    .header("X-ClipRelay-Pairing-Native","1")
                     .post(RequestBody.create(MediaType.get("application/json"),data.toString())).build())) {
                 pairing.checkCancelled();
                 if (response.code()==404) return null; // Older hosts retain manual PIN pairing.
@@ -100,6 +102,7 @@ public final class LanPairing implements AutoCloseable {
                     throw new IOException("配对确认标识不匹配");
                 pairing.id = full.substring(0,32); pairing.verification = code;
                 pairing.feedback=LanPairingFeedback.fromBootstrap(result);
+                pairing.nativeId=LanPairingFeedback.nativeIdFromBootstrap(result);
                 pairing.checkCancelled();retained=true;
                 return pairing;
             }
@@ -172,8 +175,9 @@ public final class LanPairing implements AutoCloseable {
         monitor.start();
     }
 
-    public String sessionName() { return "ClipRelay-"+id; }
-    public String sessionId() { return id; }
+    public String sessionName() { return "ClipRelay-"+sessionId(); }
+    public String sessionId() { return nativeId==null?id:nativeId; }
+    public String nativeSessionId() { return nativeId; }
     public X509Certificate hostCertificate() { return serverCert; }
     private static String hex(byte[] bytes) {
         StringBuilder out=new StringBuilder(); for(byte b:bytes) out.append(String.format(Locale.ROOT,"%02x",b&255)); return out.toString();

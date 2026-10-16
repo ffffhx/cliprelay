@@ -51,6 +51,23 @@ test('feedback capability rejects malformed metadata and never exposes private g
   for(const value of [null,{},[],{protocol:1,receipt:'bad'},{protocol:1,receipt:'a'.repeat(32),generation:'private'}])assert.throws(()=>feedback.ticket({feedback:value,expires:123}),{code:'PAIRING_STATUS_INVALID'});
   assert.throws(()=>feedback.ticket({feedback:{protocol:1,receipt:'a'.repeat(32)},expires:'123'}),{code:'PAIRING_STATUS_INVALID'});
 });
+
+test('native pairing generation drives the certificate proof while feedback keeps its receipt',async t=>{
+  const f=await fixture({feedback:true,native:true});t.after(()=>f.close());f.approve();
+  const paired=await pairHost(options(f));
+  assert.equal(paired.clientId,f.nativeID);assert.notEqual(paired.clientId,f.bootstrapID);
+  assert.equal(paired.certificate,f.host.cert);assert.equal(f.authorized,true);assert.equal(f.cancelReceipt,f.receipt);
+  assert.deepEqual(f.trace,['get-cert','challenge','server-proof','client-proof','secure-challenge']);
+});
+
+test('native generation metadata rejects missing feedback and malformed identities',()=>{
+  assert.equal(feedback.nativeTicket({}),null);
+  const valid={protocol:1,id:'b'.repeat(32)};
+  assert.equal(feedback.nativeTicket({feedback:{},native:valid}),valid.id);
+  assert.throws(()=>feedback.nativeTicket({native:valid}),{code:'PAIRING_STATUS_INVALID'});
+  for(const native of [null,[],{}, {...valid,protocol:2},{...valid,id:'bad'},{...valid,extra:true}])
+    assert.throws(()=>feedback.nativeTicket({feedback:{},native}),{code:'PAIRING_STATUS_INVALID'});
+});
 test('transient status failures retry within a fixed bound without losing rejection',async t=>{
   for(const failures of [1,3]){
     let reads=0;const f=await fixture({feedback:true,onStatus:({res,value})=>{if(++reads<=failures)res.destroy();else res.end(JSON.stringify({...value,state:'rejected'}));}});t.after(()=>f.close());

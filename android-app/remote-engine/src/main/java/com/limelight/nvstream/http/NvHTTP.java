@@ -1162,8 +1162,10 @@ public class NvHTTP {
 
     String executePairingCommand(String additionalArguments, boolean enableReadTimeout) throws HostHttpResponseException, IOException {
         if (pairingCancelled) throw new java.io.InterruptedIOException("配对已取消");
+        LanPairing pairing=lanPairing;
+        String managed=pairing!=null && pairing.nativeSessionId()!=null ? "cliprelay_pairing="+pairing.nativeSessionId()+"&" : "";
         return openHttpConnectionToString(enableReadTimeout ? httpClientLongConnectTimeout : httpClientLongConnectNoReadTimeout,
-                baseUrlHttp, "pair", "devicename=" + pairingName + "&updateState=1&" + additionalArguments);
+                baseUrlHttp, "pair", "devicename=" + pairingName + "&updateState=1&" + managed + additionalArguments);
     }
 
     public void ownLanPairing(LanPairing pairing) {
