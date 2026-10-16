@@ -72,12 +72,15 @@ async function main(){
     stage='paired-tls';const control={address:'127.0.0.1',port:48791,path:'/not-a-command',method:'GET',identity:identities.client,
       trust:{cert:pairing.certificate},acceptStatuses:[404],timeout:3000,limit:2048};
     await exchange(control);await assert.rejects(exchange({...control,identity:identities.wrong}));cases.push('paired-client-tls-accepted-and-other-client-refused');
-    stage='restart';await controller.action('host-stop');reaped();await start();
+    stage='restart-stop';await controller.action('host-stop');stage='restart-reap';reaped();stage='restart-start';await start();
+    stage='restart-persistence';
     assert.deepEqual(state.read('cacert.pem',16384),certificate);assert.ok(contains(JSON.parse(state.read('clients.json',4*1024*1024)),identities.client.cert));
     await exchange(control);assert.deepEqual((await controller.action('host-status')).requests,[]);cases.push('restart-retains-approved-client-with-no-stale-requests');
     stage='close';await controller.close();reaped();assert.equal(controller.snapshot().phase,'closed');cases.push('application-owner-close-reaps-both-processes');
     assert.deepEqual(protectedDirectories.map(snapshot),before);assert.equal(process.env.HOME,originalHome);
-  }catch(error){console.error(JSON.stringify({stage,code:error.code || 'PACKAGED_HOST_PAIRING_FAILED',host:controller.snapshot().phase}));throw error;}
+  }catch(error){console.error(JSON.stringify({stage,code:error.code || 'PACKAGED_HOST_PAIRING_FAILED',host:controller.snapshot().phase,
+    children:children.map((child,index)=>({role:index%2?'companion':'engine',exitCode:child.exitCode,signalCode:child.signalCode})),
+    location:String(error.stack||'').split('\n').filter(line=>line.includes('test_macos_host_pairing.cjs:')).slice(0,3)}));throw error;}
   finally{
     await controller.close();for(const child of children)assert.ok(child.exitCode!==null || child.signalCode!==null);
     assert.deepEqual(protectedDirectories.map(snapshot),before);assert.ok(base.startsWith(fs.realpathSync(os.tmpdir())+path.sep));

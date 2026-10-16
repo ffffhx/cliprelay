@@ -120,7 +120,14 @@ public class LanPairingFeedbackTest {
         LanPairing begin(java.util.function.Consumer<LanPairing> register) throws Exception {
             return LanPairing.begin(new ComputerDetails.AddressTuple("127.0.0.1",server.getLocalPort()-3),identity(),cert("host"),"Test phone","1234",register);
         }
-        public void close() throws Exception {release.countDown();server.close();for(SSLSocket socket:sockets)socket.close();executor.shutdownNow();assertTrue(executor.awaitTermination(3,TimeUnit.SECONDS));if(failure!=null)throw new AssertionError(failure);}
+        public void close() throws Exception {
+            release.countDown();server.close();for(SSLSocket socket:sockets)socket.close();
+            // Released handlers must finish before any interrupt escalation;
+            // shutdownNow races the latch and turns normal teardown into a failure.
+            executor.shutdown();
+            if(!executor.awaitTermination(3,TimeUnit.SECONDS)){executor.shutdownNow();assertTrue(executor.awaitTermination(3,TimeUnit.SECONDS));fail("Fixture workers did not stop normally");}
+            if(failure!=null)throw new AssertionError(failure);
+        }
     }
 
     @Test public void rejectionAndExpiryCancelTheNativeOwnerWithFixedReasons() throws Exception {
