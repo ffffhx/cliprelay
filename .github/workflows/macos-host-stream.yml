@@ -18,6 +18,11 @@ on:
         description: 'Diagnose CI window visibility by activating only the owned viewer'
         type: boolean
         default: false
+      arm_runner:
+        description: 'ARM operating system for compatibility diagnosis'
+        type: choice
+        options: ['macos-26', 'macos-15']
+        default: 'macos-26'
 permissions:
   contents: read
   actions: read
@@ -27,7 +32,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-26
+          - runner: ${{ inputs.arm_runner || 'macos-26' }}
             arch: arm64
           - runner: macos-15-intel
             arch: x64
