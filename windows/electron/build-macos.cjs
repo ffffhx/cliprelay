@@ -89,7 +89,7 @@ async function build(){
         fs.writeFileSync(path.join(output,`host-pairing-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pairing},null,2));
         const clients=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_clients.cjs'),appDirectory],{encoding:'utf8',timeout:240000,maxBuffer:65536}));
         if(clients.passed!==true || clients.actualChildStarts!==4 || clients.realClientPairings!==3 || clients.revokePreservesOtherClient!==true ||
-            clients.reusedTLSRefused!==true || clients.newTLSRefused!==true || clients.revocationPersisted!==true || clients.newPairingRequired!==true ||
+            clients.reusedTLSRefused!==true || clients.newTLSRefused!==true || clients.revocationPersisted!==true || clients.newPairingRequired!==true || clients.lostReplyConfirmed!==true ||
             clients.ownedChildrenReaped!==true || clients.defaultStateUnchanged!==true || clients.nativeWorkers!==false || clients.keychainValidated!==false ||
             clients.nativeRequestsExecuted!==false || clients.streamStarted!==false || clients.systemInputInjected!==false)throw new Error('Packaged host client management check failed');
         fs.writeFileSync(path.join(output,`host-clients-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,clients},null,2));

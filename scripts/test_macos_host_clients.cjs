@@ -56,7 +56,15 @@ async function main(){
     stage='re-pair';await pair(identities.client,'Disposable client A');const rejoined=await status();
     const replacement=rejoined.devices.find(device=>device.name==='Disposable client A');assert.ok(replacement?.enabled);assert.notEqual(replacement.uuid,first.uuid);
     await assert.rejects(revoke(rejoined,first.uuid),{code:'HOST_CLIENTS_STALE'});await exchange(control(identities.client));cases.push('re-pair-creates-new-identity-old-decision-rejected');
-    stage='revoke-all';await revoke(rejoined,replacement.uuid);await revoke(await status(),second.uuid);
+    stage='lost-reply';const transport=controller.clients.request;let lost=false;
+    controller.clients.request=async options=>{
+      const result=await transport(options);
+      if(options.operation==='unpair' && options.uuid===replacement.uuid){assert.equal(lost,false);lost=true;throw Error('DISPOSABLE_LOST_REPLY');}
+      return result;
+    };
+    const confirmed=await revoke(rejoined,replacement.uuid);assert.equal(lost,true);assert.equal(confirmed.clients.error,null);assert.deepEqual(confirmed.clients.devices,[second]);
+    controller.clients.request=transport;cases.push('unpair-lost-reply-confirmed-by-native-list');
+    stage='revoke-all';await revoke(await status(),second.uuid);
     assert.deepEqual((await status()).devices,[]);await assert.rejects(exchange(control(identities.client)));await assert.rejects(exchange(control(identities.wrong)));
     cases.push('last-client-revocation-removes-all-trust');
     stage='close';await controller.close();reaped();assert.equal(controller.snapshot().phase,'closed');cases.push('owner-close-reaps-both-native-processes');
@@ -68,7 +76,7 @@ async function main(){
     assert.ok(path.basename(base).startsWith('cliprelay-packaged-host-clients-'));fs.rmSync(base,{recursive:true,force:true});
   }
   process.stdout.write(JSON.stringify({protocol:1,passed:true,cases,actualChildStarts:children.length,realClientPairings:3,
-    revokePreservesOtherClient:true,reusedTLSRefused:true,newTLSRefused:true,revocationPersisted:true,newPairingRequired:true,
+    revokePreservesOtherClient:true,reusedTLSRefused:true,newTLSRefused:true,revocationPersisted:true,newPairingRequired:true,lostReplyConfirmed:true,
     ownedChildrenReaped:true,defaultStateUnchanged:true,nativeWorkers:false,keychainValidated:false,nativeRequestsExecuted:false,streamStarted:false,systemInputInjected:false,
     scope:'Actual packaged two-client management, pinned native admin changes and reused/new control TLS on disposable macOS CI. No user GUI, Keychain or active video-stream termination acceptance.'})+'\n');
 }

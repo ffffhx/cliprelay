@@ -89,6 +89,12 @@ test('false disable confirmation or unchanged active device never proceeds to un
     await assert.rejects(f.clients.revoke(f.data()),{code:'HOST_CLIENTS_UNCONFIRMED'});assert.equal(f.calls.some(([op])=>op==='unpair'),false);
   }
 });
+test('fresh native absence confirms a successful unpair whose reply was lost without repeating the write',async t=>{
+  const f=fixture(t);await f.clients.refresh();
+  f.clients.request=async args=>{const result=await f.request(args);if(args.operation==='unpair')throw Error('lost reply');return result;};
+  const result=await f.clients.revoke(f.data());assert.equal(result.error,null);assert.deepEqual(result.devices,[second]);
+  assert.equal(f.calls.filter(([op])=>op==='disable').length,1);assert.equal(f.calls.filter(([op])=>op==='unpair').length,1);
+});
 test('revocation cancels old list responses and serializes competing decisions',async t=>{
   const f=fixture(t);await f.clients.refresh();const data=f.data();let finishList,finishDisable;
   f.clients.request=async args=>{

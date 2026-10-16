@@ -62,9 +62,13 @@ class HostClients{
       }catch(error){
         if(this.current(r)){
           r.error='HOST_CLIENTS_UNCONFIRMED';
-          // A partial revoke stays visible as disabled. Never re-enable it or
-          // infer success from a lost response; allow a fresh explicit retry.
-          try{r.devices=await this.query(r,'list');r.phase='ready';}
+          // A partial revoke stays visible as disabled. A fresh native list
+          // can confirm removal after a lost reply; never re-enable or retry
+          // a mutation automatically when the final state is still uncertain.
+          try{
+            r.devices=await this.query(r,'list');r.phase='ready';
+            if(!r.devices.some(device=>device.uuid===data.uuid)){r.error=null;return;}
+          }
           catch{if(this.current(r)){r.devices=[];r.phase='failed';}}
         }
         throw fault(this.current(r)?'HOST_CLIENTS_UNCONFIRMED':'HOST_CLIENTS_STALE');
