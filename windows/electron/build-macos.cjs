@@ -58,7 +58,9 @@ async function build(){
         const minimum=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :LSMinimumSystemVersion',path.join(bundle,'ClipRelay.app','Contents','Info.plist')],{encoding:'utf8'}).trim();
         if(minimum!=='14.2')throw new Error('Host application must require macOS 14.2');
         execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',path.join(packaged,'Sunshine.app')],{stdio:'inherit'});
-        fs.writeFileSync(path.join(output,`host-engine-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:hostPin,verifiedFiles:Object.keys(manifest.files).length,nativeMinimumOS:manifest.nativeMinimumOS,signatureVerified:true,scope:'Engine packaging only; host startup, permissions and streaming are not exercised.'},null,2));
+        const permissionCommands=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_permissions.cjs'),packaged],{encoding:'utf8',timeout:30000,maxBuffer:65536}));
+        if(permissionCommands.passed!==true || permissionCommands.nativeRequestsExecuted!==false || permissionCommands.ownedChildrenReaped!==true)throw new Error('Packaged host permission command check failed');
+        fs.writeFileSync(path.join(output,`host-engine-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:hostPin,verifiedFiles:Object.keys(manifest.files).length,nativeMinimumOS:manifest.nativeMinimumOS,signatureVerified:true,permissionCommands,scope:'Engine packaging and read-only permission commands only; permission grants, host startup and streaming are not exercised.'},null,2));
       }
       if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
         const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','network-helper');

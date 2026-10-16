@@ -44,6 +44,8 @@ npm run build:mac -- arm64  # Intel Mac 使用 x64
 
 Mac 配对身份和主机记录保存在 `~/Library/Application Support/ClipRelay/paired/state.json`。私钥使用 Electron 的系统密钥保护功能加密保存；钥匙串不可用时拒绝配对，不降级保存明文私钥。后续 TLS 连接在发出 HTTP 请求前核对电脑证书；证书改变会停止连接。接收日志只保存消息 ID、摘要和处理状态，最多 4096 条；写入时清理超过一小时的记录，回执丢失不会重新覆盖剪贴板。
 
+包含被控端引擎的开发包提供菜单「本机远程访问权限…」。打开窗口只读取该引擎的屏幕录制与键鼠控制权限；分别点击「前往授权」才请求对应权限，完成后重新读取系统结果。窗口关闭或应用退出会取消并回收尚未结束的权限命令；授权拒绝、超时和校验失败不会显示为已允许。此入口用于被控端准备，完整 Mac 被控服务的启动、配对批准和网络接入仍在开发中。引擎声明 `com.cliprelay.host-engine` 身份；系统实际将授权归属到内嵌引擎还是外层应用仍需原生运行验收。
+
 Mac 主动发送文本最多 1 MiB，PNG 最多 8 MiB、4096 × 4096 且不超过 600 万像素；接收 JPEG 最多 25 MiB、32768 单边且不超过 2400 万像素。配对电脑需可从 Mac 访问；开发分支的电脑控制电脑能力见后文，Mac 的内置跨网配对界面和被控端能力仍待实现。
 
 协议测试可运行 `node --test windows/tests/mac-pairing.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-owned-window.test.cjs`（测试用 Go 生成临时证书）。`TestMacClientRealRelayAndDesktopWorker` 验证真实 Go mTLS 接口到 C# 模拟剪贴板 worker；`windows/tests/mac_sunshine_pairing.py` 在 Windows 上启动隔离 Sunshine 验证真实配对握手，关闭输入与托盘，退出时清理私钥和测试进程。这些测试不替代 macOS App 构建、钥匙串及系统剪贴板验收。

@@ -2,13 +2,13 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const {EventEmitter}=require('node:events');const {pathToFileURL}=require('node:url');
 async function fixture(){
-  let ready,menuItems,hotkey,legacySends=0,encryptedSends=0,controller,network;const handlers=new Map(),windows=[];
+  let ready,menuItems,hotkey,legacySends=0,encryptedSends=0,controller,network,quits=0;const handlers=new Map(),windows=[],appEvents=new Map();
   class Window extends EventEmitter{
     constructor(){super();this.webContents=new EventEmitter();this.webContents.id=windows.length+1;this.webContents.mainFrame={};this.webContents.setWindowOpenHandler=()=>{};windows.push(this);}
     loadFile(file,options){this.webContents.mainFrame.url=pathToFileURL(file).href+'?'+new URLSearchParams(options.query);}
     show(){}focus(){}showInactive(){}isDestroyed(){return false;}close(){this.emit('closed');}
   }
-  const app={setName(){},setPath(){},getPath:()=>'/fixture',requestSingleInstanceLock:()=>true,on(){},isReady:()=>true,dock:{hide(){}},whenReady:()=>({then:fn=>{ready=fn();return {catch:cb=>{ready=ready.catch(cb);}};}})};
+  const app={setName(){},setPath(){},getPath:()=>'/fixture',requestSingleInstanceLock:()=>true,on:(name,fn)=>appEvents.set(name,fn),quit(){quits++;},isReady:()=>true,dock:{hide(){}},whenReady:()=>({then:fn=>{ready=fn();return {catch:cb=>{ready=ready.catch(cb);}};}})};
   class Store{constructor(){this.data={legacySelected:false};}selected(){return {id:'paired',name:'PC',enabled:true};}hosts(){return [this.selected()];}}
   class Network{constructor(){network=this;this.claims=0;}snapshot(){return {available:true,computers:[],pairing:{state:'idle'}};}claim(){this.claims++;}reconcile(){}route(){return null;}cancelPair(){}close(){}}
   class Controller{constructor(options){controller=this;this.store=options.store;this.status='connected';this.started=0;}start(){}snapshot(){return {hosts:[{id:'paired',name:'PC'}],status:'connected',pairing:{state:'idle'}};}startPair(){this.started++;return this.snapshot();}sendCurrent(){encryptedSends++;return Promise.reject(Object.assign(new Error('fixture changed certificate'),{code:'HOST_CERT_CHANGED'}));}cancelPair(){}close(){}reconcileRoutes(){}}
@@ -26,8 +26,9 @@ async function fixture(){
   const audioActions=[];imports['./audio-mute-controller.cjs']={AudioMuteController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}setEnabled(data){audioActions.push(data);}},message:()=> 'Audio mute operation failed'};
   const lockActions=[];imports['./session-lock-controller.cjs']={SessionLockController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}setEnabled(data){lockActions.push(data);}},message:()=> 'Audio mute operation failed'};
   const wakeActions=[];imports['./wake-controller.cjs']={WakeController:class{snapshot(){return {phase:'idle'};}reconcile(){}close(){}action(action,data){wakeActions.push(data);}},message:()=> 'Wake operation failed'};
+  const hostActions=[];let hostOwner;imports['./host-permission-controller.cjs']={HostPermissionController:class{constructor(){hostOwner=this;this.releases=0;this.closes=0;this.stop=Promise.resolve();}snapshot(){return {available:true,screenRecording:null,inputControl:null};}async action(action,data){hostActions.push({action,data});return this.snapshot();}releaseWindow(){this.releases++;return this.stop;}close(){this.closes++;return this.stop;}},message:()=> 'Permission operation failed'};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),require:name=>imports[name] || require(name),setTimeout:()=>0,Buffer,URLSearchParams},{filename});await ready;
-  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},controller,windows,fileActions,bitrateActions,displayActions,inputActions,privacyActions,audioActions,lockActions,wakeActions};
+  return {request:handlers.get('mac:request'),open:()=>{menuItems.find(item=>item.label==='配对电脑与安全收发…').click();return windows.at(-1);},openPermissions:()=>{menuItems.find(item=>item.label==='本机远程访问权限…').click();return windows.at(-1);},event:window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame}),hotkey,get legacySends(){return legacySends;},get encryptedSends(){return encryptedSends;},get quits(){return quits;},controller,windows,fileActions,bitrateActions,displayActions,inputActions,privacyActions,audioActions,lockActions,wakeActions,hostActions,hostOwner,appEvents};
 }
 test('Mac pairing IPC is restricted to its owned top-level window and never returns key material',async()=>{
   const f=await fixture(),window=f.open(),event=f.event(window);
@@ -67,4 +68,22 @@ test('Mac pairing IPC is restricted to its owned top-level window and never retu
 });
 test('Mac hotkey never falls back to enabled legacy HTTP after a paired send failure',async()=>{
   const f=await fixture();f.hotkey();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.encryptedSends,1);assert.equal(f.legacySends,0);
+});
+
+test('host permission commands belong only to the live owned settings window',async()=>{
+  const f=await fixture();assert.equal(f.hostActions.length,0);const window=f.openPermissions(),event=f.event(window);
+  const initial=await f.request(event,'initial');assert.equal(initial.screenRecording,null);assert.equal(f.hostActions.length,0);
+  await f.request(event,'host-permissions-check');await f.request(event,'host-permissions-request',{permission:'screenRecording'});assert.equal(f.hostActions.length,2);
+  await assert.rejects(f.request({...event,senderFrame:{}},'host-permissions-request',{permission:'inputControl'}),/Unknown renderer/);
+  const other=f.open();await assert.rejects(f.request(f.event(other),'host-permissions-request',{permission:'inputControl'}));assert.equal(f.hostActions.length,2);
+  window.webContents.emit('render-process-gone');assert.equal(f.hostOwner.releases,1);
+  await f.request(event,'cancel');assert.equal(f.hostOwner.releases,2);
+  await assert.rejects(f.request(event,'host-permissions-check'),/Unknown renderer/);
+});
+
+test('application quit waits for its permission child to close and cannot duplicate shutdown',async()=>{
+  const f=await fixture();let finish,prevented=0;f.hostOwner.stop=new Promise(resolve=>finish=resolve);const event={preventDefault(){prevented++;}};
+  f.appEvents.get('before-quit')(event);f.appEvents.get('before-quit')(event);assert.equal(prevented,2);assert.equal(f.hostOwner.closes,1);assert.equal(f.quits,0);
+  finish();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.quits,1);
+  f.appEvents.get('before-quit')(event);assert.equal(prevented,2);assert.equal(f.hostOwner.closes,1);
 });

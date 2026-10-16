@@ -4,6 +4,9 @@
   const cancel=()=>api.request('cancel');
   if(kind==='alert'){root.className='alert';root.textContent=data.message;return;}
   document.addEventListener('keydown',event=>{if(event.key==='Escape')cancel();});
+  if(kind==='host-permissions'){
+    const {mount}=await import('./host-permission-ui.js');mount(root,api,cancel,data);return;
+  }
   if(kind==='paired'){
     const {mount}=await import('./paired-ui.js');await mount(root,api,cancel,data);return;
   }

@@ -22,15 +22,21 @@ const {PrivacyController,message:privacyMessage}=require('./privacy-controller.c
 const {AudioMuteController,message:audioMuteMessage}=require('./audio-mute-controller.cjs');
 const {SessionLockController,message:sessionLockMessage}=require('./session-lock-controller.cjs');
 const {WakeController,message:wakeMessage}=require('./wake-controller.cjs');
+const {HostPermissionController,message:hostPermissionMessage}=require('./host-permission-controller.cjs');
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
-let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake;
+let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake,hostPermissions,permissionQuit=false,permissionQuitReady=false;
 const windows=new Map();
 const page=path.join(__dirname,'ui.html');const pageURL=pathToFileURL(page).href;
 const pairedSnapshot=()=>{bitrate.reconcile();displays.reconcile();privacy.reconcile();audioMute.reconcile();sessionLock.reconcile();wake.reconcile();return {...paired.snapshot(),viewer:viewer.snapshot(),network:network.snapshot(),files:files.snapshot(),bitrate:bitrate.snapshot(),displays:displays.snapshot(),privacy:privacy.snapshot(),audioMute:audioMute.snapshot(),sessionLock:sessionLock.snapshot(),wake:wake.snapshot()};};
 if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('window-all-closed',()=>{});
+  app.on('before-quit',event=>{
+    if(!hostPermissions || permissionQuitReady)return;
+    event.preventDefault();if(permissionQuit)return;permissionQuit=true;
+    hostPermissions.close().then(()=>{permissionQuitReady=true;app.quit();});
+  });
   app.whenReady().then(start).catch(error=>{require('electron').dialog.showErrorBox('ClipRelay',error.code==='EADDRINUSE'?'ClipRelay 端口已被占用。请先停用 Hammerspoon 中的 ClipRelay，再重新打开。':error.message);app.quit();});
   app.on('will-quit',()=>{scanning++;wake?.close();sessionLock?.close();audioMute?.close();privacy?.close();displays?.close();bitrate?.close();terminal?.close();files?.close();viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
 }
@@ -39,7 +45,8 @@ function openWindow(kind,data,options){
   const id=window.webContents.id;
   windows.set(id,{window,kind,data});
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
-  window.on('closed',()=>{windows.delete(id);if(kind==='paired'){paired?.cancelPair();network?.cancelPair();files?.releaseWindow();}});
+  if(kind==='host-permissions')window.webContents.on('render-process-gone',()=>{void hostPermissions?.releaseWindow();});
+  window.on('closed',()=>{windows.delete(id);if(kind==='host-permissions')void hostPermissions?.releaseWindow();if(kind==='paired'){paired?.cancelPair();network?.cancelPair();files?.releaseWindow();}});
   window.once('ready-to-show',()=>{if(kind==='alert')window.showInactive();else window.show();});
   window.loadFile(page,{query:{kind}});return window;
 }
@@ -60,6 +67,7 @@ function menu(){
   tray.setContextMenu(Menu.buildFromTemplate([
     {label:selected?`配对电脑：${selected.name} · ${status}`:'尚未选择配对电脑',enabled:false},
     {label:'配对电脑与安全收发…',click:()=>{const existing=[...windows.values()].find(entry=>entry.kind==='paired');if(existing){existing.window.show();existing.window.focus();}else openWindow('paired',{}, {width:620,height:640,alwaysOnTop:true,vibrancy:'popover'});}},
+    {label:'本机远程访问权限…',click:()=>{const existing=[...windows.values()].find(entry=>entry.kind==='host-permissions');if(existing){existing.window.show();existing.window.focus();}else openWindow('host-permissions',{}, {width:520,height:440,vibrancy:'popover'});}},
     {label:'发送当前剪贴板到配对电脑',enabled:!!selected?.enabled,click:()=>paired.sendCurrent().then(sent=>{if(sent)alert('已加密发送到 '+selected.name);}).catch(error=>alert(pairedMessage(error)))},
     {type:'separator'},
     {label:`旧版目标：${config.peer}:${config.peerPort}`,enabled:false},
@@ -109,6 +117,7 @@ function select(peer,token){
 }
 async function start(){
   app.dock?.hide();
+  hostPermissions=new HostPermissionController({directory:__dirname});
   config=loadConfig(app.getPath('userData'),{hostname:()=>{
     try{return execFileSync('/usr/sbin/scutil',['--get','ComputerName'],{encoding:'utf8'}).trim();}catch{return 'Mac';}
   }});
@@ -137,8 +146,11 @@ async function start(){
     const entry=windows.get(event.sender.id);
     if(!entry || event.senderFrame!==event.sender.mainFrame || !event.senderFrame.url.startsWith(pageURL+'?'))throw new Error('Unknown renderer');
     if(Buffer.byteLength(JSON.stringify(data ?? {}))>32768)throw new Error('Invalid request');
-    if(action==='initial')return entry.kind==='paired'?pairedSnapshot():entry.data;
+    if(action==='initial')return entry.kind==='paired'?pairedSnapshot():entry.kind==='host-permissions'?hostPermissions.snapshot():entry.data;
     if(action==='cancel'){entry.window.close();return;}
+    if(entry.kind==='host-permissions'){
+      try{return await hostPermissions.action(action,data);}catch(error){throw new Error(hostPermissionMessage(error));}
+    }
     if(entry.kind==='paired'){
       try{
         if(action==='paired-status')return pairedSnapshot();
