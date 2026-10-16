@@ -5,11 +5,11 @@
   "source": "https://github.com/LizardByte/Sunshine/tree/63d35f702ee9e362e43263742981836ec0710384",
   "hostPort": 48789,
   "serviceName": "ClipRelayRemote",
-  "cliprelaySource": "https://github.com/ffffhx/cliprelay/tree/f90c38e6cb50407811e3a79ecbd34f07973b50b3",
-  "artifactRun": 38895743968,
+  "cliprelaySource": "https://github.com/ffffhx/cliprelay/tree/8d8248ce3ba16acbed1cd654313cdae2145c495c",
+  "artifactRun": 38903273488,
   "artifactName": "sunshine-cliprelay-control-windows-amd64",
   "controlProtocol": 1,
-  "executableSha256": "9a45650342aaaf6e146479bedc8fd4b69d03ad9945154e234c5ec988b42dc233",
+  "executableSha256": "8060cd341ece609d60b22146cfc6bd9d04de3a48cb0271a03919ac639064910a",
   "capabilities": [
     "display-switch",
     "live-bitrate",
@@ -18,6 +18,7 @@
     "input-epochs-v1",
     "guarded-display-selection",
     "graceful-device-revocation-v1",
-    "managed-pairing-lifetime-v1"
+    "managed-pairing-lifetime-v1",
+    "autonomous-pairing-expiry-v1"
   ]
 }
