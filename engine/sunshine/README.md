@@ -288,8 +288,11 @@ The capture overlay keeps AVFoundation callbacks short: each output owns one
 latest retained sample, a serial callback queue and an independent stop path.
 The capture thread reads with a 100 ms budget, services stream controls on empty
 polls and reinitializes after three seconds without a real frame. Display removal,
-native mode changes, logical rearrangement and permission changes are checked
-periodically. Dummy capture has the same bounded first-frame wait. Stopping one
+native mode changes and logical rearrangement are checked periodically. Native
+screen-recording permission is rechecked with `CGPreflightScreenCaptureAccess`
+on each geometry check and before dummy capture; the upstream platform flag
+alone caches only startup permission. Dummy capture has the same bounded
+first-frame wait. Stopping one
 output detaches its delegate and drains its queue before releasing state; other
 outputs keep running. This follows the documented
 [AVFoundation callback queue contract](https://developer.apple.com/documentation/avfoundation/avcapturevideodataoutput/setsamplebufferdelegate(_:queue:)).

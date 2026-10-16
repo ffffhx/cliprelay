@@ -396,7 +396,7 @@ index 5ad931c..17c21ac 100644
  
  @end
 diff --git a/src/platform/macos/display.mm b/src/platform/macos/display.mm
-index d5fe3d0..1a2b4b1 100644
+index d5fe3d0..09a3db0 100644
 --- a/src/platform/macos/display.mm
 +++ b/src/platform/macos/display.mm
 @@ -6,10 +6,13 @@
@@ -509,7 +509,7 @@ index d5fe3d0..1a2b4b1 100644
      std::optional<CGDirectDisplayID> parse_display_id(std::string_view display_name) {
        if (display_name.empty()) {
          return std::nullopt;
-@@ -66,49 +151,74 @@ namespace platf {
+@@ -66,49 +151,76 @@ namespace platf {
        [av_capture release];
      }
  
@@ -599,7 +599,9 @@ index d5fe3d0..1a2b4b1 100644
 +          return push_captured_image_cb(std::move(heartbeat), false);
 +        },
 +        [&] {
-+          return platf::is_screen_capture_allowed() && geometry_current();
++          // The platform flag records startup permission only. Recheck native
++          // authorization so a later revocation is not hidden by that cache.
++          return platf::is_screen_capture_allowed() && CGPreflightScreenCaptureAccess() && geometry_current();
 +        },
 +        [] {
 +          return std::chrono::steady_clock::now();
@@ -625,13 +627,15 @@ index d5fe3d0..1a2b4b1 100644
      }
  
      /**
-@@ -151,42 +261,27 @@ namespace platf {
+@@ -150,43 +262,28 @@ namespace platf {
+      * @return Capture status reported to the streaming pipeline.
       */
      int dummy_img(img_t *img) override {
-       if (!platf::is_screen_capture_allowed()) {
+-      if (!platf::is_screen_capture_allowed()) {
 -        // If we don't have the screen capture permission, this function will hang
 -        // indefinitely without doing anything useful. Exit instead to avoid this.
 -        // A non-zero return value indicates failure to the calling function.
++      if (!platf::is_screen_capture_allowed() || !CGPreflightScreenCaptureAccess()) {
 +        // Check permission before opening a native capture output. A non-zero
 +        // return value indicates failure to the calling function.
          return 1;
@@ -686,7 +690,7 @@ index d5fe3d0..1a2b4b1 100644
      }
  
      /**
-@@ -240,10 +335,24 @@ namespace platf {
+@@ -240,10 +337,24 @@ namespace platf {
      if (const auto configured_display_id {parse_display_id(display_name)}) {
        display->display_id = *configured_display_id;
      } else if (!display_name.empty()) {
