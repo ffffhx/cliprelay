@@ -7,6 +7,9 @@
   if(kind==='host-permissions'){
     const {mount}=await import('./host-permission-ui.js');mount(root,api,cancel,data);return;
   }
+  if(kind==='host'){
+    const {mount}=await import('./host-ui.js');mount(root,api,cancel,data);return;
+  }
   if(kind==='paired'){
     const {mount}=await import('./paired-ui.js');await mount(root,api,cancel,data);return;
   }

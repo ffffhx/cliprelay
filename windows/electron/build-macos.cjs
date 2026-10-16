@@ -82,6 +82,11 @@ async function build(){
             session.keychainValidated!==false || session.nativeRequestsExecuted!==false || session.streamStarted!==false || session.systemInputInjected!==false)throw new Error('Packaged host session check failed');
         fs.writeFileSync(path.join(output,`host-companion-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:companionPin,
           verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session},null,2));
+        const pairing=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_pairing.cjs'),appDirectory],{encoding:'utf8',timeout:240000,maxBuffer:65536}));
+        if(pairing.passed!==true || pairing.actualChildStarts!==4 || pairing.realNativePairing!==true || pairing.pairedClientPersisted!==true ||
+            pairing.unauthorizedClientRefused!==true || pairing.ownedChildrenReaped!==true || pairing.defaultStateUnchanged!==true ||
+            pairing.nativeWorkers!==false || pairing.keychainValidated!==false || pairing.nativeRequestsExecuted!==false || pairing.streamStarted!==false || pairing.systemInputInjected!==false)throw new Error('Packaged host approval and pairing check failed');
+        fs.writeFileSync(path.join(output,`host-pairing-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pairing},null,2));
       }
       if(process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT){
         const packaged=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac','network-helper');
