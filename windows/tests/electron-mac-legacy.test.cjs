@@ -29,7 +29,7 @@ test('disabled compatibility never reads the clipboard or opens the copy helper'
     await assert.rejects(postText({legacyEnabled:value,peer:'127.0.0.1',peerPort:1},'fixture'),/未开启/);
   }
 });
-test('legacy receiver authenticates, bounds and decodes bodies, and rechecks disable during upload',async()=>{
+test('legacy receiver authenticates, bounds and decodes bodies, and rechecks disable during upload',{timeout:5000},async()=>{
   const config={legacyEnabled:false,accessToken:'fixture-key'},writes=[];
   const server=createReceiver({getConfig:()=>config,clipboard:{writeText:text=>writes.push(text)},notify:()=>{}});
   server.listen(0,'127.0.0.1');await once(server,'listening');const port=server.address().port;
@@ -43,9 +43,12 @@ test('legacy receiver authenticates, bounds and decodes bodies, and rechecks dis
     assert.equal(await request(port,body,auth),200);assert.deepEqual(writes,['fixture 中文']);
     assert.equal(await request(port,Buffer.from([0xff]),auth),400);
     assert.equal(await request(port,'',Object.assign({'Content-Length':1048577},auth)),413);
-    // Closing an oversized chunked upload can reset the writer before its 413 arrives.
-    const oversized=await request(port,'x'.repeat(1048577),auth).catch(error=>{if(error.code==='ECONNRESET')return 413;throw error;});
-    assert.equal(oversized,413);assert.deepEqual(writes,['fixture 中文']);
+    // Closing an oversized upload can report EPIPE or ECONNRESET to its writer
+    // before the response arrives. Still require the real server to finish 413;
+    // a socket error alone is not proof that the size policy ran.
+    const rejectedResponse=new Promise(resolve=>server.once('request',(_request,response)=>response.once('finish',()=>resolve(response.statusCode))));
+    const oversized=await request(port,'x'.repeat(1048577),auth).catch(error=>{if(['ECONNRESET','EPIPE'].includes(error.code))return error.code;throw error;});
+    assert.ok([413,'ECONNRESET','EPIPE'].includes(oversized));assert.equal(await rejectedResponse,413);assert.deepEqual(writes,['fixture 中文']);
     await new Promise((resolve,reject)=>{
       const req=http.request({host:'127.0.0.1',port,path:'/push',method:'POST',headers:auth,agent:false},res=>{res.resume();res.on('end',()=>{try{assert.equal(res.statusCode,403);resolve();}catch(error){reject(error);}});});
       req.setTimeout(3000,()=>req.destroy(new Error('test timeout')));req.on('error',reject);
