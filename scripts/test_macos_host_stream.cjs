@@ -26,7 +26,7 @@ async function until(read,predicate,timeout=30000){
 const protectedDirectories=[path.join(os.homedir(),'.config','sunshine'),path.join(os.homedir(),'Library/Application Support/ClipRelay/host')];
 const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
 const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cliprelay-native-mac-stream-')));
-const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[];
+const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[],debuggers=[];
 const testStarted=Date.now();
 function diagnosticLines(value){
   return value.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission|invalid|abort|fatal|exception|assert|library not loaded|reason:|screen|capture|video|vulkan|metal|molten|gpu/i.test(line)&&
@@ -37,7 +37,7 @@ function fileDiagnostics(){
   for(const folder of new Set(['/tmp',os.tmpdir(),path.join(os.homedir(),'Library/Logs/DiagnosticReports'),'/Library/Logs/DiagnosticReports'])){
     if(!fs.existsSync(folder))continue;
     for(const name of fs.readdirSync(folder)){
-      if(!/^ClipRelayStream-.*\.log$|^(Moonlight|ClipRelay.Stream).*\.(ips|crash)$/.test(name))continue;
+      if(!/^ClipRelayStream-.*\.log$|^(Moonlight|ClipRelay).*\.(ips|crash)$/.test(name))continue;
       const file=path.join(folder,name),stat=fs.lstatSync(file);
       if(stat.isFile()&&!stat.isSymbolicLink()&&stat.mtimeMs>=testStarted&&stat.size<=2*1024*1024){
         const content=fs.readFileSync(file,'utf8');
@@ -74,6 +74,15 @@ function launchViewer(file,args,settings){
   const env={...settings.env};
   for(const key of ['ELECTRON_RUN_AS_NODE','QT_QPA_PLATFORM','QT_PLUGIN_PATH','QML2_IMPORT_PATH'])delete env[key];
   const child=spawn(file,args,{...settings,env,stdio:['pipe','pipe','pipe']});nativeChildren.push(child);
+  if(process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'){
+    const debuggerChild=spawn('/usr/bin/lldb',['--no-lldbinit','--batch','--attach-pid',String(child.pid),
+      '--one-line','continue','--one-line-on-crash','thread backtrace'],{stdio:['ignore','pipe','pipe']});
+    const debug={child:debuggerChild,output:'',exit:null};debuggers.push(debug);
+    const collect=data=>{debug.output+=data.toString('utf8');if(debug.output.length>1024*1024)debuggerChild.kill('SIGKILL');};
+    debuggerChild.stdout.on('data',collect);debuggerChild.stderr.on('data',collect);
+    debuggerChild.once('error',error=>{debug.output+='\nDebugger error: '+error.code;});
+    debuggerChild.once('close',(code,signal)=>{debug.exit={code,signal};});
+  }
   let count=0,tail='';
   child.stderr.on('data',data=>{
     count+=data.length;if(count>4*1024*1024){child.kill('SIGKILL');return;}
@@ -163,7 +172,9 @@ async function main(){
     const started=Date.now();await host.action('host-client-revoke',{viewId:current.viewId,uuid:target.uuid});
     await until(()=>receiver.exit,value=>value!==null,10000);
     assert.equal(receiver.child.stdin.writableEnded,false,'owner EOF caused termination');
-    assert.equal(receiver.exit.signal,null);assert.notEqual(receiver.exit.code,0);
+    // The native host-ended event carries the cause. Qt then exits normally
+    // through its SDL_QUIT cleanup, with status zero rather than a crash code.
+    assert.deepEqual(receiver.exit,{code:0,signal:null});
     const ended=receiver.events.filter(event=>event.event==='ended');assert.equal(ended.length,1);assert.equal(ended[0].reason,'host');
     await until(admin,value=>value.streams.length===0);
     await assert.rejects(exchange({address:'127.0.0.1',port:48784,path:'/serverinfo',method:'GET',identity:identities.client,trust:{cert:first.certificate},timeout:3000,limit:16384}));
@@ -177,14 +188,19 @@ async function main(){
     for(const child of nativeChildren)assert.ok(child.exitCode!==null||child.signalCode!==null);
     assert.deepEqual(protectedDirectories.map(snapshot),before);assert.equal(process.env.HOME,originalHome);
     report.cases.push('all-owned-native-processes-reaped-and-default-state-preserved');
-    report.ownedChildrenReaped=true;report.passed=true;
+    report.ownedChildrenReaped=true;
+    assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_DEBUG,'1','DEBUGGER_RUN_NOT_ACCEPTANCE');
+    report.passed=true;
   }catch(error){
     // ReportCrash writes asynchronously after the native process has exited.
     if(viewerExits.some(exit=>exit.signal))await pause(10000);
     report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),viewerExits,
-      diagnostics:diagnostics.slice(-24),files:fileDiagnostics()};
+      diagnostics:diagnostics.slice(-24),files:fileDiagnostics(),debuggers:debuggers.map(debug=>({exit:debug.exit,
+        lines:debug.output.split('\n').filter(line=>/stop reason|error:|frame #|stop-reason|exited with status/.test(line))
+          .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(-40)}))};
     process.exitCode=1;
   }finally{
+    for(const debug of debuggers)if(!debug.exit)debug.child.kill('SIGKILL');
     display?.close();viewer?.stop();
     if(viewer)await until(()=>viewer.child,value=>!value,10000);
     for(const item of rawViewers)await closeRaw(item);

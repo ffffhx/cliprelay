@@ -54,6 +54,8 @@ jobs:
           PY
           ditto -x -k app-download/ClipRelay-macOS-${{ matrix.arch }}-*.zip app-unpacked
       - name: Real packaged capture, Qt presentation, input receipts and revocation
+        env:
+          CLIPRELAY_MAC_STREAM_DEBUG: '1'
         run: node scripts/test_macos_host_stream.cjs app-unpacked/ClipRelay.app/Contents/Resources/app/mac native-stream-report.json
       - uses: actions/upload-artifact@v4
         if: always()
