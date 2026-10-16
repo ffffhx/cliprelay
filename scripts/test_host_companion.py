@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import json
 import os
+import platform
 from pathlib import Path
 import secrets
 import select
@@ -230,6 +231,7 @@ def main(binary, report):
             cases.append(name)
         assert_state()
     result = {'cases': cases, 'passed': len(cases), 'nativeWorkers': False,
+              'architecture': platform.machine(), 'executableSha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'limits': 'Disposable CI certificates/listeners only; no native desktop providers, streaming client, user Keychain or production installation.'}
     report.write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result))
