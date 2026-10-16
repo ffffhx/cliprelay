@@ -795,109 +795,6 @@ index 151b8a6..68d5802 100644
              offset_x = desc.DesktopCoordinates.left;
              offset_y = desc.DesktopCoordinates.top;
              width = desc.DesktopCoordinates.right - offset_x;
-diff --git a/src/rtsp.cpp b/src/rtsp.cpp
-index c7135dd..cc9c78f 100644
---- a/src/rtsp.cpp
-+++ b/src/rtsp.cpp
-@@ -1255,6 +1255,7 @@ namespace rtsp_stream {
-     // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
-     // down to nearly nothing.
-     if (configuredBitrateKbps) {
-+      config.monitor.bitrateBudgetKbps = static_cast<int>(configuredBitrateKbps);
-       BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
- 
-       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
-diff --git a/src/stream.cpp b/src/stream.cpp
-index 1291c9c..d585a05 100644
---- a/src/stream.cpp
-+++ b/src/stream.cpp
-@@ -24,6 +24,8 @@ extern "C" {
- 
- // local includes
- #include "config.h"
-+#include "cliprelay_control.h"
-+#include "cliprelay_input.h"
- #include "display_device.h"
- #include "globals.h"
- #include "input.h"
-@@ -491,6 +493,7 @@ namespace stream {
- 
-     safe::mail_t mail;  ///< Mailbox used to distribute packets and lifecycle events.
- 
-+    std::shared_ptr<cliprelay::input_epoch> input_epoch = std::make_shared<cliprelay::input_epoch>();
-     std::shared_ptr<input::input_t> input;  ///< Platform input device state for this stream.
- 
-     std::jthread audioThread;  ///< Audio thread.
-@@ -1232,7 +1235,7 @@ namespace stream {
-         std::copy(payload.end() - 16, payload.end(), std::begin(iv));
-       }
- 
--      input::passthrough(session->input, std::move(plaintext));
-+      input::passthrough_epoch(session->input, std::move(plaintext), session->input_epoch);
-     });
- 
-     server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
-@@ -1295,7 +1298,7 @@ namespace stream {
-       // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
-       if (type == packetTypes[IDX_INPUT_DATA]) {
-         plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
--        input::passthrough(session->input, std::move(plaintext));
-+        input::passthrough_epoch(session->input, std::move(plaintext), session->input_epoch);
-       } else {
-         server->call(type, session, next_payload, true);
-       }
-@@ -1562,11 +1565,8 @@ namespace stream {
-       // We need to know the final frame size to calculate the last packet size, and we
-       // must avoid matching replacements against the frame header or any other non-video
-       // part of the payload.
--      if (packet->is_idr() && packet->replacements) {
--        for (auto &replacement : *packet->replacements) {
--          auto frame_old = replacement.old;
--          auto frame_new = replacement._new;
--
-+      if (packet->is_idr()) {
-+        for (const auto &[frame_old, frame_new] : packet->replacements) {
-           payload_with_replacements = replace(payload, frame_old, frame_new);
-           payload = {(char *) payload_with_replacements.data(), payload_with_replacements.size()};
-         }
-@@ -2147,6 +2147,29 @@ namespace stream {
-     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
- 
-     BOOST_LOG(debug) << "Start capturing Video"sv;
-+    // Match the authenticated control service's SHA-256(DER certificate) owner.
-+    auto cert = crypto::x509(session->client_cert);
-+    unsigned char fingerprint[EVP_MAX_MD_SIZE] {};
-+    unsigned int fingerprint_length = 0;
-+    if (cert && X509_digest(cert.get(), EVP_sha256(), fingerprint, &fingerprint_length) == 1 && fingerprint_length == 32) {
-+      constexpr char hex[] = "0123456789abcdef";
-+      std::string owner;
-+      for (unsigned int i = 0; i < fingerprint_length; ++i) {
-+        owner += hex[fingerprint[i] >> 4];
-+        owner += hex[fingerprint[i] & 15];
-+      }
-+      auto stream_id = cliprelay::displays.add_stream(session, owner, session->config.monitor.width, session->config.monitor.height);
-+      cliprelay::inputs.add(session, stream_id, owner, session->input_epoch);
-+      cliprelay::bitrates.add(session, stream_id, owner, session->config.monitor.bitrateBudgetKbps,
-+        session->config.monitor.bitrate, config::stream.fec_percentage,
-+        (session->config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * session->config.audio.channels,
-+        config::video.max_bitrate);
-+    }
-+    auto cliprelay_guard = util::fail_guard([&] {
-+      cliprelay::inputs.remove(session);
-+      cliprelay::bitrates.remove(session);
-+      cliprelay::displays.remove_stream(session);
-+    });
-     video::capture(session->mail, session->config.monitor, session);
-   }
- 
-@@ -2234,6 +2257,7 @@ namespace stream {
-       session.controlEnd.view();
-       // Reset input on session stop to avoid stuck repeated keys
-       BOOST_LOG(debug) << "Resetting Input..."sv;
-+      session.input_epoch->close();
-       input::reset(session.input);
- 
-       // If this is the last session, invoke the platform callbacks
 diff --git a/src/video.cpp b/src/video.cpp
 index 843a19a..f6b081e 100644
 --- a/src/video.cpp
@@ -1246,3 +1143,234 @@ index 5a2c9e1..829a593 100644
          ${CMAKE_THREAD_LIBS_INIT}
          wtsapi32
          ${PLATFORM_LIBRARIES})
+diff --git a/src/rtsp.cpp b/src/rtsp.cpp
+index c7135dd..e66c7f9 100644
+--- a/src/rtsp.cpp
++++ b/src/rtsp.cpp
+@@ -654,7 +654,8 @@ namespace rtsp_stream {
+ 
+       for (auto i = _session_slots->begin(); i != _session_slots->end();) {
+         auto &slot = *(*i);
+-        if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
++        const auto state = stream::session::state(slot);
++        if (all || state == stream::session::state_e::STOPPING || state == stream::session::state_e::STOPPING_GRACEFUL) {
+           stream::session::stop(slot);
+           stream::session::join(slot);
+ 
+@@ -675,7 +676,7 @@ namespace rtsp_stream {
+       for (auto i = _session_slots->begin(); i != _session_slots->end();) {
+         auto &slot = *(*i);
+         if (stream::session::client_cert(slot) == cert) {
+-          stream::session::stop(slot);
++          stream::session::stop(slot, true);
+           stream::session::join(slot);
+           i = _session_slots->erase(i);
+         } else {
+@@ -1255,6 +1256,7 @@ namespace rtsp_stream {
+     // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
+     // down to nearly nothing.
+     if (configuredBitrateKbps) {
++      config.monitor.bitrateBudgetKbps = static_cast<int>(configuredBitrateKbps);
+       BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
+ 
+       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
+diff --git a/src/stream.cpp b/src/stream.cpp
+index 1291c9c..ea5a30c 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -24,6 +24,8 @@ extern "C" {
+ 
+ // local includes
+ #include "config.h"
++#include "cliprelay_control.h"
++#include "cliprelay_input.h"
+ #include "display_device.h"
+ #include "globals.h"
+ #include "input.h"
+@@ -491,6 +493,7 @@ namespace stream {
+ 
+     safe::mail_t mail;  ///< Mailbox used to distribute packets and lifecycle events.
+ 
++    std::shared_ptr<cliprelay::input_epoch> input_epoch = std::make_shared<cliprelay::input_epoch>();
+     std::shared_ptr<input::input_t> input;  ///< Platform input device state for this stream.
+ 
+     std::jthread audioThread;  ///< Audio thread.
+@@ -545,6 +548,8 @@ namespace stream {
+ 
+       net::peer_t peer;  ///< Connected ENet peer for the control channel.
+       std::uint32_t seq;  ///< Sequence number for the next encrypted control message.
++      bool termination_sent {false};  ///< Accessed only by the control thread.
++      std::chrono::steady_clock::time_point termination_deadline {};
+ 
+       platf::feedback_queue_t feedback_queue;  ///< Queue of controller feedback awaiting control-channel delivery.
+       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;  ///< Queue of HDR metadata awaiting control-channel delivery.
+@@ -633,6 +638,19 @@ namespace stream {
+ 
+   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
+ 
++  /**
++   * @brief Queue an authenticated normal-termination message on the control thread.
++   */
++  int send_graceful_termination(control_server_t *server, session_t *session) {
++    control_terminate_t plaintext;
++    plaintext.header.type = packetTypes[IDX_TERMINATION];
++    plaintext.header.payloadLength = sizeof(plaintext.ec);
++    plaintext.ec = util::endian::big<std::uint32_t>(0x80030023);
++    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size> encrypted;
++    auto payload = encode_control(session, util::view(plaintext), encrypted);
++    return payload.empty() ? -1 : server->send(payload, session->control.peer);
++  }
++
+   /**
+    * @brief Parse a control message from an ENet packet.
+    *
+@@ -729,6 +747,13 @@ namespace stream {
+    * @param reinjected `true` if this message is being reprocessed after decryption.
+    */
+   void control_server_t::call(std::uint16_t type, session_t *session, const std::string_view &payload, bool reinjected) {
++    // ENet may continue exchanging ACKs while an owner-revoked session drains.
++    // No application control/input is dispatched after the stop decision.
++    const auto state = session->state.load(std::memory_order_acquire);
++    if (state == session::state_e::STOPPING || state == session::state_e::STOPPING_GRACEFUL) {
++      return;
++    }
++
+     // If we are using the encrypted control stream protocol, drop any messages that come off the wire unencrypted
+     if (session->config.controlProtocolType == 13 && !reinjected && type != packetTypes[IDX_ENCRYPTED]) {
+       BOOST_LOG(error) << "Dropping unencrypted message on encrypted control stream: "sv << util::hex(type).to_string_view();
+@@ -1232,7 +1257,7 @@ namespace stream {
+         std::copy(payload.end() - 16, payload.end(), std::begin(iv));
+       }
+ 
+-      input::passthrough(session->input, std::move(plaintext));
++      input::passthrough_epoch(session->input, std::move(plaintext), session->input_epoch);
+     });
+ 
+     server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
+@@ -1295,7 +1320,7 @@ namespace stream {
+       // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
+       if (type == packetTypes[IDX_INPUT_DATA]) {
+         plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
+-        input::passthrough(session->input, std::move(plaintext));
++        input::passthrough_epoch(session->input, std::move(plaintext), session->input_epoch);
+       } else {
+         server->call(type, session, next_payload, true);
+       }
+@@ -1332,7 +1357,25 @@ namespace stream {
+             session::stop(*session);
+           }
+ 
+-          if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
++          const auto state = session->state.load(std::memory_order_acquire);
++          if (state == session::state_e::STOPPING || state == session::state_e::STOPPING_GRACEFUL) {
++            if (state == session::state_e::STOPPING_GRACEFUL && session->control.peer) {
++              if (!session->control.termination_sent) {
++                session->control.termination_sent = true;
++                session->control.termination_deadline = now + 500ms;
++                if (send_graceful_termination(server, session)) {
++                  session->control.termination_deadline = now;
++                }
++                server->flush();
++              }
++              if (now < session->control.termination_deadline) {
++                // Retain the peer/session mapping while ENet receives ACKs.
++                // Other clients continue processing; a missing ACK cannot keep
++                // revoked media/input alive or hold the service indefinitely.
++                ++pos;
++                continue;
++              }
++            }
+             pos = server->_sessions->erase(pos);
+ 
+             if (session->control.peer) {
+@@ -1562,11 +1605,8 @@ namespace stream {
+       // We need to know the final frame size to calculate the last packet size, and we
+       // must avoid matching replacements against the frame header or any other non-video
+       // part of the payload.
+-      if (packet->is_idr() && packet->replacements) {
+-        for (auto &replacement : *packet->replacements) {
+-          auto frame_old = replacement.old;
+-          auto frame_new = replacement._new;
+-
++      if (packet->is_idr()) {
++        for (const auto &[frame_old, frame_new] : packet->replacements) {
+           payload_with_replacements = replace(payload, frame_old, frame_new);
+           payload = {(char *) payload_with_replacements.data(), payload_with_replacements.size()};
+         }
+@@ -2147,6 +2187,29 @@ namespace stream {
+     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+ 
+     BOOST_LOG(debug) << "Start capturing Video"sv;
++    // Match the authenticated control service's SHA-256(DER certificate) owner.
++    auto cert = crypto::x509(session->client_cert);
++    unsigned char fingerprint[EVP_MAX_MD_SIZE] {};
++    unsigned int fingerprint_length = 0;
++    if (cert && X509_digest(cert.get(), EVP_sha256(), fingerprint, &fingerprint_length) == 1 && fingerprint_length == 32) {
++      constexpr char hex[] = "0123456789abcdef";
++      std::string owner;
++      for (unsigned int i = 0; i < fingerprint_length; ++i) {
++        owner += hex[fingerprint[i] >> 4];
++        owner += hex[fingerprint[i] & 15];
++      }
++      auto stream_id = cliprelay::displays.add_stream(session, owner, session->config.monitor.width, session->config.monitor.height);
++      cliprelay::inputs.add(session, stream_id, owner, session->input_epoch);
++      cliprelay::bitrates.add(session, stream_id, owner, session->config.monitor.bitrateBudgetKbps,
++        session->config.monitor.bitrate, config::stream.fec_percentage,
++        (session->config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * session->config.audio.channels,
++        config::video.max_bitrate);
++    }
++    auto cliprelay_guard = util::fail_guard([&] {
++      cliprelay::inputs.remove(session);
++      cliprelay::bitrates.remove(session);
++      cliprelay::displays.remove_stream(session);
++    });
+     video::capture(session->mail, session->config.monitor, session);
+   }
+ 
+@@ -2197,14 +2260,15 @@ namespace stream {
+     /**
+      * @brief Stop the active streaming session and prevent new packets from being queued.
+      */
+-    void stop(session_t &session) {
++    void stop(session_t &session, bool graceful) {
+       while_starting_do_nothing(session.state);
+       auto expected = state_e::RUNNING;
+-      auto already_stopping = !session.state.compare_exchange_strong(expected, state_e::STOPPING);
++      auto already_stopping = !session.state.compare_exchange_strong(expected, graceful ? state_e::STOPPING_GRACEFUL : state_e::STOPPING);
+       if (already_stopping) {
+         return;
+       }
+ 
++      session.input_epoch->close();
+       session.shutdown_event->raise(true);
+     }
+ 
+@@ -2234,6 +2298,7 @@ namespace stream {
+       session.controlEnd.view();
+       // Reset input on session stop to avoid stuck repeated keys
+       BOOST_LOG(debug) << "Resetting Input..."sv;
++      session.input_epoch->close();
+       input::reset(session.input);
+ 
+       // If this is the last session, invoke the platform callbacks
+diff --git a/src/stream.h b/src/stream.h
+index c0b0f96..032871c 100644
+--- a/src/stream.h
++++ b/src/stream.h
+@@ -50,6 +50,7 @@ namespace stream {
+       STOPPING,  ///< The session is stopping
+       STARTING,  ///< The session is starting
+       RUNNING,  ///< The session is running
++      STOPPING_GRACEFUL,  ///< An explicit owner revocation is stopping the session
+     };
+ 
+     /**
+@@ -73,7 +74,7 @@ namespace stream {
+      *
+      * @param session Active streaming or pairing session for the request.
+      */
+-    void stop(session_t &session);
++    void stop(session_t &session, bool graceful = false);
+     /**
+      * @brief Wait for worker threads owned by the session to exit.
+      *

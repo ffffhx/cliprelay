@@ -17,6 +17,16 @@ The script checks the exact upstream commit and patch applicability and refuses
 to overwrite existing source edits. The CI workflow builds a Windows AMD64
 artifact; it has read-only repository permission and does not publish a release.
 Sunshine's additional tray is disabled because ClipRelay owns the host tray.
+
+The development patch distinguishes explicit certificate revocation from an
+unexpected stream failure. Revocation stops media and closes input admission,
+then queues the normal authenticated control-channel termination message. The
+control worker keeps that peer for at most 500 ms to exchange reliable delivery
+acknowledgments while other sessions continue processing; it dispatches no new
+input for the revoked session. Ordinary error stops retain their previous
+disconnect behavior. The installed video fixture must prove received frames,
+the client's normal termination callback, the unchanged engine instance and a
+new stream for the preserved certificate before this change is accepted.
 The patch also gives NVENC object targets their transitive Boost include requirements so
 the pinned FetchContent Boost works without unrelated system Boost headers.
 The upstream service launcher also receives the transitive Boost includes needed
