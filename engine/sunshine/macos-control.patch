@@ -175,6 +175,28 @@ index f349a23..601aaaa 100644
    proc::refresh(config::stream.file_apps);
  
    // If any of the following fail, we log an error and continue event though sunshine will not function correctly.
+diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
+--- a/src/nvhttp.cpp
++++ b/src/nvhttp.cpp
+@@ -1744,6 +1744,18 @@ namespace nvhttp {
+ 
+     ssl.join();
+     tcp.join();
++
++    // A cancelled caller can leave its deferred PIN response in the global
++    // registry. Its deleter posts to the owning server's I/O context: release
++    // it after request handlers join, while both local servers still exist.
++    // Also wake any local PIN submitter before the registry is discarded.
++    {
++      std::scoped_lock lock {map_id_sess_mutex()};
++      for (auto &[_, session] : map_id_sess) {
++        complete_pairing(session, false);
++      }
++      map_id_sess.clear();
++    }
+   }
+ 
+   void erase_all_clients() {
 diff --git a/src/platform/common.h b/src/platform/common.h
 index f9e144e..9caefb1 100644
 --- a/src/platform/common.h
