@@ -48,7 +48,7 @@ Mac 配对身份和主机记录保存在 `~/Library/Application Support/ClipRela
 
 「打开 ClipRelay 时自动启动远程访问」默认关闭，只保存明确勾选的设置，下一次打开应用时生效。每次启动仍会检查屏幕录制与键鼠控制权限；权限不足时停止启动并显示状态。菜单「本机远程访问权限…」只读取权限，分别点击「前往授权」才请求对应权限。窗口关闭或应用退出会取消并回收尚未结束的权限命令；授权拒绝、超时和校验失败不会显示为已允许。系统登录时自动打开应用尚未实现。引擎声明 `com.cliprelay.host-engine` 身份；系统实际将授权归属到内嵌引擎还是外层应用仍需原生运行验收。
 
-Mac 被控端仍处于开发阶段。包内真实引擎与辅助组件的验收覆盖进程生命周期、证书配对、设备授权撤销、后台请求监测与启动设置持久化；通知回调测试不代表系统通知已经展示。实际被控视频、键鼠输入、正在播放的视频在撤销授权后终止、系统通知及钥匙串仍有验收缺口。Mac 被控端已接入下述文件传输与主动剪贴板读写；自动剪贴板同步、终端、语音、隐私及音频控制等辅助能力仍待补齐。
+Mac 被控端仍处于开发阶段。包内真实引擎与辅助组件的验收覆盖进程生命周期、证书配对、设备授权撤销、后台请求监测与启动设置持久化；通知回调测试不代表系统通知已经展示。实际被控视频、键鼠输入、正在播放的视频在撤销授权后终止、系统通知及钥匙串仍有验收缺口。Mac 被控端已接入下述文件传输、主动剪贴板读写、可选自动剪贴板同步和配对终端；语音、隐私及音频控制等辅助能力仍待补齐。
 
 开发分支会向桌面和 Android 连接端反馈配对被拒绝、取消或过期，并清理相应的原生等待请求；底层拒绝先于状态轮询返回时，也会核对本次请求的原因。原生配对使用独立标识并绑定客户端证书，旧请求不能进入下一次配对，也不能取消新请求。允许请求后仍须完成 PIN、证书及私钥证明；清理未完成请求不会删除已有授权。Windows 关闭服务前会先通过受保护的本地管道停止新配对、等待有时限的清理，再结束后台进程。旧版主机继续使用原有握手。
 
@@ -415,9 +415,15 @@ Android 0.10.23 / Windows 0.3.5 新增侧边栏「语音输入」：先选中电
 
 开发验证：`windows/tests/file-transfer.ps1` 运行 Windows 文件路径、空间、续传和崩溃恢复测试；传入 `-TestWorkerOutput <路径>` 可保留隔离测试 worker。将该路径设置到 `CLIPRELAY_FILE_TEST_WORKER`，Android JVM 的 `FileTransferTest` 会额外运行 Java 客户端与真实 C# worker 的跨进程往返测试。`network/inputfocus` 覆盖双向 TLS、配对撤销和请求边界；Android 的 `FileDestinationTest`、`FileTransferUiTest` 使用独立临时目录、测试文档提供程序和模拟器内 TLS 服务，不连接用户电脑或读取真实文档。
 
-独立终端已具备 Windows 后端与 Android 客户端，本地验证完成，设备与安装版验收仍待进行。Windows 后端接入 [ConPTY](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session)，通过配对双向 TLS 的 `POST /v1/terminal` 管理交互式 cmd / Windows PowerShell 5.1。Shell 使用登录用户的非管理员令牌，拒绝继承 SYSTEM 或提升后的令牌；不自动加载 PowerShell 配置文件或 cmd AutoRun。每台配对设备最多四个运行中的会话，电脑总计最多八个，重新连接可列出原会话并按字节位置继续读取 UTF-8/VT 输出。每个会话保留最近 1 MiB 输出，超出时明确报告缺口；连续 30 分钟没有访问会结束会话。
+独立终端已接入 Windows 和 Mac 被控端，Android 与桌面客户端按电脑返回的能力选择 Shell，设备界面及生产安装验收仍待完成。Windows 后端接入 [ConPTY](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session)，通过配对双向 TLS 的 `POST /v1/terminal` 管理交互式 cmd / Windows PowerShell 5.1。Shell 使用登录用户的非管理员令牌，拒绝继承 SYSTEM 或提升后的令牌；不自动加载 PowerShell 配置文件或 cmd AutoRun。每台配对设备最多四个运行中的会话，电脑总计最多八个，重新连接可列出原会话并按字节位置继续读取 UTF-8/VT 输出。每个会话保留最近 1 MiB 输出，超出时明确报告缺口；连续 30 分钟没有访问会结束会话。
 
 创建会话和写入使用独立递增序号，丢失回执后的同序号重试不会再次创建 Shell 或输入命令；工作进程重启后，旧实例请求被拒绝。输入队列与输出均有容量限制，接口区分「输入已接收」和「已写入终端」，不把它们当成命令执行成功。服务每三秒同步配对授权；撤销配对会结束对应会话，工作进程二十秒收不到有效授权也会自行结束会话。关闭、退出及撤销使用独立进程 Job 清理 Shell 和子进程，输出处理与 ConPTY 关闭分线程进行，避免旧版 Windows 关闭时死锁。
+
+Mac 使用普通登录用户的原生 PTY，支持交互式登录 zsh / bash，读取用户的 Shell 配置并保留前台程序的正常终端模式。它复用配对授权、多会话、输出续读、重复请求保护及鼠标协议；拖拽停止续期后由主机释放，尺寸或鼠标模式变化会使旧手势失效。每个会话由独立守护进程监测父进程；主服务退出、被强制结束或授权撤销时，关闭所属 Shell。主动脱离会话的守护任务不属于已验证的进程清理范围。长粘贴保留 3 秒无写入进展超时和 30 秒总时限；超过安全长度的单行输入需等待行编辑器，避免被系统规范输入缓冲截断。
+
+Mac 终端的 [原生回归](https://github.com/ffffhx/cliprelay/actions/runs/38958581445)在 Linux、ARM Mac 和 Intel Mac 通过；[组件验收](https://github.com/ffffhx/cliprelay/actions/runs/38958581471)在两种 Mac 架构各通过 31 项 TLS／客户端检查和 12 项终端进程检查。覆盖真实 Shell、中文与长粘贴哈希、鼠标释放、丢失回复重试、输出缺口、证书隔离、撤销及进程重启。桌面检查使用生产控制器与 TLS 传输；安卓检查使用生产协议和会话状态类配合 JVM TLS 测试适配器，不代表 Android Activity、NvHTTP 或设备界面已经验收。下载后的组件均核对了 147 个源码文件及程序哈希；[Android APK](https://github.com/ffffhx/cliprelay/actions/runs/38958581594)通过签名与内容核验，313 项 JVM 用例中 309 项通过，4 项 Windows 原生互操作用例按预期跳过。
+
+本阶段的 [Windows 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38958834728)及 [ARM／Intel Mac 完整包](https://github.com/ffffhx/cliprelay/actions/runs/38959885824)均已通过构建与下载核验。Mac 使用实际包内组件重新执行上述 TLS／客户端检查；三平台保留原生剪贴板、配对和生命周期回归。源码、组件固定版本与测试记录匹配，汇总见 `.tools/uu-parity/mac-terminal-artifacts.json`。这些是开发验收包，未更新用户安装或公开发布；实际桌面／安卓界面和公网体验仍待验收。
 
 开发验证：`windows/tests/terminal.ps1 -Native` 运行策略测试和独立 Shell 验收，覆盖真实 cmd/PowerShell、多会话、重复输入、输出续读、尺寸变化、撤销、子进程与 EOF 清理。将 `CLIPRELAY_TERMINAL_TEST_WORKER` 设置为生成的 `terminal-tests.exe` 或完整服务程序，可运行 Go `TestTerminal*` 的真实 TLS 到 ConPTY 验证。测试只在新建 Shell 中执行测试指令，不控制已有终端。Android 从电脑菜单或串流工具栏的「终端」进入，提供 PowerShell / CMD 多会话、UTF-8 / VT 画面、颜色、光标、备用屏幕、滚动历史、软键盘及控制键。渲染器基于固定版本的 Termux terminal-emulator / TerminalRenderer，来源和许可见 `android-app/remote-engine/src/main/assets/cliprelay-remote/termux/`。返回原会话按输出字节位置继续读取；输出过期时重置画面并明确提示，旧输出中的终端查询不会再次发送。退到后台暂停网络请求、丢弃未发送按键并使旧输入法连接失效；结果未知的那一条输入保留原序号与内容用于确认。服务实例或配对身份变化时不把旧命令转发到新会话。进入终端会暂停视频串流，返回后按原有流程恢复。
 
