@@ -155,8 +155,15 @@ jobs:
             .tools/mac-electron/host-clients-bundle-*.json
             .tools/mac-electron/host-background-bundle-*.json
             .tools/mac-electron/native-clipboard-bundle-*.json
+            .tools/mac-electron/native-login-startup-*.json
             .tools/mac-electron/native-stream-bundle-*.json
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ClipRelay-Mac-Login-Failure-${{ matrix.arch }}
+          path: .tools/mac-electron/native-login-startup-*.json
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

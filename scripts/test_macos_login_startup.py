@@ -50,6 +50,13 @@ def main():
         (target/'package.json').write_text(json.dumps(dict(name='cliprelay-login-fixture', version='1.0.0', main='main.cjs')))
         (target/'main.cjs').write_text('require('+json.dumps(str(fixture))+');\n')
         subprocess.run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', str(isolated)], check=True, capture_output=True)
+        # A direct executable launch bypasses Finder's discovery of this new
+        # bundle. Register only its metadata with Launch Services before asking
+        # SMAppService about the main app; this does not create a login item.
+        discovery = directory/'register-fixture.swift'
+        discovery.write_text('import Foundation\nimport CoreServices\nlet code = LSRegisterURL(URL(fileURLWithPath: CommandLine.arguments[1]) as CFURL, true)\nprint(code)\nexit(code == 0 ? 0 : 1)\n')
+        subprocess.run(['/usr/bin/swift', str(discovery), str(isolated)], check=True, capture_output=True, timeout=60)
+        result['launchServicesMetadataRegistered'] = True
         executable = isolated/'Contents/MacOS'/info['CFBundleExecutable']
         env = dict(os.environ, CLIPRELAY_NATIVE_LOGIN_FIXTURE='1')
         env.pop('ELECTRON_RUN_AS_NODE', None)
@@ -71,6 +78,7 @@ def main():
             data = json.loads(receipt.read_text()) if receipt.exists() else dict(passed=False, phase=phase, diagnostic=stderr.decode(errors='replace')[-2000:])
             result['phases'].append(data)
             if child.returncode or data['passed'] is not True:
+                data['diagnostic'] = stderr.decode(errors='replace')[-2000:]
                 raise RuntimeError('Native login phase failed: '+phase+'\n'+stderr.decode(errors='replace')[-3000:])
             assert data['electron'] == '44.4.3'
             return data
