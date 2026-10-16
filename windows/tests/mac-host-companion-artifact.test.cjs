@@ -15,7 +15,7 @@ function fixture(t){
   const base=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-companion-artifact-')),source=path.join(base,'source');fs.mkdirSync(source);fs.mkdirSync(path.join(source,'runtime'));
   for(const name of FILES)fs.writeFileSync(path.join(source,name),name===EXECUTABLE?binary():Buffer.from('fixture-'+name));
   fs.chmodSync(path.join(source,EXECUTABLE),0o755);
-  const manifest={role:'host-companion',platform:'macos',protocol:1,nativeWorkers:false,files:Object.fromEntries(FILES.map(name=>[name,hash(fs.readFileSync(path.join(source,name)))]))};
+  const manifest={role:'host-companion',platform:'macos',protocol:1,nativeWorkers:false,pairingControl:1,files:Object.fromEntries(FILES.map(name=>[name,hash(fs.readFileSync(path.join(source,name)))]))};
   const pin={commit:'a'.repeat(40),manifestSha256:''};
   function update(){const data=JSON.stringify(manifest);fs.writeFileSync(path.join(source,'manifest.json'),data);pin.manifestSha256=hash(data);}
   update();t.after(()=>{assert.ok(path.basename(base).startsWith('cliprelay-companion-artifact-'));fs.rmSync(base,{recursive:true,force:true});});
@@ -33,7 +33,7 @@ test('unselected manifests, changed payloads and unknown files fail admission',t
   fs.appendFileSync(path.join(f.source,'LICENSE'),'changed');assert.throws(()=>verify(f.source,f.pin));
 });
 test('alternate platform, native-worker claims and file sets are rejected even with matching hashes',t=>{
-  for(const mutation of [m=>m.platform='windows',m=>m.nativeWorkers=true,m=>m.files['../escape']='a'.repeat(64),m=>m.files.LICENSE='invalid']){
+  for(const mutation of [m=>m.platform='windows',m=>m.nativeWorkers=true,m=>delete m.pairingControl,m=>m.files['../escape']='a'.repeat(64),m=>m.files.LICENSE='invalid']){
     const f=fixture(t);mutation(f.manifest);f.update();assert.throws(()=>verify(f.source,f.pin));
   }
 });

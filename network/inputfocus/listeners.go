@@ -128,7 +128,7 @@ func runHostListeners(ctx context.Context, cancel context.CancelFunc, listeners 
 	start("control listener", func() error { return control.ServeTLS(listeners.control, "", "") })
 	start("LAN pairing listener", func() error { return pairingOwner.server.ServeTLS(listeners.pairing, "", "") })
 	start("LAN discovery listener", func() error { return serveLANDiscovery(listeners.discovery) })
-	start("local relay listener", func() error { return relay.serveLocal(ctx, listeners.relay) })
+	start("local relay listener", func() error { return relay.serveLocal(ctx, listeners.relay, pairer.local) })
 	maintenanceDone := make(chan struct{})
 	go func() { defer close(maintenanceDone); relay.maintain(ctx) }()
 	remaining := 4

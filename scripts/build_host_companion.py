@@ -46,7 +46,7 @@ def build(output):
                 archive.add(source, arcname=source.relative_to(ROOT).as_posix())
         for name in ['build_host_companion.py', 'network_notices.py', 'test_host_companion.py']:
             archive.add(ROOT/'scripts'/name, arcname='scripts/'+name)
-    manifest = {'role': 'host-companion', 'platform': 'macos', 'protocol': 1, 'nativeWorkers': False,
+    manifest = {'role': 'host-companion', 'platform': 'macos', 'protocol': 1, 'nativeWorkers': False, 'pairingControl': 1,
                 'files': {file.relative_to(output).as_posix(): hashlib.sha256(file.read_bytes()).hexdigest()
                           for file in sorted(output.rglob('*')) if file.is_file()}}
     (output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')

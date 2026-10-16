@@ -48,8 +48,8 @@ function verify(directory,pin){
   const raw=read(path.join(root,'manifest.json'),16384);
   if(hash(raw)!==pin.manifestSha256)reject();
   const manifest=JSON.parse(raw);
-  if(!keys(manifest,['role','platform','protocol','nativeWorkers','files']) || manifest.role!=='host-companion' ||
-      manifest.platform!=='macos' || manifest.protocol!==1 || manifest.nativeWorkers!==false || !keys(manifest.files,FILES))reject();
+  if(!keys(manifest,['role','platform','protocol','nativeWorkers','pairingControl','files']) || manifest.role!=='host-companion' ||
+      manifest.platform!=='macos' || manifest.protocol!==1 || manifest.nativeWorkers!==false || manifest.pairingControl!==1 || !keys(manifest.files,FILES))reject();
   const expected=new Set([...FILES,'manifest.json']);
   // CI adds this unpinned receipt after building the manifest. It is verified
   // against the selected run by the fetcher and never copied into the app.

@@ -467,7 +467,7 @@ func (m *relayMailbox) handler(next http.Handler) http.Handler {
 }
 
 // Local publisher IPC is implemented by an OS-protected listener, not HTTP.
-func (m *relayMailbox) serveLocal(ctx context.Context, listener net.Listener) error {
+func (m *relayMailbox) serveLocal(ctx context.Context, listener net.Listener, local ...func([]byte) (any, bool)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	var pending sync.WaitGroup
 	var mu sync.Mutex
@@ -519,6 +519,12 @@ func (m *relayMailbox) serveLocal(ctx context.Context, listener net.Listener) er
 			line, err := bufio.NewReaderSize(connection, relayLineLimit+1).ReadSlice('\n')
 			if err != nil || len(line) > relayLineLimit || !utf8.Valid(line) {
 				return
+			}
+			if len(local) > 0 && local[0] != nil {
+				if reply, handled := local[0](line); handled {
+					_ = json.NewEncoder(connection).Encode(reply)
+					return
+				}
 			}
 			decoder := json.NewDecoder(bytes.NewReader(line))
 			decoder.DisallowUnknownFields()

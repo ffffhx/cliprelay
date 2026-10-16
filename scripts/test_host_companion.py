@@ -40,6 +40,19 @@ def command(binary, state, owner=None):
     return [str(binary), '--state-dir', str(state), '--owner-pid', str(os.getpid() if owner is None else owner)]
 
 
+def local_pairing(ipc, command):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(3)
+        connection.connect(ipc)
+        connection.sendall((json.dumps(command)+'\n').encode())
+        with connection.makefile('rb') as reader:
+            data = reader.readline(16385)
+        assert len(data) <= 16384
+        result = json.loads(data)
+        assert result['protocol'] == 1
+        return result
+
+
 def start(binary, state, payload, stdin=None):
     process = subprocess.Popen(command(binary, state), stdin=subprocess.PIPE if stdin is None else stdin,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
@@ -138,7 +151,9 @@ def main(binary, report):
         pair.request('POST', '/v1/pair', json.dumps({'name': 'disposable CI peer', 'nonce': 'a'*32, 'pin': '1234'}), {'Content-Type': 'application/json'})
         response = pair.getresponse()
         pending = json.loads(response.read())
-        assert response.status == 200 and (state/'lan-pairing'/(pending['id']+'.json')).exists()
+        assert response.status == 200 and not (state/'lan-pairing').exists()
+        live = local_pairing(status['ipc'], {'op': 'host-pair-list'})
+        assert live['ok'] is True and len(live['requests']) == 1 and live['requests'][0]['id'] == pending['id']
         pair.close()
         ipc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         ipc.connect(status['ipc'])
@@ -149,6 +164,40 @@ def main(binary, report):
         assert ipc.recv(1) == b''
         ipc.close()
         passed('tls-pairing-ipc-and-eof-cleanup')
+
+        process = start(binary, state, payload)
+        status = read_status(process)
+
+        def request_pair():
+            connection = http.client.HTTPSConnection('127.0.0.1', 48792, context=tls, timeout=3)
+            connection.request('POST', '/v1/pair', json.dumps({'name': 'disposable CI peer', 'nonce': 'a'*32, 'pin': '1234'}), {'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            assert response.status == 200
+            response.read()
+            connection.close()
+            return local_pairing(status['ipc'], {'op': 'host-pair-list'})['requests']
+
+        first = request_pair()[0]
+        decision = {'op': 'host-pair-reject', **{key: first[key] for key in ['id', 'generation', 'verification']}}
+        assert local_pairing(status['ipc'], decision)['ok'] is True
+        deadline = time.monotonic()+3
+        while True:
+            requests = request_pair()
+            if requests and requests[0]['generation'] != first['generation']:
+                second = requests[0]
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert second['id'] == first['id']
+        decision['op'] = 'host-pair-approve'
+        assert local_pairing(status['ipc'], decision)['code'] == 'HOST_PAIR_STALE'
+        for key in ['id', 'generation', 'verification']:
+            decision[key] = second[key]
+        assert local_pairing(status['ipc'], decision)['ok'] is True
+        assert local_pairing(status['ipc'], {'op': 'host-pair-list'})['requests'][0]['state'] == 'approving'
+        process.stdin.close()
+        finish(process, status)
+        passed('managed-pairing-generation-and-rejection')
 
         child_input, parent_input = socket.socketpair()
         process = start(binary, state, payload, child_input)

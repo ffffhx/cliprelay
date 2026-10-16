@@ -7,6 +7,7 @@ package inputfocus
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -34,6 +35,9 @@ type lanRequest struct {
 	pin          string
 	client       []byte
 	cancel       context.CancelFunc
+	generation   string
+	decision     string
+	approval     chan bool
 }
 
 type lanPairer struct {
@@ -46,6 +50,7 @@ type lanPairer struct {
 	requests   map[string]*lanRequest
 	engine     func(context.Context, string, string, any) ([]byte, error)
 	ctx        context.Context
+	managed    bool
 }
 
 func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPairer {
@@ -182,11 +187,20 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute)
 	request := &lanRequest{ID: id, Name: input.Name, Verification: code, Expires: time.Now().Add(2 * time.Minute).Unix(), pin: input.PIN, client: append([]byte(nil), clientCert...), cancel: cancel}
-	data, _ := json.Marshal(request)
-	err := os.MkdirAll(p.dir, 0700)
-	if err == nil {
-		_ = os.Remove(filepath.Join(p.dir, id+".approved"))
-		err = os.WriteFile(filepath.Join(p.dir, id+".json"), data, 0600)
+	var err error
+	if p.managed {
+		var generation [16]byte
+		_, err = rand.Read(generation[:])
+		request.generation = hex.EncodeToString(generation[:])
+		request.decision = "waiting"
+		request.approval = make(chan bool, 1)
+	} else {
+		data, _ := json.Marshal(request)
+		err = os.MkdirAll(p.dir, 0700)
+		if err == nil {
+			_ = os.Remove(filepath.Join(p.dir, id+".approved"))
+			err = os.WriteFile(filepath.Join(p.dir, id+".json"), data, 0600)
+		}
 	}
 	if err != nil {
 		p.mu.Unlock()
@@ -208,10 +222,22 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 		request.cancel()
 		p.mu.Lock()
 		delete(p.requests, request.ID)
-		_ = os.Remove(filepath.Join(p.dir, request.ID+".json"))
-		_ = os.Remove(filepath.Join(p.dir, request.ID+".approved"))
+		if !p.managed {
+			_ = os.Remove(filepath.Join(p.dir, request.ID+".json"))
+			_ = os.Remove(filepath.Join(p.dir, request.ID+".approved"))
+		}
 		p.mu.Unlock()
 	}()
+	if p.managed {
+		select {
+		case <-ctx.Done():
+			return
+		case approved := <-request.approval:
+			if !approved {
+				return
+			}
+		}
+	}
 	ticker := time.NewTicker(400 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -220,8 +246,10 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 			return
 		case <-ticker.C:
 		}
-		if _, err := os.Stat(filepath.Join(p.dir, request.ID+".approved")); err != nil {
-			continue
+		if !p.managed {
+			if _, err := os.Stat(filepath.Join(p.dir, request.ID+".approved")); err != nil {
+				continue
+			}
 		}
 		b, err := p.engine(ctx, "GET", "/api/pin", nil)
 		if err != nil {
@@ -242,6 +270,9 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 			// client-key signature, and the phone also checks the server TLS key.
 			if entry.Name != "ClipRelay-"+request.ID || !pairNonce.MatchString(entry.ID) {
 				continue
+			}
+			if ctx.Err() != nil || time.Now().Unix() >= request.Expires {
+				return
 			}
 			_, _ = p.engine(ctx, "POST", "/api/pin", map[string]string{"pairing_id": entry.ID, "pin": request.pin, "name": request.Name})
 			return

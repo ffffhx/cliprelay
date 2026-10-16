@@ -11,7 +11,7 @@ import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = {'LICENSE', 'NETWORK-LICENSES.txt', 'cliprelay-host-source.tar.gz', 'runtime/cliprelay-host-network'}
-CASES = ['tls-pairing-ipc-and-eof-cleanup', 'inherited-unix-stream-owner',
+CASES = ['tls-pairing-ipc-and-eof-cleanup', 'managed-pairing-generation-and-rejection', 'inherited-unix-stream-owner',
          'extra-byte-without-newline-stops-service', 'parent-exit-with-inherited-writer-held',
          'parent-crash-with-inherited-writer-held', 'invalid-frame', 'oversized-frame',
          'initialization-timeout', 'required-listener-conflict-rolls-back-runtime', 'wrong-parent', 'regular-input']

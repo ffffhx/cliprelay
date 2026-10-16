@@ -428,12 +428,17 @@ func ServeManagedHost(ctx context.Context, dir, runtimeDir string, access Engine
 	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return errors.New("runtime directory must be separate from persistent state")
 	}
-	return serveWithEngineAccess(ctx, dir, "", access, func(ctx context.Context, _ string) (*hostListeners, error) {
+	return serveHostWithEngineAccess(ctx, dir, "", access, true, func(ctx context.Context, _ string) (*hostListeners, error) {
 		return bindHostListeners(ctx, runtimeDir)
 	}, onListening)
 }
 
 func serveWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess,
+	bind func(context.Context, string) (*hostListeners, error), onListening ...func() error) error {
+	return serveHostWithEngineAccess(ctx, dir, executable, access, false, bind, onListening...)
+}
+
+func serveHostWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess, managed bool,
 	bind func(context.Context, string) (*hostListeners, error), onListening ...func() error) error {
 	if access == nil {
 		return errEngineAccessUnavailable
@@ -501,5 +506,6 @@ func serveWithEngineAccess(ctx context.Context, dir, executable string, access E
 	}
 	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProviderWithAccess(access))
 	pairer := newLANPairerWithAccess(ctx, dir, cert, access)
+	pairer.managed = managed
 	return runHostListeners(ctx, cancel, listeners, server, pairer, cert, relay, onListening...)
 }
