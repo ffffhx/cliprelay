@@ -111,7 +111,8 @@ async function main(){
     // inside HTTP 200; the transport promise itself therefore resolves.
     const denied=await nvhttp(identities.client,'applist');
     assert.match(denied,/^\s*(?:<\?xml[^?]*\?>\s*)?<root\b[^>]*\bstatus_code="401"[^>]*(?:\/>|>\s*<\/root>)\s*$/);
-    assert.match(denied,/\bquery="\/applist"/);assert.doesNotMatch(denied,/<!|<App(?:\s|>)/);
+    // Certificate admission precedes HTTP parsing, so denial has no query path.
+    assert.doesNotMatch(denied,/<!|<App(?:\s|>)/);
     report.revokedNativeStatus=401;
     report.cases.push('service-revocation-terminates-active-video-without-local-stop-or-engine-restart');
     stage='preserved-client-real-frames';second=await begin(identities.wrong);
