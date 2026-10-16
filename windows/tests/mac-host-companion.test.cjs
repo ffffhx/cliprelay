@@ -9,7 +9,8 @@ function fixture(t,options={}){
     const frame=Buffer.from(JSON.stringify({protocol:1,password:'fixture-only-password',certificate:'fixture-only-certificate'})+'\n');frames.push(frame);return frame;
   }};
   const companion=new HostCompanion({directory:__dirname,pin:{},state,platform:'darwin',arch:'arm64',
-    verify(){trace.push('verify');},checkSocket:file=>file,readyTimeout:1000,stopGraceMs:70,killDelayMs:30,
+    verify(){trace.push('verify');},checkSocket:file=>file,readyTimeout:1000,
+    stopGraceMs:options.mode==='ignore'?70:2000,killDelayMs:options.mode==='ignore'?30:200,
     launch(file,args,settings){
       trace.push({file,args,settings});
       const child=spawn(process.execPath,[path.join(__dirname,'mac-host-companion-child.cjs'),options.mode || 'normal'],

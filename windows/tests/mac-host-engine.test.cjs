@@ -11,7 +11,11 @@ function fixture(t,options={}){
   const state={prepare(name){trace.push(['prepare',name]);},environment(env){return {...env,CLIPRELAY_HOST_STATE_DIR:'fixture-only'};},close(){trace.push(['state-close']);}};
   const permissions={async query(){trace.push(['permissions']);return {screenRecording:true,inputControl:true};},async cancel(){trace.push(['permission-cancel']);},async close(){trace.push(['permission-close']);}};
   const engine=new HostEngine({directory:__dirname,pin:{arch:'arm64'},platform:'darwin',arch:'arm64',state,permissions,
-    verify(){trace.push(['verify']);},pollMs:10,monitorMs:20,readyTimeout:1500,probeTimeout:100,stopGraceMs:60,killDelayMs:30,
+    // Loaded CI runners may not schedule the EOF handler within 60 ms. Normal
+    // children retain a real grace period; ignored-EOF cases still test the
+    // short forced-shutdown path explicitly.
+    verify(){trace.push(['verify']);},pollMs:10,monitorMs:20,readyTimeout:1500,probeTimeout:100,
+    stopGraceMs:options.mode==='ignore'?60:2000,killDelayMs:options.mode==='ignore'?30:200,
     launch(file,args,settings){
       trace.push(['launch',file,args,settings]);
       const child=spawn(process.execPath,[path.join(__dirname,'mac-host-engine-child.cjs'),options.mode || 'normal'],{...settings,cwd:__dirname,stdio:['pipe','ignore','ignore','ipc']});
