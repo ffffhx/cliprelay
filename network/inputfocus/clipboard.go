@@ -129,7 +129,7 @@ func withClipboard(next http.Handler, clients string, read func(string) (json.Ra
 		}
 		if !value.OK {
 			switch value.Code {
-			case "CLIPBOARD_EMPTY", "CLIPBOARD_LOCKED", "CLIPBOARD_TOO_LARGE", "CLIPBOARD_ID_CONFLICT":
+			case "CLIPBOARD_EMPTY", "CLIPBOARD_LOCKED", "CLIPBOARD_TOO_LARGE", "CLIPBOARD_ID_CONFLICT", "CLIPBOARD_PERMISSION_REQUIRED":
 				reply(409, clipboardResponse{Code: value.Code})
 			default:
 				reply(503, clipboardResponse{Code: "CLIPBOARD_UNAVAILABLE"})

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"cliprelay/network/hostclipboard"
 	"cliprelay/network/hostcompanion"
 	"cliprelay/network/inputfocus"
 )
@@ -23,8 +24,9 @@ func main() {
 	directory := flags.String("state-dir", "", "private prepared engine state directory")
 	owner := flags.Int("owner-pid", 0, "direct owning application PID")
 	managedFiles := flags.Bool("managed-files", false, "owned native file worker")
+	managedClipboard := flags.Bool("managed-clipboard", false, "owned native clipboard worker")
 	if flags.Parse(os.Args[1:]) != nil || flags.NArg() != 0 || runtime.GOOS != "darwin" || *owner <= 1 || *owner != os.Getppid() ||
-		!filepath.IsAbs(*directory) || !ownedInput(os.Stdin) || !ownedOutput(os.Stdout) {
+		(*managedFiles && *managedClipboard) || !filepath.IsAbs(*directory) || !ownedInput(os.Stdin) || !ownedOutput(os.Stdout) {
 		fmt.Fprintln(os.Stderr, "HOST_OWNER_INVALID")
 		os.Exit(2)
 	}
@@ -45,7 +47,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	workerDone := make(chan struct{})
 	guardianDone := make(chan struct{})
-	if *managedFiles {
+	if *managedFiles || *managedClipboard {
 		// A killed companion cannot supervise its worker any more. EOF or the
 		// parent watcher still withdraws access; bound even a stuck filesystem
 		// shutdown instead of retaining an orphan after the parent disappears.
@@ -89,6 +91,10 @@ func main() {
 	var err error
 	if *managedFiles {
 		err = runManagedFiles(ctx, input, output, *directory)
+	} else if *managedClipboard {
+		runtime.LockOSThread()
+		err = hostclipboard.Serve(ctx, input, output, hostclipboard.NewNative())
+		runtime.UnlockOSThread()
 	} else {
 		err = hostcompanion.Run(ctx, input, output, *directory, *owner, inputfocus.ServeManagedHost)
 	}

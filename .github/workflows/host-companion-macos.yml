@@ -2,7 +2,7 @@ name: macOS Host Companion Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
+    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/hostclipboard/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_clipboard.py', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -46,6 +46,9 @@ jobs:
       - name: Native file transfer, recovery and filesystem boundaries
         working-directory: network
         run: go test -race -v -count=1 -timeout=120s ./hostfiles
+      - name: Native clipboard exchange and bounded owned worker
+        working-directory: network
+        run: go test -race -v -count=1 -timeout=120s ./hostclipboard
       - name: Host listener and worker lifetime regression
         working-directory: network
         run: go test -race -v -count=1 -timeout=120s ./inputfocus -run 'TestHostListeners|TestProbeOwner|TestEngineAccess|TestLANPairing'

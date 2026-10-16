@@ -21,7 +21,7 @@ def build(output):
         raise RuntimeError('Go 1.26.7 is required')
     runtime = output / 'runtime'
     runtime.mkdir(parents=True)
-    env = dict(os.environ, GOOS='darwin', CGO_ENABLED='0')
+    env = dict(os.environ, GOOS='darwin', CGO_ENABLED='1', MACOSX_DEPLOYMENT_TARGET='12.0', CC='clang')
     pieces = []
     for architecture in ['amd64', 'arm64']:
         env['GOARCH'] = architecture
@@ -41,15 +41,16 @@ def build(output):
         archive.add(ROOT/'LICENSE', arcname='LICENSE')
         for name in ['go.mod', 'go.sum']:
             archive.add(ROOT/'network'/name, arcname='network/'+name)
-        for directory in ['inputfocus', 'hostcompanion', 'hostfiles', 'cmd/cliprelay-host-network']:
-            for source in sorted((ROOT/'network'/directory).rglob('*.go')):
-                archive.add(source, arcname=source.relative_to(ROOT).as_posix())
-        for name in ['build_host_companion.py', 'network_notices.py', 'test_host_companion.py', 'test_host_files.py', 'test_host_files_client.cjs']:
+        for directory in ['inputfocus', 'hostcompanion', 'hostfiles', 'hostclipboard', 'cmd/cliprelay-host-network']:
+            for source in sorted((ROOT/'network'/directory).rglob('*')):
+                if source.suffix in ('.go', '.m', '.h'):
+                    archive.add(source, arcname=source.relative_to(ROOT).as_posix())
+        for name in ['build_host_companion.py', 'network_notices.py', 'test_host_companion.py', 'test_host_files.py', 'test_host_files_client.cjs', 'test_host_clipboard.py']:
             archive.add(ROOT/'scripts'/name, arcname='scripts/'+name)
         for name in ['file-controller.cjs', 'file-protocol.cjs', 'file-storage.cjs', 'paired-store.cjs', 'paired-transport.cjs', 'paired-crypto.cjs',
                      'routed-store.cjs', 'paired-controller.cjs', 'pairing.cjs', 'paired-relay.cjs', 'pairing-feedback.cjs']:
             archive.add(ROOT/'windows/electron/mac'/name, arcname='windows/electron/mac/'+name)
-    manifest = {'role': 'host-companion', 'platform': 'macos', 'protocol': 1, 'nativeWorkers': False, 'pairingControl': 1, 'fileTransfer': 1,
+    manifest = {'role': 'host-companion', 'platform': 'macos', 'protocol': 1, 'nativeWorkers': False, 'pairingControl': 1, 'fileTransfer': 1, 'clipboardExchange': 1,
                 'files': {file.relative_to(output).as_posix(): hashlib.sha256(file.read_bytes()).hexdigest()
                           for file in sorted(output.rglob('*')) if file.is_file()}}
     (output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')

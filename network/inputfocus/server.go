@@ -7,9 +7,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -311,6 +314,10 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 	}
 	voice := &voiceHandler{read: voiceProvider, now: time.Now}
 	var files *fileHandler
+	var imageClipboard func(string) (json.RawMessage, error)
+	if len(voiceRead) > 2 {
+		imageClipboard = voiceRead[2]
+	}
 	if len(voiceRead) > 1 {
 		files = &fileHandler{read: voiceRead[1], busy: make(chan struct{}, 1)}
 	}
@@ -358,7 +365,7 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 			return
 		}
 		if upload {
-			receiveImage(w, r, clients, read)
+			receiveImage(w, r, clients, read, imageClipboard)
 			return
 		}
 		data, err := read(command)
@@ -396,7 +403,7 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 
 const maxImageBytes = 8 * 1024 * 1024
 
-func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read func(string) (json.RawMessage, error)) {
+func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read func(string) (json.RawMessage, error), clipboardRead ...func(string) (json.RawMessage, error)) {
 	// Same paired TLS identity as the stream; only a bounded PNG clipboard write.
 	if r.Header.Get("Content-Type") != "image/png" {
 		http.Error(w, "PNG required", 415)
@@ -425,7 +432,26 @@ func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read f
 		http.Error(w, "unpaired", 403)
 		return
 	}
-	result, err := read("image:" + base64.StdEncoding.EncodeToString(data))
+	command := "image:" + base64.StdEncoding.EncodeToString(data)
+	if len(clipboardRead) > 0 && clipboardRead[0] != nil {
+		id := make([]byte, 16)
+		if _, err := rand.Read(id); err != nil {
+			http.Error(w, "clipboard unavailable", 503)
+			return
+		}
+		owner := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
+		frame, _ := json.Marshal(struct {
+			clipboardRequest
+			Owner string `json:"owner"`
+		}{clipboardRequest{Op: "write", ID: hex.EncodeToString(id), Kind: "png", Data: base64.StdEncoding.EncodeToString(data)}, hex.EncodeToString(owner[:])})
+		command = "clipboard:" + string(frame)
+		read = clipboardRead[0]
+	}
+	result, err := read(command)
+	if !paired(clients, r.TLS.PeerCertificates[0].Raw) {
+		http.Error(w, "unpaired", 403)
+		return
+	}
 	var status struct {
 		OK bool `json:"ok"`
 	}
@@ -535,6 +561,13 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 		}
 	}
 	clipboard := &probe{ctx: ctx, executable: executable, argument: "--clipboard-probe", maxOutput: clipboardMessageLimit, timeout: 10 * time.Second}
+	var imageClipboard func(string) (json.RawMessage, error)
+	if managed {
+		imageClipboard, err = configureManagedClipboard(clipboard, dir)
+		if err != nil {
+			return err
+		}
+	}
 	privacy := &probe{ctx: ctx, executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	audio := &probe{ctx: ctx, executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	wake := &probe{ctx: ctx, executable: executable, argument: "--wake-probe", maxOutput: 65536, timeout: 8 * time.Second}
@@ -563,7 +596,7 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	// is recovered before the next phone dictation. This does not start recording.
 	_, _ = voice.read("voice-status")
 	server := &http.Server{
-		Addr: ":48791", Handler: audioManager.handler(lockManager.handler(privacyManager.handler(relay.handler(withClipboard(withBitrate(withDisplays(handler(clients, p.read, voice.read, files.read), clients, engineDisplayProviderWithAccess(access), p.read), clients, engineBitrateProviderWithAccess(access)), clients, clipboard.read))))),
+		Addr: ":48791", Handler: audioManager.handler(lockManager.handler(privacyManager.handler(relay.handler(withClipboard(withBitrate(withDisplays(handler(clients, p.read, voice.read, files.read, imageClipboard), clients, engineDisplayProviderWithAccess(access), p.read), clients, engineBitrateProviderWithAccess(access)), clients, clipboard.read))))),
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second,
 		WriteTimeout: 3 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
 		ErrorLog:  log.New(io.Discard, "", 0),
