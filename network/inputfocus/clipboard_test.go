@@ -65,6 +65,65 @@ func TestClipboardAuthenticationBoundsAndFilteredReplies(t *testing.T) {
 	}
 }
 
+func TestClipboardVersionedRepliesAndRevocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clients.json")
+	cert := []byte("paired observer")
+	filePairing(t, path, cert)
+	revision := strings.Repeat("a", 64)
+	calls := 0
+	response := `{"ok":true,"revision":"` + revision + `","changed":true,"kind":"text","text":"synthetic","private":"hidden"}`
+	revoke := false
+	h := withClipboard(http.NotFoundHandler(), path, func(command string) (json.RawMessage, error) {
+		calls++
+		if revoke {
+			filePairing(t, path)
+		}
+		return json.RawMessage(response), nil
+	})
+	for _, body := range []string{
+		`{"op":"observe","revision":"bad"}`, `{"op":"observe","expect":"` + revision + `"}`,
+		`{"op":"read","revision":"` + revision + `"}`, `{"op":"observe","owner":"forged"}`,
+		`{"op":"write","id":"` + strings.Repeat("1", 32) + `","kind":"text","text":"x","expect":"bad"}`,
+	} {
+		if got := fileCall(h, cert, "POST", "/v1/clipboard", body); got.Code != 400 {
+			t.Fatal(got.Code, body)
+		}
+	}
+	if calls != 0 {
+		t.Fatal("invalid version fields reached worker")
+	}
+	if got := fileCall(h, cert, "POST", "/v1/clipboard", `{"op":"observe"}`); got.Code != 200 || strings.Contains(got.Body.String(), "hidden") {
+		t.Fatal(got.Code, got.Body)
+	}
+	for _, invalid := range []string{
+		`{"ok":true,"revision":"bad","changed":true,"kind":"empty"}`,
+		`{"ok":true,"revision":"` + revision + `","kind":"empty"}`,
+		`{"ok":true,"revision":"` + revision + `","changed":false}`,
+		`{"ok":true,"revision":"` + revision + `","changed":true,"kind":"empty","text":"private"}`,
+		`{"ok":true,"revision":"` + revision + `","changed":true,"kind":"png","data":"bad"}`,
+	} {
+		response = invalid
+		if got := fileCall(h, cert, "POST", "/v1/clipboard", `{"op":"observe"}`); got.Code != 503 || strings.Contains(got.Body.String(), "private") {
+			t.Fatal(got.Code, got.Body)
+		}
+	}
+	response = `{"ok":true,"revision":"` + revision + `","changed":false}`
+	if got := fileCall(h, cert, "POST", "/v1/clipboard", `{"op":"observe","revision":"`+revision+`"}`); got.Code != 200 {
+		t.Fatal(got.Code, got.Body)
+	}
+	for _, code := range []string{"CLIPBOARD_CHANGED", "CLIPBOARD_SYNC_UNSUPPORTED"} {
+		response = `{"ok":false,"code":"` + code + `","text":"private"}`
+		if got := fileCall(h, cert, "POST", "/v1/clipboard", `{"op":"observe"}`); got.Code != 409 || strings.Contains(got.Body.String(), "private") {
+			t.Fatal(got.Code, got.Body)
+		}
+	}
+	revoke = true
+	response = `{"ok":true,"revision":"` + revision + `","changed":true,"kind":"text","text":"private"}`
+	if got := fileCall(h, cert, "POST", "/v1/clipboard", `{"op":"observe"}`); got.Code != 403 || strings.Contains(got.Body.String(), "private") {
+		t.Fatal("revoked observation leaked", got.Code, got.Body)
+	}
+}
+
 func TestClipboardRevocationDuringRequestAndBusy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "clients.json")
 	cert := []byte("paired")
@@ -222,6 +281,18 @@ func TestClipboardRealDesktopWorkerProtocol(t *testing.T) {
 	request(clipboardRequest{Op: "write", ID: strings.Repeat("1", 32), Kind: "text", Text: text})
 	if request(clipboardRequest{Op: "read"}).Kind != "png" {
 		t.Fatal("late duplicate overwrote newer clipboard")
+	}
+	observed := request(clipboardRequest{Op: "observe"})
+	if observed.Revision == "" || observed.Changed == nil || !*observed.Changed || observed.Kind != "png" {
+		t.Fatal("cross-language versioned observation failed", observed)
+	}
+	unchanged := request(clipboardRequest{Op: "observe", Revision: observed.Revision})
+	if unchanged.Changed == nil || *unchanged.Changed || unchanged.Data != "" || unchanged.Text != "" {
+		t.Fatal("unchanged observation returned clipboard content", unchanged)
+	}
+	request(clipboardRequest{Op: "write", ID: strings.Repeat("3", 32), Kind: "text", Text: "conditional", Expect: observed.Revision})
+	if request(clipboardRequest{Op: "read"}).Text != "conditional" {
+		t.Fatal("cross-language conditional write failed")
 	}
 }
 

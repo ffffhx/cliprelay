@@ -23,13 +23,13 @@ test('Mac keeps newly copied text if the old clipboard had no plain text, and se
   const sent=await sendSelection({clipboard:{availableFormats:()=>['image/png'],readText:()=>text,writeText:()=>writes++},config:{legacyEnabled:true},copySelection:async()=>{},delay:async()=>{},post:async()=>{throw new Error('offline');}});
   assert.equal(sent,true);assert.equal(writes,0);
 });
-test('Mac receiver preserves the existing POST/probe protocol without altering the clipboard on probes',()=>{
+test('Mac receiver preserves the existing POST/probe protocol without altering the clipboard on probes',async()=>{
   const writes=[],notifications=[];const adapters={getConfig:()=>({legacyEnabled:true}),clipboard:{writeText:value=>writes.push(value)},notify:(...args)=>notifications.push(args)};
-  for(const body of ['{}','{"text":""}','{"text":1}','invalid'])assert.equal(receive('POST','/push',body,adapters,{remoteAddress:'127.0.0.1'}).status,400);
-  assert.equal(receive('GET','/push','{"text":"hello"}',adapters,{remoteAddress:'127.0.0.1'}).status,400);
-  assert.equal(receive('POST','/push-image','image',adapters,{remoteAddress:'127.0.0.1'}).status,400);
-  assert.equal(receive('POST','/push','{"text":"hello","probe":true}',adapters,{remoteAddress:'127.0.0.1'}).status,200);assert.equal(writes.length,0);
-  const value='# Title\n中文 **original**';assert.equal(receive('POST','/push',JSON.stringify({text:value}),adapters,{remoteAddress:'127.0.0.1'}).body,'ok');assert.deepEqual(writes,[value]);assert.deepEqual(notifications,[['ClipRelay 收到文本',value]]);
+  for(const body of ['{}','{"text":""}','{"text":1}','invalid'])assert.equal((await receive('POST','/push',body,adapters,{remoteAddress:'127.0.0.1'})).status,400);
+  assert.equal((await receive('GET','/push','{"text":"hello"}',adapters,{remoteAddress:'127.0.0.1'})).status,400);
+  assert.equal((await receive('POST','/push-image','image',adapters,{remoteAddress:'127.0.0.1'})).status,400);
+  assert.equal((await receive('POST','/push','{"text":"hello","probe":true}',adapters,{remoteAddress:'127.0.0.1'})).status,200);assert.equal(writes.length,0);
+  const value='# Title\n中文 **original**';assert.equal((await receive('POST','/push',JSON.stringify({text:value}),adapters,{remoteAddress:'127.0.0.1'})).body,'ok');assert.deepEqual(writes,[value]);assert.deepEqual(notifications,[['ClipRelay 收到文本',value]]);
 });
 test('Mac transport sends UTF-8 and per-peer authentication over real HTTP',async()=>{
   let seen;const server=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;seen={method:req.method,path:req.url,token:req.headers['x-cliprelay-token'],body:JSON.parse(body)};res.end('ok');});

@@ -52,3 +52,44 @@ func TestNativeNamedPasteboardTextAndImage(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeClipboardVersionAndConditionalRefusal(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	a := nativeAccess{name: "org.cliprelay.ci.version." + strconv.FormatInt(time.Now().UnixNano(), 10)}
+	if err := a.Write(writeRequest().Payload); err != nil {
+		t.Fatal(err)
+	}
+	e := New(a)
+	first := observed(t, e, "")
+	same := observed(t, e, first.Revision)
+	if *same.Changed {
+		t.Fatal("unchanged native board reported changed")
+	}
+	version, err := a.Version()
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := Payload{Kind: "text", Text: "later native content"}
+	if err := a.Write(later); err != nil {
+		t.Fatal(err)
+	}
+	r := writeRequest()
+	r.Expect = first.Revision
+	if got := e.Handle(context.Background(), r); got.Code != "CLIPBOARD_CHANGED" {
+		t.Fatal(got)
+	}
+	if written, err := a.WriteIfVersion(r.Payload, version); err != nil || written {
+		t.Fatal("native stale comparison failed", written, err)
+	}
+	if got, err := a.Read(); err != nil || got != later {
+		t.Fatal("new native content changed", got, err)
+	}
+	r.Expect = observed(t, e, "").Revision
+	if got := e.Handle(context.Background(), r); !got.OK {
+		t.Fatal(got)
+	}
+	if got, err := a.Read(); err != nil || got != r.Payload {
+		t.Fatal("conditional native text did not arrive", got, err)
+	}
+}

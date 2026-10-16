@@ -1,5 +1,5 @@
 'use strict';
-const {app,BrowserWindow,ipcMain,clipboard,nativeImage,safeStorage,dialog,shell}=require('electron');
+const {app,BrowserWindow,ipcMain,clipboard,ClipboardItem,nativeImage,safeStorage,dialog,shell}=require('electron');
 const path=require('node:path'),os=require('node:os');
 const {pathToFileURL}=require('node:url');
 const {PairedStore}=require('./mac/paired-store.cjs');
@@ -35,8 +35,8 @@ class DesktopClient {
     this.sessionLock=new SessionLockController({store,viewer:this.viewer});
     this.wake=new WakeController({store,directory:path.join(directory,'wake')});
     this.files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
-    this.terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard});
-    this.paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);this.terminal.reconcile(this.paired?.status);this.wake?.reconcile();}});
+    this.terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard,withClipboard:operation=>this.paired.withClipboard(operation)});
+    this.paired=new PairedController({store,clipboard,ClipboardItem,nativeImage,localName,copySelection:async()=>{},onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);this.terminal.reconcile(this.paired?.status);this.wake?.reconcile();}});
     this.paired.start();
     this.network.reconcile();
     ipcMain.handle('mac:request',(event,action,data)=>this.request(event,action,data));

@@ -3,19 +3,16 @@ const http=require('node:http');
 const net=require('node:net');
 const {timingSafeEqual,createHash}=require('node:crypto');
 const {isLocalAddress,resolveLocal}=require('./legacy.cjs');
+const {clipboardAccess,captureSelection}=require('./clipboard-access.cjs');
 const MAX_BODY=1024*1024;
 
 // Behavioral contract is init.lua: one peer, Ctrl+Alt+G, restore previous
 // plain text, suppress empty/unchanged selections, POST /push and probes.
 async function sendSelection({clipboard,copySelection,config,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),post=postText}){
   if(config.legacyEnabled!==true)return false;
-  const old=clipboard.availableFormats().includes('text/plain')?clipboard.readText():null;
-  await copySelection();
-  await delay(200);
-  const text=clipboard.readText();
-  if(old!==null)clipboard.writeText(old);
-  if(!text || text===old)return false;
-  await post(config,text).catch(()=>{}); // Sender remains silent on failures.
+  const payload=await captureSelection(clipboardAccess({clipboard}),copySelection,{active:()=>config.legacyEnabled===true,delay});
+  if(!payload)return false;
+  await post(config,payload.text).catch(()=>{}); // Sender remains silent on failures.
   return true;
 }
 async function postText(config,text){
@@ -47,17 +44,25 @@ function authorize(config,remoteAddress,headers={}){
   if(expected && (typeof supplied!=='string' || !timingSafeEqual(hash(expected),hash(supplied))))return {status:401,body:'unauthorized'};
   return null;
 }
-function receive(method,path,body,{clipboard,notify,getConfig=()=>({})},context={}){
+async function receive(method,path,body,{clipboard,notify,getConfig=()=>({}),withClipboard=operation=>operation()},context={}){
   const denied=authorize(getConfig(),context.remoteAddress,context.headers);if(denied)return denied;
   if(Buffer.byteLength(body,'utf8')>MAX_BODY)return {status:413,body:'too large'};
   if(method==='POST' && path==='/push'){
+    let data;try{data=JSON.parse(body);}catch{return {status:400,body:'bad request'};}
     try{
-      const data=JSON.parse(body);
       if(data && typeof data.text==='string' && data.text!==''){
-        if(data.probe!==true){clipboard.writeText(data.text);notify('ClipRelay 收到文本',Buffer.from(data.text,'utf8').subarray(0,80).toString('utf8'));}
+        if(data.probe!==true){
+          const result=await withClipboard(async()=>{
+            const denied=authorize(getConfig(),context.remoteAddress,context.headers);if(denied)return denied;
+            await clipboard.writeText(data.text);
+            try{notify('ClipRelay 收到文本',Buffer.from(data.text,'utf8').subarray(0,80).toString('utf8'));}catch{}
+            return {status:200,body:'ok'};
+          });
+          return result;
+        }
         return {status:200,body:'ok'};
       }
-    }catch{}
+    }catch{return {status:503,body:'clipboard unavailable'};}
   }
   return {status:400,body:'bad request'};
 }
@@ -75,9 +80,9 @@ function createReceiver(adapters){
     if(Number(request.headers['content-length'])>MAX_BODY){finish({status:413,body:'too large'});return;}
     let size=0;const chunks=[];
     request.on('data',chunk=>{if(finished)return;size+=chunk.length;if(size>MAX_BODY){chunks.length=0;finish({status:413,body:'too large'});}else chunks.push(chunk);});
-    request.on('end',()=>{
+    request.on('end',async()=>{
       if(finished)return;
-      try{finish(receive(request.method,request.url,new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)),adapters,context));}
+      try{finish(await receive(request.method,request.url,new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)),adapters,context));}
       catch{finish({status:400,body:'bad request'});}
     });
   });

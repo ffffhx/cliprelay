@@ -6,7 +6,7 @@
 #include <unistd.h>
 #include "native_darwin.h"
 
-enum { OK = 0, EMPTY = 1, LOCKED = 2, TOO_LARGE = 3, UNAVAILABLE = 4, PERMISSION_REQUIRED = 5 };
+enum { OK = 0, EMPTY = 1, LOCKED = 2, TOO_LARGE = 3, UNAVAILABLE = 4, PERMISSION_REQUIRED = 5, CHANGED = 6 };
 static const NSUInteger textLimit = 1024 * 1024, imageLimit = 8 * 1024 * 1024;
 
 int cr_clipboard_available(void) {
@@ -98,7 +98,21 @@ int cr_clipboard_read(const char *name, int *kind, void **data, size_t *length) 
     } @catch (NSException *exception) { return UNAVAILABLE; } }
 }
 
+int cr_clipboard_version(const char *name, long long *version) {
+    @autoreleasepool { @try {
+        int available = cr_clipboard_available(); if (available) return available;
+        NSInteger count = board(name).changeCount;
+        if (count < 0) return UNAVAILABLE;
+        *version = count;
+        return OK;
+    } @catch (NSException *exception) { return UNAVAILABLE; } }
+}
+
 int cr_clipboard_write(const char *name, int kind, const void *data, size_t length) {
+    return cr_clipboard_write_if_version(name, kind, data, length, -1);
+}
+
+int cr_clipboard_write_if_version(const char *name, int kind, const void *data, size_t length, long long version) {
     @autoreleasepool { @try {
         if (!data || !length || (kind != 1 && kind != 2)) return UNAVAILABLE;
         if (length > (kind == 1 ? textLimit : imageLimit)) return TOO_LARGE;
@@ -110,6 +124,9 @@ int cr_clipboard_write(const char *name, int kind, const void *data, size_t leng
         } else if (![item setData:value forType:NSPasteboardTypePNG]) return UNAVAILABLE;
         int available = cr_clipboard_available(); if (available) return available;
         NSPasteboard *pasteboard = board(name);
+        // AppKit provides no atomic compare-and-replace operation. Check after
+        // preparing the payload, immediately before declaring the new contents.
+        if (version >= 0 && pasteboard.changeCount != version) return CHANGED;
         [pasteboard clearContents];
         return [pasteboard writeObjects:@[item]] ? OK : UNAVAILABLE;
     } @catch (NSException *exception) { return UNAVAILABLE; } }

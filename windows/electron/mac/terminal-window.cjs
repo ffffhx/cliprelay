@@ -2,8 +2,8 @@
 const path=require('node:path'),{pathToFileURL}=require('node:url');
 const {TerminalController,message}=require('./terminal-controller.cjs');
 class DesktopTerminal{
-  constructor({store,BrowserWindow,ipcMain,clipboard,Controller=TerminalController}){
-    Object.assign(this,{store,BrowserWindow,ipcMain,clipboard,Controller});this.page=path.join(__dirname,'terminal.html');this.url=pathToFileURL(this.page).href;
+  constructor({store,BrowserWindow,ipcMain,clipboard,withClipboard=operation=>operation(),Controller=TerminalController}){
+    Object.assign(this,{store,BrowserWindow,ipcMain,clipboard,withClipboard,Controller});this.page=path.join(__dirname,'terminal.html');this.url=pathToFileURL(this.page).href;
     ipcMain.handle('terminal:request',(event,action,data)=>this.request(event,action,data));
   }
   open(){
@@ -34,8 +34,13 @@ class DesktopTerminal{
       if(action==='pause'){controller.pause();return controller.snapshot();}
       if(action==='resume')return controller.resume();
       if(action==='refresh'){controller.needList=true;return controller.snapshot();}
-      if(action==='copy'){if(typeof data?.text!=='string' || Buffer.byteLength(data.text)>1024*1024)throw new Error();this.clipboard.writeText(data.text);return;}
-      if(action==='paste'){controller.checkPaste(data);return controller.beginPaste(data,this.clipboard.readText());}
+      if(action==='copy' || action==='paste')return await this.withClipboard(async()=>{
+        const current=()=>{if(this.window!==window || this.controller!==controller || window.isDestroyed() || event.senderFrame!==window.webContents.mainFrame || event.senderFrame.url!==this.url)throw new Error();};
+        current();
+        if(action==='copy'){if(typeof data?.text!=='string' || Buffer.byteLength(data.text)>1024*1024)throw new Error();await this.clipboard.writeText(data.text);current();return;}
+        controller.checkPaste(data);const text=await this.clipboard.readText();current();
+        return controller.beginPaste(data,text);
+      });
       if(action==='paste-preview')return controller.beginPaste(data,data?.text);
       if(action==='paste-submit')return controller.submitPaste(data);
       if(action==='paste-cancel'){controller.cancelPaste(data);return;}

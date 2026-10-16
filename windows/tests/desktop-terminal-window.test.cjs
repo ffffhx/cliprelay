@@ -14,5 +14,8 @@ test('terminal IPC is owned by one exact top-level window; blur, crash and reloa
   await app.request(event,'copy',{text:'selection'});assert.equal(copies,1);assert.equal((await app.request(event,'paste',{view:'current'})).text,'chosen text');await assert.rejects(app.request(event,'paste',{view:'stale'}));assert.equal(reads,1);await assert.rejects(app.request(event,'input',{text:'x'.repeat(65537)}),/Invalid request/);
   window.emit('blur');assert.equal(controller.phase,'paused');await app.request(event,'initial');assert.equal(controller.phase,'paused');await app.request(event,'resume');assert.equal(controller.phase,'ready');
   window.webContents.emit('did-start-loading');assert.equal(controller.phase,'paused');await app.request(event,'resume');window.webContents.emit('render-process-gone');assert.equal(controller.phase,'paused');
-  host.clientId='new-client';app.open();assert.equal(controller.closed,true);assert.notEqual(app.window,window);await assert.rejects(app.request(event,'input',{}),/Unknown renderer/);app.close();assert.equal(handlers.size,0);
+  await app.request(event,'resume');let release,started;const began=new Promise(resolve=>{started=resolve;});app.clipboard.readText=()=>{started();return new Promise(resolve=>{release=resolve;});};
+  const pending=app.request(event,'paste',{view:'current'});await began;window.emit('blur');release('late paste');await assert.rejects(pending);
+  await app.request(event,'resume');const changed=app.request(event,'paste',{view:'current'});
+  host.clientId='new-client';app.open();release('closed-window paste');await assert.rejects(changed);assert.equal(controller.closed,true);assert.notEqual(app.window,window);await assert.rejects(app.request(event,'input',{}),/Unknown renderer/);app.close();assert.equal(handlers.size,0);
 });

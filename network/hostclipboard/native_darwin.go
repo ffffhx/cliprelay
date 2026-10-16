@@ -13,6 +13,7 @@ import "C"
 import (
 	"encoding/base64"
 	"errors"
+	"strconv"
 	"unsafe"
 )
 
@@ -34,6 +35,8 @@ func nativeError(code C.int) error {
 		return errors.New("CLIPBOARD_TOO_LARGE")
 	case 5:
 		return errors.New("CLIPBOARD_PERMISSION_REQUIRED")
+	case 6:
+		return errors.New("CLIPBOARD_CHANGED")
 	default:
 		return errors.New("CLIPBOARD_UNAVAILABLE")
 	}
@@ -69,6 +72,32 @@ func (a nativeAccess) Read() (Payload, error) {
 }
 
 func (a nativeAccess) Write(value Payload) error {
+	return a.write(value, -1)
+}
+
+func (a nativeAccess) Version() (string, error) {
+	name := C.CString(a.name)
+	defer C.free(unsafe.Pointer(name))
+	var version C.longlong
+	if err := nativeError(C.cr_clipboard_version(name, &version)); err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(int64(version), 10), nil
+}
+
+func (a nativeAccess) WriteIfVersion(value Payload, version string) (bool, error) {
+	number, err := strconv.ParseInt(version, 10, 64)
+	if err != nil || number < 0 {
+		return false, errors.New("CLIPBOARD_UNAVAILABLE")
+	}
+	err = a.write(value, number)
+	if err != nil && err.Error() == "CLIPBOARD_CHANGED" {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (a nativeAccess) write(value Payload, version int64) error {
 	if err := validate(value); err != nil {
 		return err
 	}
@@ -79,5 +108,5 @@ func (a nativeAccess) Write(value Payload) error {
 	}
 	name := C.CString(a.name)
 	defer C.free(unsafe.Pointer(name))
-	return nativeError(C.cr_clipboard_write(name, kind, unsafe.Pointer(&raw[0]), C.size_t(len(raw))))
+	return nativeError(C.cr_clipboard_write_if_version(name, kind, unsafe.Pointer(&raw[0]), C.size_t(len(raw)), C.longlong(version)))
 }

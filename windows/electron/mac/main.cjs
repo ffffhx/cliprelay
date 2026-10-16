@@ -1,5 +1,5 @@
 'use strict';
-const {app,Tray,Menu,nativeImage,globalShortcut,clipboard,Notification,BrowserWindow,ipcMain,screen,systemPreferences,safeStorage,dialog,shell}=require('electron');
+const {app,Tray,Menu,nativeImage,globalShortcut,clipboard,ClipboardItem,Notification,BrowserWindow,ipcMain,screen,systemPreferences,safeStorage,dialog,shell}=require('electron');
 const {Bonjour}=require('bonjour-service');
 const path=require('node:path');
 const {pathToFileURL}=require('node:url');
@@ -95,7 +95,7 @@ function menu(){
 }
 async function startReceiver(){
   if(config.legacyEnabled!==true || receiver?.listening)return;
-  receiver=createReceiver({clipboard,getConfig:()=>config,notify:(title,body)=>new Notification({title,body}).show()});
+  receiver=createReceiver({clipboard,getConfig:()=>config,withClipboard:operation=>paired.withClipboard(operation),notify:(title,body)=>new Notification({title,body}).show()});
   const current=receiver;
   await new Promise((resolve,reject)=>{
     current.once('error',reject);
@@ -157,8 +157,8 @@ async function start(){
   sessionLock=new SessionLockController({store,viewer});
   wake=new WakeController({store,directory:path.join(directory,'wake')});
   files=new FileController({store,directory:path.join(directory,'files'),dialog,shell});
-  terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard});
-  paired=new PairedController({store,clipboard,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);files?.reconcile(paired?.status);terminal?.reconcile(paired?.status);wake?.reconcile();if(tray)menu();}});
+  terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard,withClipboard:operation=>paired.withClipboard(operation)});
+  paired=new PairedController({store,clipboard,ClipboardItem,nativeImage,localName,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[]),notify:(title,body)=>new Notification({title,body}).show(),onUpdate:()=>{viewer?.reconcile(paired?.status);files?.reconcile(paired?.status);terminal?.reconcile(paired?.status);wake?.reconcile();if(tray)menu();}});
   await startReceiver();
   bonjour=new Bonjour({},error=>alert('ClipRelay 局域网声明失败：'+error.message));
   tray=new Tray(nativeImage.createEmpty());tray.setTitle('ClipRelay');menu();publish();
@@ -224,7 +224,7 @@ async function start(){
   globalShortcut.register(config.hotkey || 'Control+Alt+G',()=>{
     if(paired.store.data.legacySelected!==true){paired.sendCurrent(true).catch(error=>alert(pairedMessage(error)));return;}
     if(config.legacyEnabled!==true){alert('旧版收发已关闭，请选择配对电脑或明确开启兼容');return;}
-    sendSelection({clipboard,config,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[])}).catch(()=>{});
+    paired.withClipboard(()=>sendSelection({clipboard,config,copySelection:()=>promisify(execFile)(path.join(__dirname,'copy-selection'),[])})).catch(()=>{});
   });
   alert('ClipRelay 已启动');
   await host.launch();

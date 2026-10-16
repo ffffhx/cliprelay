@@ -31,10 +31,14 @@ jobs:
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1" @testOptions
             if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
           }
+          & .tools/uu-parity/clipboard-exchange-tests.exe --native-clipboard-fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Native conditional clipboard acceptance failed' }
           powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File windows/tests/remote-lan-pair-ui.ps1 -ClientManagement
           if ($LASTEXITCODE -ne 0) { throw 'Client management settings failed' }
           npm run test:electron
           if ($LASTEXITCODE -ne 0) { throw 'Electron tests failed' }
+          node --test windows/tests/desktop-clipboard.test.cjs windows/tests/mac-controller.test.cjs windows/tests/electron-mac-legacy.test.cjs windows/tests/desktop-terminal-window.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Async clipboard tests failed' }
           node --test windows/tests/paired-renderer-routing.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Paired clipboard renderer routing tests failed' }
           node --test windows/tests/windows-host-pairing-ui.test.cjs
@@ -68,6 +72,10 @@ jobs:
           $package = Get-ChildItem dist/ClipRelay-Windows-*.zip | Select-Object -First 1
           python windows/tests/package_archive.py $package.FullName --output (Join-Path $env:RUNNER_TEMP 'cliprelay-install') --report dist/archive-report.json
           if ($LASTEXITCODE -ne 0) { throw 'Archive preflight acceptance failed' }
+      - name: Verify packaged clipboard modules with real Electron and native clipboard
+        run: |
+          python scripts/test_electron_clipboard.py --runtime windows/screen-share/engine/electron.exe --modules (Join-Path $env:RUNNER_TEMP 'cliprelay-install/ClipRelay-Windows/desktop/resources/app/mac') --report dist/native-electron-clipboard.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native Electron clipboard acceptance failed' }
       - name: Install on disposable runner
         run: |
           if (Get-Service ClipRelayRemote -ErrorAction SilentlyContinue) { throw 'Runner must not have an existing ClipRelay service.' }

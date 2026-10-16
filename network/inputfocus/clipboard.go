@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,19 +18,25 @@ import (
 const clipboardMessageLimit = 12 * 1024 * 1024
 const clipboardTextLimit = 1024 * 1024
 
+var clipboardRevision = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
 type clipboardRequest struct {
-	Op   string `json:"op"`
-	ID   string `json:"id,omitempty"`
-	Kind string `json:"kind,omitempty"`
-	Text string `json:"text,omitempty"`
-	Data string `json:"data,omitempty"`
+	Op       string `json:"op"`
+	ID       string `json:"id,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	Revision string `json:"revision,omitempty"`
+	Expect   string `json:"expect,omitempty"`
 }
 type clipboardResponse struct {
-	OK   bool   `json:"ok"`
-	Code string `json:"code,omitempty"`
-	Kind string `json:"kind,omitempty"`
-	Text string `json:"text,omitempty"`
-	Data string `json:"data,omitempty"`
+	OK       bool   `json:"ok"`
+	Code     string `json:"code,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	Revision string `json:"revision,omitempty"`
+	Changed  *bool  `json:"changed,omitempty"`
 }
 
 func validClipboard(kind, text, data string) bool {
@@ -102,9 +109,10 @@ func withClipboard(next http.Handler, clients string, read func(string) (json.Ra
 			reply(400, clipboardResponse{Code: "CLIPBOARD_BAD_REQUEST"})
 			return
 		}
-		if (request.Op == "read" && (request.ID != "" || request.Kind != "" || request.Text != "" || request.Data != "")) ||
-			(request.Op == "write" && (!fileID.MatchString(request.ID) || !validClipboard(request.Kind, request.Text, request.Data))) ||
-			(request.Op != "read" && request.Op != "write") {
+		if (request.Op == "read" && (request.ID != "" || request.Kind != "" || request.Text != "" || request.Data != "" || request.Revision != "" || request.Expect != "")) ||
+			(request.Op == "observe" && (request.ID != "" || request.Kind != "" || request.Text != "" || request.Data != "" || request.Expect != "" || (request.Revision != "" && !clipboardRevision.MatchString(request.Revision)))) ||
+			(request.Op == "write" && (!fileID.MatchString(request.ID) || !validClipboard(request.Kind, request.Text, request.Data) || request.Revision != "" || (request.Expect != "" && !clipboardRevision.MatchString(request.Expect)))) ||
+			(request.Op != "read" && request.Op != "write" && request.Op != "observe") {
 			reply(400, clipboardResponse{Code: "CLIPBOARD_BAD_REQUEST"})
 			return
 		}
@@ -129,7 +137,7 @@ func withClipboard(next http.Handler, clients string, read func(string) (json.Ra
 		}
 		if !value.OK {
 			switch value.Code {
-			case "CLIPBOARD_EMPTY", "CLIPBOARD_LOCKED", "CLIPBOARD_TOO_LARGE", "CLIPBOARD_ID_CONFLICT", "CLIPBOARD_PERMISSION_REQUIRED":
+			case "CLIPBOARD_EMPTY", "CLIPBOARD_LOCKED", "CLIPBOARD_TOO_LARGE", "CLIPBOARD_ID_CONFLICT", "CLIPBOARD_PERMISSION_REQUIRED", "CLIPBOARD_CHANGED", "CLIPBOARD_SYNC_UNSUPPORTED":
 				reply(409, clipboardResponse{Code: value.Code})
 			default:
 				reply(503, clipboardResponse{Code: "CLIPBOARD_UNAVAILABLE"})
@@ -138,6 +146,16 @@ func withClipboard(next http.Handler, clients string, read func(string) (json.Ra
 		}
 		if request.Op == "write" {
 			reply(200, clipboardResponse{OK: true})
+			return
+		}
+		if request.Op == "observe" {
+			if !clipboardRevision.MatchString(value.Revision) || value.Changed == nil ||
+				(!*value.Changed && (value.Revision != request.Revision || value.Kind != "" || value.Text != "" || value.Data != "")) ||
+				(*value.Changed && (value.Revision == request.Revision || (value.Kind == "empty" && (value.Text != "" || value.Data != "")) || (value.Kind != "empty" && !validClipboard(value.Kind, value.Text, value.Data)))) {
+				reply(503, clipboardResponse{Code: "CLIPBOARD_UNAVAILABLE"})
+				return
+			}
+			reply(200, clipboardResponse{OK: true, Revision: value.Revision, Changed: value.Changed, Kind: value.Kind, Text: value.Text, Data: value.Data})
 			return
 		}
 		if !validClipboard(value.Kind, value.Text, value.Data) {

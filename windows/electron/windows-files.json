@@ -56,6 +56,7 @@
   "mac/routed-store.cjs",
   "mac/paired-store.cjs",
   "mac/paired-controller.cjs",
+  "mac/clipboard-access.cjs",
   "mac/paired-crypto.cjs",
   "mac/paired-relay.cjs",
   "mac/paired-transport.cjs",
