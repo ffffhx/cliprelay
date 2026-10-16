@@ -167,6 +167,9 @@ async function main(){
     await until(()=>display.snapshot(),value=>value.input.canPause&&!value.input.manualPaused);
     assert.equal(viewer.currentSession(),record);assert.ok(record.input.epoch>epoch);
     report.presentation.last=viewer.snapshot().progress;
+    report.input={pausedEpoch:epoch,resumedEpoch:record.input.epoch,generationBefore:native.generation,
+      generationAfter:switched.generation,streamPreserved:switched.streams[0].id===binding.id,
+      hostFirstFrameAfter:switched.streams[0].firstFrame};
     report.cases.push('production-input-ACK-pause-display-reconstruction-and-fresh-frame-resume');
     stage='owner-eof';display.close();viewer.stop();await until(()=>viewer.child,value=>!value,10000);
     assert.deepEqual(viewerExits[0],{code:0,signal:null});
