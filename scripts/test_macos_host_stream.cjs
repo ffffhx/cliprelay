@@ -186,14 +186,16 @@ async function main(){
     const target=current.devices.find(device=>device.name==='Mac stream A');assert.ok(target?.enabled);
     const started=Date.now();await host.action('host-client-revoke',{viewId:current.viewId,uuid:target.uuid});
     await until(()=>receiver.exit,value=>value!==null,10000);
+    const ended=receiver.events.filter(event=>event.event==='ended');
+    report.revocation={elapsedMs:Date.now()-started,exit:receiver.exit,event:ended[0]||null,
+      endedCount:ended.length,ownerPipeStayedOpen:!receiver.child.stdin.writableEnded};
     assert.equal(receiver.child.stdin.writableEnded,false,'owner EOF caused termination');
     // The native host-ended event carries the cause. Qt then exits normally
     // through its SDL_QUIT cleanup, with status zero rather than a crash code.
     assert.deepEqual(receiver.exit,{code:0,signal:null});
-    const ended=receiver.events.filter(event=>event.event==='ended');assert.equal(ended.length,1);assert.equal(ended[0].reason,'host');
+    assert.equal(ended.length,1);assert.equal(ended[0].reason,'host');
     await until(admin,value=>value.streams.length===0);
     await assert.rejects(exchange({address:'127.0.0.1',port:48784,path:'/serverinfo',method:'GET',identity:identities.client,trust:{cert:first.certificate},timeout:3000,limit:16384}));
-    report.revocation={elapsedMs:Date.now()-started,exit:receiver.exit,event:ended[0],ownerPipeStayedOpen:true};
     report.cases.push('native-host-termination-after-revocation-without-client-control-polling');
     stage='preserved-client';const preserved=rawViewer(second,identities.wrong);report.preservedPresentation=await presented(preserved);
     await closeRaw(preserved);assert.deepEqual(preserved.exit,{code:0,signal:null});
@@ -210,7 +212,8 @@ async function main(){
   }catch(error){
     // ReportCrash writes asynchronously after the native process has exited.
     if(viewerExits.some(exit=>exit.signal))await pause(10000);
-    report.failure={stage,code:error.code||error.message,host:host.snapshot().phase,viewer:viewer?.snapshot(),viewStates,viewerExits,
+    report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_host_stream\.cjs:\d+:\d+/)?.[0],
+      host:host.snapshot().phase,viewer:viewer?.snapshot(),viewStates,viewerExits,
       diagnostics:diagnostics.slice(-24),files:fileDiagnostics(),debuggers:debuggers.map(debug=>({exit:debug.exit,
         lines:debug.output.split('\n').filter(line=>/stop reason|error:|frame #|stop-reason|exited with status/.test(line))
           .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(0,60)}))};
