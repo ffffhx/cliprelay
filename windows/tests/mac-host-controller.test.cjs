@@ -20,6 +20,20 @@ function fixture(t,options={}){
   return {controller,session,calls,directory};
 }
 async function start(f){const status=await f.controller.action('host-start');assert.equal(status.phase,'starting');await f.controller.startTask;}
+
+test('login startup remains independent of missing host components and never starts remote access',async t=>{
+  const {LoginStartup}=require('../electron/mac/login-startup.cjs');let enabled=false;const writes=[];
+  const loginStartup=new LoginStartup({platform:'darwin',app:{isPackaged:true,
+    getLoginItemSettings:()=>({status:enabled?'enabled':'not-registered',openAtLogin:enabled}),
+    setLoginItemSettings:value=>{writes.push(value);enabled=value.openAtLogin;}}});
+  const f=fixture(t,{missing:'host-engine',loginStartup});
+  assert.equal((await f.controller.action('host-status')).loginStartup.enabled,false);assert.deepEqual(writes,[]);
+  assert.equal((await f.controller.action('host-set-login-startup',{enabled:true})).loginStartup.enabled,true);
+  assert.equal(f.controller.autoStart,false);assert.deepEqual(f.calls,[]);
+  enabled=false;assert.equal((await f.controller.action('host-status')).loginStartup.enabled,false);assert.equal(writes.length,1);
+  await f.controller.close();await assert.rejects(f.controller.action('host-set-login-startup',{enabled:true}),{code:'HOST_SESSION_CLOSED'});
+  assert.equal(writes.length,1);assert.equal(loginStartup.snapshot().available,false);
+});
 test('opening settings is read-only; start uses the trusted device name and exposes no owner internals',async t=>{
   const f=fixture(t);assert.deepEqual(f.calls,[]);assert.equal((await f.controller.action('host-status')).phase,'stopped');assert.deepEqual(f.calls,[]);
   await start(f);const status=await f.controller.action('host-status');assert.deepEqual(f.calls[0],['start','Trusted fixture name']);

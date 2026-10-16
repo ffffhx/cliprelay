@@ -6,11 +6,13 @@ export function mount(root,api,cancel,initial){
   const permissions=element('button','检查系统权限'),close=element('button','关闭'),notice=element('p'),requests=element('div'),clients=element('div'),capabilities=element('p'),clipboard=element('p');
   const startupLabel=element('label'),startup=element('input');startup.type='checkbox';startup.name='host-auto-start';
   startupLabel.className='host-startup';startupLabel.append(startup,element('span','打开 ClipRelay 时自动启动远程访问'));
+  const loginLabel=element('label'),login=element('input'),loginStatus=element('p');login.type='checkbox';login.name='login-startup';
+  loginLabel.className='host-startup';loginLabel.append(login,element('span','登录 Mac 后打开 ClipRelay'));loginStatus.setAttribute('role','status');
   status.setAttribute('role','status');notice.setAttribute('aria-live','polite');controls.className='host-actions';
-  controls.append(start,stop,permissions,close);root.append(title,status,controls,startupLabel,
+  controls.append(start,stop,permissions,close);root.append(title,status,controls,loginLabel,loginStatus,startupLabel,
     element('p','自动启动设置在下次打开应用时生效。当前远程访问使用上方的启动、停止按钮控制。'),
     element('p','启动后，可在同一局域网的另一台设备中添加这台 Mac，再在此处核对验证码。关闭此窗口后仍允许连接，点击“停止远程访问”可结束连接。'),
-    capabilities,clipboard,element('p','本机暂不支持远程终端、语音及隐私控制。'),notice,requests,clients);
+    capabilities,clipboard,element('p','本机语音及隐私控制仍待提供。'),notice,requests,clients);
   const errors={HOST_UNAVAILABLE:'此安装包未包含完整的本机远程访问组件。',HOST_PERMISSION_REQUIRED:'请先允许屏幕录制和键鼠控制。',HOST_KEYCHAIN_UNAVAILABLE:'系统钥匙串不可用，请稍后重试。',HOST_PAIR_STALE:'这次请求已过期或已处理，请核对当前请求。',HOST_PAIR_CLOSED:'远程访问已停止。',HOST_PAIR_TIMEOUT:'读取配对请求超时，请重试。',HOST_PAIR_UNAVAILABLE:'暂时无法读取配对请求，请重试。',HOST_ENGINE_EXITED:'远程画面组件已退出。',HOST_COMPANION_EXITED:'远程连接组件已退出。'};
   function render(){
     clipboard.textContent=state.phase!=='running'?'远程访问启动后会显示剪贴板的可用状态。':state.clipboardExchange===true?
@@ -23,6 +25,14 @@ export function mount(root,api,cancel,initial){
     start.disabled=pending || !state.available || !['stopped','failed'].includes(state.phase);
     stop.disabled=pending || !state.available || !['starting','running'].includes(state.phase);
     startup.checked=state.autoStart===true;startup.disabled=pending || state.phase==='closed' || (!state.available && !startup.checked);
+    const loginState=state.loginStartup || {};
+    login.checked=loginState.registered===true;login.indeterminate=loginState.status==='unknown';
+    login.disabled=pending || state.phase==='closed' || loginState.available!==true;
+    loginStatus.textContent=({enabled:'已开启：下次登录 Mac 后，ClipRelay 会在菜单栏运行。',
+      'requires-approval':'等待系统批准。请前往“系统设置 → 通用 → 登录项与扩展”允许 ClipRelay；目前尚未生效。',
+      'not-registered':'登录启动已关闭。此开关只打开应用；自动允许远程连接请使用下方设置。',
+      'not-found':'系统未找到此应用的登录项，请将 ClipRelay 放入“应用程序”后重新设置。',
+      unknown:'暂时无法确认登录启动状态，请检查系统设置中的登录项。'})[loginState.status] || '请使用已安装的 Mac 应用设置登录启动。';
     notice.textContent=noticeText || (state.error?(errors[state.error] || '无法完成操作，请检查权限后重试。'):'');
     requests.replaceChildren();const live=new Set();
     for(const request of state.requests || []){
@@ -79,12 +89,13 @@ export function mount(root,api,cancel,initial){
       if(action==='host-pair-reject')noticeText='已拒绝这次请求。';
       if(action==='host-client-revoke'){revocation=null;noticeText='已撤销该设备的访问权限，再次连接需要重新配对。';}
       if(action==='host-set-auto-start')noticeText=data.enabled?'已保存，下次打开 ClipRelay 时会自动启动远程访问。':'已关闭自动启动。';
-    }catch{if(!disposed){noticeText=action==='host-set-auto-start'?'设置未能保存，请重试。':action==='host-client-revoke'?'尚未确认撤销完成，请核对设备状态后重试。':'操作未完成，请刷新并核对当前请求。';await refreshAfterAction();}}
+    }catch{if(!disposed){noticeText=action==='host-set-login-startup'?'登录启动设置尚未确认，请核对系统状态。':action==='host-set-auto-start'?'设置未能保存，请重试。':action==='host-client-revoke'?'尚未确认撤销完成，请核对设备状态后重试。':'操作未完成，请刷新并核对当前请求。';await refreshAfterAction();}}
     finally{if(!disposed){pending=false;render();}}
   }
   async function refreshAfterAction(){try{state=await api.request('host-status');}catch{state={...state,requests:[],error:'HOST_PAIR_UNAVAILABLE',clients:{phase:'failed',devices:[],error:'HOST_CLIENTS_UNAVAILABLE'}};}}
   start.onclick=()=>{if(!start.disabled)return perform('host-start');};stop.onclick=()=>{if(!stop.disabled)return perform('host-stop');};
   startup.onchange=()=>{if(!startup.disabled)return perform('host-set-auto-start',{enabled:startup.checked});};
+  login.onchange=()=>{if(!login.disabled)return perform('host-set-login-startup',{enabled:login.checked});};
   permissions.onclick=()=>api.request('host-open-permissions');close.onclick=cancel;
   const dispose=()=>{disposed=true;generation++;clearInterval(timer);window.removeEventListener('focus',refresh);};
   window.addEventListener('focus',refresh);window.addEventListener('beforeunload',dispose,{once:true});

@@ -4,6 +4,7 @@ const {HostState}=require('./host-state.cjs'),{HostEngine}=require('./host-engin
 const {hostPairing,decision}=require('./host-pairing.cjs');
 const {HostClients}=require('./host-clients.cjs');
 const {HostMonitor}=require('./host-monitor.cjs');
+const {message:loginMessage}=require('./login-startup.cjs');
 const fault=code=>Object.assign(new Error(code),{code});
 const messages={
   HOST_UNAVAILABLE:'此安装包未包含完整的本机远程访问组件。',HOST_ENGINE_INVALID:'远程画面组件校验失败，请重新安装完整应用。',
@@ -19,7 +20,7 @@ const messages={
   HOST_PREFERENCES_INVALID:'自动启动设置无效。',HOST_PREFERENCES_BUSY:'正在保存设置，请稍候。',HOST_PREFERENCES_FAILED:'设置未能保存，请重试。',
   HOST_ENGINE_EXITED:'远程画面组件已退出，远程访问已停止。',HOST_COMPANION_EXITED:'远程连接组件已退出，远程访问已停止。'
 };
-function message(error){return messages[error?.code] || '无法完成远程访问操作，请检查权限后重试。';}
+function message(error){return error?.code?.startsWith('LOGIN_STARTUP_')?loginMessage(error):messages[error?.code] || '无法完成远程访问操作，请检查权限后重试。';}
 function readPin(directory,name,arch){
   const file=path.join(directory,name+'-pin.json'),stat=fs.lstatSync(file);
   if(!stat.isFile() || stat.isSymbolicLink() || stat.size>1024)throw fault('HOST_UNAVAILABLE');
@@ -36,8 +37,8 @@ function createOwners({directory,stateDirectory,safeStorage,enginePin,companionP
   return {session:new HostSession({engine,companion,onUpdate}),companion};
 }
 class HostController{
-  constructor({directory,stateDirectory,safeStorage,localName,platform=process.platform,arch=process.arch,create=createOwners,rpc=hostPairing,clientRequest,onUpdate=()=>{},onPairingRequest=()=>{},autoStart=false,saveAutoStart,monitorOptions={}}){
-    Object.assign(this,{localName,rpc,onUpdate,saveAutoStart});this.autoStart=autoStart===true;this.owner=null;this.requests=[];this.operations=new Set();this.backgroundOperations=new Set();this.generation=0;this.error=null;this.closed=false;
+  constructor({directory,stateDirectory,safeStorage,localName,platform=process.platform,arch=process.arch,create=createOwners,rpc=hostPairing,clientRequest,onUpdate=()=>{},onPairingRequest=()=>{},autoStart=false,saveAutoStart,loginStartup,monitorOptions={}}){
+    Object.assign(this,{localName,rpc,onUpdate,saveAutoStart,loginStartup});this.autoStart=autoStart===true;this.owner=null;this.requests=[];this.operations=new Set();this.backgroundOperations=new Set();this.generation=0;this.error=null;this.closed=false;
     try{
       if(platform!=='darwin' || !['arm64','x64'].includes(arch))throw fault('HOST_PLATFORM_UNSUPPORTED');
       this.owner=create({directory,stateDirectory,safeStorage,enginePin:readPin(directory,'host-engine',arch),companionPin:readPin(directory,'host-companion',arch),onUpdate:()=>this.changed()});
@@ -52,6 +53,7 @@ class HostController{
     const state=this.owner?.session.snapshot() || {phase:'stopped',error:null};
     return {available:!!this.owner && !this.closed,phase:this.closed?'closed':state.phase,error:state.error || this.error,
       requests:state.phase==='running' && !this.closed?this.requests.map(request=>({...request})):[],nativeWorkers:false,autoStart:this.autoStart,
+      ...(this.loginStartup?{loginStartup:this.loginStartup.snapshot()}:{}),
       fileTransfer:!this.closed&&state.phase==='running'&&state.fileTransfer===true,
       clipboardExchange:!this.closed&&state.phase==='running'&&state.clipboardExchange===true,
       clients:this.clients?.snapshot() || {viewId:null,phase:'unavailable',error:null,devices:[],revoking:null}};
@@ -76,7 +78,7 @@ class HostController{
       return result;
     }finally{signal?.removeEventListener('abort',cancel);this.operations.delete(abort);this.backgroundOperations.delete(abort);}
   }
-  async refresh(){await Promise.all([this.refreshPairing(),this.clients?.refresh()]);return this.snapshot();}
+  async refresh(){this.loginStartup?.refresh();await Promise.all([this.refreshPairing(),this.clients?.refresh()]);return this.snapshot();}
   refreshPairing(){
     if(this.owner?.session.snapshot().phase!=='running' || this.closed)return Promise.resolve(this.snapshot());
     if(this.refreshOperation)return this.refreshOperation.task;
@@ -89,10 +91,14 @@ class HostController{
     })();return operation.task;
   }
   async action(action,data){
-    if(!['host-status','host-start','host-stop','host-pair-approve','host-pair-reject','host-client-revoke','host-set-auto-start'].includes(action))throw fault('HOST_PAIR_INVALID');
-    if(!action.startsWith('host-pair-') && !['host-client-revoke','host-set-auto-start'].includes(action) && data!==undefined && (data===null || Array.isArray(data) || typeof data!=='object' || Object.keys(data).length))throw fault('HOST_PAIR_INVALID');
+    if(!['host-status','host-start','host-stop','host-pair-approve','host-pair-reject','host-client-revoke','host-set-auto-start','host-set-login-startup'].includes(action))throw fault('HOST_PAIR_INVALID');
+    if(!action.startsWith('host-pair-') && !['host-client-revoke','host-set-auto-start','host-set-login-startup'].includes(action) && data!==undefined && (data===null || Array.isArray(data) || typeof data!=='object' || Object.keys(data).length))throw fault('HOST_PAIR_INVALID');
     if(action==='host-status')return this.refresh();
     if(this.closed)throw fault('HOST_SESSION_CLOSED');
+    if(action==='host-set-login-startup'){
+      if(!this.loginStartup)throw fault('HOST_UNAVAILABLE');
+      this.loginStartup.setEnabled(data);this.publish();return this.snapshot();
+    }
     if(action==='host-set-auto-start')return this.setAutoStart(data);
     if(!this.owner)throw fault(this.error || 'HOST_UNAVAILABLE');
     if(action==='host-start'){
@@ -129,7 +135,7 @@ class HostController{
   }
   releaseWindow(){for(const operation of this.operations)if(!this.backgroundOperations.has(operation))operation.abort();this.clients?.releaseWindow();}
   close(){
-    if(!this.closePromise){this.closed=true;this.invalidate();const monitoring=this.monitor?.close();this.closePromise=(async()=>{await Promise.allSettled([monitoring,this.preferenceTask]);await this.clients?.close();await this.owner?.session.close();return this.snapshot();})();}
+    if(!this.closePromise){this.closed=true;this.loginStartup?.close();this.invalidate();const monitoring=this.monitor?.close();this.closePromise=(async()=>{await Promise.allSettled([monitoring,this.preferenceTask]);await this.clients?.close();await this.owner?.session.close();return this.snapshot();})();}
     return this.closePromise;
   }
 }

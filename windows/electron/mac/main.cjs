@@ -26,6 +26,7 @@ const {WakeController,message:wakeMessage}=require('./wake-controller.cjs');
 const {HostPermissionController,message:hostPermissionMessage}=require('./host-permission-controller.cjs');
 const {HostController,message:hostMessage}=require('./host-controller.cjs');
 const {HostNotices}=require('./host-notices.cjs');
+const {LoginStartup}=require('./login-startup.cjs');
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
 let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake,clipboardSync,hostPermissions,host,hostNotices,permissionQuit=false,permissionQuitReady=false;
@@ -140,6 +141,7 @@ async function start(){
   const localName=Array.from(String(config.deviceName || 'Mac').replace(/[\r\n\0]/g,'')).slice(0,32).join('') || 'Mac';
   hostNotices=new HostNotices({Notification,active:()=>!permissionQuit && host?.snapshot().phase==='running',open:()=>showHostWindow('host')});
   host=new HostController({directory:__dirname,stateDirectory:path.join(app.getPath('userData'),'host'),safeStorage,localName,
+    loginStartup:new LoginStartup({app}),
     autoStart:config.hostAutoStart===true,
     saveAutoStart:enabled=>{const next={...config,hostAutoStart:enabled};saveConfig(app.getPath('userData'),next);config=next;},
     onPairingRequest:notice=>hostNotices.show(notice),onUpdate:value=>{

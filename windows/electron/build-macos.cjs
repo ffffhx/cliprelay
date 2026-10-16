@@ -58,6 +58,7 @@ async function build(){
     const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp'],...(hostPin?{LSMinimumSystemVersion:'14.2'}:{})}});
     for(const bundle of built){
       if(process.env.CI==='true' && process.env.GITHUB_ACTIONS==='true'){
+        execFileSync('python3',[path.join(repo,'scripts','test_macos_login_startup.py'),'--runtime',path.join(bundle,'ClipRelay.app'),'--modules',path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac'),'--report',path.join(output,`native-login-startup-${architecture}.json`)],{stdio:'inherit',timeout:180000});
         execFileSync('python3',[path.join(repo,'scripts','test_electron_clipboard.py'),'--runtime',path.join(bundle,'ClipRelay.app'),'--modules',path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac'),'--report',path.join(output,`native-clipboard-bundle-${architecture}.json`)],{stdio:'inherit'});
       }
       if(hostPin){

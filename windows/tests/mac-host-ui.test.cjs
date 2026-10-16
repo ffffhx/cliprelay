@@ -76,6 +76,26 @@ test('startup opt-in requires a checkbox change and saves only an explicit boole
   checkbox.checked=true;await checkbox.onchange();assert.equal(checkbox.checked,true);assert.equal(JSON.stringify(f.calls.at(-1)),JSON.stringify({action:'host-set-auto-start',data:{enabled:true}}));
   assert.equal(f.calls.some(call=>call.action==='host-start'),false);f.ui.close();
 });
+
+test('login startup requires its own click, shows pending system approval and never changes remote startup',async()=>{
+  let state={available:false,phase:'stopped',requests:[],autoStart:false,loginStartup:{available:true,status:'not-registered',registered:false,enabled:false}};
+  const f=fixture({initial:state,request:(action,data)=>{if(action==='host-set-login-startup')state={...state,loginStartup:{available:true,status:data.enabled?'requires-approval':'not-registered',registered:data.enabled,enabled:false}};return state;}});await f.ui.ready;
+  const checkbox=f.root.all(node=>node.name==='login-startup')[0];assert.equal(checkbox.checked,false);assert.equal(checkbox.disabled,false);assert.deepEqual(f.calls.map(call=>call.action),['host-status']);
+  checkbox.checked=true;await checkbox.onchange();assert.equal(JSON.stringify(f.calls.at(-1)),JSON.stringify({action:'host-set-login-startup',data:{enabled:true}}));
+  assert.ok(f.root.all(node=>node.textContent.startsWith('等待系统批准')).length);assert.equal(f.root.all(node=>node.textContent.startsWith('已开启：')).length,0);
+  assert.equal(f.root.all(node=>node.name==='host-auto-start')[0].checked,false);
+  checkbox.checked=false;await checkbox.onchange();assert.equal(checkbox.checked,false);assert.equal(f.calls.some(call=>call.action==='host-start'),false);f.ui.close();
+});
+
+test('login state refresh follows external changes and failed removal keeps the actual enabled checkbox',async()=>{
+  let state={available:true,phase:'stopped',requests:[],loginStartup:{available:true,status:'enabled',registered:true,enabled:true}};
+  const f=fixture({initial:state,request:action=>{if(action==='host-set-login-startup')throw Error('private detail');return state;}});await f.ui.ready;
+  const checkbox=f.root.all(node=>node.name==='login-startup')[0];checkbox.checked=false;await checkbox.onchange();assert.equal(checkbox.checked,true);
+  assert.ok(f.root.all(node=>node.textContent==='登录启动设置尚未确认，请核对系统状态。').length);
+  assert.equal(f.root.all(node=>node.textContent.includes('private detail')).length,0);
+  state={...state,loginStartup:{available:true,status:'not-registered',registered:false,enabled:false}};await f.ui.refresh();assert.equal(checkbox.checked,false);
+  assert.equal(f.calls.filter(call=>call.action==='host-set-login-startup').length,1);f.ui.close();
+});
 test('failed preference writes restore the saved checkbox and an unavailable install can opt out',async()=>{
   const state={available:false,phase:'stopped',requests:[],autoStart:true};
   const f=fixture({initial:state,request:action=>{if(action==='host-set-auto-start')throw Error('private detail');return state;}});await f.ui.ready;
