@@ -16,7 +16,11 @@ const {DisplayController}=require(path.join(directory,'display-controller.cjs'))
 const {pairHost}=require(path.join(directory,'pairing.cjs'));
 const {jsonRequest,exchange}=require(path.join(directory,'paired-transport.cjs'));
 const {identities}=require('../windows/tests/mac-pairing-fixture.cjs');
-const viewerDirectory=path.join(directory,'stream-viewer');
+const viewerDirectory=process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||path.join(directory,'stream-viewer');
+if(process.env.CLIPRELAY_DIAGNOSTIC_VIEWER){
+  assert.ok(fs.realpathSync(viewerDirectory).startsWith(fs.realpathSync(process.env.RUNNER_TEMP)+path.sep));
+  assert.match(process.env.DIAGNOSTIC_VIEWER_COMMIT,/^[a-f0-9]{40}$/);
+}
 const options={width:1280,height:720,fps:30,bitrate:6000,fullscreen:false};
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(read,predicate,timeout=30000){
@@ -130,7 +134,8 @@ async function closeRaw(item){
 }
 async function main(){
   const report={protocol:1,passed:false,testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.APP_SOURCE_COMMIT,
-    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1',
+    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER,
+    diagnosticViewerCommit:process.env.DIAGNOSTIC_VIEWER_COMMIT||null,
     physicalInputInjected:false,audioEnabled:false,screenContentSaved:false,keychainValidated:false};
   try{
     stage='host-start';await host.action('host-start');await host.startTask;assert.equal(host.snapshot().phase,'running');
@@ -200,6 +205,7 @@ async function main(){
     report.cases.push('all-owned-native-processes-reaped-and-default-state-preserved');
     report.ownedChildrenReaped=true;
     assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_DEBUG,'1','DEBUGGER_RUN_NOT_ACCEPTANCE');
+    assert.equal(process.env.CLIPRELAY_DIAGNOSTIC_VIEWER,undefined,'COMPONENT_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
     report.passed=true;
   }catch(error){
     // ReportCrash writes asynchronously after the native process has exited.

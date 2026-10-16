@@ -10,6 +10,10 @@ on:
         description: 'Attach LLDB for diagnosis only; this cannot pass acceptance'
         type: boolean
         default: false
+      viewer_run_id:
+        description: 'Optional successful viewer component build for diagnosis; cannot pass complete app acceptance'
+        type: string
+        required: false
 permissions:
   contents: read
   actions: read
@@ -54,6 +58,29 @@ jobs:
           subprocess.run(['gh','run','download',run,'-n','ClipRelay-macOS-'+os.environ['APP_ARCH'],'-D','app-download'],check=True)
           PY
           ditto -x -k app-download/ClipRelay-macOS-${{ matrix.arch }}-*.zip app-unpacked
+      - name: Select diagnostic viewer component
+        if: inputs.viewer_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VIEWER_RUN_ID: ${{ inputs.viewer_run_id }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,re,subprocess,tarfile
+          run=os.environ['VIEWER_RUN_ID']; assert re.fullmatch(r'[0-9]+',run)
+          metadata=json.loads(subprocess.check_output(['gh','run','view',run,'--json','name,headSha,status,conclusion']))
+          assert metadata['name']=='Desktop Client Build' and metadata['status']=='completed' and metadata['conclusion']=='success'
+          directory=pathlib.Path(os.environ['RUNNER_TEMP'])/'cliprelay-diagnostic-viewer'; directory.mkdir()
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-Stream-macOS','-D',str(directory)],check=True)
+          with tarfile.open(directory/'ClipRelay-Stream-macOS.tar.gz') as archive: archive.extractall(directory,filter='data')
+          artifact=directory/'ClipRelay-Stream-macOS'
+          manifest=json.loads((artifact/'manifest.json').read_text())
+          assert manifest['platform']=='macos' and manifest['protocol']==1
+          for name,digest in manifest['files'].items():
+              file=(artifact/name).resolve(); assert file.is_relative_to(artifact.resolve())
+              assert hashlib.sha256(file.read_bytes()).hexdigest()==digest
+          with open(os.environ['GITHUB_ENV'],'a') as output:
+              output.write('CLIPRELAY_DIAGNOSTIC_VIEWER='+str(artifact)+'\nDIAGNOSTIC_VIEWER_COMMIT='+metadata['headSha']+'\n')
+          PY
       - name: Real packaged capture, Qt presentation, input receipts and revocation
         env:
           CLIPRELAY_MAC_STREAM_DEBUG: ${{ inputs.debug_native && '1' || '' }}
