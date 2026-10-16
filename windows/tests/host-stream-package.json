@@ -1,9 +1,9 @@
 {
   "repository": "ffffhx/cliprelay",
-  "run": 38891177911,
-  "commit": "9f7acc21b8d08872e99575c41b0d36470dd02018",
+  "run": 38899519425,
+  "commit": "a7edcc9c66bb9d9cfeaa3de37019dc8ac772ea08",
   "artifact": "ClipRelay-Windows-Complete",
   "archive": "ClipRelay-Windows-0.4.0.zip",
-  "sha256": "dee849ee2ea35d2013a328afce32f98233df0b13967b00ce6bf0f42288a48da4",
-  "bytes": 242584731
+  "sha256": "70abc13e75d3da83cc29869a93bdd42253daffc44a31e03aa1bc5111897d05e8",
+  "bytes": 242613805
 }
