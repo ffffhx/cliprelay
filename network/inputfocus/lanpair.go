@@ -48,6 +48,10 @@ type lanPairer struct {
 }
 
 func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPairer {
+	return newLANPairerWithAccess(ctx, dir, cert, fileEngineAccess(dir))
+}
+
+func newLANPairerWithAccess(ctx context.Context, dir string, cert tls.Certificate, access EngineAccess) *lanPairer {
 	p := &lanPairer{ctx: ctx, dir: filepath.Join(dir, "lan-pairing"), serverCert: cert.Certificate[0], requests: make(map[string]*lanRequest)}
 	// The admin API stays loopback-only and uses the engine's pinned certificate.
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12,
@@ -60,15 +64,12 @@ func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPai
 		}}}
 	client := &http.Client{Transport: transport, Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	p.engine = func(ctx context.Context, method, path string, body any) ([]byte, error) {
-		b, err := os.ReadFile(filepath.Join(dir, "service.json"))
+		password, certificate, err := access()
 		if err != nil {
 			return nil, err
 		}
-		var config struct {
-			Password string `json:"adminPassword"`
-		}
-		if json.Unmarshal(b, &config) != nil || config.Password == "" {
-			return nil, errors.New("missing local credential")
+		if password == "" || !bytes.Equal(certificate, p.serverCert) {
+			return nil, errors.New("local engine identity changed")
 		}
 		var data []byte
 		if body != nil {
@@ -81,7 +82,7 @@ func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPai
 		if err != nil {
 			return nil, err
 		}
-		r.SetBasicAuth("cliprelay", config.Password)
+		r.SetBasicAuth("cliprelay", password)
 		r.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(r)
 		if err != nil {
@@ -91,7 +92,7 @@ func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPai
 		if resp.StatusCode != 200 {
 			return nil, errors.New("local pairing API unavailable")
 		}
-		b, err = io.ReadAll(io.LimitReader(resp.Body, 32769))
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 32769))
 		if len(b) > 32768 {
 			return nil, errors.New("invalid local response")
 		}
@@ -240,7 +241,11 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 }
 
 func serveLANPairing(ctx context.Context, dir string, cert tls.Certificate) error {
-	p := newLANPairer(ctx, dir, cert)
+	return serveLANPairingWithAccess(ctx, dir, cert, fileEngineAccess(dir))
+}
+
+func serveLANPairingWithAccess(ctx context.Context, dir string, cert tls.Certificate, access EngineAccess) error {
+	p := newLANPairerWithAccess(ctx, dir, cert, access)
 	server := &http.Server{Addr: ":48792", Handler: p, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 4 * time.Second, WriteTimeout: 4 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
 		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAnyClientCert},
 		ErrorLog:  nil}

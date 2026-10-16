@@ -46,8 +46,12 @@ type bitrateSelection struct {
 type bitrateProvider func(context.Context, string, *bitrateSelection) (bitrateState, error)
 
 func engineBitrateProvider(dir string) bitrateProvider {
+	return engineBitrateProviderWithAccess(fileEngineAccess(dir))
+}
+
+func engineBitrateProviderWithAccess(access EngineAccess) bitrateProvider {
 	return func(ctx context.Context, owner string, selection *bitrateSelection) (bitrateState, error) {
-		password, certificate, err := readEngineAccess(dir)
+		password, certificate, err := access()
 		if err != nil {
 			return bitrateState{}, err
 		}

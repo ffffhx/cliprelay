@@ -31,8 +31,12 @@ type inputState struct {
 type inputProvider func(context.Context) (inputState, error)
 
 func engineInputProvider(dir string) inputProvider {
+	return engineInputProviderWithAccess(fileEngineAccess(dir))
+}
+
+func engineInputProviderWithAccess(access EngineAccess) inputProvider {
 	return func(ctx context.Context) (inputState, error) {
-		password, certificate, err := readEngineAccess(dir)
+		password, certificate, err := access()
 		if err != nil {
 			return inputState{}, err
 		}

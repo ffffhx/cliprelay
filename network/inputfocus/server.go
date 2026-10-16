@@ -345,11 +345,31 @@ func controlTLSConfig(cert tls.Certificate, clients string) *tls.Config {
 }
 
 func Serve(ctx context.Context, dir, executable string) error {
+	return ServeWithEngineAccess(ctx, dir, executable, fileEngineAccess(dir))
+}
+
+// ServeWithEngineAccess uses credentials supplied by the owning local process.
+// Unlike Serve it does not require a plaintext service.json. Callers still own
+// context cancellation, native provider capabilities and complete host readiness.
+func ServeWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess) error {
+	if access == nil {
+		return errEngineAccessUnavailable
+	}
+	password, certificate, err := access()
+	if err != nil || password == "" || len(certificate) == 0 {
+		return errEngineAccessUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cert, err := tls.LoadX509KeyPair(filepath.Join(dir, "cacert.pem"), filepath.Join(dir, "cakey.pem"))
 	if err != nil {
 		return err
+	}
+	if len(cert.Certificate) != 1 || !bytes.Equal(certificate, cert.Certificate[0]) {
+		return errEngineAccessUnavailable
 	}
 	clients := filepath.Join(dir, "clients.json")
 	relay := newRelayMailbox(clients)
@@ -370,17 +390,17 @@ func Serve(ctx context.Context, dir, executable string) error {
 	defer clipboard.stop()
 	privacy := &probe{executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	defer privacy.stop()
-	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProvider(dir), read: privacy.read, now: time.Now}
+	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, now: time.Now}
 	privacyDone := make(chan struct{})
 	go func() { defer close(privacyDone); privacyManager.maintain(ctx) }()
 	defer func() { cancel(); <-privacyDone }()
-	lockManager := &sessionLockControl{clients: clients, provider: engineDisplayProvider(dir), read: privacy.read, now: time.Now}
+	lockManager := &sessionLockControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, now: time.Now}
 	lockDone := make(chan struct{})
 	go func() { defer close(lockDone); lockManager.maintain(ctx) }()
 	defer func() { cancel(); <-lockDone }()
 	audio := &probe{executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
 	defer audio.stop()
-	audioManager := &audioMuteControl{clients: clients, provider: engineDisplayProvider(dir), read: audio.read, now: time.Now}
+	audioManager := &audioMuteControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: audio.read, now: time.Now}
 	audioDone := make(chan struct{})
 	go func() { defer close(audioDone); audioManager.maintain(ctx) }()
 	defer func() { cancel(); <-audioDone }()
@@ -397,14 +417,14 @@ func Serve(ctx context.Context, dir, executable string) error {
 	// is recovered before the next phone dictation. This does not start recording.
 	_, _ = voice.read("voice-status")
 	server := &http.Server{
-		Addr: ":48791", Handler: audioManager.handler(lockManager.handler(privacyManager.handler(relay.handler(withClipboard(withBitrate(withDisplays(handler(clients, p.read, voice.read, files.read), clients, engineDisplayProvider(dir), p.read), clients, engineBitrateProvider(dir)), clients, clipboard.read))))),
+		Addr: ":48791", Handler: audioManager.handler(lockManager.handler(privacyManager.handler(relay.handler(withClipboard(withBitrate(withDisplays(handler(clients, p.read, voice.read, files.read), clients, engineDisplayProviderWithAccess(access), p.read), clients, engineBitrateProviderWithAccess(access)), clients, clipboard.read))))),
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second,
 		WriteTimeout: 3 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
 		ErrorLog:  log.New(io.Discard, "", 0),
 		TLSConfig: controlTLSConfig(cert, clients),
 	}
-	go func() { _ = serveLANPairing(ctx, dir, cert) }()
-	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProvider(dir))
+	go func() { _ = serveLANPairingWithAccess(ctx, dir, cert, access) }()
+	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProviderWithAccess(access))
 	go func() { _ = serveLANDiscovery(ctx) }()
 	go func() { <-ctx.Done(); server.Close() }()
 	return server.ListenAndServeTLS("", "")

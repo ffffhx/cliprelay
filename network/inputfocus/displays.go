@@ -93,8 +93,12 @@ type displayProvider func(context.Context, bool, *displaySelection) (displayStat
 // The endpoint and credentials are host-owned constants. This client cannot be
 // used as an arbitrary URL proxy, and never follows a redirect carrying Basic auth.
 func engineDisplayProvider(dir string) displayProvider {
+	return engineDisplayProviderWithAccess(fileEngineAccess(dir))
+}
+
+func engineDisplayProviderWithAccess(access EngineAccess) displayProvider {
 	return func(ctx context.Context, refresh bool, selection *displaySelection) (displayState, error) {
-		password, certificate, err := readEngineAccess(dir)
+		password, certificate, err := access()
 		if err != nil {
 			return displayState{}, err
 		}
