@@ -25,6 +25,10 @@ test('pending system approval stays visibly unconfirmed and can be removed',()=>
   const pending=f.owner.setEnabled({enabled:true});assert.equal(pending.status,'requires-approval');assert.equal(pending.enabled,false);assert.equal(pending.registered,true);
   assert.equal(f.owner.setEnabled({enabled:false}).registered,false);
 });
+test('a previously unseen system service may be explicitly registered without treating not-found as enabled',()=>{
+  const f=fixture({status:'not-found'});assert.equal(f.owner.snapshot().enabled,false);assert.equal(f.owner.snapshot().registered,false);
+  assert.deepEqual(f.writes,[]);assert.equal(f.owner.setEnabled({enabled:true}).status,'enabled');
+});
 test('silent OS failure, exceptions and inconsistent reads never claim a successful change',()=>{
   const unchanged=fixture({write:()=>{}});assert.throws(()=>unchanged.owner.setEnabled({enabled:true}),{code:'LOGIN_STARTUP_UNCONFIRMED'});assert.equal(unchanged.owner.snapshot().enabled,false);
   const denied=fixture({status:'enabled',write:()=>{throw Error('private OS detail');}});assert.throws(()=>denied.owner.setEnabled({enabled:false}),{code:'LOGIN_STARTUP_UNCONFIRMED'});assert.equal(denied.owner.snapshot().enabled,true);

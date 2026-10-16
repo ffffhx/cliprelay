@@ -31,7 +31,7 @@ export function mount(root,api,cancel,initial){
     loginStatus.textContent=({enabled:'已开启：下次登录 Mac 后，ClipRelay 会在菜单栏运行。',
       'requires-approval':'等待系统批准。请前往“系统设置 → 通用 → 登录项与扩展”允许 ClipRelay；目前尚未生效。',
       'not-registered':'登录启动已关闭。此开关只打开应用；自动允许远程连接请使用下方设置。',
-      'not-found':'系统未找到此应用的登录项，请将 ClipRelay 放入“应用程序”后重新设置。',
+      'not-found':'系统尚未提供登录启动记录。可以尝试开启，设置后会再次核对状态。',
       unknown:'暂时无法确认登录启动状态，请检查系统设置中的登录项。'})[loginState.status] || '请使用已安装的 Mac 应用设置登录启动。';
     notice.textContent=noticeText || (state.error?(errors[state.error] || '无法完成操作，请检查权限后重试。'):'');
     requests.replaceChildren();const live=new Set();

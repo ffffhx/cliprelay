@@ -13,13 +13,18 @@ app.whenReady().then(()=>{
   const owner=new LoginStartup({app});let result;
   try{
     if(options.phase==='initial'){
-      result=owner.refresh();assert.equal(result.status,'not-registered');assert.equal(result.enabled,false);
+      // A previously unseen service can be not-found until first registration:
+      // https://developer.apple.com/forums/thread/719862 (Apple DTS answer).
+      result=owner.refresh();assert.ok(['not-registered','not-found'].includes(result.status));assert.equal(result.enabled,false);assert.equal(result.registered,false);
     }else if(options.phase==='enable'){
       result=owner.setEnabled({enabled:true});assert.equal(result.status,'enabled');assert.equal(result.enabled,true);
     }else if(options.phase==='reopen'){
       result=owner.refresh();assert.equal(result.enabled,true);
+    }else if(options.phase==='disable'){
+      assert.equal(owner.snapshot().enabled,true);result=owner.setEnabled({enabled:false});
+      assert.equal(result.status,'not-registered');assert.equal(result.registered,false);
     }else if(options.phase==='external-disable'){
-      assert.equal(owner.snapshot().enabled,true);
+      assert.equal(owner.snapshot().enabled,false);assert.equal(owner.setEnabled({enabled:true}).enabled,true);
       app.setLoginItemSettings({type:'mainAppService',openAtLogin:false});result=owner.refresh();
       assert.equal(result.status,'not-registered');assert.equal(result.registered,false);
     }else if(options.phase==='cleanup'){

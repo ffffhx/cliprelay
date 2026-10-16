@@ -92,7 +92,8 @@ def main():
 
         try:
             for phase, case in [('initial', 'native-default-off-read-only'), ('enable', 'explicit-native-enable'),
-                                ('reopen', 'native-setting-survives-process-exit'), ('external-disable', 'external-disable-refresh-without-reenable')]:
+                                ('reopen', 'native-setting-survives-process-exit'), ('disable', 'explicit-native-disable'),
+                                ('external-disable', 'external-disable-refresh-without-reenable')]:
                 try:
                     invoke(phase); result['cases'].append(case)
                 except Exception as error:
