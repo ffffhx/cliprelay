@@ -9,11 +9,11 @@ function fixture(t,options={}){
     const frame=Buffer.from(JSON.stringify({protocol:1,password:'fixture-only-password',certificate:'fixture-only-certificate'})+'\n');frames.push(frame);return frame;
   }};
   const companion=new HostCompanion({directory:__dirname,pin:{},state,platform:'darwin',arch:'arm64',
-    verify(){trace.push('verify');},checkSocket:file=>file,readyTimeout:1000,
+    verify(){trace.push('verify');},checkSocket:file=>file,
     stopGraceMs:options.mode==='ignore'?70:2000,killDelayMs:options.mode==='ignore'?30:200,
     launch(file,args,settings){
       trace.push({file,args,settings});
-      const child=spawn(process.execPath,[path.join(__dirname,'mac-host-companion-child.cjs'),options.mode || 'normal'],
+      const child=spawn(process.execPath,[path.join(__dirname,'mac-host-companion-child.cjs'),options.mode || 'normal',String(options.replyDelay || 0)],
         {...settings,cwd:__dirname,stdio:['pipe','pipe','ignore','ipc']});
       child.on('message',message=>messages.push(message));children.push(child);return child;
     },...options});
@@ -53,6 +53,11 @@ test('malformed, wrong-owner and excess replies cannot produce readiness',async 
 test('an invalid socket receipt is rejected with a fixed public error',async t=>{
   const f=fixture(t,{checkSocket(){throw Object.assign(Error('private socket path'),{code:'HOST_COMPANION_IPC_INVALID'});}});
   await assert.rejects(f.companion.start(),{code:'HOST_COMPANION_IPC_INVALID'});reaped(f);
+});
+
+test('malformed response after a slow fixture start is rejected by content within the production startup budget',async t=>{
+  const f=fixture(t,{mode:'extra-byte',replyDelay:1200});
+  await assert.rejects(f.companion.start(),{code:'HOST_COMPANION_BAD_REPLY'});reaped(f);
 });
 test('missing startup reply and ignored EOF still force and reap the child',async t=>{
   const f=fixture(t,{mode:'ignore',readyTimeout:300});await assert.rejects(f.companion.start(),{code:'HOST_COMPANION_TIMEOUT'});reaped(f);

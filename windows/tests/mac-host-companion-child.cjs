@@ -4,6 +4,9 @@ let bytes=Buffer.alloc(0),initialized=false;
 process.stdin.on('data',chunk=>{
   bytes=Buffer.concat([bytes,chunk]);if(initialized || !bytes.includes(10))return;initialized=true;
   const frame=JSON.parse(bytes.toString());
+  setTimeout(()=>reply(frame),Number(process.argv[3] || 0));
+});
+function reply(frame){
   process.send?.({initialized:true,protocol:frame.protocol,passwordMatches:frame.password==='fixture-only-password'});
   if(mode==='quiet' || mode==='ignore')return;
   if(mode==='flood'){process.stdout.write('x'.repeat(4097));return;}
@@ -19,5 +22,5 @@ process.stdin.on('data',chunk=>{
   process.stdout.write(encoded+'\n');
   if(mode==='exit')setTimeout(()=>process.exit(7),150);
   if(mode==='late-data')setTimeout(()=>process.stdout.write('x'),150);
-});
+}
 process.stdin.on('end',()=>{if(mode==='ignore')return;clearInterval(timer);setTimeout(()=>process.exit(0),30);});
