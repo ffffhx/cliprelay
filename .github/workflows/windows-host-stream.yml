@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: ['codex/desktop-client-input-20261015']
-    paths: ['.github/workflows/windows-host-stream.yml', 'windows/tests/installed-host-stream.cjs', 'windows/tests/host-stream-package.json']
+    paths: ['.github/workflows/windows-host-stream.yml', 'windows/tests/installed-host-stream.cjs', 'windows/tests/host-stream-package.json', 'windows/tests/build-engine-stream-client.ps1', 'windows/tests/engine_stream_client.c']
 permissions:
   contents: read
   actions: read

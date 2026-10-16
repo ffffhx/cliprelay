@@ -15,7 +15,7 @@ if ($DesktopSource) {
     $core = Join-Path ((Resolve-Path -LiteralPath $DesktopSource).Path) 'moonlight-common-c\moonlight-common-c'
     $extraFlags += '-DCLIPRELAY_NATIVE_INPUT_EPOCHS'
 }
-$output = [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory))
+$output = if ([IO.Path]::IsPathRooted($OutputDirectory)) { [IO.Path]::GetFullPath($OutputDirectory) } else { [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory)) }
 $compiler = Join-Path $CompilerDirectory 'clang.exe'
 $dlltool = Join-Path $CompilerDirectory 'llvm-dlltool.exe'
 $exports = Join-Path $CompilerDirectory 'llvm-readobj.exe'
