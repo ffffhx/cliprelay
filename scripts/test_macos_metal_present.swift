@@ -43,17 +43,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         view.preferredFramesPerSecond = 30; view.delegate = renderer
         window.contentView = view; window.makeKeyAndOrderFront(nil); app.activate(ignoringOtherApps: true)
         var passed = false
+        DispatchQueue.global().asyncAfter(deadline: .now() + 12) { exit(3) }
         let timer = Timer.scheduledTimer(withTimeInterval: 8, repeats: false) { _ in
             renderer.lock.lock()
-            passed = renderer.displayed >= 60 && renderer.gpuErrors == 0
+            let submitted = renderer.submitted, displayed = renderer.displayed, dropped = renderer.dropped, gpuErrors = renderer.gpuErrors
+            renderer.lock.unlock()
+            passed = displayed >= 60 && gpuErrors == 0
             let report: [String: Any] = ["protocol": 1, "passed": passed, "testCommit": ProcessInfo.processInfo.environment["GITHUB_SHA"] ?? "",
-                "gpu": device.name, "submitted": renderer.submitted, "displayed": renderer.displayed,
-                "dropped": renderer.dropped, "gpuErrors": renderer.gpuErrors,
+                "gpu": device.name, "submitted": submitted, "displayed": displayed,
+                "dropped": dropped, "gpuErrors": gpuErrors,
                 "windowVisible": window.isVisible, "windowOcclusionVisible": window.occlusionState.contains(.visible),
                 "applicationActive": app.isActive, "screenContentSaved": false]
-            renderer.lock.unlock()
             FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]))
-            app.stop(nil)
+            exit(passed ? 0 : 1)
         }
         app.run(); timer.invalidate(); view.isPaused = true; window.orderOut(nil)
         withExtendedLifetime(renderer) {}
