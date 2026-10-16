@@ -90,7 +90,9 @@ test('manual pause remains available with frozen video; resume waits for current
   assert.throws(()=>f.setInput(false),{code:'INPUT_NOT_READY'});assert.equal(f.input.epoch,3);
   f.viewer.progress.renderedAgeMs=0;await until(()=>f.controller.snapshot().input.canResume);
   f.s.d.inputEpochSelection=false;await until(()=>f.controller.snapshot().error==='DISPLAY_UNSUPPORTED');assert.equal(f.controller.snapshot().input.canResume,true);
-  f.setInput(false);await delay(30);f.viewer.progress.received=f.viewer.progress.rendered=21;await until(()=>f.input.phase==='active');
+  f.setInput(false);await until(()=>f.input.busy);
+  assert.equal(f.input.phase,'paused');assert.equal(f.viewer.manualPaused,true);
+  f.viewer.progress.received=f.viewer.progress.rendered=21;await until(()=>f.input.phase==='active');
 });
 test('manual resume cancellation preserves pause intent and rejects stale or injected renderer targets',async t=>{
   const f=await fixture(t);await until(()=>f.controller.snapshot().input.canPause);const viewId=f.controller.snapshot().viewId;
