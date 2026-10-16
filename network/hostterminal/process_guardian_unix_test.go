@@ -200,17 +200,25 @@ func TestGuardianEOFClosesForegroundJobAndReapsShell(t *testing.T) {
 }
 
 func TestGuardianWholePasteAndOutputRing(t *testing.T) {
-	p, b := guardianFixture(t, "bash")
-	body := strings.Repeat("a", 14000)
-	want := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
-	nativeWrite(t, p, 1, "printf '%s' '"+body+"' | shasum -a 256\r", true)
-	eventually(t, 8*time.Second, func() bool { return strings.Contains(contents(b), want) && p.Status().Written == 1 })
-	marker := "guarded-output-end"
-	nativeWrite(t, p, 2, "head -c 1200000 /dev/zero | tr '\\000' a; printf '\\n"+octal(marker)+"\\n'\r", false)
-	eventually(t, 10*time.Second, func() bool { return strings.Contains(contents(b), marker) && p.Status().Written == 2 })
-	start, end := b.Bounds()
-	if start <= 0 || end-start != OutputLimit || p.Status().Failed || p.Status().Exited {
-		t.Fatalf("output was lost at guardian instead of retained ring: %d %d %+v", start, end, p.Status())
+	shells := []string{"bash"}
+	if runtime.GOOS == "darwin" {
+		shells = append(shells, "zsh")
+	}
+	for _, shell := range shells {
+		t.Run(shell, func(t *testing.T) {
+			p, b := guardianFixture(t, shell)
+			body := strings.Repeat("a", 14000)
+			want := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
+			nativeWrite(t, p, 1, "printf '%s' '"+body+"' | shasum -a 256\r", true)
+			eventually(t, 8*time.Second, func() bool { return strings.Contains(contents(b), want) && p.Status().Written == 1 })
+			marker := "guarded-output-end"
+			nativeWrite(t, p, 2, "head -c 1200000 /dev/zero | tr '\\000' a; printf '\\n"+octal(marker)+"\\n'\r", false)
+			eventually(t, 10*time.Second, func() bool { return strings.Contains(contents(b), marker) && p.Status().Written == 2 })
+			start, end := b.Bounds()
+			if start <= 0 || end-start != OutputLimit || p.Status().Failed || p.Status().Exited {
+				t.Fatalf("output was lost at guardian instead of retained ring: %d %d %+v", start, end, p.Status())
+			}
+		})
 	}
 }
 func TestGuardianRejectsImpossibleWrittenReceipt(t *testing.T) {

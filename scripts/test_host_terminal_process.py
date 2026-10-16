@@ -100,9 +100,18 @@ def open_session(worker, shell):
 
 def read(worker, session):
     # All output in these tests is synthetic and fits the retained output ring.
-    reply = worker.rpc(dict(session, op='read', offset=0))
-    assert reply['ok'] and not reply['gap']
-    return base64.b64decode(reply.get('data', '')).decode(errors='replace')
+    offset, chunks = 0, []
+    for _ in range(32):
+        reply = worker.rpc(dict(session, op='read', offset=offset))
+        assert reply['ok'] and not reply['gap'] and reply['offset'] == offset
+        data = base64.b64decode(reply.get('data', ''))
+        assert reply['next'] == offset+len(data)
+        chunks.append(data)
+        offset = reply['next']
+        if offset == reply['session']['end']:
+            return b''.join(chunks).decode(errors='replace')
+        assert data, 'output pagination made no progress'
+    raise AssertionError('synthetic terminal output exceeded retained ring')
 
 
 def write(worker, session, sequence, text, paste=False):
@@ -145,7 +154,14 @@ def run(binary, report):
                 body = 'a'*14000
                 write(worker, session, 3, "printf '%s' '"+body+"' | shasum -a 256\r", paste=True)
                 digest = hashlib.sha256(body.encode()).hexdigest()
-                eventually(lambda: digest in read(worker, session), 10)
+                try:
+                    eventually(lambda: digest in read(worker, session), 10)
+                except AssertionError:
+                    output = read(worker, session)
+                    snapshot = worker.rpc(dict(session, op='read', offset=0))['session']
+                    print(json.dumps({'shell': shell, 'stage': 'paste', 'session': snapshot,
+                                      'outputLength': len(output), 'syntheticOutputTail': output[-800:]}), flush=True)
+                    raise
                 cases.append(shell+': whole 14 KB paste digest')
                 size = worker.rpc(dict(session, op='resize', columns=120, rows=40))
                 assert size['ok'] and size['session']['columns'] == 120 and size['session']['rows'] == 40
