@@ -418,12 +418,9 @@ namespace ClipRelay.Remote {
         }
 
         Func<string, string, object, object> ClientRequests() {
-            var clock = Stopwatch.StartNew();
-            return delegate(string method, string path, object body) {
-                int remaining = 15000 - (int)clock.ElapsedMilliseconds;
-                if (remaining <= 0) throw new System.TimeoutException("Device authorization operation timed out");
-                return EngineRequest(method, path, body, Math.Min(3000, remaining), 65536);
-            };
+            return HostClientsControl.BoundedRequests(delegate(string method, string path, object body, int timeoutMs) {
+                return EngineRequest(method, path, body, timeoutMs, 65536);
+            });
         }
         object EngineRequest(string method, string path, object body, int timeoutMs = 20000, int replyLimit = 1024 * 1024) {
             string password;

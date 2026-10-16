@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -9,6 +10,21 @@ namespace ClipRelay.Remote {
     // Caller serializes this policy with engine stop/start and supplies a bounded
     // pinned loopback transport. Decisions belong to the currently running engine.
     internal static class HostClientsControl {
+        internal const int OperationTimeoutMs = 15000;
+        internal const int RequestTimeoutMs = 3000;
+        internal static Func<string,string,object,object> BoundedRequests(Func<string,string,object,int,object> transport) {
+            if(transport==null)throw new ArgumentNullException("transport");
+            var clock=Stopwatch.StartNew();
+            return delegate(string method,string path,object body) {
+                long remaining=OperationTimeoutMs-clock.ElapsedMilliseconds;
+                if(remaining<=0)throw new TimeoutException("Device authorization operation timed out");
+                object result=transport(method,path,body,(int)Math.Min(RequestTimeoutMs,remaining));
+                // The transport's own timer starts after caller preparation.
+                // A reply is usable only while the whole operation still owns it.
+                if(clock.ElapsedMilliseconds>=OperationTimeoutMs)throw new TimeoutException("Device authorization operation timed out");
+                return result;
+            };
+        }
         static readonly Regex View = new Regex("\\A[0-9a-f]{32}\\z");
         static readonly Regex Uuid = new Regex("\\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\\z");
         static string Text(Dictionary<string,object> value,string key) {
