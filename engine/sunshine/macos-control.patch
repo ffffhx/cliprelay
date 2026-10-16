@@ -1,3 +1,19 @@
+diff --git a/src/config.cpp b/src/config.cpp
+index 4bea96b..a78461d 100644
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -1790,7 +1790,11 @@ namespace config {
+       fs::permissions(
+         stream.file_apps,
+         fs::perms::owner_read | fs::perms::owner_write,
++  #ifdef __APPLE__
++        fs::perm_options::replace
++  #else
+         fs::perm_options::add
++  #endif
+       );
+     }
+ #endif
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
 index c364049..8471aef 100644
 --- a/src/confighttp.cpp
@@ -20,7 +36,7 @@ index c364049..8471aef 100644
        bad_request(response, request, "Invalid display query"); return;
      }
 diff --git a/src/main.cpp b/src/main.cpp
-index f349a23..e295539 100644
+index f349a23..aa20683 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -13,6 +13,8 @@
@@ -32,7 +48,7 @@ index f349a23..e295539 100644
    #include <mach-o/dyld.h>
  #endif
  #ifdef __linux__
-@@ -182,6 +184,13 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event)
+@@ -182,6 +184,16 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event)
   * @return Process or platform callback exit code.
   */
  int main(int argc, char *argv[]) {
@@ -40,6 +56,9 @@ index f349a23..e295539 100644
 +  // Permission queries must not create config/log files, open listeners or
 +  // initialize capture. Only an explicit request action may ask macOS for access.
 +  if (auto code = platf::cliprelay_permission_command(argc, argv, std::cout)) {
++    return *code;
++  }
++  if (auto code = platf::cliprelay_state_command(argc, argv, std::cout)) {
 +    return *code;
 +  }
 +#endif
@@ -746,10 +765,10 @@ index d5fe3d0..09a3db0 100644
      // Print all displays available with their names and ids
      BOOST_LOG(debug) << "Detecting displays"sv;
 diff --git a/src/platform/macos/misc.h b/src/platform/macos/misc.h
-index 0af5d1a..3091d90 100644
+index 0af5d1a..21fc64a 100644
 --- a/src/platform/macos/misc.h
 +++ b/src/platform/macos/misc.h
-@@ -5,12 +5,24 @@
+@@ -5,12 +5,33 @@
  #pragma once
  
  // standard includes
@@ -771,22 +790,40 @@ index 0af5d1a..3091d90 100644
 +   */
 +  std::optional<int> cliprelay_permission_command(int argc, const char *const *argv, std::ostream &output);
 +
++  /**
++   * @brief Admit an explicit private state root or handle a read-only state check.
++   * @param argc Argument count.
++   * @param argv Process arguments.
++   * @param output Bounded JSON response on rejection or a state check.
++   * @return Status for a handled command, or no value for admitted host startup.
++   */
++  std::optional<int> cliprelay_state_command(int argc, const char *const *argv, std::ostream &output);
++
    /**
     * @brief Check whether macOS has granted screen-capture permission.
     *
 diff --git a/src/platform/macos/misc.mm b/src/platform/macos/misc.mm
-index 7c3127d..f00d026 100644
+index 7c3127d..77169b9 100644
 --- a/src/platform/macos/misc.mm
 +++ b/src/platform/macos/misc.mm
-@@ -32,6 +32,7 @@
+@@ -24,6 +24,7 @@
+ #include <net/if_dl.h>
+ #include <pwd.h>
+ #include <sys/qos.h>
++#include <sys/stat.h>
+ 
+ // lib includes
+ #include <boost/asio/ip/address.hpp>
+@@ -32,6 +33,8 @@
  
  // local includes
  #include "misc.h"
 +#include "src/cliprelay_permissions.h"
++#include "src/cliprelay_state.h"
  #include "src/entry_handler.h"
  #include "src/logging.h"
  #include "src/platform/common.h"
-@@ -42,6 +43,16 @@ namespace bp = boost::process::v1;
+@@ -42,6 +45,33 @@ namespace bp = boost::process::v1;
  
  namespace platf {
  
@@ -800,9 +837,54 @@ index 7c3127d..f00d026 100644
 +    return cliprelay::macos::permission_command(argc, argv, api, output);
 +  }
 +
++  std::optional<int> cliprelay_state_command(int argc, const char *const *argv, std::ostream &output) {
++    const auto secure_directory = [](std::string_view value) {
++      const fs::path directory {value};
++      struct stat status {};
++      std::error_code error;
++      return lstat(directory.c_str(), &status) == 0 && S_ISDIR(status.st_mode) &&
++             status.st_uid == geteuid() && (status.st_mode & 07777) == 0700 &&
++             fs::canonical(directory, error) == directory && !error;
++    };
++    auto result = cliprelay::macos::state_command(argc, argv, getenv("CLIPRELAY_HOST_STATE_DIR"), secure_directory, output);
++    if (!result) {
++      // Config, logs, certificates and later implicit state share this mode.
++      umask(S_IRWXG | S_IRWXO);
++    }
++    return result;
++  }
++
  // Even though the following two functions are available starting in macOS 10.15, they weren't
  // actually in the Mac SDK until Xcode 12.2, the first to include the SDK for macOS 11
  #if __MAC_OS_X_VERSION_MAX_ALLOWED < 110000  // __MAC_11_0
+@@ -93,7 +123,7 @@ namespace platf {
+         CGPreflightScreenCaptureAccess != nullptr && CGRequestScreenCaptureAccess != nullptr && !CGPreflightScreenCaptureAccess()) {
+       BOOST_LOG(error) << "No screen capture permission!"sv;
+       BOOST_LOG(error) << "Please activate it in 'System Preferences' -> 'Privacy' -> 'Screen Recording'"sv;
+-      CGRequestScreenCaptureAccess();
++      // Permission requests are owned by the explicit application settings flow.
+       return nullptr;
+     }
+ #pragma clang diagnostic pop
+@@ -103,12 +133,13 @@ namespace platf {
+   }
+ 
+   fs::path appdata() {
+-    const char *homedir;
+-    if ((homedir = getenv("HOME")) == nullptr) {
+-      homedir = getpwuid(geteuid())->pw_dir;
++    // Static defaults are computed before main. Validation in main runs before
++    // config/log writes; do not fall back for a malformed explicit override.
++    if (const auto *directory = getenv("CLIPRELAY_HOST_STATE_DIR")) {
++      return fs::path {directory};
+     }
+-
+-    return fs::path {homedir} / ".config/sunshine"sv;
++    const auto *account = getpwuid(geteuid());
++    return fs::path {account && account->pw_dir ? account->pw_dir : "/nonexistent"} / "Library/Application Support/ClipRelay/host"sv;
+   }
+ 
+   using ifaddr_t = util::safe_ptr<ifaddrs, freeifaddrs>;
 diff --git a/src/platform/virtualhid_input.cpp b/src/platform/virtualhid_input.cpp
 index 362f50a..ee3dcc5 100644
 --- a/src/platform/virtualhid_input.cpp

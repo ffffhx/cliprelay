@@ -81,6 +81,17 @@ class PermissionCheckerTest(unittest.TestCase):
                 checker.check(self.engine, self.report)
         run.assert_not_called()
 
+    def test_permission_query_cannot_initialize_the_new_cliprelay_default_state(self):
+        def write_then_reply(*args, **kwargs):
+            state = self.root / 'fixture-home/Library/Application Support/ClipRelay/host'
+            state.mkdir(parents=True, exist_ok=True)
+            (state / 'sunshine.conf').write_text('fixture')
+            return self.reply(*args, **kwargs)
+        with patch.object(checker.subprocess, 'run', side_effect=write_then_reply):
+            with self.assertRaisesRegex(RuntimeError, 'changed application state'):
+                checker.check(self.engine, self.report)
+        self.assertFalse(self.report.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

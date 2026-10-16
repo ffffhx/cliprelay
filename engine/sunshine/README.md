@@ -301,10 +301,9 @@ outputs keep running. This follows the documented
 latest-frame replacement, bounded waits, cancellation, callback draining, output
 ownership and capture-loop deadlines. Only the capture session boundary is faked;
 no screen is recorded. The workflow requires all thirty-nine cases within a
-two-minute test-process deadline. Native validation of the capture changes is
-pending. Physical hotplug, capture permissions and monitor behavior remain
-unverified, as does a complete Mac hosting application. Host lifecycle and
-permission UI remain separate work.
+two-minute test-process deadline. Physical hotplug, capture permissions and
+monitor behavior remain unverified, as does a complete Mac hosting application.
+The app now has owned permission settings; host lifecycle remains separate work.
 
 The engine handles `--cliprelay-permissions status` before configuration, logging,
 capture or listener initialization. It returns one JSON object with current
@@ -318,10 +317,9 @@ revocation, denied requests, malformed arguments and unavailable functions.
 After signing, the packager runs four native status/invalid-command checks on
 the actual installed engine and records `permission-tests.json`. These checks
 never invoke a native permission request. They require clean JSON and unchanged
-application configuration and working directories. The engine archive includes
+Sunshine and ClipRelay default state plus working directories. The engine archive includes
 the command header, policy test and native checker source; the application
-packager requires the permission-command receipt too. Native validation of
-these new commands and their final app integration remains pending.
+packager requires the permission-command receipt too.
 Before signing, the engine receives the distinct `com.cliprelay.host-engine`
 bundle identifier and the name `ClipRelay Host`. The packaged engine declares
 this identity; macOS permission attribution when launched by the enclosing app
@@ -337,9 +335,26 @@ the pinned manifest, complete file inventory, included licenses, native machine
 type, actual minimum OS and contained dependencies before and after packaging.
 It also verifies the engine's signature using macOS `codesign` in both locations.
 Packages containing the engine require macOS 14.2. A `host-engine-bundle-*.json`
-receipt records the exact selection. This packages the engine only; it does not
-enable hosting, grant permissions or launch the engine. Native validation of
-this application packaging path is pending the capture build.
+receipt records the exact selection. The final packaged production Node owner
+executes two read-only native permission queries and verifies child cleanup.
+This does not enable hosting, grant permissions or validate actual streaming.
+
+Mac host startup requires `CLIPRELAY_HOST_STATE_DIR` to name an existing,
+canonical absolute directory owned by the current user with mode `0700`.
+Invalid, missing, aliased or permissive roots fail before configuration/log
+initialization. All platform app-data paths use this explicit root; the real
+`HOME` is unchanged. File creation uses a private umask, and the initial apps
+file receives owner-only permissions. Capture initialization never opens a
+permission request itself; the explicit app settings flow owns those requests.
+
+`--cliprelay-state check` validates the same admission rule without creating
+files. The signed-engine packager requires twelve native state checks, including
+real configuration/log initialization with an intentionally unknown command
+that exits before capture, permissions or network initialization. The receipt
+proves default application directories are unchanged and created state stays
+private. The state header, policy test and native checker are included in the
+archive, and application staging requires this receipt. Complete host service
+configuration, lifecycle, pairing and network integration remain separate work.
 
 This patch and control code are GPL-3.0-only, matching the modified Sunshine
 engine. Distribute the pinned upstream source reference, patch and added headers

@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -29,8 +30,10 @@ def check(engine: Path, report_path: Path) -> dict:
     if platform.system() != 'Darwin':
         raise RuntimeError('Native permission-command verification requires macOS')
     engine = engine.resolve(strict=True)
-    state = Path.home() / '.config/sunshine'
-    before = snapshot(state)
+    states = [Path.home() / '.config/sunshine', Path.home() / 'Library/Application Support/ClipRelay/host']
+    before = [snapshot(state) for state in states]
+    environment = dict(os.environ)
+    environment.pop('CLIPRELAY_HOST_STATE_DIR', None)
     cases, status = [], None
     with tempfile.TemporaryDirectory(prefix='cliprelay-permission-command-') as temporary:
         for name, args, expected in [
@@ -41,7 +44,7 @@ def check(engine: Path, report_path: Path) -> dict:
         ]:
             # No native permission request action is ever run by this fixture.
             result = subprocess.run([str(engine), *args], cwd=temporary, stdin=subprocess.DEVNULL,
-                                    capture_output=True, timeout=10, check=False)
+                                    capture_output=True, timeout=10, check=False, env=environment)
             if result.returncode != expected or len(result.stdout) > 4096 or len(result.stderr) > 16384:
                 raise RuntimeError('Native permission command failed: ' + name)
             value = json.loads(result.stdout)
@@ -54,7 +57,7 @@ def check(engine: Path, report_path: Path) -> dict:
             elif value != {'protocol': 1, 'error': 'invalid_command'}:
                 raise RuntimeError('Invalid native permission error reply')
             cases.append(name)
-        if list(Path(temporary).iterdir()) or snapshot(state) != before:
+        if list(Path(temporary).iterdir()) or [snapshot(state) for state in states] != before:
             raise RuntimeError('Permission query changed application state')
     report = {'protocol': 1, 'passed': True, 'cases': cases, 'lastStatus': status,
               'applicationStateUnchanged': True, 'nativeRequestsExecuted': False,

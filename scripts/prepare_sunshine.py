@@ -22,7 +22,7 @@ def prepare(source: Path, check: bool = False, macos_host: bool = False) -> None
         raise RuntimeError("Refusing to patch an already modified Sunshine source tree")
     headers = ["cliprelay_control.h", "cliprelay_audio.h", "cliprelay_input.h"]
     if macos_host:
-        headers.extend(["cliprelay_macos.h", "cliprelay_capture.h", "cliprelay_permissions.h"])
+        headers.extend(["cliprelay_macos.h", "cliprelay_capture.h", "cliprelay_permissions.h", "cliprelay_state.h"])
     if any((source / "src" / name).exists() for name in headers):
         raise RuntimeError("Refusing to replace an existing ClipRelay header")
     input_test = source / "tests/unit/test_cliprelay_input.cpp"
