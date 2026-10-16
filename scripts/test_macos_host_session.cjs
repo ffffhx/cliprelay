@@ -28,11 +28,12 @@ async function main(){
   const engine=new HostEngine({directory:path.join(appDirectory,'host-engine'),pin:pin('host-engine'),state:fixtureState,launch:launch('engine')});
   const companion=new HostCompanion({directory:path.join(appDirectory,'host-companion'),pin:pin('host-companion'),state:fixtureState,launch:launch('companion')});
   const fileTransfer=JSON.parse(fs.readFileSync(path.join(appDirectory,'host-companion','manifest.json'),'utf8')).fileTransfer===1;
+  const clipboardExchange=JSON.parse(fs.readFileSync(path.join(appDirectory,'host-companion','manifest.json'),'utf8')).clipboardExchange===1;
   const session=new HostSession({engine,companion,onUpdate:value=>phases.push(value)});
   async function start(){
     assert.equal((await session.start('Packaged CI Mac')).phase,'running');
     assert.equal(engine.snapshot().phase,'running');assert.equal(companion.snapshot().phase,'running');
-    assert.equal(session.snapshot().nativeWorkers,false);assert.equal(session.snapshot().fileTransfer,fileTransfer);runtimes.push(path.dirname(companion.ipcPath()));
+    assert.equal(session.snapshot().nativeWorkers,false);assert.equal(session.snapshot().fileTransfer,fileTransfer);assert.equal(session.snapshot().clipboardExchange,clipboardExchange);runtimes.push(path.dirname(companion.ipcPath()));
   }
   function reaped(){
     assert.equal(session.current,null);assert.equal(engine.current,null);assert.equal(companion.current,null);
@@ -46,7 +47,7 @@ async function main(){
   try{
     stage='both-start';await start();cases.push('packaged-engine-and-companion-start');
     const identity=state.id,certificate=state.read('cacert.pem',16384),authorization=state.authorization();
-    assert.deepEqual(Object.keys(session.snapshot()).sort(),['error','fileTransfer','nativeWorkers','phase']);cases.push('public-snapshot-without-credentials-or-ipc');
+    assert.deepEqual(Object.keys(session.snapshot()).sort(),['clipboardExchange','error','fileTransfer','nativeWorkers','phase']);cases.push('public-snapshot-without-credentials-or-ipc');
     stage='active-listener-stop';const ipc=await hold({path:companion.ipcPath()}),tls=await hold({host:'127.0.0.1',port:48792});
     const ipcClosed=once(ipc,'close'),tlsClosed=once(tls,'close');
     await session.stop();await Promise.all([ipcClosed,tlsClosed]);reaped();cases.push('joined-eof-stop-with-open-listeners');
