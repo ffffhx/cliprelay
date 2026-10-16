@@ -82,14 +82,17 @@ async function build(){
             session.keychainValidated!==false || session.nativeRequestsExecuted!==false || session.streamStarted!==false || session.systemInputInjected!==false)throw new Error('Packaged host session check failed');
         fs.writeFileSync(path.join(output,`host-companion-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:companionPin,
           verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session},null,2));
-        // Includes two independent production two-minute expiry checks.
-        const pairing=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_pairing.cjs'),appDirectory],{encoding:'utf8',timeout:360000,maxBuffer:65536}));
+        // Includes three independent production two-minute expiry checks.
+        const pairing=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_pairing.cjs'),appDirectory],{encoding:'utf8',timeout:480000,maxBuffer:65536}));
         if(pairing.passed!==true || pairing.actualChildStarts!==4 || pairing.realNativePairing!==true || pairing.pairedClientPersisted!==true ||
             pairing.remoteRejectionFeedback!==true || pairing.remoteExpiryFeedback!==true || !(pairing.rejectionFeedbackMs<5000) || !(pairing.expiryWaitMs>=110000 && pairing.expiryWaitMs<130000) ||
             pairing.pendingNativeResponsesReleased!==true || !(pairing.pendingNativeBeforeStop>=1 && pairing.pendingNativeBeforeStop<=2) ||
             pairing.nativeCleanup?.passed!==true || pairing.nativeCleanup.cases.length!==3 ||
             pairing.nativeCleanup.freshNativeIdentityOnNonceReuse!==true || pairing.nativeCleanup.staleReceiptRefused!==true ||
             pairing.nativeCleanup.ownerCloseCompletedNativeResponse!==true ||
+            pairing.nativeCleanup.autonomousExpiry?.passed!==true || pairing.nativeCleanup.autonomousExpiry.nativeExpiryStatus!==408 ||
+            pairing.nativeCleanup.autonomousExpiry.lateNativeStatus!==403 || pairing.nativeCleanup.autonomousExpiry.noPairingAPITrafficDuringWait!==true ||
+            pairing.nativeCleanup.autonomousExpiry.engineUnchanged!==true || pairing.nativeCleanup.autonomousExpiry.trustUnchanged!==true ||
             pairing.unauthorizedClientRefused!==true || pairing.ownedChildrenReaped!==true || pairing.defaultStateUnchanged!==true ||
             pairing.nativeWorkers!==false || pairing.keychainValidated!==false || pairing.nativeRequestsExecuted!==false || pairing.streamStarted!==false || pairing.systemInputInjected!==false)throw new Error('Packaged host approval and pairing check failed');
         fs.writeFileSync(path.join(output,`host-pairing-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pairing},null,2));

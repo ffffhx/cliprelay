@@ -3,7 +3,7 @@
 // exchange with a disposable synthetic client. No user GUI or streaming client.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {snapshot,encryptedStorage}=require('./test_macos_host_state.cjs');
-const {verifyNativeCleanup,nativeWaiter,holdManagedPairing}=require('./test_native_pairing_cleanup.cjs');
+const {verifyNativeCleanup,nativeWaiter,holdManagedPairing,verifyAutonomousExpiry}=require('./test_native_pairing_cleanup.cjs');
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(read,predicate){const deadline=Date.now()+15000;while(true){const value=await read();if(predicate(value))return value;if(Date.now()>deadline)throw Error('PACKAGED_PAIRING_WAIT_TIMEOUT');await pause(25);}}
 async function main(){
@@ -84,6 +84,21 @@ async function main(){
     stage='paired-tls';const control={address:'127.0.0.1',port:48791,path:'/not-a-command',method:'GET',identity:identities.client,
       trust:{cert:pairing.certificate},acceptStatuses:[404],timeout:3000,limit:2048};
     await exchange(control);await assert.rejects(exchange({...control,identity:identities.wrong}));cases.push('paired-client-tls-accepted-and-other-client-refused');
+    stage='abandoned-native-registration-expiry';
+    nativeCleanup.autonomousExpiry=await verifyAutonomousExpiry({exchange,identity:identities.wrong,
+      register:async()=>{
+        const id=crypto.randomBytes(16).toString('hex');
+        const client_fingerprint=crypto.createHash('sha256').update(new crypto.X509Certificate(identities.wrong.cert).raw).digest('hex');
+        const result=await jsonRequest({address:'127.0.0.1',port:48790,path:'/api/cliprelay/pairing',method:'POST',identity:identities.client,
+          trust:{cert:certificate},headers:{Authorization:state.authorization()},body:{id,client_fingerprint},timeout:3000,limit:2048});
+        assert.equal(result.protocol,1);assert.equal(result.status,true);return id;
+      },
+      // This generation deliberately has no companion owner to send DELETE.
+      // The actual engine must expire it without any later pairing API call.
+      abandon:async()=>({kind:'abandoned-native-registration'}),listNative:async()=>(await nativePending()).pairings,
+      engineIdentity:async()=>{const child=controller.owner.session.engine.current.child;assert.equal(child.exitCode,null);return child.pid;},
+      readTrust:async()=>JSON.parse(state.read('clients.json',4*1024*1024))});
+    cases.push('packaged-abandoned-native-expiry-without-pairing-api-traffic');
     stage='restart-pending';await until(nativePending,value=>value.pairings.length===0);
     // Managed requests now clean up promptly. Explicitly open one legacy
     // deferred response to retain the independent native shutdown regression.

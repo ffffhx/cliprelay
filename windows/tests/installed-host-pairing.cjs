@@ -9,7 +9,13 @@ const installed=path.join(process.env.LOCALAPPDATA,'ClipRelay'),state=path.join(
 const {pairHost}=require(path.join(installed,'electron','mac','pairing.cjs'));
 const {jsonRequest,exchange}=require(path.join(installed,'electron','mac','paired-transport.cjs'));
 const {identities}=require('./mac-pairing-fixture.cjs');
-const {verifyNativeCleanup,holdManagedPairing}=require('../../scripts/test_native_pairing_cleanup.cjs');
+const {verifyNativeCleanup,holdManagedPairing,verifyAutonomousExpiry}=require('../../scripts/test_native_pairing_cleanup.cjs');
+const execFile=require('node:util').promisify(require('node:child_process').execFile);
+async function helperProcess(action){
+  const {stdout}=await execFile(path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
+    ['-NoProfile','-NonInteractive','-File',path.join(__dirname,'installed-pairing-helper-fault.ps1'),'-Action',action],
+    {windowsHide:true,timeout:15000,maxBuffer:4096});return JSON.parse(stdout);
+}
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function control(command){
   return new Promise((resolve,reject)=>{
@@ -95,6 +101,20 @@ async function main(){
     const firstDevice=current.named_certs.find(value=>value.name==='Approved installed client'),secondDevice=current.named_certs.find(value=>value.name==='Preserved installed client');
     assert.ok(firstDevice?.enabled);assert.ok(secondDevice?.enabled);assert.match(current.viewId,/^[0-9a-f]{32}$/);
     cases.push('installed-two-client-native-list-and-current-engine-view');
+    stage='helper-crash-autonomous-expiry';
+    nativeCleanup.autonomousExpiry=await verifyAutonomousExpiry({exchange,identity:identities.client,
+      register:async()=>(await jsonRequest({address:'127.0.0.1',port:48792,path:'/v1/pair',identity:identities.client,trust:{bootstrap:true},
+        timeout:4000,limit:2048,headers:{'X-ClipRelay-Pairing-Feedback':'1','X-ClipRelay-Pairing-Native':'1'},
+        body:{name:'Helper crash fixture',nonce:crypto.randomBytes(16).toString('hex'),pin:'1234'}})).native.id,
+      abandon:async()=>{const result=await helperProcess('Kill');assert.equal(result.killed,true);return {kind:'installed-helper-hard-termination',oldHelperPid:result.pid};},
+      listNative:async()=>(await request({action:'pairings'})).pairings.filter(value=>!value.automatic),
+      engineIdentity:async()=>(await request({action:'status'})).pid,
+      readTrust:async()=>(await request({action:'clients'})).named_certs});
+    const replacementHelper=await helperProcess('Inspect');
+    assert.notEqual(replacementHelper.pid,nativeCleanup.autonomousExpiry.fault.oldHelperPid);
+    assert.deepEqual((await request({action:'lanPairings'})).pairings,[]);
+    nativeCleanup.autonomousExpiry.helperRestarted=true;
+    cases.push('installed-helper-crash-native-expiry-without-pairing-api-traffic');
     const expected=new crypto.X509Certificate(paired.certificate).raw;
     agent=new https.Agent({keepAlive:true,maxSockets:1,maxCachedSessions:0,cert:identities.client.cert,key:identities.client.key,ca:paired.certificate,
       minVersion:'TLSv1.2',checkServerIdentity:(_host,cert)=>cert.raw?.equals(expected)?undefined:Error('HOST_CERT_CHANGED')});

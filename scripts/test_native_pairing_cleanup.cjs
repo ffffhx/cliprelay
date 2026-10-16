@@ -74,4 +74,30 @@ async function holdManagedPairing({jsonRequest,exchange,identity,listNative}){
     }};
   }catch(error){owner.abort();await waiting;throw error;}
 }
-module.exports={verifyNativeCleanup,nativeWaiter,holdManagedPairing};
+async function verifyAutonomousExpiry({exchange,identity,register,abandon,listNative,engineIdentity,readTrust}){
+  const engine=await engineIdentity(),trust=await readTrust(),started=Date.now();
+  const id=await register();assert.match(id,/^[0-9a-f]{32}$/);
+  const owner=new AbortController();let ended=false;
+  const waiting=nativeWaiter(exchange,identity,id,{signal:owner.signal})
+    .then(value=>{ended=true;return {value};},error=>{ended=true;return {error};});
+  try{
+    await until(listNative,entries=>entries.some(entry=>entry.managed_id===id));
+    assert.equal(ended,false,'Fault must occur while the native response is held');
+    const fault=await abandon(id);
+    assert.equal(ended,false,'Abandonment must not perform native cleanup');
+    // Deliberately issue no pairing request, status poll, or cancellation until
+    // the native HTTP response itself ends. Old lazy expiry cannot pass this.
+    const result=await waiting;if(result.error)throw result.error;
+    const elapsedMs=Date.now()-started;
+    assert.match(result.value,/<root\b[^>]*status_code="408"/);assert.match(result.value,/<paired>0<\/paired>/);
+    assert.ok(elapsedMs>=118000 && elapsedMs<130000,`Unexpected native lifetime: ${elapsedMs}`);
+    assert.equal(await engineIdentity(),engine,'Engine must survive the fault');
+    assert.deepEqual(await readTrust(),trust,'Expiry must preserve existing paired clients');
+    assert.equal((await listNative()).some(entry=>entry.managed_id===id),false);
+    const late=await nativeWaiter(exchange,identity,id,{timeout:3000});
+    assert.match(late,/<root\b[^>]*status_code="403"/);assert.match(late,/<paired>0<\/paired>/);
+    return {passed:true,fault,elapsedMs,productionLifetimeMs:120000,noPairingAPITrafficDuringWait:true,
+      nativeExpiryStatus:408,lateNativeStatus:403,engineUnchanged:true,trustUnchanged:true};
+  }finally{owner.abort();await waiting;}
+}
+module.exports={verifyNativeCleanup,nativeWaiter,holdManagedPairing,verifyAutonomousExpiry};
