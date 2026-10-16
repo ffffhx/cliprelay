@@ -79,6 +79,24 @@ index c364049..eb4804b 100644
      server.resource["^/api/clients/unpair$"]["POST"] = unpair;
      server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
      server.resource["^/api/clients/update$"]["POST"] = updateClient;
+diff --git a/src/httpcommon.cpp b/src/httpcommon.cpp
+index d12d010..8e91318 100644
+--- a/src/httpcommon.cpp
++++ b/src/httpcommon.cpp
+@@ -192,7 +192,13 @@ namespace http {
+       return -1;
+     }
+ 
++#ifdef __APPLE__
++    // Keep every engine-managed file inside the application's private state
++    // contract; the parent validates it before certificate pinning or restart.
++    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
++#else
+     fs::permissions(cert_path, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
++#endif
+ 
+     if (err_code) {
+       BOOST_LOG(error) << "Couldn't change permissions of ["sv << config::nvhttp.cert << "] :"sv << err_code.message();
 diff --git a/src/main.cpp b/src/main.cpp
 index f349a23..601aaaa 100644
 --- a/src/main.cpp

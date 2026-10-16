@@ -76,7 +76,7 @@ function verify(directory,pin){
       !object(manifest.files) || !sameKeys(manifest.sourceHashes,SOURCES) || !sameKeys(manifest.symlinks,[]) ||
       !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
-      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==45 || new Set(manifest.inputTests).size!==45)reject();
+      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==46 || new Set(manifest.inputTests).size!==46)reject();
   const expected=Object.keys(manifest.files);
   if(expected.length>4096 || REQUIRED.some(name=>!Object.hasOwn(manifest.files,name)))reject();
   const names=new Set(['manifest.json']);

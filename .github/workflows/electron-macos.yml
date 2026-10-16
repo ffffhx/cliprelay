@@ -12,7 +12,7 @@ on:
         required: false
         type: string
       host_engine_run_id:
-        description: 'Successful Sunshine macOS Host Build with 45 native cases to embed (empty: no host engine)'
+        description: 'Successful Sunshine macOS Host Build with 46 native cases to embed (empty: no host engine)'
         required: false
         type: string
 

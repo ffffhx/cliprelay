@@ -328,7 +328,7 @@ still requires runtime validation. Its bundle minimum system version is macOS
 remain ad-hoc; this does not establish Developer ID distribution or notarization.
 
 The Electron macOS packaging workflow accepts an explicit `host_engine_run_id`.
-It requires a successful native host workflow with all forty-five tests, verifies
+It requires a successful native host workflow with all forty-six tests, verifies
 the archive checksum and every included source against that run's Git commit,
 then stages the matching arm64 or x86_64 engine. The application packager checks
 the pinned manifest, complete file inventory, included licenses, native machine
@@ -364,7 +364,8 @@ is joined on normal exit and never closes a descriptor it does not own. Native
 self-restart exits instead of forking a supervisor; ClipRelay owns replacements.
 
 `--cliprelay-owner check` and `--cliprelay-owner wait` exercise this ownership
-without capture or listeners. Packaging requires six native pipe/monitor tests
+without capture or listeners. Packaging requires seven native pipe/monitor and
+private certificate-file tests
 and sixteen signed-engine command/process cases, including owner exit/crash and
 rejection of full startup without an owner. `/api/cliprelay/host` is a read-only,
 authenticated Mac endpoint returning the actual engine PID, parent PID and

@@ -2,14 +2,17 @@
 /** @file macos_owner_test.cpp @brief Actual Mac pipe ownership and monitor lifecycle tests. */
 #ifdef __APPLE__
   #include "src/cliprelay_owner.h"
+  #include "src/httpcommon.h"
 
   #include <fcntl.h>
+  #include <filesystem>
   #include <gtest/gtest.h>
 
 /** @brief Own disposable descriptors without starting any host or reading user state. */
 class ClipRelayMacOwnerTest: public testing::Test {
 protected:
   int pipe_[2] {-1, -1};  ///< Fixture-only ownership pipe.
+  std::filesystem::path credential_root_;  ///< Optional disposable certificate fixture directory.
 
   /** @brief Open a private test pipe. */
   void SetUp() override {
@@ -22,6 +25,10 @@ protected:
       if (descriptor >= 0) {
         close(descriptor);
       }
+    }
+    if (!credential_root_.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove_all(credential_root_, ignored);
     }
   }
 
@@ -119,5 +126,23 @@ TEST_F(ClipRelayMacOwnerTest, UnfinishedCleanupHasAHardDeadline) {
   ASSERT_TRUE(wait(forced));
   EXPECT_EQ(lost.load(), 1);
   EXPECT_EQ(forced.load(), 1);
+}
+
+TEST_F(ClipRelayMacOwnerTest, GeneratedTLSFilesPreservePrivateStatePermissions) {
+  auto temporary = (std::filesystem::temp_directory_path() / "cliprelay-owner-credentials-XXXXXX").string();
+  ASSERT_NE(mkdtemp(temporary.data()), nullptr);
+  credential_root_ = temporary;
+  const auto key = credential_root_ / "cakey.pem";
+  const auto certificate = credential_root_ / "cacert.pem";
+  ASSERT_EQ(http::create_creds(key.string(), certificate.string()), 0);
+  for (const auto &file : {key, certificate}) {
+    struct stat info {};
+    ASSERT_EQ(lstat(file.c_str(), &info), 0);
+    EXPECT_TRUE(S_ISREG(info.st_mode));
+    EXPECT_EQ(info.st_mode & 07777, 0600);
+    EXPECT_EQ(info.st_uid, geteuid());
+    EXPECT_EQ(info.st_nlink, 1);
+    EXPECT_GT(info.st_size, 0);
+  }
 }
 #endif
