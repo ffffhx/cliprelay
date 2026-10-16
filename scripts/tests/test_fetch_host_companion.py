@@ -5,6 +5,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+import copy
 
 spec = importlib.util.spec_from_file_location('fetch_host_companion', Path(__file__).resolve().parents[1]/'fetch_host_companion.py')
 fetcher = importlib.util.module_from_spec(spec)
@@ -38,6 +39,23 @@ class CompanionArchiveTest(unittest.TestCase):
         artifact = fetcher.unpack(self.archive, self.output)
         self.assertEqual(artifact, self.output/'host-companion')
         self.assertEqual((artifact/'runtime/cliprelay-host-network').read_bytes(), b'fixture')
+
+    def test_only_named_optional_terminal_receipt_is_accepted(self):
+        self.make('host-companion/terminal-process-report.json')
+        artifact = fetcher.unpack(self.archive, self.output)
+        self.assertTrue((artifact/'terminal-process-report.json').is_file())
+
+    def test_terminal_receipt_requires_complete_cases_and_exact_native_binary(self):
+        report = dict(passed=True, scope='packaged owned terminal process, not HTTP/client integration',
+                      architecture='arm64', binarySha256='a'*64, cases=list(fetcher.TERMINAL_CASES))
+        fetcher.verify_terminal_report(report, 'arm64', 'a'*64)
+        for field, value in [('passed', 1), ('passed', False), ('scope', 'HTTP verified'), ('architecture', 'x86_64'),
+                             ('binarySha256', 'b'*64), ('cases', report['cases'][:-1]), ('extra', True)]:
+            with self.subTest(field=field):
+                changed = copy.deepcopy(report)
+                changed[field] = value
+                with self.assertRaises(ValueError):
+                    fetcher.verify_terminal_report(changed, 'arm64', 'a'*64)
 
     def test_missing_unexpected_escape_and_alias_entries_fail_before_writes(self):
         for name in ['host-companion/unexpected', '../escape', '/host-companion/escape',

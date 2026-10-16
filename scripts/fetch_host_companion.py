@@ -20,6 +20,19 @@ FILE_CASES = ['tls-files-desktop-resume-and-no-overwrite', 'tls-files-owner-and-
 CLIPBOARD_CASES = ['tls-clipboard-text-image-and-idempotence', 'tls-clipboard-owner-and-live-revocation',
                    'clipboard-worker-crash-recovery', 'clipboard-eof-joins-worker',
                    'clipboard-parent-loss-with-writer-held', 'clipboard-owner-admission', 'tls-clipboard-desktop-client']
+TERMINAL_CASES = [shell+': '+case for shell in ['zsh', 'bash'] for case in [
+    'inventory and duplicate open', 'Unicode and lost input ACK deduplication', 'whole 14 KB paste digest',
+    'native resize', 'live revocation reaps native shell']]
+TERMINAL_CASES += ['worker EOF reaps foreground shell through guardian', 'worker SIGKILL reaps foreground shell through guardian']
+TERMINAL_REPORT = 'terminal-process-report.json'
+
+
+def verify_terminal_report(report, arch, executable_hash):
+    if (set(report) != {'passed', 'scope', 'architecture', 'binarySha256', 'cases'}
+            or report['passed'] is not True or report['cases'] != TERMINAL_CASES
+            or report['scope'] != 'packaged owned terminal process, not HTTP/client integration'
+            or report['architecture'] != arch or report['binarySha256'] != executable_hash):
+        raise ValueError('Terminal receipt does not match selected executable and complete acceptance cases')
 
 
 def entries(archive, *, limit=96*1024*1024):
@@ -47,7 +60,8 @@ def unpack(archive_path, directory):
     with tarfile.open(archive_path) as archive:
         members = entries(archive)
         required = {'host-companion/'+name for name in FILES | {'manifest.json', 'process-report.json'}}
-        if ({member.name for member in members if member.isfile()} != required
+        actual = {member.name for member in members if member.isfile()}
+        if (not required <= actual or actual-required not in (set(), {'host-companion/'+TERMINAL_REPORT})
                 or any(member.name.rstrip('/') not in ('host-companion', 'host-companion/runtime')
                        for member in members if member.isdir())):
             raise ValueError('Unexpected companion archive layout')
@@ -64,9 +78,16 @@ def verify_sources(source_path, commit):
         subprocess.run(['git', 'fetch', '--depth=1', 'origin', commit], cwd=ROOT, check=True)
     paths = output('git', 'ls-tree', '-r', '--name-only', commit, 'network/inputfocus',
                    'network/hostcompanion', 'network/hostfiles', 'network/hostclipboard', 'network/cmd/cliprelay-host-network').decode().splitlines()
+    # Intermediate older builds contained the new package in Git before the
+    # companion linked it. Match the source list to that selected build script.
+    terminal = b"'hostterminal'" in output('git', 'show', commit+':scripts/build_host_companion.py')
+    if terminal:
+        paths += output('git', 'ls-tree', '-r', '--name-only', commit, 'network/hostterminal').decode().splitlines()
     expected = {name for name in paths if name.endswith(('.go', '.m', '.h'))}
     expected |= {'LICENSE', 'network/go.mod', 'network/go.sum', 'scripts/build_host_companion.py',
                  'scripts/network_notices.py', 'scripts/test_host_companion.py'}
+    if terminal:
+        expected.add('scripts/test_host_terminal_process.py')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard.py').strip():
         expected.add('scripts/test_host_clipboard.py')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_clipboard_client.cjs').strip():
@@ -109,6 +130,15 @@ def fetch(run, arch, directory):
     clipboard_exchange = json.loads((artifact/'manifest.json').read_bytes()).get('clipboardExchange') == 1
     expected_cases = (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
     executable_hash = hashlib.sha256((artifact/'runtime/cliprelay-host-network').read_bytes()).hexdigest()
+    terminal = b"'hostterminal'" in subprocess.check_output(['git', 'show', commit+':scripts/build_host_companion.py'], cwd=ROOT)
+    terminal_receipt = artifact/TERMINAL_REPORT
+    if terminal != terminal_receipt.exists():
+        raise ValueError('Terminal process receipt is missing or unexpected for the selected build')
+    if terminal:
+        raw = terminal_receipt.read_bytes()
+        if len(raw) > 16384:
+            raise ValueError('Terminal receipt exceeds size limit')
+        verify_terminal_report(json.loads(raw), arch, executable_hash)
     if (report['cases'] != expected_cases or report['passed'] != len(expected_cases) or report['nativeWorkers'] is not False
             or (file_transfer and report.get('fileTransfer') != 1)
             or (clipboard_exchange and report.get('clipboardExchange') != 1)
@@ -116,6 +146,8 @@ def fetch(run, arch, directory):
         raise ValueError('Companion process receipt does not match the selected architecture and executable')
     result = {'run': int(run), 'architecture': arch, 'pin': pin, 'sourceFilesVerified': source_files,
               'directory': str(artifact), 'archiveSha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
+    if terminal:
+        result['terminalProcessCasesVerified'] = len(TERMINAL_CASES)
     (directory/'selection.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
     return result
 

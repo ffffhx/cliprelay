@@ -22,10 +22,16 @@ function fixture(t){
   return {base,source,manifest,pin,update};
 }
 test('both native slices are verified and only pinned files are copied into a fresh package',t=>{
-  const f=fixture(t);fs.writeFileSync(path.join(f.source,'process-report.json'),'{}');
+  const f=fixture(t);for(const name of ['process-report.json','terminal-process-report.json'])fs.writeFileSync(path.join(f.source,name),'{}');
   const dest=path.join(f.base,'staged'),result=stage(f.source,dest,f.pin);
   assert.deepEqual(result.nativeMinimumOS,{x86_64:'12.0.0',arm64:'12.0.0'});verify(dest,f.pin);
-  assert.equal(fs.existsSync(path.join(dest,'process-report.json')),false);assert.throws(()=>stage(f.source,dest,f.pin));
+  for(const name of ['process-report.json','terminal-process-report.json'])assert.equal(fs.existsSync(path.join(dest,name)),false);assert.throws(()=>stage(f.source,dest,f.pin));
+});
+
+test('optional CI terminal receipts remain bounded and cannot redirect file access',t=>{
+  const f=fixture(t),receipt=path.join(f.source,'terminal-process-report.json');
+  fs.writeFileSync(receipt,Buffer.alloc(16385));assert.throws(()=>verify(f.source,f.pin));fs.unlinkSync(receipt);
+  fs.linkSync(path.join(f.source,'LICENSE'),receipt);assert.throws(()=>verify(f.source,f.pin));
 });
 test('unselected manifests, changed payloads and unknown files fail admission',t=>{
   const f=fixture(t);assert.throws(()=>verify(f.source,{...f.pin,manifestSha256:'b'.repeat(64)}));

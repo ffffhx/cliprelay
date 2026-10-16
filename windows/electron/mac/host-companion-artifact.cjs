@@ -56,7 +56,7 @@ function verify(directory,pin){
   const expected=new Set([...FILES,'manifest.json']);
   // CI adds this unpinned receipt after building the manifest. It is verified
   // against the selected run by the fetcher and never copied into the app.
-  const optional='process-report.json';
+  const optional=new Set(['process-report.json','terminal-process-report.json']);
   function visit(current,relative=''){
     for(const entry of fs.readdirSync(current,{withFileTypes:true})){
       const name=relative+entry.name,file=path.join(current,entry.name);
@@ -64,7 +64,7 @@ function verify(directory,pin){
       if(entry.isDirectory()){
         if(name!=='runtime')reject();visit(file,name+'/');
       }else if(entry.isFile()){
-        if(name===optional)read(file,16384);
+        if(optional.has(name))read(file,16384);
         else if(!expected.delete(name))reject();
       }else reject();
     }
