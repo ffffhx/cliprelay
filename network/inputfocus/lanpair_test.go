@@ -122,3 +122,53 @@ func TestLANVerificationChangesWithEitherIdentityOrNonce(t *testing.T) {
 		}
 	}
 }
+
+func TestLANPairingCloseJoinsApprovalAndRemovesPrivateRequests(t *testing.T) {
+	p := newLANPairer(context.Background(), t.TempDir(), tls.Certificate{Certificate: [][]byte{[]byte("fixture host")}})
+	defer p.close()
+	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	p.engine = func(ctx context.Context, _, _ string, _ any) ([]byte, error) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return nil, ctx.Err()
+	}
+	body := `{"name":"fixture phone","nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pin":"1234"}`
+	w := lanCall(p, []byte("fixture phone"), "POST", "/v1/pair", body)
+	var request lanRequest
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &request) != nil {
+		t.Fatal("pairing fixture not admitted")
+	}
+	if err := os.WriteFile(filepath.Join(p.dir, request.ID+".approved"), []byte("fixture approval"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitHostSignal(t, started, "pending approval")
+	done := make(chan struct{})
+	go func() { p.close(); close(done) }()
+	waitHostSignal(t, cancelled, "approval cancellation")
+	select {
+	case <-done:
+		t.Fatal("pairing owner returned before approval joined")
+	default:
+	}
+	if w := lanCall(p, []byte("another phone"), "POST", "/v1/pair", body); w.Code != 503 {
+		t.Fatal("closed owner created another pending request")
+	}
+	close(release)
+	waitHostSignal(t, done, "pairing owner close")
+	entries, err := os.ReadDir(p.dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("request or approval survived owner close", err)
+	}
+	if len(p.requests) != 0 {
+		t.Fatal("memory request survived owner close")
+	}
+}

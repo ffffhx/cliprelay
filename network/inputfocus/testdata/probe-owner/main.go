@@ -6,14 +6,25 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 func main() {
-	if len(os.Args) != 2 || os.Args[1] != "--focus-probe" {
+	if len(os.Args) != 2 || (os.Args[1] != "--focus-probe" && os.Args[1] != "--voice-probe") {
 		os.Exit(2)
 	}
+	if marker := os.Getenv("CLIPRELAY_PROBE_FIXTURE_STARTED"); marker != "" {
+		if os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0600) != nil {
+			os.Exit(3)
+		}
+	}
+	defer func() {
+		if marker := os.Getenv("CLIPRELAY_PROBE_FIXTURE_EXITED"); marker != "" {
+			_ = os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0600)
+		}
+	}()
 	scanner := bufio.NewScanner(os.Stdin)
 	out := json.NewEncoder(os.Stdout)
 	ignoreEOF := false

@@ -24,7 +24,8 @@ func TestProbeOwnerCancelledBeforeLaunch(t *testing.T) {
 	}
 }
 
-func TestProbeOwnerProcessLifecycle(t *testing.T) {
+func buildProbeOwnerFixture(t *testing.T) string {
+	t.Helper()
 	executable := filepath.Join(t.TempDir(), "probe-owner")
 	if runtime.GOOS == "windows" {
 		executable += ".exe"
@@ -34,6 +35,11 @@ func TestProbeOwnerProcessLifecycle(t *testing.T) {
 	if output, err := exec.CommandContext(buildCtx, "go", "build", "-o", executable, "./testdata/probe-owner").CombinedOutput(); err != nil {
 		t.Fatalf("build disposable worker: %v\n%s", err, output)
 	}
+	return executable
+}
+
+func TestProbeOwnerProcessLifecycle(t *testing.T) {
+	executable := buildProbeOwnerFixture(t)
 	newProbe := func(t *testing.T, ctx context.Context) *probe {
 		t.Helper()
 		p := &probe{ctx: ctx, executable: executable, timeout: 15 * time.Second}

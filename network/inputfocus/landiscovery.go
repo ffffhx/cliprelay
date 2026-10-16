@@ -1,7 +1,6 @@
 package inputfocus
 
 import (
-	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -25,13 +24,8 @@ func discoveryReply(packet []byte, name string) []byte {
 	return b
 }
 
-func serveLANDiscovery(ctx context.Context) error {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 47634})
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	go func() { <-ctx.Done(); conn.Close() }()
+// The listener group owns this already-bound socket and closes it on shutdown.
+func serveLANDiscovery(conn *net.UDPConn) error {
 	name, _ := os.Hostname()
 	buffer := make([]byte, 256)
 	// Limit total responses even when untrusted LAN hosts flood queries.

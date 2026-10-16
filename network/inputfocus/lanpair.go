@@ -12,10 +12,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,6 +38,9 @@ type lanRequest struct {
 
 type lanPairer struct {
 	mu         sync.Mutex
+	closed     bool
+	pending    sync.WaitGroup
+	closeIdle  func()
 	dir        string
 	serverCert []byte
 	requests   map[string]*lanRequest
@@ -63,6 +64,7 @@ func newLANPairerWithAccess(ctx context.Context, dir string, cert tls.Certificat
 			return nil
 		}}}
 	client := &http.Client{Transport: transport, Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	p.closeIdle = transport.CloseIdleConnections
 	p.engine = func(ctx context.Context, method, path string, body any) ([]byte, error) {
 		password, certificate, err := access()
 		if err != nil {
@@ -155,6 +157,11 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	id, code := verification(p.serverCert, clientCert, input.Nonce)
 	p.mu.Lock()
+	if p.closed || p.ctx.Err() != nil {
+		p.mu.Unlock()
+		http.Error(w, "pairing stopping", 503)
+		return
+	}
 	if existing := p.requests[id]; existing != nil {
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -188,6 +195,7 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.requests[id] = request
+	p.pending.Add(1)
 	p.mu.Unlock()
 	go p.run(ctx, request)
 	w.Header().Set("Content-Type", "application/json")
@@ -195,6 +203,7 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
+	defer p.pending.Done()
 	defer func() {
 		request.cancel()
 		p.mu.Lock()
@@ -240,20 +249,21 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 	}
 }
 
-func serveLANPairing(ctx context.Context, dir string, cert tls.Certificate) error {
-	return serveLANPairingWithAccess(ctx, dir, cert, fileEngineAccess(dir))
+func (p *lanPairer) close() {
+	p.mu.Lock()
+	p.closed = true
+	for _, request := range p.requests {
+		request.cancel()
+	}
+	p.mu.Unlock()
+	p.pending.Wait()
+	if p.closeIdle != nil {
+		p.closeIdle()
+	}
 }
 
-func serveLANPairingWithAccess(ctx context.Context, dir string, cert tls.Certificate, access EngineAccess) error {
-	p := newLANPairerWithAccess(ctx, dir, cert, access)
-	server := &http.Server{Addr: ":48792", Handler: p, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 4 * time.Second, WriteTimeout: 4 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
+func lanPairingServer(cert tls.Certificate, p *lanPairer) *http.Server {
+	return &http.Server{Addr: ":48792", Handler: p, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 4 * time.Second, WriteTimeout: 4 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
 		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAnyClientCert},
 		ErrorLog:  nil}
-	// Bind separately so an occupied port fails before starting a permanent waiter.
-	listener, err := net.Listen("tcp", server.Addr)
-	if err != nil {
-		return fmt.Errorf("LAN pairing listener: %w", err)
-	}
-	go func() { <-ctx.Done(); server.Close() }()
-	return server.ServeTLS(listener, "", "")
 }

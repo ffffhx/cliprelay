@@ -409,6 +409,11 @@ func Serve(ctx context.Context, dir, executable string) error {
 // Unlike Serve it does not require a plaintext service.json. Callers still own
 // context cancellation, native provider capabilities and complete host readiness.
 func ServeWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess) error {
+	return serveWithEngineAccess(ctx, dir, executable, access, bindHostListeners)
+}
+
+func serveWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess,
+	bind func(context.Context, string) (*hostListeners, error)) error {
 	if access == nil {
 		return errEngineAccessUnavailable
 	}
@@ -430,13 +435,11 @@ func ServeWithEngineAccess(ctx context.Context, dir, executable string, access E
 	}
 	clients := filepath.Join(dir, "clients.json")
 	relay := newRelayMailbox(clients)
-	relayListener, err := relayPipe(dir)
+	listeners, err := bind(ctx, dir)
 	if err != nil {
 		return err
 	}
-	defer relayListener.Close()
-	go relay.serveLocal(ctx, relayListener)
-	go relay.maintain(ctx)
+	defer listeners.close()
 	p := &probe{ctx: ctx, executable: executable}
 	voice := &probe{ctx: ctx, executable: executable, argument: "--voice-probe"}
 	files := &probe{ctx: ctx, executable: executable, argument: "--file-probe", maxOutput: fileMessageLimit, timeout: 15 * time.Second}
@@ -475,9 +478,7 @@ func ServeWithEngineAccess(ctx context.Context, dir, executable string, access E
 		ErrorLog:  log.New(io.Discard, "", 0),
 		TLSConfig: controlTLSConfig(cert, clients),
 	}
-	go func() { _ = serveLANPairingWithAccess(ctx, dir, cert, access) }()
 	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProviderWithAccess(access))
-	go func() { _ = serveLANDiscovery(ctx) }()
-	go func() { <-ctx.Done(); server.Close() }()
-	return server.ListenAndServeTLS("", "")
+	pairer := newLANPairerWithAccess(ctx, dir, cert, access)
+	return runHostListeners(ctx, cancel, listeners, server, pairer, cert, relay)
 }

@@ -467,21 +467,28 @@ func (m *relayMailbox) handler(next http.Handler) http.Handler {
 }
 
 // Local publisher IPC is implemented by an OS-protected listener, not HTTP.
-func (m *relayMailbox) serveLocal(ctx context.Context, listener net.Listener) {
-	done := make(chan struct{})
-	defer close(done)
+func (m *relayMailbox) serveLocal(ctx context.Context, listener net.Listener) error {
+	ctx, cancel := context.WithCancel(ctx)
+	var pending sync.WaitGroup
+	var mu sync.Mutex
+	connections := make(map[net.Conn]struct{})
+	stopped := make(chan struct{})
 	go func() {
-		select {
-		case <-ctx.Done():
-			listener.Close()
-		case <-done:
+		defer close(stopped)
+		<-ctx.Done()
+		_ = listener.Close()
+		mu.Lock()
+		for connection := range connections {
+			_ = connection.Close()
 		}
+		mu.Unlock()
 	}()
+	defer func() { cancel(); <-stopped; pending.Wait() }()
 	workers := make(chan struct{}, 8)
 	for {
 		connection, err := listener.Accept()
 		if err != nil {
-			return
+			return err
 		}
 		select {
 		case workers <- struct{}{}:
@@ -489,9 +496,25 @@ func (m *relayMailbox) serveLocal(ctx context.Context, listener net.Listener) {
 			connection.Close()
 			continue
 		}
+		mu.Lock()
+		if ctx.Err() != nil {
+			mu.Unlock()
+			<-workers
+			_ = connection.Close()
+			return ctx.Err()
+		}
+		connections[connection] = struct{}{}
+		pending.Add(1)
+		mu.Unlock()
 		go func() {
+			defer pending.Done()
 			defer func() { <-workers }()
-			defer connection.Close()
+			defer func() {
+				_ = connection.Close()
+				mu.Lock()
+				delete(connections, connection)
+				mu.Unlock()
+			}()
 			_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
 			line, err := bufio.NewReaderSize(connection, relayLineLimit+1).ReadSlice('\n')
 			if err != nil || len(line) > relayLineLimit || !utf8.Valid(line) {
