@@ -125,9 +125,17 @@ def receiver_command():
 
 def run_mouse(tls, session, sequence):
     for index, resize in enumerate((False, True)):
+        before = read_all(tls, session)[1]['mouse']['epoch']
         write(tls, session, sequence+index, receiver_command())
-        eventually(lambda: read_all(tls, session)[1]['mouse']['mode'] == 1002)
-        state = read_all(tls, session)[1]['mouse']
+        ready = []
+        def observe_ready():
+            mouse = read_all(tls, session)[1]['mouse']
+            if mouse['mode'] == 1002 and mouse['format'] == 1006 and mouse['epoch'] > before:
+                ready.append(mouse)
+                return True
+            return False
+        eventually(observe_ready)
+        state = ready[-1]
         column, row = (90, 25) if resize else (5, 7)
         press = dict(session, op='mouse', sequence=state['acceptedSequence']+1, action='press', epoch=state['epoch'],
                      gesture=state['nextGesture'], column=column, row=row, button=0, modifiers=0)
@@ -146,7 +154,10 @@ def run_mouse(tls, session, sequence):
             expected += '\x1b[<32;6;8M\x1b[<0;6;8m'
         expected = base64.b64encode(expected.encode()).decode()
         eventually(lambda: 'HTTP_MOUSE_CAPTURE_'+expected+'_END' in read_all(tls, session)[0], 5)
-        eventually(lambda: read_all(tls, session)[1]['mouse']['buttons'] == 0)
+        def observe_reset():
+            mouse = read_all(tls, session)[1]['mouse']
+            return mouse['buttons'] == 0 and mouse['mode'] == 0 and mouse['format'] == 0 and mouse['epoch'] > state['epoch']
+        eventually(observe_reset)
 
 
 def worker_pid(parent):
