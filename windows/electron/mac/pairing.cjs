@@ -12,7 +12,7 @@ async function pairHost({address,port=48789,name,identity,signal,onVerification=
   const owner=new AbortController(),cancel=()=>owner.abort();
   signal?.addEventListener('abort',cancel,{once:true});if(signal?.aborted)cancel();
   const base={address:target.address,identity,trust,signal:owner.signal};
-  let id,bound,monitorTask,feedbackError;
+  let id,bound,monitorTask,feedbackError,readFeedback;
   try{
     const bootstrap=await jsonRequest({...base,port:ports.bootstrap || port+3,path:'/v1/pair',body:{nonce,name,pin},headers:{'X-ClipRelay-Pairing-Feedback':'1','X-ClipRelay-Pairing-Native':'1'},timeout:6000,limit:2048});
     const digest=hash('cliprelay-lan-pair-v1\n',new crypto.X509Certificate(trust.cert).raw,new crypto.X509Certificate(identity.cert).raw,nonce).toString('hex');
@@ -21,8 +21,8 @@ async function pairHost({address,port=48789,name,identity,signal,onVerification=
     if(bootstrap.id!==id || bootstrap.verification!==verification)throw fault('PAIRING_CODE_MISMATCH');
     bound=feedback.ticket(bootstrap);
     const nativeID=feedback.nativeTicket(bootstrap),sessionID=nativeID || id;
-    if(bound)monitorTask=feedback.monitor({bound,signal:owner.signal,read:()=>jsonRequest({...base,
-      port:ports.bootstrap || port+3,path:'/v1/pair/status',body:{id,receipt:bound.receipt},timeout:4000,limit:2048})})
+    readFeedback=()=>jsonRequest({...base,port:ports.bootstrap || port+3,path:'/v1/pair/status',body:{id,receipt:bound.receipt},timeout:4000,limit:2048});
+    if(bound)monitorTask=feedback.monitor({bound,signal:owner.signal,read:readFeedback})
       .catch(error=>{if(!owner.signal.aborted){feedbackError=error;owner.abort();}});
     await onVerification({verification,expires:bootstrap.expires});
     if(owner.signal.aborted)throw fault('CANCELLED');
@@ -50,6 +50,13 @@ async function pairHost({address,port=48789,name,identity,signal,onVerification=
     if(owner.signal.aborted)throw fault('CANCELLED');
     return {...target,id:hash(hostCert.raw).toString('hex'),name:target.address,certificate:hostCert.toString(),clientId:sessionID,enabled:true};
   }catch(error){
+    // Native cleanup can finish before the next status poll. Read the same
+    // pinned, receipt-bound status once to preserve its terminal explanation.
+    // This never retries a mutation or substitutes for certificate proof.
+    if(bound && error.code==='PAIRING_FAILED' && !owner.signal.aborted){
+      try{feedback.state(await readFeedback(),bound);}
+      catch(observed){if(['PAIRING_REJECTED','PAIRING_EXPIRED','PAIRING_CANCELLED_REMOTE','PAIRING_STATUS_INVALID','HOST_CERT_CHANGED'].includes(observed.code))feedbackError=observed;}
+    }
     throw feedbackError || error;
   }finally{
     owner.abort();await monitorTask;signal?.removeEventListener('abort',cancel);

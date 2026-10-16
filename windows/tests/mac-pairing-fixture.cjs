@@ -22,7 +22,7 @@ async function listen(server,{maximumPort}={}){
 async function close(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client,feedback=false,native=false,onStatus}={}){
   const host=identities.host,client=clientIdentity,trace=[],writes=[];
-  let pin,id,session,key,challenge,responseHash,authorized=false,approval=false,waiting,deleted=false;
+  let pin,id,session,key,challenge,responseHash,authorized=false,approval=false,waiting,waitingResponse,deleted=false;
   const receipt=crypto.randomBytes(16).toString('hex');let expires,state='waiting',statusReads=0,cancelReceipt;
   const nativeID=crypto.randomBytes(16).toString('hex');let nativeAdvertised=false;
   const xml=(response,fields)=>response.end('<root status_code="200"><paired>1</paired>'+Object.entries(fields).map(([k,v])=>'<'+k+'>'+v+'</'+k+'>').join('')+'</root>');
@@ -54,11 +54,12 @@ async function fixture({badSignature=false,badCode=false,badPin=false,clientIden
     const query=new URL(req.url,'http://fixture').searchParams;
     const expectedID=nativeAdvertised?nativeID:id;
     if(query.get('uniqueid')!==expectedID || (nativeAdvertised&&query.get('cliprelay_pairing')!==nativeID)){res.writeHead(400);res.end();return;}
+    if(nativeAdvertised&&['rejected','expired','cancelled'].includes(state)){res.end('<root status_code="403"><paired>0</paired></root>');return;}
     if(query.get('phrase')==='getservercert'){
       trace.push('get-cert');session=query.get('devicename');
       if(session!=='ClipRelay-'+expectedID || !Buffer.from(query.get('clientcert'),'hex').equals(Buffer.from(client.cert))){res.writeHead(400);res.end();return;}
       key=digest(Buffer.from(query.get('salt'),'hex'),badPin?'99999':pin).subarray(0,16);
-      const answer=()=>xml(res,{plaincert:Buffer.from(host.cert).toString('hex')});if(approval)answer();else waiting=answer;return;
+      const answer=()=>xml(res,{plaincert:Buffer.from(host.cert).toString('hex')});if(approval)answer();else {waiting=answer;waitingResponse=res;}return;
     }
     if(query.has('clientchallenge')){
       trace.push('challenge');challenge=aes(Buffer.from(query.get('clientchallenge'),'hex'),key,true);
@@ -79,7 +80,7 @@ async function fixture({badSignature=false,badCode=false,badPin=false,clientIden
   });
   const secure=await listen(server),httpPort=await listen(plain);
   return {host,client,trace,writes,receipt,nativeID,get bootstrapID(){return id;},ports:{bootstrap:secure,http:httpPort,secure},approve:()=>{approval=true;waiting?.();},
-    setFeedback(value){state=value;},replaceCertificate(value){server.setSecureContext({key:value.key,cert:value.cert});},get statusReads(){return statusReads;},get cancelReceipt(){return cancelReceipt;},
+    setFeedback(value){state=value;if(nativeAdvertised&&['rejected','expired','cancelled'].includes(state))waitingResponse?.end('<root status_code="400"><paired>0</paired></root>');},replaceCertificate(value){server.setSecureContext({key:value.key,cert:value.cert});},get statusReads(){return statusReads;},get cancelReceipt(){return cancelReceipt;},
     get authorized(){return authorized;},get deleted(){return deleted;},close:async()=>{await close(plain);await close(server);}};
 }
 module.exports={identities,fixture,listen,close};

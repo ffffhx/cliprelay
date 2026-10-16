@@ -8,6 +8,18 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(check){const end=Date.now()+4000;while(!check()){assert.ok(Date.now()<end,'feedback test deadline');await delay(5);}}
 const options=f=>({address:'127.0.0.1',name:'Feedback fixture',identity:f.client,ports:f.ports});
 
+test('native cleanup winning the poll race retains the authenticated terminal reason',async t=>{
+  for(const phase of ['before-native-request','waiting-native-response']){
+    for(const [state,code] of [['rejected','PAIRING_REJECTED'],['expired','PAIRING_EXPIRED'],['cancelled','PAIRING_CANCELLED_REMOTE']])await t.test(phase+' '+state,async t=>{
+      const f=await fixture({feedback:true,native:true});t.after(()=>f.close());
+      const onVerification=async()=>{await until(()=>f.statusReads===1);if(phase==='before-native-request')f.setFeedback(state);};
+      const result=assert.rejects(pairHost({...options(f),onVerification}),{code});
+      if(phase==='waiting-native-response'){await until(()=>f.trace.includes('get-cert'));f.setFeedback(state);}
+      await result;assert.equal(f.authorized,false);assert.equal(f.deleted,true);assert.ok(f.statusReads>=2);
+    });
+  }
+});
+
 test('managed rejection, expiry and cancellation promptly join the waiting native exchange',async t=>{
   for(const [state,code] of [['rejected','PAIRING_REJECTED'],['expired','PAIRING_EXPIRED'],['cancelled','PAIRING_CANCELLED_REMOTE']])await t.test(state,async t=>{
     const f=await fixture({feedback:true});t.after(()=>f.close());

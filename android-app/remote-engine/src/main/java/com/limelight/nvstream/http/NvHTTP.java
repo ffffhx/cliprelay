@@ -1164,8 +1164,16 @@ public class NvHTTP {
         if (pairingCancelled) throw new java.io.InterruptedIOException("配对已取消");
         LanPairing pairing=lanPairing;
         String managed=pairing!=null && pairing.nativeSessionId()!=null ? "cliprelay_pairing="+pairing.nativeSessionId()+"&" : "";
-        return openHttpConnectionToString(enableReadTimeout ? httpClientLongConnectTimeout : httpClientLongConnectNoReadTimeout,
+        String response=openHttpConnectionToString(enableReadTimeout ? httpClientLongConnectTimeout : httpClientLongConnectNoReadTimeout,
                 baseUrlHttp, "pair", "devicename=" + pairingName + "&updateState=1&" + managed + additionalArguments);
+        if (pairing!=null && pairing.nativeSessionId()!=null) {
+            boolean refused;
+            try { refused=!"1".equals(getXmlString(response,"paired",true)); }
+            catch (HostHttpResponseException error) { refused=true; }
+            catch (XmlPullParserException malformed) { refused=false; } // The existing caller rejects malformed XML.
+            if (refused) { IOException reason=pairing.confirmNativeFailure();if (reason!=null)throw reason; }
+        }
+        return response;
     }
 
     public void ownLanPairing(LanPairing pairing) {

@@ -208,7 +208,11 @@ public class LanPairingFeedbackTest {
         value.getJSONObject("native").put("protocol",1);value.remove("feedback");
         try{LanPairingFeedback.nativeIdFromBootstrap(value);fail();}catch(IOException expected){}
     }
-    @Test public void nativeGenerationIsSentOnTheActualPairingRequest() throws Exception {
+    @Test public void nativeGenerationIsSentOnTheActualPairingRequest() throws Exception { exerciseNativeRefusal(null); }
+    @Test public void fastNativeRefusalPreservesTheAuthenticatedTerminalReason() throws Exception {
+        for(String state:new String[]{"rejected","expired","cancelled"})exerciseNativeRefusal(state);
+    }
+    private void exerciseNativeRefusal(String terminalState) throws Exception {
         try(Host host=new Host();java.net.ServerSocket server=new java.net.ServerSocket(0,1,java.net.InetAddress.getByName("127.0.0.1"))) {
             host.nativeTicket=true;
             ExecutorService worker=Executors.newSingleThreadExecutor();
@@ -216,6 +220,7 @@ public class LanPairingFeedbackTest {
             Future<String> observed=worker.submit(()->{try(java.net.Socket socket=server.accept()){
                 socket.setSoTimeout(5000);BufferedInputStream input=new BufferedInputStream(socket.getInputStream());String line=Host.line(input);
                 while(!Host.line(input).isEmpty()){}
+                if(terminalState!=null)host.state=terminalState;
                 byte[] body="<root status_code=\"400\"/>".getBytes(StandardCharsets.US_ASCII);
                 socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Length: "+body.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
                 socket.getOutputStream().write(body);socket.getOutputStream().flush();return line;
@@ -223,10 +228,30 @@ public class LanPairingFeedbackTest {
             try {
                 LanPairing pairing=host.begin(http::ownLanPairing);http.setLanPairingSession(pairing);
                 assertEquals(host.nativeId,pairing.sessionId());assertEquals("ClipRelay-"+host.nativeId,pairing.sessionName());
-                assertTrue(nativePairing(http).contains("400"));String line=observed.get(5,TimeUnit.SECONDS);
+                until(()->host.statusReads.get()>0);
+                if(terminalState==null)assertTrue(nativePairing(http).contains("400"));
+                else {
+                    String expected=terminalState.equals("rejected")?"拒绝":terminalState.equals("expired")?"过期":"结束";
+                    try{nativePairing(http);fail("Native refusal lost its terminal reason");}catch(IOException error){assertTrue(error.getMessage(),error.getMessage().contains(expected));}
+                    assertNotNull(http.pairingFailure());assertTrue(host.statusReads.get()>=2);
+                }
+                String line=observed.get(5,TimeUnit.SECONDS);
                 assertTrue(line.contains("uniqueid="+host.nativeId));assertTrue(line.contains("cliprelay_pairing="+host.nativeId));
                 assertTrue(line.contains("devicename=ClipRelay-"+host.nativeId));
             }finally{http.cancelPairing();http.closeLanPairing();server.close();worker.shutdownNow();assertTrue(worker.awaitTermination(3,TimeUnit.SECONDS));}
+        }
+    }
+    @Test public void closingJoinsAnInFlightNativeFailureConfirmation() throws Exception {
+        try(Host host=new Host()){
+            host.nativeTicket=true;host.stall=true;
+            LanPairing pairing=host.begin(ignored->{});
+            ExecutorService worker=Executors.newSingleThreadExecutor();
+            java.lang.reflect.Method method=LanPairing.class.getDeclaredMethod("confirmNativeFailure");method.setAccessible(true);
+            Future<?> confirmation=worker.submit(()->{try{method.invoke(pairing);}catch(Exception expected){}});
+            try{
+                until(()->host.statusReads.get()==1);long start=System.nanoTime();pairing.close();
+                confirmation.get(1,TimeUnit.SECONDS);assertTrue(System.nanoTime()-start<TimeUnit.SECONDS.toNanos(3));
+            }finally{pairing.close();worker.shutdownNow();assertTrue(worker.awaitTermination(3,TimeUnit.SECONDS));}
         }
     }
     @Test public void remoteRejectionCancelsAnActualNativeResponseBodyAndPreservesItsReason() throws Exception {

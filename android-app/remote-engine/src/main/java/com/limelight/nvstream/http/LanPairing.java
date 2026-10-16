@@ -28,7 +28,8 @@ public final class LanPairing implements AutoCloseable {
     public String verification;
     private LanPairingFeedback feedback;
     private boolean cancelled, closed;
-    private Call pendingCall;
+    private Call pendingCall, confirmationCall;
+    private Thread confirmationOwner;
     private Thread monitor;
     private volatile IOException failure;
     private static final class StatusUnavailable extends IOException { }
@@ -131,10 +132,39 @@ public final class LanPairing implements AutoCloseable {
         if (cancelled) throw new java.io.InterruptedIOException("配对已取消");
     }
     public IOException failure() { return failure; }
+    // A native refusal may arrive before the periodic feedback read. Confirm
+    // only its explanation; a waiting/approving result never means success.
+    IOException confirmNativeFailure() throws IOException {
+        if (feedback==null || nativeId==null) return failure;
+        final Call call;
+        synchronized (this) {
+            checkCancelled();
+            Request request=new Request.Builder().url(url.newBuilder().addPathSegment("status").build())
+                    .post(RequestBody.create(MediaType.get("application/json"),feedback.query().toString())).build();
+            call=client.newBuilder().callTimeout(2,TimeUnit.SECONDS).build().newCall(request);
+            confirmationCall=call;confirmationOwner=Thread.currentThread();
+        }
+        try (Response response=call.execute()) {
+            if (response.isSuccessful() && response.body()!=null) {
+                okio.BufferedSource source=response.body().source();source.request(2049);
+                if (source.buffer().size()<=2048) {
+                    JSONObject value=new JSONObject(source.readUtf8());
+                    try { feedback.observe(value); }
+                    catch (IOException reason) { synchronized(this) { if (!cancelled && failure==null) failure=reason; } }
+                }
+            }
+        } catch (Exception ignored) { /* Keep the original native failure if no bound reason was confirmed. */ }
+        finally { synchronized(this) { if (confirmationCall==call) { confirmationCall=null;confirmationOwner=null;notifyAll(); } } }
+        synchronized(this) {
+            if (cancelled && failure==null) throw new java.io.InterruptedIOException("配对已取消");
+            return failure;
+        }
+    }
     public void cancel() {
-        final Call call; final Thread thread;
-        synchronized (this) { cancelled=true; call=pendingCall; thread=monitor; }
+        final Call call, confirmation; final Thread thread;
+        synchronized (this) { cancelled=true; call=pendingCall; confirmation=confirmationCall; thread=monitor; }
         if (call!=null) call.cancel();
+        if (confirmation!=null) confirmation.cancel();
         if (thread!=null) thread.interrupt();
     }
     public synchronized void startFeedback(Runnable cancelNative) throws IOException {
@@ -191,6 +221,11 @@ public final class LanPairing implements AutoCloseable {
         if (thread!=null && thread!=Thread.currentThread()) {
             while (thread.isAlive()) {
                 try { thread.join(); } catch (InterruptedException ignored) { interrupted=true; }
+            }
+        }
+        synchronized(this) {
+            while(confirmationCall!=null && confirmationOwner!=Thread.currentThread()) {
+                try { wait(); } catch(InterruptedException ignored) { interrupted=true; }
             }
         }
         if (id != null) {
