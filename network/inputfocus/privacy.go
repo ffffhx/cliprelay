@@ -33,6 +33,7 @@ type privacyControl struct {
 	clients     string
 	provider    displayProvider
 	read        func(string) (json.RawMessage, error)
+	cleanupRead func(string) (json.RawMessage, error)
 	now         func() time.Time
 	request     privacyRequest
 	certificate []byte
@@ -45,7 +46,11 @@ func (p *privacyControl) worker(op, lease string) (privacyResponse, error) {
 		Op    string `json:"op"`
 		Lease string `json:"lease,omitempty"`
 	}{op, lease})
-	raw, err := p.read("privacy:" + string(command))
+	read := p.read
+	if op == "stop" && p.cleanupRead != nil {
+		read = p.cleanupRead
+	}
+	raw, err := read("privacy:" + string(command))
 	var response privacyResponse
 	if err != nil || len(raw) > 4096 || json.Unmarshal(raw, &response) != nil {
 		return response, errors.New("privacy worker unavailable")

@@ -179,6 +179,11 @@ func TestPrivacyLostAcknowledgmentAndShutdownRestore(t *testing.T) {
 	}
 	f.fail = false
 	fileCall(h, []byte("first"), "POST", "/v1/privacy", privacyBody("start"))
+	f.control.cleanupRead = f.control.read
+	f.control.read = func(string) (json.RawMessage, error) {
+		t.Error("shutdown used cancelled request path")
+		return nil, context.Canceled
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	f.control.maintain(ctx)

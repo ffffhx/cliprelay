@@ -281,6 +281,11 @@ func TestAudioMuteShutdownRestores(t *testing.T) {
 	if audioCall(h, "first", "start") != 200 {
 		t.Fatal("start")
 	}
+	f.control.cleanupRead = f.control.read
+	f.control.read = func(string) (json.RawMessage, error) {
+		t.Error("shutdown used cancelled request path")
+		return nil, context.Canceled
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	f.control.maintain(ctx)

@@ -94,6 +94,8 @@ func pairingEnabled(raw json.RawMessage) bool {
 
 type probe struct {
 	mu         sync.Mutex
+	ctx        context.Context
+	closed     bool
 	executable string
 	argument   string
 	cmd        *exec.Cmd
@@ -101,6 +103,28 @@ type probe struct {
 	out        *bufio.Reader
 	maxOutput  int
 	timeout    time.Duration
+}
+
+// Close independent workers concurrently, while retaining each owner until Wait
+// confirms exit. Restoration managers must finish before this final teardown.
+// A late handler cannot restart a worker after its owner has closed.
+func stopProbes(workers ...*probe) {
+	var joined sync.WaitGroup
+	for _, worker := range workers {
+		if worker == nil {
+			continue
+		}
+		joined.Add(1)
+		go func(p *probe) { defer joined.Done(); p.close() }(worker)
+	}
+	joined.Wait()
+}
+
+func (p *probe) close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	p.stopLocked()
 }
 
 func (p *probe) stop() {
@@ -126,8 +150,29 @@ func (p *probe) stopLocked() {
 }
 
 func (p *probe) read(command string) (json.RawMessage, error) {
+	ctx := p.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return p.readWithContext(ctx, command)
+}
+
+// Cleanup is reserved for the managers' fixed stop/cancel/authorization-clear
+// operations. It retains the normal command deadline but survives cancellation
+// of ordinary service requests so native state can still be restored.
+func (p *probe) readCleanup(command string) (json.RawMessage, error) {
+	return p.readWithContext(context.Background(), command)
+}
+
+func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMessage, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if p.closed {
+		return nil, errors.New("focus worker closed")
+	}
 	if p.cmd == nil {
 		argument := p.argument
 		if argument == "" {
@@ -155,8 +200,12 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 		}
 		p.cmd, p.in, p.out = cmd, in, bufio.NewReaderSize(out, bufferSize)
 	}
+	if err := ctx.Err(); err != nil {
+		p.stopLocked()
+		return nil, err
+	}
 	// A hung accessibility provider cannot stall streaming or retain workers.
-	// The service Job owns this entire process tree.
+	// Windows additionally owns the process tree through its service Job.
 	result := make(chan []byte, 1)
 	timeout := 1200 * time.Millisecond
 	if strings.HasPrefix(command, "voice-") {
@@ -186,11 +235,19 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	}()
 	select {
 	case b := <-result:
+		if err := ctx.Err(); err != nil {
+			p.stopLocked()
+			return nil, err
+		}
 		if len(b) == 0 || len(b) > limit || !json.Valid(b) {
 			p.stopLocked()
 			return nil, errors.New("focus unavailable")
 		}
 		return json.RawMessage(b), nil
+	case <-ctx.Done():
+		p.stopLocked()
+		<-result
+		return nil, ctx.Err()
 	case <-time.After(timeout):
 		p.stopLocked()
 		<-result
@@ -380,36 +437,31 @@ func ServeWithEngineAccess(ctx context.Context, dir, executable string, access E
 	defer relayListener.Close()
 	go relay.serveLocal(ctx, relayListener)
 	go relay.maintain(ctx)
-	p := &probe{executable: executable}
-	defer p.stop()
-	voice := &probe{executable: executable, argument: "--voice-probe"}
-	defer voice.stop()
-	files := &probe{executable: executable, argument: "--file-probe", maxOutput: fileMessageLimit, timeout: 15 * time.Second}
-	defer files.stop()
-	clipboard := &probe{executable: executable, argument: "--clipboard-probe", maxOutput: clipboardMessageLimit, timeout: 10 * time.Second}
-	defer clipboard.stop()
-	privacy := &probe{executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
-	defer privacy.stop()
-	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, now: time.Now}
+	p := &probe{ctx: ctx, executable: executable}
+	voice := &probe{ctx: ctx, executable: executable, argument: "--voice-probe"}
+	files := &probe{ctx: ctx, executable: executable, argument: "--file-probe", maxOutput: fileMessageLimit, timeout: 15 * time.Second}
+	clipboard := &probe{ctx: ctx, executable: executable, argument: "--clipboard-probe", maxOutput: clipboardMessageLimit, timeout: 10 * time.Second}
+	privacy := &probe{ctx: ctx, executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
+	audio := &probe{ctx: ctx, executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
+	wake := &probe{ctx: ctx, executable: executable, argument: "--wake-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	terminal := &probe{ctx: ctx, executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	// Registered before manager joins: those cleanup operations run first, then
+	// every remaining worker gets its EOF/grace period at the same time.
+	defer func() { cancel(); stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal) }()
+	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, cleanupRead: privacy.readCleanup, now: time.Now}
 	privacyDone := make(chan struct{})
 	go func() { defer close(privacyDone); privacyManager.maintain(ctx) }()
 	defer func() { cancel(); <-privacyDone }()
-	lockManager := &sessionLockControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, now: time.Now}
+	lockManager := &sessionLockControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, cleanupRead: privacy.readCleanup, now: time.Now}
 	lockDone := make(chan struct{})
 	go func() { defer close(lockDone); lockManager.maintain(ctx) }()
 	defer func() { cancel(); <-lockDone }()
-	audio := &probe{executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
-	defer audio.stop()
-	audioManager := &audioMuteControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: audio.read, now: time.Now}
+	audioManager := &audioMuteControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: audio.read, cleanupRead: audio.readCleanup, now: time.Now}
 	audioDone := make(chan struct{})
 	go func() { defer close(audioDone); audioManager.maintain(ctx) }()
 	defer func() { cancel(); <-audioDone }()
-	wake := &probe{executable: executable, argument: "--wake-probe", maxOutput: 65536, timeout: 8 * time.Second}
-	defer wake.stop()
 	wakeManager := &wakeControl{clients: clients, read: wake.read, now: time.Now}
-	terminal := &probe{executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
-	defer terminal.stop()
-	terminalManager := &terminalControl{clients: clients, read: terminal.read}
+	terminalManager := &terminalControl{clients: clients, read: terminal.read, cleanupRead: terminal.readCleanup}
 	terminalDone := make(chan struct{})
 	go func() { defer close(terminalDone); terminalManager.maintain(ctx) }()
 	defer func() { cancel(); <-terminalDone }()

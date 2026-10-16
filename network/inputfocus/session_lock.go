@@ -29,6 +29,7 @@ type sessionLockControl struct {
 	clients                        string
 	provider                       displayProvider
 	read                           func(string) (json.RawMessage, error)
+	cleanupRead                    func(string) (json.RawMessage, error)
 	now                            func() time.Time
 	request                        privacyRequest
 	certificate                    []byte
@@ -44,7 +45,11 @@ func (p *sessionLockControl) worker(op, lease string) (sessionLockState, error) 
 		Op    string `json:"op"`
 		Lease string `json:"lease,omitempty"`
 	}{op, lease})
-	raw, err := p.read("session-lock:" + string(command))
+	read := p.read
+	if op == "cancel" && p.cleanupRead != nil {
+		read = p.cleanupRead
+	}
+	raw, err := read("session-lock:" + string(command))
 	var state sessionLockState
 	if err != nil || len(raw) > 4096 || json.Unmarshal(raw, &state) != nil {
 		return state, errors.New("lock worker unavailable")

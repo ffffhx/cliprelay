@@ -29,6 +29,7 @@ type audioMuteControl struct {
 	clients     string
 	provider    displayProvider
 	read        func(string) (json.RawMessage, error)
+	cleanupRead func(string) (json.RawMessage, error)
 	now         func() time.Time
 	request     audioMuteRequest
 	certificate []byte
@@ -43,7 +44,11 @@ func (p *audioMuteControl) worker(op, lease string) (audioMuteState, error) {
 		Op    string `json:"op"`
 		Lease string `json:"lease,omitempty"`
 	}{op, lease})
-	raw, err := p.read("audio-mute:" + string(command))
+	read := p.read
+	if op == "stop" && p.cleanupRead != nil {
+		read = p.cleanupRead
+	}
+	raw, err := read("audio-mute:" + string(command))
 	var value audioMuteState
 	if err != nil || len(raw) > 4096 || json.Unmarshal(raw, &value) != nil {
 		return value, errors.New("audio worker unavailable")

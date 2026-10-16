@@ -79,10 +79,11 @@ type terminalReply struct {
 	Sessions      []terminalSession `json:"sessions,omitempty"`
 }
 type terminalControl struct {
-	clients string
-	read    func(string) (json.RawMessage, error)
-	mu      sync.Mutex
-	started bool
+	clients     string
+	read        func(string) (json.RawMessage, error)
+	cleanupRead func(string) (json.RawMessage, error)
+	mu          sync.Mutex
+	started     bool
 }
 
 // This list is sent only through the trusted local worker pipe. The network
@@ -137,7 +138,11 @@ func (p *terminalControl) syncLocked(shutdown bool) error {
 		Owners []string `json:"owners"`
 	}{"sync", owners})
 	p.started = true
-	raw, readErr := p.read(string(payload))
+	read := p.read
+	if shutdown && p.cleanupRead != nil {
+		read = p.cleanupRead
+	}
+	raw, readErr := read(string(payload))
 	var reply terminalReply
 	if readErr != nil || len(raw) > 65536 || json.Unmarshal(raw, &reply) != nil || !reply.OK || !fileID.MatchString(reply.Instance) {
 		p.started = false

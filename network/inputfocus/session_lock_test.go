@@ -372,6 +372,11 @@ func TestSessionLockDisarmShutdownAndLostAcknowledgment(t *testing.T) {
 	}
 	f, h = newLockFixture(t)
 	lockCall(h, "arm")
+	f.control.cleanupRead = f.control.read
+	f.control.read = func(string) (json.RawMessage, error) {
+		t.Error("shutdown used cancelled request path")
+		return nil, context.Canceled
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	f.control.maintain(ctx)
