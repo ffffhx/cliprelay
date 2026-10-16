@@ -8,34 +8,56 @@ import (
 	"strings"
 )
 
-func Decode(raw []byte) (Request, error) {
-	var request Request
+func objectFields(raw []byte, limit int) (map[string]json.RawMessage, error) {
 	bad := errors.New("TERMINAL_BAD_REQUEST")
-	if len(raw) > RequestLimit {
-		return request, bad
+	if len(raw) > limit {
+		return nil, bad
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		return request, bad
+		return nil, bad
 	}
 	fields := make(map[string]json.RawMessage)
 	for decoder.More() {
 		token, err := decoder.Token()
 		key, ok := token.(string)
 		if err != nil || !ok {
-			return request, bad
+			return nil, bad
 		}
 		if _, exists := fields[key]; exists {
-			return request, bad
+			return nil, bad
 		}
 		var value json.RawMessage
 		if decoder.Decode(&value) != nil || bytes.Equal(value, []byte("null")) {
-			return request, bad
+			return nil, bad
 		}
 		fields[key] = value
 	}
 	if token, err := decoder.Token(); err != nil || token != json.Delim('}') || decoder.Decode(new(any)) != io.EOF {
-		return request, bad
+		return nil, bad
+	}
+	return fields, nil
+}
+
+func exactFields(fields map[string]json.RawMessage, names string) bool {
+	expected := strings.Split(names, ",")
+	if len(fields) != len(expected) {
+		return false
+	}
+	for _, key := range expected {
+		if _, ok := fields[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func Decode(raw []byte) (Request, error) {
+	var request Request
+	bad := errors.New("TERMINAL_BAD_REQUEST")
+	fields, err := objectFields(raw, RequestLimit)
+	if err != nil {
+		return request, err
 	}
 	if json.Unmarshal(raw, &request) != nil {
 		return request, bad
@@ -59,14 +81,8 @@ func Decode(raw []byte) (Request, error) {
 	default:
 		return request, bad
 	}
-	expected := strings.Split(allowed, ",")
-	if len(fields) != len(expected) {
+	if !exactFields(fields, allowed) {
 		return request, bad
-	}
-	for _, key := range expected {
-		if _, ok := fields[key]; !ok {
-			return request, bad
-		}
 	}
 	if request.Op == "sync" {
 		if request.Owners == nil || len(request.Owners) > 256 {

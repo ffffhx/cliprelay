@@ -66,9 +66,10 @@ type Reply struct {
 	Data       string         `json:"data,omitempty"`
 }
 type ProcessState struct {
-	Written        int64
-	Exited, Failed bool
-	ExitCode       int
+	Written  int64 `json:"written"`
+	Exited   bool  `json:"exited"`
+	Failed   bool  `json:"failed"`
+	ExitCode int   `json:"exitCode"`
 }
 
 // Queue and Close must not block on terminal I/O. Close starts cancellation;
