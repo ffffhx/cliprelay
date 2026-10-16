@@ -73,7 +73,8 @@ def main():
 
         def invoke(phase):
             receipt = directory/(phase+'.json')
-            env['CLIPRELAY_NATIVE_LOGIN_OPTIONS'] = json.dumps(dict(phase=phase, userData=str(directory/'user-data'), modules=str(modules), report=str(receipt)))
+            log = directory/(phase+'.log')
+            env['CLIPRELAY_NATIVE_LOGIN_OPTIONS'] = json.dumps(dict(phase=phase, userData=str(directory/'user-data'), modules=str(modules), report=str(receipt), log=str(log)))
             child = subprocess.Popen([str(launcher), str(isolated)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
             try:
                 stdout, stderr = child.communicate(timeout=35)
@@ -84,18 +85,20 @@ def main():
             data = json.loads(receipt.read_text()) if receipt.exists() else dict(passed=False, phase=phase, diagnostic=stderr.decode(errors='replace')[-2000:])
             result['phases'].append(data)
             if child.returncode or data['passed'] is not True:
-                data['diagnostic'] = stderr.decode(errors='replace')[-2000:]
+                data['diagnostic'] = (stderr.decode(errors='replace') + (log.read_text(errors='replace') if log.exists() else ''))[-3000:]
                 raise RuntimeError('Native login phase failed: '+phase+'\n'+stderr.decode(errors='replace')[-3000:])
             assert data['electron'] == '44.4.3'
             return data
 
         try:
-            invoke('initial'); result['cases'].append('native-default-off-read-only')
-            invoke('enable'); result['cases'].append('explicit-native-enable')
-            invoke('reopen'); result['cases'].append('native-setting-survives-process-exit')
-            invoke('external-disable'); result['cases'].append('external-disable-refresh-without-reenable')
-        except Exception as error:
-            failure = error
+            for phase, case in [('initial', 'native-default-off-read-only'), ('enable', 'explicit-native-enable'),
+                                ('reopen', 'native-setting-survives-process-exit'), ('external-disable', 'external-disable-refresh-without-reenable')]:
+                try:
+                    invoke(phase); result['cases'].append(case)
+                except Exception as error:
+                    # Preserve the failing gate, but still collect the explicit
+                    # registration result instead of stopping at a read failure.
+                    failure = failure or error
         finally:
             try:
                 invoke('cleanup'); result['cleanupConfirmed'] = True
