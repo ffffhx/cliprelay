@@ -6,6 +6,7 @@ import tarfile
 import tempfile
 import unittest
 import copy
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('fetch_host_companion', Path(__file__).resolve().parents[1]/'fetch_host_companion.py')
 fetcher = importlib.util.module_from_spec(spec)
@@ -13,6 +14,14 @@ spec.loader.exec_module(fetcher)
 
 
 class CompanionArchiveTest(unittest.TestCase):
+    def test_terminal_receipts_follow_selected_source_revision(self):
+        for path, count in [(b'', 6), (b'scripts/test_host_terminal_android.py\n', 7)]:
+            with self.subTest(count=count), patch.object(fetcher.subprocess, 'check_output', return_value=path) as git:
+                cases = fetcher.terminal_http_cases('a'*40)
+                self.assertEqual(len(cases), count)
+                self.assertEqual('tls-terminal-android-protocol' in cases, count == 7)
+                git.assert_called_once_with(['git', 'ls-tree', '--name-only', 'a'*40, 'scripts/test_host_terminal_android.py'], cwd=fetcher.ROOT)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='cliprelay-companion-archive-')
         self.addCleanup(temporary.cleanup)

@@ -120,6 +120,13 @@ def verify_sources(source_path, commit):
     return len(expected)
 
 
+def terminal_http_cases(commit):
+    cases = list(TERMINAL_HTTP_CASES)
+    if not subprocess.check_output(['git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal_android.py'], cwd=ROOT).strip():
+        cases.remove('tls-terminal-android-protocol')
+    return cases
+
+
 def fetch(run, arch, directory):
     if not re.fullmatch(r'[0-9]+', run) or arch not in ('arm64', 'x86_64'):
         raise ValueError('Invalid companion build selection')
@@ -141,9 +148,7 @@ def fetch(run, arch, directory):
     file_transfer = json.loads((artifact/'manifest.json').read_bytes()).get('fileTransfer') == 1
     clipboard_exchange = json.loads((artifact/'manifest.json').read_bytes()).get('clipboardExchange') == 1
     terminal_control = json.loads((artifact/'manifest.json').read_bytes()).get('terminalControl') == 1
-    terminal_cases = list(TERMINAL_HTTP_CASES)
-    if not output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal_android.py').strip():
-        terminal_cases.remove('tls-terminal-android-protocol')
+    terminal_cases = terminal_http_cases(commit)
     expected_cases = (terminal_cases if terminal_control else []) + (CLIPBOARD_CASES if clipboard_exchange else []) + (FILE_CASES if file_transfer else []) + CASES
     executable_hash = hashlib.sha256((artifact/'runtime/cliprelay-host-network').read_bytes()).hexdigest()
     terminal = b"'hostterminal'" in subprocess.check_output(['git', 'show', commit+':scripts/build_host_companion.py'], cwd=ROOT)
