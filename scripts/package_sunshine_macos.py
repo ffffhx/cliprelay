@@ -102,6 +102,17 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     if not (assets / 'web/index.html').is_file() or not (assets / 'apps.json').is_file():
         raise RuntimeError('Incomplete engine assets')
 
+    # Give the permission helper its ClipRelay bundle identity before signing.
+    # The enclosing application's permission attribution still needs native QA.
+    plist.update({
+        'CFBundleIdentifier': 'com.cliprelay.host-engine',
+        'CFBundleName': 'ClipRelay Host', 'CFBundleDisplayName': 'ClipRelay Host',
+        'LSMinimumSystemVersion': '14.2',
+        'NSMicrophoneUsageDescription': "ClipRelay needs microphone access to forward microphone audio to a paired device.",
+        'NSAudioCaptureUsageDescription': "ClipRelay needs system audio access to stream this Mac's sound to a paired device.",
+    })
+    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(plist))
+
     # install_name_tool changes signatures while upstream bundles dylibs. Use
     # an ad-hoc signature for this internal build, not a distribution identity.
     subprocess.run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
@@ -182,6 +193,7 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'deploymentTarget': dependency_pins['deploymentTarget'], 'nativeMinimumOS': minimum_versions,
         'signature': 'ad-hoc', 'notarized': False,
         'permissionCommand': 1,
+        'bundleIdentifier': plist['CFBundleIdentifier'],
         'scope': 'Internal engine build only. No ClipRelay host UI, permission grant, capture, network listener or hardware streaming acceptance.',
         'files': {}, 'symlinks': {}
     }

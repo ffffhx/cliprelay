@@ -322,6 +322,12 @@ application configuration and working directories. The engine archive includes
 the command header, policy test and native checker source; the application
 packager requires the permission-command receipt too. Native validation of
 these new commands and their final app integration remains pending.
+Before signing, the engine receives the distinct `com.cliprelay.host-engine`
+bundle identifier and the name `ClipRelay Host`. The packaged engine declares
+this identity; macOS permission attribution when launched by the enclosing app
+still requires runtime validation. Its bundle minimum system version is macOS
+14.2, matching the native executable. Internal signatures
+remain ad-hoc; this does not establish Developer ID distribution or notarization.
 
 The Electron macOS packaging workflow accepts an explicit `host_engine_run_id`.
 It requires a successful native host workflow with all thirty-nine tests, verifies

@@ -26,7 +26,7 @@ function fixture(t,arch='arm64'){
     'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py'];
   const manifest={protocol:1,platform:'darwin',arch,sourceCommit:commit,
     upstreamCommit:'63d35f702ee9e362e43263742981836ec0710384',libvirtualhidCommit:'53e1a949fc0784af716b782ddfa6c647cafd1f05',
-    executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,permissionCommand:1,files:{},symlinks:{},sourceHashes:{},
+    executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,permissionCommand:1,bundleIdentifier:'com.cliprelay.host-engine',files:{},symlinks:{},sourceHashes:{},
     nativeMinimumOS:{[EXECUTABLE]:'14.2.0'},nativeDependencies:{[EXECUTABLE]:['/usr/lib/libSystem.B.dylib']},inputTests:[]};
   function put(name,data){const file=path.join(source,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,data);manifest.files[name]=sha(data);}
   for(const name of sources){const data=fs.readFileSync(path.join(root,name));put('source/'+name,data);manifest.sourceHashes[name]=sha(data);
@@ -53,6 +53,7 @@ test('manifest and source version must match the caller pin',t=>{
   const f=fixture(t),pin=f.pin();
   assert.throws(()=>verify(f.source,{...pin,commit:'8'.repeat(40)}));
   f.manifest.scope='changed';f.pin();assert.throws(()=>verify(f.source,pin));
+  f.manifest.bundleIdentifier='dev.lizardbyte.app.Sunshine';assert.throws(()=>verify(f.source,f.pin()));
 });
 test('Intel artifacts have their own architecture pin and verified native binary',t=>{
   const f=fixture(t,'x86_64'),pin=f.pin();assert.equal(verify(f.source,pin).arch,'x86_64');

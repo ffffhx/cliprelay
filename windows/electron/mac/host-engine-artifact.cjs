@@ -72,7 +72,7 @@ function verify(directory,pin){
   if(manifest.protocol!==1 || manifest.platform!=='darwin' || manifest.arch!==pin.arch || manifest.sourceCommit!==pin.commit ||
       manifest.upstreamCommit!==UPSTREAM || manifest.libvirtualhidCommit!==HID || manifest.executable!==EXECUTABLE ||
       manifest.deploymentTarget!=='14.2' || manifest.signature!=='ad-hoc' || manifest.notarized!==false ||
-      manifest.permissionCommand!==1 ||
+      manifest.permissionCommand!==1 || manifest.bundleIdentifier!=='com.cliprelay.host-engine' ||
       !object(manifest.files) || !sameKeys(manifest.sourceHashes,SOURCES) || !sameKeys(manifest.symlinks,[]) ||
       !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
