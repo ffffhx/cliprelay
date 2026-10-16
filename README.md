@@ -54,7 +54,9 @@ Mac 被控端仍处于开发阶段。包内真实引擎与辅助组件的验收�
 
 [Windows 安装包验收](https://github.com/ffffhx/cliprelay/actions/runs/38899519425)通过 11 项实际安装后场景，两种架构的 [Mac 完整包验收](https://github.com/ffffhx/cliprelay/actions/runs/38900657460)各通过 9 项配对和生命周期场景，覆盖拒绝、取消、实际两分钟过期、迟到请求拒绝、证书保留和退出清理。[Android 构建](https://github.com/ffffhx/cliprelay/actions/runs/38900656075)执行通过 308 项 JVM 测试，其中 13 项覆盖配对反馈；4 项 Windows 专用互操作测试在 Linux 跳过，没有安装到手机。[同一 Windows 包的视频回归](https://github.com/ffffhx/cliprelay/actions/runs/38901360390)收到真实加密 H264 帧，撤销当前设备后约 1.18 秒收到正常结束通知，另一台已授权设备随后在同一引擎重新收流。未验证解码显示、Mac 视频或真机界面。详细记录见 `.tools/uu-parity/native-pairing-cleanup-artifacts.json`。
 
-上述清理验收使用可工作的本地管理接口。该接口故障时，清理请求会在独立的三秒期限后结束，原生准入仍按到期时间拒绝后续请求；残留等待响应目前依赖下一次原生配对 API 访问或引擎退出回收，独立超时清扫任务及其故障注入验收仍待补齐。
+异常情况下的配对回收已补充验证：原生引擎每秒检查超时请求，停止服务时先结束并等待回收线程退出。[Windows 安装包验收](https://github.com/ffffhx/cliprelay/actions/runs/38905634944)通过 12 项实际安装后场景；强制结束配对辅助进程，使其无法发出清理请求后，旧请求约 120.7 秒自动结束，辅助进程自动恢复，引擎和已有两台设备的授权保持正常。两种架构的 [Mac 完整包验收](https://github.com/ffffhx/cliprelay/actions/runs/38906130091)各通过 10 项配对与生命周期场景；无人负责清理的原生请求约 120.4–120.6 秒自动结束。等待期间未调用配对接口触发清理，迟到请求均被拒绝。三个架构各通过 22 项原生配对测试，其中新增 4 项覆盖独立过期和回收线程停止。这些结果来自临时 CI 环境，尚不代表真机界面、Mac 视频或所有网络故障都已验收；详细记录见 `.tools/uu-parity/autonomous-pairing-expiry-artifacts.json`。
+
+同一新 Windows 包的[视频回归](https://github.com/ffffhx/cliprelay/actions/runs/38907981595)也已通过：先收到 3 帧真实加密 H264 数据，撤销当前设备后约 1.18 秒收到正常结束通知，另一台已授权设备随后在同一引擎收到 4 帧。测试没有解码显示、注入键鼠或验证音频；记录见 `.tools/uu-parity/autonomous-pairing-expiry-stream-artifacts.json`。
 
 Mac 被控端的配置准备模块使用应用指定的私有目录，不改动 `HOME` 或已有 Sunshine 数据。配置、管理凭据和日志仅当前用户可读写；已有证书与配对记录保留，链接、过宽权限及损坏的身份记录会使准备失败。管理密码通过 Electron `safeStorage` 保存加密副本，钥匙串不可用时停止准备。应用打包验收会使用临时目录、测试加密提供者和包内真实引擎验证配置解析、日志写入与身份复用；这项检查不代表系统钥匙串或完整被控服务已经验收。
 
