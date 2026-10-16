@@ -5,7 +5,7 @@ const {DisplayController}=require('../electron/mac/display-controller.cjs');
 const {InputSession}=require('../electron/mac/input-session.cjs');
 const protocol=require('../electron/mac/display-protocol.cjs');
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function until(check){for(let i=0;i<400;i++){if(check())return;await delay(5);}throw Error('display test deadline');}
+async function until(check,attempts=400){for(let i=0;i<attempts;i++){if(check())return;await delay(5);}throw Error('display test deadline');}
 function states(){const instance='12345678-1234-1234-1234-123456789012';return {
   d:{protocol:1,supported:true,instance,revision:1,requestId:0,requested:'',result:'',error:'',accepted:false,shared:false,inputEpochSelection:true,requestStream:0,inputEpoch:0,
     displays:['left','right'],phase:'active',generation:2,capture:{id:'left'},streams:[{id:3,generation:2,firstFrame:10,width:1280,height:720}]},
@@ -33,9 +33,12 @@ async function fixture(t,{post,timeoutMs=3000}={}){
       if(op!==3)Object.assign(s.i.streams[0],{epoch,acknowledged:epoch,enabled:true,paused:op===1});callback();
       if(local)queueMicrotask(()=>input.receive({version:1,event:'input',epoch,stage:op===3?'acknowledged':'submitted'}));
     }});
+  // Register ownership before admission can reject, so a failed setup cannot
+  // leave the HTTPS listener alive and prevent the test process from exiting.
+  let controller;
+  t.after(async()=>{controller?.close();input.close();await close(server);});
   await input.initialize();
-  const controller=new DisplayController({store,viewer,pollMs:10,pendingPollMs:5,timeoutMs});
-  t.after(async()=>{controller.close();input.close();await close(server);});controller.reconcile();
+  controller=new DisplayController({store,viewer,pollMs:10,pendingPollMs:5,timeoutMs});controller.reconcile();
   return {s,posts,commands,reads,host,session,store,viewer,input,controller,block(){blocked=true;},local(value){local=value;},
     apply(){return controller.apply({viewId:controller.snapshot().viewId,display:'right'});},
     setInput(paused){return controller.setInput({viewId:controller.snapshot().viewId,paused});},
@@ -107,8 +110,9 @@ test('a lost selection response is observed once and never automatically resent'
 });
 test('uncertain timeout and explicit rejection end the viewer without reopening input',async t=>{
   for(const reject of [false,true])await t.test(reject?'rejection':'timeout',async t=>{
-    const f=await fixture(t,{timeoutMs:300,post:reject?({s,res})=>{res.writeHead(409);res.end(JSON.stringify(s.d));}:undefined});
-    await until(()=>f.controller.snapshot().canSelect);f.apply();await until(()=>f.viewer.failures.length);
+    const f=await fixture(t,{post:reject?({s,res})=>{res.writeHead(409);res.end(JSON.stringify(s.d));}:undefined});
+    await until(()=>f.controller.snapshot().canSelect);f.apply();await until(()=>f.viewer.failures.length,1000);
+    assert.equal(f.viewer.failures[0],reject?'DISPLAY_REJECTED':'DISPLAY_TIMEOUT');
     assert.deepEqual(f.commands.slice(-2),[[3,1],[3,3]]);assert.equal(f.posts.length,1);assert.equal(f.input.phase,'closed');
   });
 });
