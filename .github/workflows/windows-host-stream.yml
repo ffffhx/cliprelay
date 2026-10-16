@@ -53,19 +53,18 @@ jobs:
           CLIPRELAY_CI_MSYS: ${{ steps.compiler.outputs.msys2-location }}
         run: |
           $ErrorActionPreference='Stop'
-          $engine=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-install/ClipRelay-Windows/remote-desktop/engine'
-          $crypto=@(Get-ChildItem -LiteralPath $engine -Filter 'libcrypto*.dll')
-          if ($crypto.Count -ne 1) {throw 'Expected one pinned crypto DLL'}
+          $crypto=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-install/ClipRelay-Windows/remote-viewer/runtime/libcrypto-3-x64.dll'
+          if (!(Test-Path -LiteralPath $crypto -PathType Leaf)) {throw 'Pinned viewer crypto DLL is absent'}
           $receiver=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-receiver'
           $compilerDirectory=Join-Path $env:CLIPRELAY_CI_MSYS 'ucrt64/bin'
-          & windows/tests/build-engine-stream-client.ps1 -CompilerDirectory $compilerDirectory -CryptoDll $crypto[0].FullName -OutputDirectory $receiver
+          & windows/tests/build-engine-stream-client.ps1 -CompilerDirectory $compilerDirectory -CryptoDll $crypto -OutputDirectory $receiver
           if ($LASTEXITCODE -ne 0) {throw 'Native receiver compilation failed'}
           $identity=Join-Path $env:RUNNER_TEMP 'cliprelay-stream-identities.exe'
           go build -o $identity windows/tests/mac-pairing-fixture/main.go
           if ($LASTEXITCODE -ne 0) {throw 'Identity fixture compilation failed'}
           "CLIPRELAY_STREAM_TEST_RECEIVER=$receiver/engine-stream-client.exe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "CLIPRELAY_PAIRING_TEST_FIXTURE=$identity" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          $receipt=[ordered]@{sourceCommit=$env:GITHUB_SHA;receiverSha256=(Get-FileHash "$receiver/engine-stream-client.exe").Hash;cryptoSha256=(Get-FileHash $crypto[0].FullName).Hash;compiler=@(& (Join-Path $compilerDirectory 'clang.exe') --version);sourceHashes=@{}}
+          $receipt=[ordered]@{sourceCommit=$env:GITHUB_SHA;receiverSha256=(Get-FileHash "$receiver/engine-stream-client.exe").Hash;cryptoSha256=(Get-FileHash $crypto).Hash;compiler=@(& (Join-Path $compilerDirectory 'clang.exe') --version);sourceHashes=@{}}
           foreach ($file in @('windows/tests/engine_stream_client.c','windows/tests/build-engine-stream-client.ps1','windows/tests/installed-host-stream.cjs')) {$receipt.sourceHashes[$file]=(Get-FileHash $file).Hash}
           $receipt | ConvertTo-Json -Depth 5 | Set-Content dist/host-stream/receiver-build.json -Encoding UTF8
       - name: Install through the packaged detached launcher
