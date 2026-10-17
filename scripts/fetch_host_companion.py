@@ -66,7 +66,7 @@ def unpack(archive_path, directory):
         members = entries(archive)
         required = {'host-companion/'+name for name in FILES | {'manifest.json', 'process-report.json'}}
         actual = {member.name for member in members if member.isfile()}
-        if (not required <= actual or actual-required not in (set(), {'host-companion/'+TERMINAL_REPORT})
+        if (not required <= actual or not actual-required <= {'host-companion/'+TERMINAL_REPORT, 'host-companion/privacy-process-report.json'}
                 or any(member.name.rstrip('/') not in ('host-companion', 'host-companion/runtime')
                        for member in members if member.isdir())):
             raise ValueError('Unexpected companion archive layout')
@@ -91,12 +91,17 @@ def verify_sources(source_path, commit):
     wake = b"'hostwake'" in output('git', 'show', commit+':scripts/build_host_companion.py')
     if wake:
         paths += output('git', 'ls-tree', '-r', '--name-only', commit, 'network/hostwake').decode().splitlines()
+    privacy = b"'hostprivacy'" in output('git', 'show', commit+':scripts/build_host_companion.py')
+    if privacy:
+        paths += output('git', 'ls-tree', '-r', '--name-only', commit, 'network/hostprivacy').decode().splitlines()
     expected = {name for name in paths if name.endswith(('.go', '.m', '.h'))}
     expected |= {'LICENSE', 'network/go.mod', 'network/go.sum', 'scripts/build_host_companion.py',
                  'scripts/network_notices.py', 'scripts/test_host_companion.py'}
     if wake:
         expected |= {'scripts/test_host_wake.py', 'scripts/test_host_wake_client.cjs', 'scripts/WakeMacInterop.java', 'windows/electron/mac/wake-protocol.cjs'}
         expected |= {'android-app/remote-engine/src/main/java/com/limelight/nvstream/wol/'+name+'.java' for name in ['WakeState', 'WakeSelection']}
+    if privacy:
+        expected |= {'scripts/test_macos_privacy_worker.py', 'scripts/privacy_fixture/audit.mm'}
     if terminal:
         expected.add('scripts/test_host_terminal_process.py')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal.py').strip():
@@ -136,6 +141,37 @@ def terminal_http_cases(commit):
     return cases
 
 
+PRIVACY_CASES = ['native-prepare-invisible-activate-visible-stop-restores',
+                 'native-deadline-exits-and-removes-owned-masks',
+                 'native-owner-channel-EOF-removes-owned-masks',
+                 'native-worker-crash-removes-owned-masks',
+                 'privacy-production-owner-and-channel-admission',
+                 'privacy-parent-exit-with-writer-held', 'privacy-parent-crash-with-writer-held',
+                 'privacy-signal-hides-owned-masks']
+
+
+def verify_privacy_report(report, arch, executable_hash, commit):
+    sources = subprocess.check_output(['git','ls-tree','-r','--name-only',commit,'network/hostprivacy'],cwd=ROOT).decode().splitlines()
+    sources += ['network/cmd/cliprelay-host-network/main.go', 'network/cmd/cliprelay-host-network/input_unix.go',
+                'network/go.mod', 'network/go.sum', 'scripts/privacy_fixture/audit.mm', 'scripts/test_macos_privacy_worker.py']
+    hashes = {name:hashlib.sha256(subprocess.check_output(['git','show',commit+':'+name],cwd=ROOT)).hexdigest() for name in sources}
+    if (report.get('protocol') != 1 or report.get('passed') is not True or report.get('productionCLI') is not True
+            or report.get('architecture') != arch or report.get('sourceCommit') != commit
+            or report.get('workerSha256') != executable_hash or report.get('sourceHashes') != hashes
+            or report.get('cases') != PRIVACY_CASES):
+        raise ValueError('Privacy worker receipt does not match the selected source and executable')
+    observations = report.get('observations', [])
+    if [item.get('case') for item in observations] != ['expiry','EOF','parent-exit','parent-crash']:
+        raise ValueError('Privacy worker recovery observations are incomplete')
+    if not 14.5 <= observations[0].get('elapsedSeconds',0) <= 16:
+        raise ValueError('Privacy deadline was not enforced')
+    if observations[1].get('exit') != 0 or not 0 <= observations[1].get('elapsedSeconds',-1) <= 2:
+        raise ValueError('Privacy channel withdrawal was not enforced')
+    for item in observations[2:]:
+        if item.get('writerHeld') is not True or not 0 <= item.get('elapsedSeconds',-1) <= 2:
+            raise ValueError('Privacy parent withdrawal was not enforced with an open writer')
+
+
 def fetch(run, arch, directory):
     if not re.fullmatch(r'[0-9]+', run) or arch not in ('arm64', 'x86_64'):
         raise ValueError('Invalid companion build selection')
@@ -170,6 +206,16 @@ def fetch(run, arch, directory):
         if len(raw) > 16384:
             raise ValueError('Terminal receipt exceeds size limit')
         verify_terminal_report(json.loads(raw), arch, executable_hash)
+    privacy = b"'hostprivacy'" in subprocess.check_output(['git','show',commit+':scripts/build_host_companion.py'],cwd=ROOT)
+    privacy_receipt = artifact/'privacy-process-report.json'
+    privacy_worker = json.loads((artifact/'manifest.json').read_bytes()).get('privacyWorker') == 1
+    if privacy != privacy_receipt.exists() or privacy != privacy_worker:
+        raise ValueError('Privacy worker evidence is missing or unexpected for the selected build')
+    if privacy:
+        raw = privacy_receipt.read_bytes()
+        if len(raw) > 16384:
+            raise ValueError('Privacy receipt exceeds size limit')
+        verify_privacy_report(json.loads(raw),arch,executable_hash,commit)
     if (report['cases'] != expected_cases or report['passed'] != len(expected_cases) or report['nativeWorkers'] is not False
             or (file_transfer and report.get('fileTransfer') != 1)
             or (clipboard_exchange and report.get('clipboardExchange') != 1)
@@ -181,6 +227,8 @@ def fetch(run, arch, directory):
               'directory': str(artifact), 'archiveSha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
     if terminal:
         result['terminalProcessCasesVerified'] = len(TERMINAL_CASES)
+    if privacy:
+        result['privacyWorkerCasesVerified'] = len(PRIVACY_CASES)
     (directory/'selection.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
     return result
 

@@ -2,7 +2,7 @@ name: macOS Host Companion Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/hostclipboard/**', 'network/hostterminal/**', 'network/hostwake/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_clipboard.py', 'scripts/test_host_terminal*', 'scripts/test_host_wake*', 'scripts/WakeMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/nvstream/wol/**', 'scripts/TerminalMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/terminal/**', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
+    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/hostclipboard/**', 'network/hostterminal/**', 'network/hostwake/**', 'network/hostprivacy/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_clipboard.py', 'scripts/test_host_terminal*', 'scripts/test_host_wake*', 'scripts/test_macos_privacy_worker.py', 'scripts/privacy_fixture/**', 'scripts/WakeMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/nvstream/wol/**', 'scripts/TerminalMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/terminal/**', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -30,6 +30,8 @@ jobs:
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.2'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -68,6 +70,8 @@ jobs:
         run: python3 scripts/test_host_companion.py .tools/host-companion/runtime/cliprelay-host-network --report .tools/host-companion/process-report.json
       - name: Packaged terminal session worker and guardian acceptance
         run: python3 scripts/test_host_terminal_process.py .tools/host-companion/runtime/cliprelay-host-network --report .tools/host-companion/terminal-process-report.json
+      - name: Packaged private mask worker admission and native recovery
+        run: python3 scripts/test_macos_privacy_worker.py --binary .tools/host-companion/runtime/cliprelay-host-network --output .tools/host-companion/privacy-process-report.json
       - name: Preserve executable mode
         run: tar -czf .tools/host-companion-macos.tar.gz -C .tools host-companion
       - uses: actions/upload-artifact@v4

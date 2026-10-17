@@ -6,6 +6,7 @@ import tarfile
 import tempfile
 import unittest
 import copy
+import hashlib
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('fetch_host_companion', Path(__file__).resolve().parents[1]/'fetch_host_companion.py')
@@ -53,6 +54,40 @@ class CompanionArchiveTest(unittest.TestCase):
         self.make('host-companion/terminal-process-report.json')
         artifact = fetcher.unpack(self.archive, self.output)
         self.assertTrue((artifact/'terminal-process-report.json').is_file())
+
+    def test_named_optional_privacy_receipt_is_accepted(self):
+        self.make('host-companion/privacy-process-report.json')
+        artifact = fetcher.unpack(self.archive, self.output)
+        self.assertTrue((artifact/'privacy-process-report.json').is_file())
+
+    def test_privacy_evidence_requires_production_binary_sources_and_bounded_parent_recovery(self):
+        sources = ['network/hostprivacy/controller.go', 'network/cmd/cliprelay-host-network/main.go',
+                   'network/cmd/cliprelay-host-network/input_unix.go', 'network/go.mod', 'network/go.sum',
+                   'scripts/privacy_fixture/audit.mm', 'scripts/test_macos_privacy_worker.py']
+        def git(args, **kwargs):
+            self.assertEqual(kwargs['cwd'],fetcher.ROOT)
+            if args[1] == 'ls-tree': return (sources[0]+'\n').encode()
+            self.assertEqual(args[1], 'show')
+            self.assertTrue(args[2].startswith('a'*40+':'))
+            return args[2].split(':',1)[1].encode()
+        report = dict(protocol=1,passed=True,productionCLI=True,architecture='arm64',sourceCommit='a'*40,
+                      workerSha256='b'*64,cases=list(fetcher.PRIVACY_CASES),
+                      sourceHashes={name:hashlib.sha256(name.encode()).hexdigest() for name in sources},
+                      observations=[dict(case='expiry',elapsedSeconds=15.1),dict(case='EOF',elapsedSeconds=.05,exit=0),
+                                    dict(case='parent-exit',elapsedSeconds=.3,writerHeld=True),
+                                    dict(case='parent-crash',elapsedSeconds=.3,writerHeld=True)])
+        with patch.object(fetcher.subprocess,'check_output',side_effect=git):
+            fetcher.verify_privacy_report(report,'arm64','b'*64,'a'*40)
+            for field,value in [('passed',1),('productionCLI',False),('architecture','x86_64'),
+                                ('sourceCommit','c'*40),('workerSha256','c'*64),('sourceHashes',{}),
+                                ('cases',report['cases'][:-1]),('observations',report['observations'][:-1])]:
+                changed=copy.deepcopy(report);changed[field]=value
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    fetcher.verify_privacy_report(changed,'arm64','b'*64,'a'*40)
+            for index,field,value in [(0,'elapsedSeconds',17),(1,'exit',2),(2,'writerHeld',False),(3,'elapsedSeconds',3)]:
+                changed=copy.deepcopy(report);changed['observations'][index][field]=value
+                with self.subTest(observation=index,field=field), self.assertRaises(ValueError):
+                    fetcher.verify_privacy_report(changed,'arm64','b'*64,'a'*40)
 
     def test_terminal_receipt_requires_complete_cases_and_exact_native_binary(self):
         report = dict(passed=True, scope='packaged owned terminal process, not HTTP/client integration',

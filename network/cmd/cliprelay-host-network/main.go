@@ -15,10 +15,19 @@ import (
 
 	"cliprelay/network/hostclipboard"
 	"cliprelay/network/hostcompanion"
+	"cliprelay/network/hostprivacy"
 	"cliprelay/network/hostterminal"
 	"cliprelay/network/hostwake"
 	"cliprelay/network/inputfocus"
 )
+
+// AppKit requires the initial process thread. Lock before main can migrate;
+// modes without an AppKit event loop release this lock after admission.
+func init() {
+	if runtime.GOOS == "darwin" {
+		runtime.LockOSThread()
+	}
+}
 
 func main() {
 	flags := flag.NewFlagSet("cliprelay-host-network", flag.ContinueOnError)
@@ -29,12 +38,13 @@ func main() {
 	managedClipboard := flags.Bool("managed-clipboard", false, "owned native clipboard worker")
 	managedTerminal := flags.Bool("managed-terminal", false, "owned terminal session worker")
 	managedWake := flags.Bool("managed-wake", false, "owned read-only LAN inventory worker")
+	managedPrivacy := flags.Bool("managed-privacy", false, "owned native privacy mask worker")
 	terminalShell := flags.String("terminal-session", "", "owned native terminal guardian")
 	terminalColumns := flags.Int("terminal-columns", 0, "owned terminal columns")
 	terminalRows := flags.Int("terminal-rows", 0, "owned terminal rows")
 	parseErr := flags.Parse(os.Args[1:])
 	workers := 0
-	for _, enabled := range []bool{*managedFiles, *managedClipboard, *managedTerminal, *managedWake, *terminalShell != ""} {
+	for _, enabled := range []bool{*managedFiles, *managedClipboard, *managedTerminal, *managedWake, *managedPrivacy, *terminalShell != ""} {
 		if enabled {
 			workers++
 		}
@@ -44,6 +54,9 @@ func main() {
 		workers > 1 || !terminalValid || !filepath.IsAbs(*directory) || !ownedInput(os.Stdin) || !ownedOutput(os.Stdout) {
 		fmt.Fprintln(os.Stderr, "HOST_OWNER_INVALID")
 		os.Exit(2)
+	}
+	if !*managedPrivacy {
+		runtime.UnlockOSThread()
 	}
 	input, inputErr := pollableChannel(os.Stdin, true)
 	output, outputErr := pollableChannel(os.Stdout, false)
@@ -104,7 +117,9 @@ func main() {
 		}
 	}()
 	var err error
-	if *managedFiles {
+	if *managedPrivacy {
+		err = hostprivacy.RunNative(ctx, input, output)
+	} else if *managedFiles {
 		err = runManagedFiles(ctx, input, output, *directory)
 	} else if *managedClipboard {
 		runtime.LockOSThread()

@@ -22,10 +22,10 @@ function fixture(t){
   return {base,source,manifest,pin,update};
 }
 test('both native slices are verified and only pinned files are copied into a fresh package',t=>{
-  const f=fixture(t);for(const name of ['process-report.json','terminal-process-report.json'])fs.writeFileSync(path.join(f.source,name),'{}');
+  const f=fixture(t);for(const name of ['process-report.json','terminal-process-report.json','privacy-process-report.json'])fs.writeFileSync(path.join(f.source,name),'{}');
   const dest=path.join(f.base,'staged'),result=stage(f.source,dest,f.pin);
   assert.deepEqual(result.nativeMinimumOS,{x86_64:'12.0.0',arm64:'12.0.0'});verify(dest,f.pin);
-  for(const name of ['process-report.json','terminal-process-report.json'])assert.equal(fs.existsSync(path.join(dest,name)),false);assert.throws(()=>stage(f.source,dest,f.pin));
+  for(const name of ['process-report.json','terminal-process-report.json','privacy-process-report.json'])assert.equal(fs.existsSync(path.join(dest,name)),false);assert.throws(()=>stage(f.source,dest,f.pin));
 });
 
 test('optional CI terminal receipts remain bounded and cannot redirect file access',t=>{
@@ -50,8 +50,8 @@ test('legacy and version-one file manifests are accepted but unknown capability 
   for(const version of [0,2,true,'1',null]){f.manifest.fileTransfer=version;f.update();assert.throws(()=>verify(f.source,f.pin));}
 });
 
-test('clipboard, terminal and wake capabilities retain old packages and reject unsupported versions',t=>{
-  for(const capability of ['clipboardExchange','terminalControl','wakeControl']){
+test('optional worker capabilities retain old packages and reject unsupported versions',t=>{
+  for(const capability of ['clipboardExchange','terminalControl','wakeControl','privacyWorker']){
     const f=fixture(t);assert.equal(verify(f.source,f.pin).manifest[capability],undefined);
     f.manifest[capability]=1;f.update();assert.equal(verify(f.source,f.pin).manifest[capability],1);
     for(const version of [0,2,true,'1',null]){f.manifest[capability]=version;f.update();assert.throws(()=>verify(f.source,f.pin));}

@@ -2,7 +2,7 @@ name: Mac Privacy Worker Development Checks
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['network/hostprivacy/**', 'scripts/privacy_fixture/**', 'scripts/test_macos_privacy_worker.py', '.github/workflows/macos-privacy-worker.yml']
+    paths: ['network/hostprivacy/**', 'network/cmd/cliprelay-host-network/**', 'scripts/privacy_fixture/**', 'scripts/test_macos_privacy_worker.py', '.github/workflows/macos-privacy-worker.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           go test -race -json -count=1 -timeout=90s ./hostprivacy | tee privacy-policy-tests.json
-      - name: Native masks, independent expiry, EOF and crash recovery
+      - name: Production CLI admission, native masks, deadline and owner withdrawal
         if: runner.os == 'macOS'
         run: python3 scripts/test_macos_privacy_worker.py --output native-privacy-worker.json
       - uses: actions/upload-artifact@v4
