@@ -45,7 +45,25 @@ public final class TerminalMacInterop {
         if (!condition) throw new AssertionError(reason);
     }
 
+    private static final class ReadBusy extends IOException {
+        ReadBusy() { super("TERMINAL_BUSY"); }
+    }
+
     private TerminalProtocol.Reply rpc(JSONObject command) throws Exception {
+        // The host's authorization refresh shares the terminal controller lock.
+        // Retry only an explicitly rejected read, with the same offset and a
+        // bounded window. Mutations and all other errors retain their verdict.
+        long deadline = System.nanoTime() + 2000000000L;
+        while (true) {
+            try { return rpcOnce(command); }
+            catch (ReadBusy busy) {
+                if (System.nanoTime() >= deadline) throw busy;
+                Thread.sleep(50);
+            }
+        }
+    }
+
+    private TerminalProtocol.Reply rpcOnce(JSONObject command) throws Exception {
         HttpsURLConnection connection = (HttpsURLConnection) URI.create("https://127.0.0.1:48791/v1/terminal").toURL().openConnection();
         connection.setSSLSocketFactory(tls); // Standard certificate and IP SAN verification remain enabled.
         connection.setConnectTimeout(5000); connection.setReadTimeout(10000);
@@ -61,6 +79,8 @@ public final class TerminalMacInterop {
             }
             check(raw.length <= 65536, "unbounded terminal response");
             JSONObject value = new JSONObject(new String(raw, StandardCharsets.UTF_8));
+            if (command.optString("op").equals("read") && status == 429
+                    && value.optString("code").equals("TERMINAL_BUSY")) throw new ReadBusy();
             TerminalProtocol.checkHttp(status, value);
             return new TerminalProtocol.Reply(command, value);
         } finally { connection.disconnect(); }
