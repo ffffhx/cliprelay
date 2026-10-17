@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -104,5 +105,34 @@ func TestPrivacyManagedDuplicatePublicKeysCannotStartWorker(t *testing.T) {
 	}
 	if f.starts != 0 {
 		t.Fatal("ambiguous request launched worker")
+	}
+}
+
+func TestPrivacyMaintenanceProviderFailureKeepsFailClosedPolicy(t *testing.T) {
+	for _, cause := range []struct {
+		err    error
+		reason string
+	}{
+		{fmt.Errorf("private-provider-detail: %w", context.DeadlineExceeded), "display-timeout"},
+		{fmt.Errorf("private-provider-detail: %w", context.Canceled), "display-canceled"},
+		{errors.New("private-provider-detail"), "display-unavailable"},
+	} {
+		t.Run(cause.reason, func(t *testing.T) {
+			f, h := newManagedPrivacyPolicyFixture(t)
+			if w := fileCall(h, []byte("first"), "POST", "/v1/privacy", privacyBody("start")); w.Code != 200 {
+				t.Fatal(w.Body.String())
+			}
+			deadline := f.control.deadline
+			f.control.provider = func(context.Context, bool, *displaySelection) (displayState, error) {
+				return displayState{}, cause.err
+			}
+			if reason := f.control.bindingFailure(context.Background(), f.control.request, f.control.owner); reason != cause.reason {
+				t.Fatal("provider failure was not safely classified", reason)
+			}
+			f.control.check(context.Background())
+			if f.active != "" || f.control.request.Lease != "" || f.stops != 1 || !f.now.Before(deadline) {
+				t.Fatal("provider failure did not restore the unexpired owned mask")
+			}
+		})
 	}
 }

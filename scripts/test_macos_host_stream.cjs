@@ -261,9 +261,10 @@ async function main(){
   }catch(error){
     // ReportCrash writes asynchronously after the native process has exited.
     if(viewerExits.some(exit=>exit.signal))await pause(10000);
-    report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_host_stream\.cjs:\d+:\d+/)?.[0],
+    report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_(?:host|privacy)_[a-z_]+\.cjs:\d+:\d+/)?.[0],
+      assertion:error.code==='ERR_ASSERTION'&&/^[A-Z][A-Z_]{5,80}$/.test(error.message)?error.message:undefined,
       host:host.snapshot().phase,viewer:viewer?.snapshot(),viewStates,viewerExits,
-      companionDiagnostics:companionDiagnostics.split('\n').filter(line=>/privacy operation|^HOST_[A-Z_]+$/.test(line)).map(line=>line.slice(0,400)).slice(-16),
+      companionDiagnostics:companionDiagnostics.split('\n').filter(line=>/privacy operation|privacy maintenance|^HOST_[A-Z_]+$/.test(line)).map(line=>line.slice(0,400)).slice(-16),
       diagnostics:diagnostics.slice(-24),files:fileDiagnostics(),debuggers:debuggers.map(debug=>({exit:debug.exit,
         lines:debug.output.split('\n').filter(line=>/stop reason|error:|frame #|stop-reason|exited with status/.test(line))
           .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(0,60)}))};

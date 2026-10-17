@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -82,11 +83,37 @@ func (p *privacyControl) restore() bool {
 	return true
 }
 func (p *privacyControl) bound(ctx context.Context, request privacyRequest, owner string) bool {
+	return p.bindingFailure(ctx, request, owner) == ""
+}
+
+// Only fixed classifications reach logs: never provider error text, identities,
+// certificates or lease identifiers. Keep the same fail-closed policy.
+func (p *privacyControl) bindingFailure(ctx context.Context, request privacyRequest, owner string) string {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	state, err := p.provider(ctx, false, nil)
-	return err == nil && validDisplayState(state) && state.Instance == request.Instance && state.Phase == "active" && len(state.Streams) == 1 &&
-		state.Streams[0].Owner == owner && state.Streams[0].ID == request.Stream && state.Streams[0].Generation == state.Generation && state.Streams[0].FirstFrame > 0
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "display-timeout"
+	case errors.Is(err, context.Canceled):
+		return "display-canceled"
+	case err != nil:
+		return "display-unavailable"
+	case !validDisplayState(state):
+		return "display-invalid"
+	case state.Instance != request.Instance:
+		return "host-instance-changed"
+	case state.Phase != "active":
+		return "capture-not-active"
+	case len(state.Streams) != 1:
+		return "stream-not-exclusive"
+	case state.Streams[0].Owner != owner || state.Streams[0].ID != request.Stream:
+		return "stream-owner-changed"
+	case state.Streams[0].Generation != state.Generation || state.Streams[0].FirstFrame == 0:
+		return "capture-generation-not-ready"
+	default:
+		return ""
+	}
 }
 func (p *privacyControl) maintain(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
@@ -104,12 +131,25 @@ func (p *privacyControl) maintain(ctx context.Context) {
 func (p *privacyControl) check(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.request.Lease != "" && (!p.now().Before(p.deadline) || !paired(p.clients, p.certificate) || !p.bound(ctx, p.request, p.owner)) {
-		p.restore()
+	if p.request.Lease != "" {
+		reason := ""
+		switch {
+		case !p.now().Before(p.deadline):
+			reason = "lease-expired"
+		case !paired(p.clients, p.certificate):
+			reason = "pairing-revoked"
+		default:
+			reason = p.bindingFailure(ctx, p.request, p.owner)
+		}
+		if reason != "" {
+			log.Printf("privacy maintenance withdrew: reason=%s remaining_ms=%d", reason, p.deadline.Sub(p.now()).Milliseconds())
+			p.restore()
+		}
 	}
 	if p.managed != nil && p.request.Lease != "" {
 		value, err := p.worker(ctx, "status", "")
 		if err != nil || !value.OK || !value.Active || value.Lease != p.request.Lease {
+			log.Printf("privacy maintenance withdrew: reason=worker-status remaining_ms=%d", p.deadline.Sub(p.now()).Milliseconds())
 			p.restore()
 		}
 	}
