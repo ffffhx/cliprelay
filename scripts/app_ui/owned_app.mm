@@ -17,7 +17,7 @@ static NSRunningApplication *application;
 static NSString *expected_path;
 static struct proc_bsdinfo original;
 static pid_t owner;
-static bool closing=false,forced=false;
+static bool closing=false,forced=false,quit_observed=false;
 static std::chrono::steady_clock::time_point close_at,deadline;
 static void emit(NSDictionary *value){
   NSData *json=[NSJSONSerialization dataWithJSONObject:value options:0 error:nullptr];
@@ -42,7 +42,8 @@ static void traverse(AXUIElementRef node,unsigned depth,unsigned &budget,NSMutab
                      std::chrono::steady_clock::time_point end){
   if(depth>12||!budget||std::chrono::steady_clock::now()>=end)return;--budget;AXUIElementSetMessagingTimeout(node,.05);
   NSString *role=text(node,kAXRoleAttribute),*title=text(node,kAXTitleAttribute),*description=text(node,kAXDescriptionAttribute);
-  if(rows.count<100&&(title.length||description.length))[rows addObject:@{@"role":role,@"title":title,@"description":description,@"depth":@(depth)}];
+  NSString *value=[command isEqualToString:@"windows"]?text(node,kAXValueAttribute):@"";
+  if(rows.count<60&&(title.length||description.length||value.length))[rows addObject:@{@"role":role,@"title":title,@"description":description,@"value":value,@"depth":@(depth)}];
   BOOL match=NO;
   if([command isEqualToString:@"menu"])match=[role isEqualToString:@"AXMenuBarItem"]&&([title isEqualToString:@"ClipRelay"]||[description isEqualToString:@"ClipRelay"]);
   NSString *wanted=[@{@"host":@"允许其他设备连接这台 Mac…",@"paired":@"配对电脑与安全收发…",@"permissions":@"本机远程访问权限…",@"exit":@"退出 ClipRelay"} objectForKey:command];
@@ -91,6 +92,19 @@ static bool inspect(NSString *command){
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();
   if(owned()&&!inspect(@"exit"))[application terminate];
+}
+static void observe_quit(){
+  if(!owned())return;
+  AXUIElementRef app=AXUIElementCreateApplication(application.processIdentifier);AXUIElementSetMessagingTimeout(app,.1);
+  CFTypeRef windows=nullptr;NSMutableArray *rows=[NSMutableArray array],*matches=[NSMutableArray array];unsigned budget=250;
+  const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+  if(AXUIElementCopyAttributeValue(app,kAXWindowsAttribute,&windows)==kAXErrorSuccess&&windows){
+    if(CFGetTypeID(windows)==CFArrayGetTypeID())for(id node in (__bridge NSArray *)windows){
+      if(CFGetTypeID((__bridge CFTypeRef)node)==AXUIElementGetTypeID())traverse((__bridge AXUIElementRef)node,0,budget,rows,matches,@"windows",end);
+    }
+    CFRelease(windows);
+  }
+  CFRelease(app);emit(@{@"event":@"quit-windows",@"owned":@(owned()),@"nodes":rows,@"remainingBudget":@(budget)});
 }
 int main(int argc,char **argv){
   @autoreleasepool {
@@ -143,6 +157,7 @@ int main(int argc,char **argv){
       (void)timer;const auto now=std::chrono::steady_clock::now();
       if(application.terminated){emit(@{@"event":@"closed",@"terminated":@YES,@"forced":@(forced)});exit(closing&&!forced?0:4);}
       if(getppid()!=owner||now>=deadline)close_owned();
+      if(closing&&!quit_observed&&now-close_at>std::chrono::seconds(2)&&owned()){quit_observed=true;observe_quit();}
       if(closing&&now-close_at>std::chrono::seconds(8)&&owned()){forced=true;[application forceTerminate];}
       if(closing&&now-close_at>std::chrono::seconds(12)){emit(@{@"event":@"error",@"code":@"APP_CLEANUP_TIMEOUT"});exit(4);}
     }];

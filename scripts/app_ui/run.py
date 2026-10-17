@@ -149,10 +149,11 @@ finally:
                 if browser_connected:
                     time.sleep(2)
                     if child.poll() is None:
-                        observed=subprocess.run([str(browser),'--namespace',namespace,'--session',name,'--json','snapshot'],
-                                                env=env,capture_output=True,text=True,timeout=3)
-                        if observed.returncode==0 and len(observed.stdout)<65536:
-                            result['quitSnapshot']=json.loads(observed.stdout)
+                        try:
+                            observed=subprocess.run([str(browser),'--namespace',namespace,'--session',name,'--json','snapshot'],
+                                                    env=env,capture_output=True,text=True,timeout=3)
+                            if len(observed.stdout)<65536:result['quitSnapshot']=json.loads(observed.stdout)
+                        except Exception as error:result['quitSnapshotError']=type(error).__name__
                 child.stdin.close()
             child.wait(timeout=15)
             closed=next((v for v in reversed(all_events) if v.get('event')=='closed'),None)
