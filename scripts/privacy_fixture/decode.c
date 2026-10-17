@@ -113,6 +113,7 @@ static int receive_frame(PDECODE_UNIT unit) {
 }
 static void cleanup(void) { av_packet_free(&packet); av_frame_free(&image); avcodec_free_context(&decoder); }
 static void ended(int reason) { atomic_store(&termination, reason); atomic_store(&stopped, 1); }
+static void stage_failed(int stage,int code) { printf("{\"event\":\"stage-failed\",\"stage\":%d,\"code\":%d}\n",stage,code);fflush(stdout); }
 static void silent_log(const char *format, ...) { (void)format; }
 static void *watch(void *ignored) {
   (void)ignored;
@@ -147,7 +148,7 @@ int main(void) {
   if (!hex_key(key,config.remoteInputAesKey) || !hex_key(iv,config.remoteInputAesIv)) return 2;
   memset(key,0,sizeof key);memset(iv,0,sizeof iv);
   video.setup=setup;video.cleanup=cleanup;video.submitDecodeUnit=receive_frame;video.capabilities=CAPABILITY_DIRECT_SUBMIT;
-  listener.connectionTerminated=ended;listener.logMessage=silent_log;
+  listener.connectionTerminated=ended;listener.stageFailed=stage_failed;listener.logMessage=silent_log;
   av_log_set_level(AV_LOG_ERROR);
   pthread_t guard;if (pthread_create(&guard,NULL,watch,NULL) != 0) return 2;
   const int result=LiStartConnection(&server,&config,&listener,&video,NULL,NULL,0,NULL,0);

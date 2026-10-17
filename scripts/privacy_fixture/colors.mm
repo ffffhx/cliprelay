@@ -27,7 +27,10 @@ static NSString *pixel(unsigned r,unsigned g,unsigned b) {
 }
 static void sample(void) {
   [SCScreenshotManager captureImageWithFilter:filter configuration:configuration completionHandler:^(CGImageRef image,NSError *error) {
-    if (error || !image || CGImageGetWidth(image)!=16 || CGImageGetHeight(image)!=16) _exit(4);
+    if (error || !image || CGImageGetWidth(image)!=16 || CGImageGetHeight(image)!=16) {
+      emit(@{@"event":@"error",@"code":@"LOCAL_SAMPLE",@"nativeCode":@(error.code),
+        @"width":@(image?CGImageGetWidth(image):0),@"height":@(image?CGImageGetHeight(image):0)});_exit(4);
+    }
     unsigned char rgba[16*16*4] = {0};
     CGColorSpaceRef color = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGContextRef context = CGBitmapContextCreate(rgba,16,16,8,16*4,color,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big);
@@ -67,7 +70,7 @@ int main(void) {
     backdrop.collectionBehavior=NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorFullScreenAuxiliary;
     [backdrop orderFrontRegardless];
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO completionHandler:^(SCShareableContent *content,NSError *error) {
-      if (error || !content) _exit(4);
+      if (error || !content) { emit(@{@"event":@"error",@"code":@"LOCAL_CONTENT",@"nativeCode":@(error.code)});_exit(4); }
       dispatch_async(dispatch_get_main_queue(),^{
         SCDisplay *display=nil;
         for (SCDisplay *candidate in content.displays) if (candidate.displayID==identifier) display=candidate;

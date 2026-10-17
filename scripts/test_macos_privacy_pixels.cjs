@@ -95,6 +95,12 @@ async function verify({directory,host,identity,hostState,admin,until,nativeChild
     await command('blue','paint');const blue=await remote('blue',Math.max(recovered.streams[0].firstFrame,green.decoded+5));
     await local('blue');receipt.observations.push({stage:'restored',remote:blue.color,local:'blue',frame:blue.decoded,generation:recovered.generation});
     receipt.decodedPixelsVerified=true;receipt.passed=true;
+  }catch(error){
+    const state=value=>value?{exit:value.exit,error:value.error,events:value.events.slice(-5),
+      diagnostics:value.stderr.split('\n').filter(line=>!(/rtsp|rikey|private.key|password|credential|token/i.test(line))).slice(-8).map(line=>line.slice(0,300))}:null;
+    receipt.failure={code:error.code||error.message,message:String(error.message).slice(0,500),
+      location:error.stack?.match(/test_macos_privacy_pixels\.cjs:\d+:\d+/)?.[0],colors:state(colors),decoder:state(decoder)};
+    throw error;
   }finally{
     if(binding)await protocol.request(host,identity,'stop',binding).catch(()=>{});
     const closed=await Promise.allSettled([close(decoder),close(colors)]);

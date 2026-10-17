@@ -65,7 +65,7 @@ jobs:
           clang++ -fobjc-arc -Wall -Wextra -Werror -mmacosx-version-min=14.0 scripts/privacy_fixture/colors.mm -framework AppKit -framework ScreenCaptureKit -framework CoreVideo -o "$RUNNER_TEMP/cliprelay-privacy-colors"
           echo "CLIPRELAY_PRIVACY_DECODE_FIXTURE=$RUNNER_TEMP/privacy-decode-build/cliprelay-privacy-decode" >> "$GITHUB_ENV"
           echo "CLIPRELAY_PRIVACY_COLOR_FIXTURE=$RUNNER_TEMP/cliprelay-privacy-colors" >> "$GITHUB_ENV"
-      - name: Real paired privacy activation and recovery
+      - name: Real paired privacy activation, recovery and decoded colors
         env:
           CLIPRELAY_COMPONENT_PRIVACY_TEST: '1'
         run: node scripts/test_macos_host_stream.cjs .tools/privacy-stream-mac privacy-stream-development.json
