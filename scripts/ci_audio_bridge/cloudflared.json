@@ -1,0 +1,9 @@
+{
+  "version": "2026.10.1",
+  "repository": "cloudflare/cloudflared",
+  "assets": {
+    "linux-x64": { "id": 644585706, "name": "cloudflared-linux-amd64", "size": 40227032, "sha256": "3bfc539f45d2620c71debb7a86be0efa737ed5ccbad9eb85c787116900e5c586" },
+    "darwin-x64": { "id": 644587062, "name": "cloudflared-darwin-amd64.tgz", "size": 21768449, "sha256": "3b0dbaf378337e9d7fb6cd235a76d1d6a7dee434c2d8edf9281164fb6a3837ab" },
+    "darwin-arm64": { "id": 644587372, "name": "cloudflared-darwin-arm64.tgz", "size": 19807806, "sha256": "647615df99d49cd179ea5e13ef760b9bbfb33630f6ae62f87e33dfadda60adcc" }
+  }
+}

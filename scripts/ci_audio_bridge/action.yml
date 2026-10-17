@@ -1,0 +1,5 @@
+name: Isolated audio environment transport
+description: Disposable mutually authenticated CI route, with private keys kept in their originating jobs
+runs:
+  using: node24
+  main: index.mjs

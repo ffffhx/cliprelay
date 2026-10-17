@@ -1,0 +1,8 @@
+{
+  "name": "cliprelay-disposable-audio-bridge-action",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "dependencies": { "@actions/artifact": "6.3.1" }
+}
