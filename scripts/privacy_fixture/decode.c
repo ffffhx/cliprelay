@@ -57,6 +57,17 @@ static int hex_key(const char *value, char output[16]) {
   }
   return 1;
 }
+static int version_quad(const char *value, int signed_revision) {
+  for (int part=0;part<4;++part) {
+    if (part==3 && signed_revision && *value=='-') ++value;
+    int digits=0;
+    while (*value>='0' && *value<='9') { ++value;if (++digits>6) return 0; }
+    if (!digits) return 0;
+    if (part==3) return *value==0;
+    if (*value++!='.') return 0;
+  }
+  return 0;
+}
 static int setup(int format, int width, int height, int fps, void *context, int flags) {
   (void)context; (void)flags;
   if (format != VIDEO_FORMAT_H264 || width != 1280 || height != 720 || fps != 30) return -1;
@@ -136,7 +147,8 @@ int main(void) {
   char version[64], gfe[64], url[256], key[64], iv[64];
   if (!line(version,sizeof version) || !line(gfe,sizeof gfe) || !line(url,sizeof url) || !line(key,sizeof key) || !line(iv,sizeof iv)) return 2;
   static const char prefix[] = "rtspenc://127.0.0.1:";
-  if (strspn(version,"0123456789.") != strlen(version) || strspn(gfe,"0123456789.") != strlen(gfe) ||
+  // The pinned Sunshine engine advertises 7.1.431.-1, a signed final revision.
+  if (!version_quad(version,1) || !version_quad(gfe,0) ||
       strncmp(url,prefix,sizeof(prefix)-1) != 0) return 2;
   const char *port = url + sizeof(prefix)-1;
   if (!*port || strlen(port)>5 || strspn(port,"0123456789")!=strlen(port) || strtol(port,NULL,10)<1 || strtol(port,NULL,10)>65535) return 2;

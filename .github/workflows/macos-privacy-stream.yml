@@ -54,7 +54,7 @@ jobs:
           PY
       - name: Stage verified components for development acceptance
         run: python3 scripts/stage_privacy_stream.py
-      - name: Build disposable encrypted decoder and owned color fixture
+      - name: Build disposable Sunshine-compatible decoder and owned color fixture
         run: |
           brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
           git clone --no-checkout https://github.com/moonlight-stream/moonlight-common-c "$RUNNER_TEMP/privacy-common"
