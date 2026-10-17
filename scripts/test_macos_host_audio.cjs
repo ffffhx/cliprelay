@@ -2,7 +2,7 @@
 // Actual packaged host engine -> encrypted Moonlight transport -> Opus decode.
 // Owned synthetic source only, disposable CI. No audio samples are retained.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
-const {spawn}=require('node:child_process');
+const {spawn,spawnSync}=require('node:child_process');
 const {snapshot,encryptedStorage}=require('./test_macos_host_state.cjs');
 assert.equal(process.platform,'darwin');assert.equal(process.env.GITHUB_ACTIONS,'true');
 const directory=path.resolve(process.argv[2]),reportPath=path.resolve(process.argv[3]);
@@ -24,17 +24,21 @@ const protectedDirectories=[path.join(os.homedir(),'.config/sunshine'),path.join
 const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
 const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cliprelay-native-audio-')));
 const nativeChildren=[],fixtures=[];
-let hostState,stage='prepare',tone,decoder;
+let hostState,stage='prepare',tone,decoder,engineChild;
 const host=new HostController({directory,stateDirectory:path.join(base,'Host'),safeStorage:encryptedStorage(),localName:'Native audio CI',
   create({stateDirectory,safeStorage,enginePin,companionPin,onUpdate}){
     hostState=new HostState({directory:stateDirectory,safeStorage});
     const prepare=hostState.prepare.bind(hostState);
     hostState.prepare=name=>{
       const result=prepare(name);
-      hostState.write('sunshine.conf',configuration(name)+'bind_address = 127.0.0.1\nmouse = disabled\nkeyboard = disabled\nstream_audio = enabled\n');
+      hostState.write('sunshine.conf',configuration(name).replace('min_log_level = 2','min_log_level = 0')+
+        'bind_address = 127.0.0.1\nmouse = disabled\nkeyboard = disabled\nstream_audio = enabled\n');
       return result;
     };
-    const launch=(file,args,settings)=>{const child=spawn(file,args,settings);nativeChildren.push(child);return child;};
+    const launch=(file,args,settings)=>{
+      const child=spawn(file,args,settings);nativeChildren.push(child);
+      if(path.basename(file)==='sunshine')engineChild=child;return child;
+    };
     const engine=new HostEngine({directory:path.join(directory,'host-engine'),pin:enginePin,state:hostState,launch});
     const companion=new HostCompanion({directory:path.join(directory,'host-companion'),pin:companionPin,state:hostState,launch});
     return {session:new HostSession({engine,companion,onUpdate}),companion};
@@ -88,9 +92,18 @@ async function close(item){
   finally{if(!item.exit){item.child.kill('SIGKILL');await until(()=>item.exit,Boolean,5000);}}
 }
 function diagnostics(){
-  let text='';try{text=hostState.read('engine.log',2*1024*1024).toString('utf8');}catch{}
+  let text='';try{text=hostState.read('engine.log',8*1024*1024).toString('utf8');}catch{}
   return text.split('\n').filter(line=>/audio|tap|aggregate|permission|microphone|error|fail|capture/i.test(line)&&
     !/rikey|pin=|uniqueid|PRIVATE KEY|certificate|authorization|credential|password|secret|token/i.test(line)).slice(-45).map(line=>line.slice(0,400));
+}
+function audioStack(){
+  if(!engineChild||engineChild.exitCode!==null||engineChild.signalCode!==null)return [];
+  // Sample only the engine child this fixture owns; no process discovery or
+  // memory dump. Keep audio/TCC stack symbols, never keys, arguments or frames.
+  const sampled=spawnSync('/usr/bin/sample',[String(engineChild.pid),'1','1','-mayDie'],
+    {encoding:'utf8',timeout:5000,maxBuffer:2*1024*1024});
+  return String(sampled.stdout||'').split('\n').filter(line=>/Audio|audio|TCC|tcc|microphone|setupSystemTap|createProcessTap/.test(line)&&
+    !/PRIVATE KEY|authorization|credential|password|secret|token/i.test(line)).slice(0,50).map(line=>line.slice(0,400));
 }
 const report={protocol:1,testCommit:process.env.GITHUB_SHA,architecture:process.arch,passed:false,componentOnly:true,
   source:'owned-synthetic-tone',receiver:'standalone-opus-and-software-h264',productionPlaybackVerified:false,
@@ -163,8 +176,9 @@ async function main(){
     assert.deepEqual(protectedDirectories.map(snapshot),before);assert.equal(process.env.HOME,originalHome);
     report.ownedChildrenReaped=true;report.cases.push('owned-processes-reaped-and-default-profile-preserved');report.passed=true;
   }catch(error){
+    let source=tone?.events.at(-1);if(tone&&!tone.exit)try{source=await command('state');}catch{}
     report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_host_audio\.cjs:\d+:\d+/)?.[0],
-      host:host.snapshot(),tone:tone?.events.at(-1),decoder:decoder?.events.at(-1),engine:diagnostics()};process.exitCode=1;
+      host:host.snapshot(),tone:source,decoder:decoder?.events.at(-1),engine:diagnostics(),audioStack:audioStack()};process.exitCode=1;
   }finally{
     const cleanup=[];
     for(const item of [decoder])try{await close(item);}catch{cleanup.push('receiver');}

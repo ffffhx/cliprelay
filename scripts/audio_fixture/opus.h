@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Included only by the disposable audio receiver, never the shipping viewer.
 // Opus API: https://opus-codec.org/docs/opus_api-1.5/group__opus__multistream.html
-#include <opus/opus_multistream.h>
+#include <opus_multistream.h>
 #include <math.h>
 static OpusMSDecoder *audio_decoder;
 static unsigned audio_packets, audio_errors, audio_windows, window_samples;
