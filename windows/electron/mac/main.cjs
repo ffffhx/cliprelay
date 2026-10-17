@@ -40,7 +40,10 @@ else{
     if((!hostPermissions && !host) || permissionQuitReady)return;
     event.preventDefault();if(permissionQuit)return;permissionQuit=true;
     clipboardSync?.close();hostNotices?.close();
-    Promise.all([hostPermissions?.close(),host?.close()]).then(()=>{permissionQuitReady=true;app.quit();});
+    // Electron assigns its native quitting flag after before-quit returns.
+    // Retrying from cleanup microtasks can reenter that cancelled event and
+    // leave closed windows with a live process. Resume on the next event turn.
+    Promise.all([hostPermissions?.close(),host?.close()]).then(()=>setImmediate(()=>{permissionQuitReady=true;app.quit();}));
   });
   app.whenReady().then(start).catch(error=>{require('electron').dialog.showErrorBox('ClipRelay',error.code==='EADDRINUSE'?'ClipRelay 端口已被占用。请先停用 Hammerspoon 中的 ClipRelay，再重新打开。':error.message);app.quit();});
   app.on('will-quit',()=>{scanning++;clipboardSync?.close();wake?.close();sessionLock?.close();audioMute?.close();privacy?.close();displays?.close();bitrate?.close();terminal?.close();files?.close();viewer?.stop();paired?.close();network?.close();globalShortcut.unregisterAll();receiver?.close();service?.stop();bonjour?.destroy();tray?.destroy();});
