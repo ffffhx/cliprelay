@@ -180,18 +180,23 @@ async function build(){
         delete env.CLIPRELAY_MAC_STREAM_ACTIVATE;
         delete env.CLIPRELAY_MAC_STREAM_H264;
         delete env.CLIPRELAY_COMPONENT_PRIVACY_TEST;
+        const privacyControl=JSON.parse(fs.readFileSync(path.join(appDirectory,'host-companion/manifest.json'),'utf8')).privacyControl===1;
+        if(privacyControl&&(!env.CLIPRELAY_PRIVACY_DECODE_FIXTURE||!env.CLIPRELAY_PRIVACY_COLOR_FIXTURE||!env.CLIPRELAY_PRIVACY_FIXTURE_RECEIPT))
+          throw new Error('Packaged privacy acceptance requires native pixel fixtures');
         execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_stream.cjs'),appDirectory,reportPath],{env,stdio:'inherit',timeout:240000});
         const report=JSON.parse(fs.readFileSync(reportPath,'utf8'));
         const expected=['packaged-Mac-capture-encode-encrypted-transport-and-Qt-present',
           'production-input-ACK-pause-display-reconstruction-and-fresh-frame-resume','desktop-owner-EOF-releases-native-stream',
           'native-host-termination-after-revocation-without-client-control-polling',
           'other-paired-client-still-renders-and-EOF-releases-stream','all-owned-native-processes-reaped-and-default-state-preserved'];
-        const privacyControl=JSON.parse(fs.readFileSync(path.join(appDirectory,'host-companion/manifest.json'),'utf8')).privacyControl===1;
         if(privacyControl){
-          const privacyCases=require('../../scripts/test_macos_host_privacy.cjs').CASES;
-          expected.splice(3,0,...privacyCases.slice(0,2));expected.splice(6,0,privacyCases[2]);
-          if(report.privacy?.passed!==true||report.privacy.actualEncodedReadiness!==true||report.privacy.cycles?.length!==3)
+          const {CASES:privacyCases,REPEAT_CASE}=require('../../scripts/test_macos_host_privacy.cjs');
+          const pixels=require('../../scripts/privacy_fixture/receipt.cjs');
+          expected.splice(3,0,privacyCases[0],REPEAT_CASE,privacyCases[1]);expected.splice(7,0,privacyCases[2]);
+          expected.splice(-1,0,pixels.PIXEL_CASE);
+          if(report.privacy?.passed!==true||report.privacy.actualEncodedReadiness!==true||report.privacy.cycles?.length!==3||report.privacy.repetitions?.length!==3)
             throw new Error('Packaged paired privacy acceptance did not complete');
+          pixels.validate(report.privacyPixels,{testCommit:process.env.GITHUB_SHA,architecture,hostScope:'complete-app-host'});
         }
         if(report.protocol!==1 || report.passed!==true || report.diagnosticOnly!==false || report.architecture!==architecture ||
           report.applicationCommit!==process.env.GITHUB_SHA || JSON.stringify(report.cases)!==JSON.stringify(expected) ||

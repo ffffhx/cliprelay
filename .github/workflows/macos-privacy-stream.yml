@@ -56,15 +56,8 @@ jobs:
         run: python3 scripts/stage_privacy_stream.py
       - name: Build disposable Sunshine-compatible decoder and owned color fixture
         run: |
-          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
-          git clone --no-checkout https://github.com/moonlight-stream/moonlight-common-c "$RUNNER_TEMP/privacy-common"
-          git -C "$RUNNER_TEMP/privacy-common" checkout --detach f900dd4767759c7b9d0e93bcea666b55c69ea62f
-          git -C "$RUNNER_TEMP/privacy-common" submodule update --init --recursive
-          cmake -S scripts/privacy_fixture -B "$RUNNER_TEMP/privacy-decode-build" -DMOONLIGHT_COMMON="$RUNNER_TEMP/privacy-common" -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$RUNNER_TEMP/privacy-decode-build" --parallel 3
-          clang++ -fobjc-arc -Wall -Wextra -Werror -mmacosx-version-min=14.0 scripts/privacy_fixture/colors.mm -framework AppKit -framework ScreenCaptureKit -framework CoreVideo -o "$RUNNER_TEMP/cliprelay-privacy-colors"
-          echo "CLIPRELAY_PRIVACY_DECODE_FIXTURE=$RUNNER_TEMP/privacy-decode-build/cliprelay-privacy-decode" >> "$GITHUB_ENV"
-          echo "CLIPRELAY_PRIVACY_COLOR_FIXTURE=$RUNNER_TEMP/cliprelay-privacy-colors" >> "$GITHUB_ENV"
+          node --test scripts/tests/mac-privacy-receipt.test.cjs
+          python3 scripts/build_privacy_pixel_fixtures.py
       - name: Real paired privacy activation, recovery and decoded colors
         env:
           CLIPRELAY_COMPONENT_PRIVACY_TEST: '1'

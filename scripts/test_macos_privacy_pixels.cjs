@@ -1,17 +1,35 @@
 'use strict';
-// Additional component acceptance, distinct from shipped Qt presentation.
+// Independent decoded host-output acceptance, distinct from Qt presentation.
 // Only a CI-owned color backdrop and unsaved center samples are inspected.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {spawn}=require('node:child_process');
+const {validate,PIXEL_CASE}=require('./privacy_fixture/receipt.cjs');
 async function verify({directory,host,identity,hostState,admin,until,nativeChildren,report,setStage}){
   assert.equal(process.platform,'darwin');assert.equal(process.env.GITHUB_ACTIONS,'true');
-  assert.equal(report.componentOnly,true);
+  assert.equal(typeof report.componentOnly,'boolean');
+  if(!report.componentOnly)assert.equal(report.applicationCommit,process.env.GITHUB_SHA);
   const configuration=hostState.read('sunshine.conf',65536).toString('utf8');
   assert.match(configuration,/^lan_encryption_mode = 2$/m);assert.match(configuration,/^wan_encryption_mode = 2$/m);
   const {exchange,jsonRequest}=require(path.join(directory,'paired-transport.cjs'));
   const {xmlValue}=require(path.join(directory,'paired-crypto.cjs'));
   const protocol=require(path.join(directory,'privacy-protocol.cjs'));
   const root=fs.realpathSync(process.env.RUNNER_TEMP)+path.sep;
+  const fixturePath=fs.realpathSync(process.env.CLIPRELAY_PRIVACY_FIXTURE_RECEIPT);
+  assert.ok(fixturePath.startsWith(root)&&fs.statSync(fixturePath).size<16384);
+  const fixture=JSON.parse(fs.readFileSync(fixturePath,'utf8'));
+  assert.equal(fixture.protocol,1);assert.equal(fixture.testCommit,process.env.GITHUB_SHA);assert.equal(fixture.architecture,process.arch);
+  for(const [name,digest] of Object.entries(fixture.sources)){
+    assert.ok(['scripts/privacy_fixture/decode.c','scripts/privacy_fixture/colors.mm','scripts/privacy_fixture/CMakeLists.txt',
+      'scripts/build_privacy_pixel_fixtures.py','engine/desktop-client/upstream.json'].includes(name));
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname,'..',name))).digest('hex'),digest);
+  }
+  assert.equal(fixture.commonCommit,JSON.parse(fs.readFileSync(path.join(__dirname,'../engine/desktop-client/upstream.json'),'utf8')).commonCommit);
+  const binarySha256={};
+  for(const [name,variable] of [['decoder','CLIPRELAY_PRIVACY_DECODE_FIXTURE'],['colors','CLIPRELAY_PRIVACY_COLOR_FIXTURE']]){
+    const file=fs.realpathSync(process.env[variable]);assert.ok(file.startsWith(root));assert.equal(file,fixture.files[name].path);
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'),fixture.files[name].sha256);
+    binarySha256[name]=fixture.files[name].sha256;
+  }
   function child(variable){
     const file=fs.realpathSync(process.env[variable]);assert.ok(file.startsWith(root));
     const processChild=spawn(file,[],{stdio:['pipe','pipe','pipe']});nativeChildren.push(processChild);
@@ -49,6 +67,9 @@ async function verify({directory,host,identity,hostState,admin,until,nativeChild
     trust:{cert:host.certificate},headers:{Authorization:hostState.authorization()},timeout:3000,limit:8192});
   let colors,decoder,binding;
   const receipt=report.privacyPixels={passed:false,decoder:'standalone-software-h264',productionQtPixelsVerified:false,
+    hostScope:report.componentOnly?'development-components':'complete-app-host',
+    fixture:{protocol:fixture.protocol,testCommit:fixture.testCommit,architecture:fixture.architecture,commonCommit:fixture.commonCommit,
+      libavcodecVersion:fixture.libavcodecVersion,sources:fixture.sources,binarySha256},
     source:'owned-solid-color-window',localSampleSize:[16,16],decodedSampleCount:9,screenContentSaved:false,
     encryptedRTSP:true,hostRequiresVideoEncryption:true,observations:[]};
   async function command(value,event){
@@ -99,6 +120,7 @@ async function verify({directory,host,identity,hostState,admin,until,nativeChild
     await command('blue','paint');const blue=await remote('blue',Math.max(recovered.streams[0].firstFrame,green.decoded+5));
     await local('blue');receipt.observations.push({stage:'restored',remote:blue.color,local:'blue',frame:blue.decoded,generation:recovered.generation});
     receipt.decodedPixelsVerified=true;receipt.passed=true;
+    validate(receipt,{testCommit:process.env.GITHUB_SHA,architecture:process.arch,hostScope:receipt.hostScope});
   }catch(error){
     const state=value=>value?{exit:value.exit,error:value.error,events:value.events.slice(-5),
       diagnostics:value.stderr.split('\n').filter(line=>!(/rtsp|rikey|private.key|password|credential|token/i.test(line))).slice(-8).map(line=>line.slice(0,300))}:null;
@@ -111,6 +133,6 @@ async function verify({directory,host,identity,hostState,admin,until,nativeChild
     for(const result of closed)if(result.status==='rejected')throw result.reason;
   }
   await until(admin,value=>value.streams.length===0,10000);
-  report.cases.push('owned-color-decoded-through-encrypted-stream-while-local-display-masked');
+  report.cases.push(PIXEL_CASE);
 }
 module.exports={verify};

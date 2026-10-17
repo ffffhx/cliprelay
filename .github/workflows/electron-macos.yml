@@ -141,6 +141,11 @@ jobs:
           companion_arch="$APP_ARCH"
           if [ "$companion_arch" = x64 ]; then companion_arch=x86_64; fi
           python3 scripts/fetch_host_companion.py --run "$HOST_COMPANION_RUN_ID" --arch "$companion_arch" --directory .tools/host-companion-download
+      - name: Build independent decoder for complete host privacy acceptance
+        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != ''
+        run: |
+          node --test scripts/tests/mac-privacy-receipt.test.cjs
+          python3 scripts/build_privacy_pixel_fixtures.py
       - run: npm run build:mac -- ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:

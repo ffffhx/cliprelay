@@ -5,6 +5,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const {spawnSync}=require('node:child_process');
 const CASES=['paired-privacy-filtered-encoding-renew-stop','paired-privacy-expiry-without-client-requests',
   'paired-privacy-revocation-reaps-native-mask'];
+const REPEAT_CASE='paired-privacy-repeated-native-activation-and-recovery';
 function create({directory,base,nativeChildren,hostState,admin,first,second,identities,until,report,setStage}){
   assert.equal(process.platform,'darwin');assert.equal(process.env.GITHUB_ACTIONS,'true');
   const protocol=require(path.join(directory,'privacy-protocol.cjs'));
@@ -37,8 +38,8 @@ function create({directory,base,nativeChildren,hostState,admin,first,second,iden
     return JSON.parse(result.stdout);
   }
   const progress=receiver=>{assert.equal(receiver.exit,null);assert.equal(receiver.error,null);return receiver.events.filter(e=>e.event==='progress').at(-1);};
-  const record=report.privacy={passed:false,actualEncodedReadiness:false,decodedPixelsVerified:false,screenContentSaved:false,cycles:[]};
-  async function start(receiver){
+  const record=report.privacy={passed:false,actualEncodedReadiness:false,decodedPixelsVerified:false,screenContentSaved:false,cycles:[],repetitions:[]};
+  async function start(receiver,observations=record.cycles){
     const before=await admin();assert.equal(before.phase,'active');assert.equal(before.streams.length,1);
     const binding={instance:before.instance,stream:before.streams[0].id,lease:crypto.randomBytes(16).toString('hex')};
     const started=Date.now(),state=await protocol.request(first,identities.client,'start',binding);
@@ -53,7 +54,7 @@ function create({directory,base,nativeChildren,hostState,admin,first,second,iden
     const flowing=await until(()=>progress(receiver),value=>value?.received>received+3&&value.received>=filtered.firstFrame,5000);
     const observed={activationMs:Date.now()-started,remainingMs:state.expiresMs,generation:filtered.generation,
       firstFrame:filtered.firstFrame,received:flowing.received,maskWindows:windows.length};
-    record.cycles.push(observed);record.actualEncodedReadiness=true;
+    observations.push(observed);record.actualEncodedReadiness=true;
     return {binding,pid:original[0],filtered,observed,acknowledged};
   }
   async function restored(receiver,held){
@@ -74,6 +75,13 @@ function create({directory,base,nativeChildren,hostState,admin,first,second,iden
       assert.equal(renewed.active,true);assert.equal(renewed.lease,held.binding.lease);assert.deepEqual(workers(),[held.pid]);
       const stopped=await protocol.request(first,identities.client,'stop',held.binding);assert.equal(stopped.active,false);
       await restored(receiver,held);report.cases.push(CASES[0]);
+      for(let cycle=0;cycle<3;cycle++){
+        setStage('privacy-repeated-activation-'+(cycle+1));
+        const repeated=await start(receiver,record.repetitions);
+        const restoredState=await protocol.request(first,identities.client,'stop',repeated.binding);assert.equal(restoredState.active,false);
+        await restored(receiver,repeated);assert.deepEqual(workers(),[]);
+      }
+      report.cases.push(REPEAT_CASE);
       setStage('privacy-independent-expiry');
       const expired=await start(receiver);
       // These are native process observations, not public status/renew calls.
@@ -91,4 +99,4 @@ function create({directory,base,nativeChildren,hostState,admin,first,second,iden
     }
   };
 }
-module.exports={create,CASES};
+module.exports={create,CASES,REPEAT_CASE};
