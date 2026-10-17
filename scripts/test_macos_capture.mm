@@ -134,6 +134,24 @@ int main() {
           auto buffer = CMSampleBufferGetImageBuffer(sample);
           require(CVPixelBufferGetPixelFormatType(buffer) == format && CVPixelBufferGetPlaneCount(buffer) == 2, "native NV12/P010 planes");
           require(CVPixelBufferGetWidth(buffer) == (size_t)owner.frameWidth && CVPixelBufferGetHeight(buffer) == (size_t)owner.frameHeight, "native frame geometry");
+          size_t x = (point.x - bounds.origin.x) * CVPixelBufferGetWidth(buffer) / bounds.size.width;
+          size_t y = (point.y - bounds.origin.y) * CVPixelBufferGetHeight(buffer) / bounds.size.height;
+          require(CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly) == kCVReturnSuccess, "native encoder pixel map");
+          auto *luma = static_cast<unsigned char *>(CVPixelBufferGetBaseAddressOfPlane(buffer, 0)) + y * CVPixelBufferGetBytesPerRowOfPlane(buffer, 0);
+          auto *chroma = static_cast<unsigned char *>(CVPixelBufferGetBaseAddressOfPlane(buffer, 1)) + (y / 2) * CVPixelBufferGetBytesPerRowOfPlane(buffer, 1);
+          unsigned Y, Cb, Cr;
+          if (format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+            Y = luma[x]; Cb = chroma[(x / 2) * 2]; Cr = chroma[(x / 2) * 2 + 1];
+          } else {
+            // P010 stores ten-bit video-range samples in the high bits of
+            // little-endian 16-bit words. Normalize to eight-bit code values.
+            Y = reinterpret_cast<uint16_t *>(luma)[x] >> 8;
+            Cb = reinterpret_cast<uint16_t *>(chroma)[(x / 2) * 2] >> 8;
+            Cr = reinterpret_cast<uint16_t *>(chroma)[(x / 2) * 2 + 1] >> 8;
+          }
+          CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
+          printf("encoder-format=%u red-YCbCr=%u,%u,%u\n", format, Y, Cb, Cr);
+          require(Y >= 40 && Y <= 110 && Cb >= 60 && Cb <= 150 && Cr >= 170, "NV12/P010 preserves actual red fixture pixels");
           CFRelease(sample);
           closeSource(owner, source);
         }

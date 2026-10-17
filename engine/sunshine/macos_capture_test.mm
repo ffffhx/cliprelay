@@ -17,7 +17,7 @@
 /** @brief Native stream boundary that never opens a screen capture device. */
 @interface ClipRelayCaptureTestStream: NSObject <ClipRelayCaptureStream>
 @property (nonatomic, retain) id<SCStreamOutput> output;
-@property (nonatomic) dispatch_queue_t queue;
+@property (nonatomic, assign) dispatch_queue_t queue;
 @property (nonatomic) BOOL running;
 @property (nonatomic) BOOL refuse;
 @property (nonatomic) BOOL failStart;
@@ -53,7 +53,7 @@
   handler(nil);
 }
 - (void)finishStart {
-  auto callback = [self.pendingStart copy];
+  void (^callback)(NSError *) = [self.pendingStart copy];
   self.pendingStart = nil;
   self.running = YES;
   callback(nil);
