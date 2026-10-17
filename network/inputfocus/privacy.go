@@ -34,6 +34,7 @@ type privacyControl struct {
 	provider    displayProvider
 	read        func(string) (json.RawMessage, error)
 	cleanupRead func(string) (json.RawMessage, error)
+	managed     func(context.Context, string, privacyRequest, string) (privacyResponse, error)
 	now         func() time.Time
 	request     privacyRequest
 	certificate []byte
@@ -41,7 +42,10 @@ type privacyControl struct {
 	deadline    time.Time
 }
 
-func (p *privacyControl) worker(op, lease string) (privacyResponse, error) {
+func (p *privacyControl) worker(ctx context.Context, op, lease string) (privacyResponse, error) {
+	if p.managed != nil {
+		return p.managed(ctx, op, p.request, p.owner)
+	}
 	command, _ := json.Marshal(struct {
 		Op    string `json:"op"`
 		Lease string `json:"lease,omitempty"`
@@ -63,14 +67,19 @@ func (p *privacyControl) worker(op, lease string) (privacyResponse, error) {
 	}
 	return response, nil
 }
-func (p *privacyControl) restore() {
+func (p *privacyControl) restore() bool {
 	if p.request.Lease != "" {
-		_, _ = p.worker("stop", p.request.Lease)
+		value, err := p.worker(context.Background(), "stop", p.request.Lease)
+		if p.managed != nil && (err != nil || !value.OK || value.Active) {
+			p.deadline = time.Time{}
+			return false // Retain ownership so recovery is retried, never report success.
+		}
 	}
 	p.request = privacyRequest{}
 	p.certificate = nil
 	p.owner = ""
 	p.deadline = time.Time{}
+	return true
 }
 func (p *privacyControl) bound(ctx context.Context, request privacyRequest, owner string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -97,6 +106,12 @@ func (p *privacyControl) check(ctx context.Context) {
 	defer p.mu.Unlock()
 	if p.request.Lease != "" && (!p.now().Before(p.deadline) || !paired(p.clients, p.certificate) || !p.bound(ctx, p.request, p.owner)) {
 		p.restore()
+	}
+	if p.managed != nil && p.request.Lease != "" {
+		value, err := p.worker(ctx, "status", "")
+		if err != nil || !value.OK || !value.Active || value.Lease != p.request.Lease {
+			p.restore()
+		}
 	}
 }
 
@@ -137,10 +152,9 @@ func (p *privacyControl) handler(next http.Handler) http.Handler {
 			return
 		}
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(15 * time.Second))
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
-		decoder.DisallowUnknownFields()
+		raw, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024))
 		var request privacyRequest
-		if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
+		if readErr != nil || decodePrivacyJSON(raw, &request, 1024) != nil {
 			fail(400, "PRIVACY_BAD_REQUEST")
 			return
 		}
@@ -165,7 +179,12 @@ func (p *privacyControl) handler(next http.Handler) http.Handler {
 			return
 		}
 		if request.Op == "status" {
-			value, err := p.worker("status", "")
+			if p.managed != nil && p.request.Lease != "" && p.owner != owner {
+				// Foreign polling/cancellation cannot control the owner's worker.
+				reply(200, privacyResponse{OK: true, Supported: true})
+				return
+			}
+			value, err := p.worker(r.Context(), "status", "")
 			if !allowed() {
 				if p.owner == owner {
 					p.restore()
@@ -192,8 +211,9 @@ func (p *privacyControl) handler(next http.Handler) http.Handler {
 			return
 		}
 		if request.Op == "stop" {
-			if matching {
-				p.restore()
+			if matching && !p.restore() {
+				fail(503, "PRIVACY_UNAVAILABLE")
+				return
 			}
 			reply(200, privacyResponse{OK: true})
 			return
@@ -219,18 +239,27 @@ func (p *privacyControl) handler(next http.Handler) http.Handler {
 		p.owner = owner
 		p.certificate = append([]byte(nil), r.TLS.PeerCertificates[0].Raw...)
 		p.deadline = p.now().Add(15 * time.Second)
-		value, err := p.worker(op, request.Lease)
-		if err != nil || !value.OK || !value.Active || value.Lease != request.Lease || !allowed() {
+		value, err := p.worker(r.Context(), op, request.Lease)
+		if p.managed != nil && err == nil {
+			p.deadline = earlierPrivacyDeadline(p.deadline, p.now().Add(time.Duration(value.ExpiresMs)*time.Millisecond))
+		}
+		if err != nil || !value.OK || !value.Supported || !value.Active || value.Lease != request.Lease || value.ExpiresMs <= 0 || value.ExpiresMs > 15000 || r.Context().Err() != nil || (p.managed != nil && !p.bound(r.Context(), request, owner)) || !allowed() || !p.now().Before(p.deadline) {
 			p.restore()
 			code := "PRIVACY_UNAVAILABLE"
-			if err == nil {
-				switch value.Code {
-				case "PRIVACY_UNSUPPORTED", "PRIVACY_DESKTOP_UNAVAILABLE", "PRIVACY_EXPIRED", "PRIVACY_BUSY":
-					code = value.Code
-				}
+			switch value.Code {
+			case "PRIVACY_UNSUPPORTED", "PRIVACY_DESKTOP_UNAVAILABLE", "PRIVACY_EXPIRED", "PRIVACY_BUSY":
+				code = value.Code
 			}
 			fail(409, code)
 			return
+		}
+		if p.managed != nil {
+			value.ExpiresMs = p.deadline.Sub(p.now()).Milliseconds()
+			if value.ExpiresMs <= 0 {
+				p.restore()
+				fail(409, "PRIVACY_EXPIRED")
+				return
+			}
 		}
 		reply(200, value)
 	})

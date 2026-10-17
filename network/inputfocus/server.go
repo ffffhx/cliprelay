@@ -103,6 +103,8 @@ type probe struct {
 	argument    string
 	arguments   []string
 	observeExit bool
+	noRestart   bool
+	started     bool
 	exitDone    chan struct{}
 	outputPipe  io.ReadCloser
 	cmd         *exec.Cmd
@@ -202,6 +204,9 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 		}
 	}
 	if p.cmd == nil {
+		if p.noRestart && p.started {
+			return nil, errors.New("owned worker exited")
+		}
 		argument := p.argument
 		if argument == "" {
 			argument = "--focus-probe"
@@ -238,6 +243,7 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 			}
 			return nil, err
 		}
+		p.started = true
 		if writer != nil {
 			writer.Close()
 			p.outputPipe = out
@@ -586,6 +592,13 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	// every remaining worker gets its EOF/grace period at the same time.
 	defer func() { cancel(); stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal) }()
 	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, cleanupRead: privacy.readCleanup, now: time.Now}
+	if managed {
+		closePrivacy, err := configureManagedPrivacy(ctx, privacyManager, dir, access)
+		if err != nil {
+			return err
+		}
+		defer closePrivacy()
+	}
 	privacyDone := make(chan struct{})
 	go func() { defer close(privacyDone); privacyManager.maintain(ctx) }()
 	defer func() { cancel(); <-privacyDone }()

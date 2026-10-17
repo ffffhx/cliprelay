@@ -19,6 +19,9 @@ jobs:
       - name: File recovery and case-sensitive filesystem boundaries
         working-directory: network
         run: go test -race -v -count=1 -timeout=120s ./hostfiles
+      - name: Paired privacy broker expiry and owned process lifetime
+        working-directory: network
+        run: go test -race -v -count=1 -timeout=120s ./inputfocus -run 'TestManagedPrivacy|TestPrivacy'
   verify:
     strategy:
       fail-fast: false
@@ -57,9 +60,9 @@ jobs:
       - name: Native read-only wake inventory and paired LAN helper regression
         working-directory: network
         run: go test -race -v -count=1 -timeout=120s ./hostwake ./inputfocus -run "TestWake"
-      - name: Host listener and worker lifetime regression
+      - name: Host listener, paired privacy and worker lifetime regression
         working-directory: network
-        run: go test -race -v -count=1 -timeout=120s ./inputfocus -run 'TestHostListeners|TestProbeOwner|TestEngineAccess|TestLANPairing'
+        run: go test -race -v -count=1 -timeout=120s ./inputfocus -run 'TestHostListeners|TestProbeOwner|TestEngineAccess|TestLANPairing|TestManagedPrivacy|TestPrivacy'
       - name: Build universal companion
         run: python3 scripts/build_host_companion.py --output .tools/host-companion
       - uses: actions/setup-java@v4
