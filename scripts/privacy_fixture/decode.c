@@ -139,6 +139,9 @@ static void *watch(void *ignored) {
   }
   return NULL;
 }
+#ifdef CLIPRELAY_AUDIO_FIXTURE
+#include "../audio_fixture/opus.h"
+#endif
 int main(void) {
   struct stat channel;
   if (!getenv("GITHUB_ACTIONS") || strcmp(getenv("GITHUB_ACTIONS"), "true") || getppid() <= 1 ||
@@ -163,12 +166,23 @@ int main(void) {
   listener.connectionTerminated=ended;listener.stageFailed=stage_failed;listener.logMessage=silent_log;
   av_log_set_level(AV_LOG_ERROR);
   pthread_t guard;if (pthread_create(&guard,NULL,watch,NULL) != 0) return 2;
+#ifdef CLIPRELAY_AUDIO_FIXTURE
+  AUDIO_RENDERER_CALLBACKS audio;
+  LiInitializeAudioCallbacks(&audio);
+  audio.init=audio_setup;audio.cleanup=audio_cleanup;audio.decodeAndPlaySample=audio_receive;
+  const int result=LiStartConnection(&server,&config,&listener,&video,&audio,NULL,0,NULL,0);
+#else
   const int result=LiStartConnection(&server,&config,&listener,&video,NULL,NULL,0,NULL,0);
+#endif
   if (!result) {
     while (!atomic_load(&stopped)) {
       pthread_mutex_lock(&state_gate);
+#ifdef CLIPRELAY_AUDIO_FIXTURE
+      audio_progress();
+#else
       printf("{\"received\":%u,\"decoded\":%u,\"color\":\"%s\",\"ageMs\":%llu,\"errors\":%d}\n",received,decoded,colors[color],
           (unsigned long long)(sampled_at?now_ms()-sampled_at:0),atomic_load(&decode_errors));
+#endif
       pthread_mutex_unlock(&state_gate);fflush(stdout);usleep(100000);
     }
     LiStopConnection();
