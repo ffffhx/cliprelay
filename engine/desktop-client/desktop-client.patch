@@ -963,3 +963,14 @@ index c20d3126..f7dd6021 100644
      m_Pacer->renderOnMainThread();
  }
 -
+diff --git a/app/streaming/audio/renderers/sdlaud.cpp b/app/streaming/audio/renderers/sdlaud.cpp
+--- a/app/streaming/audio/renderers/sdlaud.cpp
++++ b/app/streaming/audio/renderers/sdlaud.cpp
+@@ -128,6 +128,7 @@
+         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                      "Failed to queue audio sample: %s",
+                      SDL_GetError());
++        return false;
+     }
+ 
+     return true;
