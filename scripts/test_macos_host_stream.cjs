@@ -244,6 +244,10 @@ async function main(){
     await closeRaw(preserved);assert.deepEqual(preserved.exit,{code:0,signal:null});
     await until(admin,value=>value.streams.length===0);
     report.cases.push('other-paired-client-still-renders-and-EOF-releases-stream');
+    if(process.env.CLIPRELAY_PRIVACY_DECODE_FIXTURE){
+      await require('./test_macos_privacy_pixels.cjs').verify({directory,host:second,identity:identities.wrong,hostState,
+        admin,until,nativeChildren,report,setStage:value=>{stage=value;}});
+    }
     stage='close-host';await host.close();
     for(const child of nativeChildren)assert.ok(child.exitCode!==null||child.signalCode!==null);
     assert.deepEqual(protectedDirectories.map(snapshot),before);assert.equal(process.env.HOME,originalHome);
