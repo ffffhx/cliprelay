@@ -283,6 +283,30 @@ managed GUI and installed hardware acceptance remain separate.
 
 ## macOS host overlay
 
+The private `macos-privacy.patch` adds authenticated GET/POST
+`/api/cliprelay/privacy` for the application-owned companion. POST requires
+`op`, `instance`, `owner`, `stream` and `lease`; `prepare` also requires the
+native worker's PID, birth time and display/window identities. CSRF protection,
+strict field validation, duplicate-key rejection and a 4096-byte limit apply.
+Native identities must never be accepted through the paired client API.
+
+Registration verifies same-user process ancestry through the companion to the
+engine's application owner, invisible window metadata and exact ScreenCaptureKit
+window ownership. It advances a filter epoch so actual capture and encoder-probe
+sources are reconstructed with those exclusions. Only an actual capture source
+bound to a newer display generation, followed by that generation's real encoded
+frame, can report readiness; probe pixels alone cannot do so. A 15-second lease,
+identity uncertainty, capture/display changes or loss of stream exclusivity
+withdraw activation permission. Exclusions remain until the original worker is
+positively gone, then another epoch reconstructs capture without its windows.
+
+`privacy_test.cpp` checks the policy separately from
+`test_macos_privacy_filter.py`, which exercises the unchanged native worker
+library and real pixels in disposable CI. That fixture simulates the initial
+display registry and does not prove encoded readiness or paired activation.
+The private `privacyFilter` artifact marker requires its exact source-bound
+receipt; it does not advertise client-facing Mac privacy availability.
+
 The macOS host workflow applies `prepare_sunshine.py --macos-host` to the pinned
 Sunshine source and its pinned libvirtualhid gitlink. This adds the display
 catalog, actual capture identity and logical desktop geometry. Capture pixels

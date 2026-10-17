@@ -116,6 +116,20 @@ index ffbbc2d..f0c2abd 100644
  #endif
      server.resource["^/api/clients/unpair$"]["POST"] = unpair;
      server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
+diff --git a/src/confighttp.h b/src/confighttp.h
+index 9d6bcc9..b77116d 100644
+--- a/src/confighttp.h
++++ b/src/confighttp.h
+@@ -94,6 +94,9 @@ namespace confighttp {
+    */
+   void cancelPairing(const resp_https_t &response, const req_https_t &request);
+   void cliprelayManagedPairing(const resp_https_t &response, const req_https_t &request);
++#ifdef __APPLE__
++  void cliprelayPrivacy(const resp_https_t &response, const req_https_t &request);
++#endif
+ 
+   /**
+    * @brief Apply a PIN to an explicitly selected pairing request.
 diff --git a/src/platform/macos/display.mm b/src/platform/macos/display.mm
 index 09a3db0..345a20c 100644
 --- a/src/platform/macos/display.mm
@@ -181,3 +195,84 @@ index 09a3db0..345a20c 100644
      }
  
      /**
+diff --git a/tests/unit/test_confighttp.cpp b/tests/unit/test_confighttp.cpp
+index 87494cd..6be3d7a 100644
+--- a/tests/unit/test_confighttp.cpp
++++ b/tests/unit/test_confighttp.cpp
+@@ -333,6 +333,10 @@ protected:
+     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
+     server->resource["^/managed-pairing-test$"]["POST"] = confighttp::cliprelayManagedPairing;
+     server->resource["^/managed-pairing-test$"]["DELETE"] = confighttp::cliprelayManagedPairing;
++#ifdef __APPLE__
++    server->resource["^/privacy-test$"]["GET"] = confighttp::cliprelayPrivacy;
++    server->resource["^/privacy-test$"]["POST"] = confighttp::cliprelayPrivacy;
++#endif
+     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
+ 
+     // Start server
+@@ -587,6 +591,65 @@ TEST_F(ConfigHttpTest, ClipRelayManagedPairingRequiresAuthenticationAndCSRF) {
+   }
+ }
+ 
++#ifdef __APPLE__
++TEST_F(ConfigHttpTest, ClipRelayPrivacyRequiresAuthenticationAndCSRF) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  for (const auto &method : {"GET", "POST"}) {
++    EXPECT_EQ(client->request(method, "/privacy-test", "{}", headers)->status_code, "401 Unauthorized");
++  }
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  headers.emplace("Origin", "https://example.invalid");
++  EXPECT_EQ(client->request("POST", "/privacy-test", "{}", headers)->status_code, "400 Bad Request");
++  EXPECT_EQ(client->request("GET", "/privacy-test?worker=1", "", headers)->status_code, "400 Bad Request");
++}
++
++TEST_F(ConfigHttpTest, ClipRelayPrivacyRejectsMalformedAndDuplicateIdentities) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  auto request = nlohmann::json {{"op", "prepare"}, {"instance", "stale"}, {"owner", std::string(64, 'a')},
++    {"stream", 1}, {"lease", std::string(32, 'b')}, {"worker", {{"pid", 2}, {"birthSec", 1}, {"birthUsec", 0},
++      {"windows", nlohmann::json::array({{{"id", 1}, {"display", 1}}})}}}};
++  std::vector<std::string> invalid {"{}", std::string(4097, 'a'), "[]", request.dump() + "{}"};
++  for (const auto &field : {"owner", "stream", "lease", "worker", "instance"}) {
++    auto changed = request; changed[field] = false; invalid.push_back(changed.dump());
++  }
++  auto changed = request; changed["extra"] = 1; invalid.push_back(changed.dump());
++  changed = request; changed["stream"] = (1ULL << 53); invalid.push_back(changed.dump());
++  changed = request; changed["worker"]["birthUsec"] = 1000000; invalid.push_back(changed.dump());
++  changed = request; changed["worker"]["windows"].push_back(changed["worker"]["windows"][0]); invalid.push_back(changed.dump());
++  auto duplicate = request.dump(); duplicate.insert(1, "\"op\":\"status\","); invalid.push_back(duplicate);
++  duplicate = request.dump(); duplicate.insert(duplicate.find("\"pid\""), "\"pid\":3,"); invalid.push_back(duplicate);
++  for (const auto &body : invalid) {
++    EXPECT_EQ(client->request("POST", "/privacy-test", body, headers)->status_code, "400 Bad Request") << body;
++  }
++}
++
++TEST_F(ConfigHttpTest, ClipRelayPrivacyStaleBindingCannotAuthorizeCapture) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  const auto initial = client->request("GET", "/privacy-test", "", headers);
++  ASSERT_EQ(initial->status_code, "200 OK");
++  const auto before = nlohmann::json::parse(initial->content.string());
++  EXPECT_EQ(before.at("retained"), false); EXPECT_EQ(before.at("ready"), false);
++  for (const auto &op : {"status", "renew", "release", "prepare"}) {
++    auto request = nlohmann::json {{"op", op}, {"instance", "stale"}, {"owner", std::string(64, 'a')},
++      {"stream", 1}, {"lease", std::string(32, 'b')}};
++    if (std::string(op) == "prepare") request["worker"] = {{"pid", 2}, {"birthSec", 1}, {"birthUsec", 0},
++      {"windows", nlohmann::json::array({{{"id", 1}, {"display", 1}}})}};
++    const auto reply = client->request("POST", "/privacy-test", request.dump(), headers);
++    ASSERT_EQ(reply->status_code, "200 OK");
++    const auto state = nlohmann::json::parse(reply->content.string());
++    EXPECT_EQ(state.at("outcome"), "stale_instance"); EXPECT_EQ(state.at("epoch"), before.at("epoch"));
++    EXPECT_EQ(state.at("retained"), false); EXPECT_EQ(state.at("authorized"), false); EXPECT_EQ(state.at("ready"), false);
++    EXPECT_EQ(state.at("firstFrame"), 0); EXPECT_EQ(state.at("expiresMs"), 0);
++    EXPECT_FALSE(state.contains("worker")); EXPECT_FALSE(state.contains("windows"));
++  }
++}
++#endif
++
+ TEST_F(ConfigHttpTest, ClipRelayManagedPairingValidatesFieldsAndReturnsNativeResult) {
+   SimpleWeb::CaseInsensitiveMultimap headers;
+   headers.emplace("Content-Type", "application/json");

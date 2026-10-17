@@ -98,7 +98,7 @@ jobs:
           # A callback-drain regression must fail within two minutes, rather
           # than occupy the runner until the entire build job expires.
           python3 -c "import subprocess; subprocess.run(['./sunshine-build/tests/test_sunshine', '--gtest_filter=ClipRelayInputTest.*:ClipRelayMacMouseTest.*:ClipRelayMacCaptureTest.*:ClipRelayMacOwnerTest.*', '--gtest_output=xml:input-tests.xml'], check=True, timeout=120)"
-          python3 -c "import subprocess; subprocess.run(['./sunshine-build/tests/test_sunshine', '--gtest_filter=PairingSessionRegistryTest.*:ClipRelayManagedPairingTest.*:PairingHttpHandlerTest.ClipRelayManaged*:ConfigHttpTest.ClipRelayManaged*'], check=True, timeout=120)"
+          python3 -c "import subprocess; subprocess.run(['./sunshine-build/tests/test_sunshine', '--gtest_filter=PairingSessionRegistryTest.*:ClipRelayManagedPairingTest.*:PairingHttpHandlerTest.ClipRelayManaged*:ConfigHttpTest.ClipRelayManaged*:ConfigHttpTest.ClipRelayPrivacy*'], check=True, timeout=120)"
       - name: Package relocatable engine and verify dependencies
         run: |
           set -euo pipefail
