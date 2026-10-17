@@ -47,6 +47,12 @@ test('lost start reply triggers exact-lease cleanup and never an automatic resta
   assert.equal(f.active,'');assert.equal(f.calls.filter(c=>c.op==='start').length,1);assert.equal(f.controller.snapshot().active,false);
 });
 
+test('native filter preparation can exceed four seconds without replaying the start',async t=>{
+  const f=await fixture(t,{handler:async({body})=>{if(body.op==='start')await delay(4200);}});
+  const value=await protocol.request(f.host,identities.client,'start',{instance,stream:3,lease:'a'.repeat(32)});
+  assert.equal(value.active,true);assert.equal(f.calls.filter(call=>call.op==='start').length,1);
+});
+
 test('a local restore or frozen presented video cancels renewals and requires a new explicit enable',async t=>{
   const f=await fixture(t,{renewMs:500});await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.controller.snapshot().active);
   f.restore();await until(()=>f.controller.snapshot().canEnable);await delay(80);assert.equal(f.calls.filter(c=>c.op==='start').length,1);

@@ -209,6 +209,10 @@ async function main(){
     report.cases.push('desktop-owner-EOF-releases-native-stream');
     stage='raw-video';const receiver=rawViewer(first,identities.client);report.rawPresentation=await presented(receiver);
     await until(admin,value=>value.phase==='active'&&value.streams.length===1&&value.streams[0].firstFrame>0);
+    const companionManifest=JSON.parse(fs.readFileSync(path.join(directory,'host-companion/manifest.json'),'utf8'));
+    const privacy=companionManifest.privacyControl===1?require('./test_macos_host_privacy.cjs').create({
+      directory,base,nativeChildren,hostState,admin,first,second,identities,until,report,setStage:value=>{stage=value;}}):null;
+    const masked=privacy?await privacy.exercise(receiver):null;
     stage='revoke-active';const current=(await host.action('host-status')).clients;
     const target=current.devices.find(device=>device.name==='Mac stream A');assert.ok(target?.enabled);
     const started=Date.now();await host.action('host-client-revoke',{viewId:current.viewId,uuid:target.uuid});
@@ -228,6 +232,7 @@ async function main(){
     assert.ok(!/<!/.test(refusal));assert.match(refusal,/<root\b[^>]*\bstatus_code="401"(?:\s|\/|>)/);
     report.revocation.nativeAuthorizationStatus=401;
     report.cases.push('native-host-termination-after-revocation-without-client-control-polling');
+    if(privacy)await privacy.revoked(masked);
     stage='preserved-client';const preserved=rawViewer(second,identities.wrong);report.preservedPresentation=await presented(preserved);
     await closeRaw(preserved);assert.deepEqual(preserved.exit,{code:0,signal:null});
     await until(admin,value=>value.streams.length===0);

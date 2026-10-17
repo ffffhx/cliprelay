@@ -185,6 +185,13 @@ async function build(){
           'production-input-ACK-pause-display-reconstruction-and-fresh-frame-resume','desktop-owner-EOF-releases-native-stream',
           'native-host-termination-after-revocation-without-client-control-polling',
           'other-paired-client-still-renders-and-EOF-releases-stream','all-owned-native-processes-reaped-and-default-state-preserved'];
+        const privacyControl=JSON.parse(fs.readFileSync(path.join(appDirectory,'host-companion/manifest.json'),'utf8')).privacyControl===1;
+        if(privacyControl){
+          const privacyCases=require('../../scripts/test_macos_host_privacy.cjs').CASES;
+          expected.splice(3,0,...privacyCases.slice(0,2));expected.splice(6,0,privacyCases[2]);
+          if(report.privacy?.passed!==true||report.privacy.actualEncodedReadiness!==true||report.privacy.cycles?.length!==3)
+            throw new Error('Packaged paired privacy acceptance did not complete');
+        }
         if(report.protocol!==1 || report.passed!==true || report.diagnosticOnly!==false || report.architecture!==architecture ||
           report.applicationCommit!==process.env.GITHUB_SHA || JSON.stringify(report.cases)!==JSON.stringify(expected) ||
           report.ownedChildrenReaped!==true || report.revocation?.ownerPipeStayedOpen!==true)

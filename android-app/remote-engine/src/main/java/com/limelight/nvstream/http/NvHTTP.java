@@ -375,6 +375,12 @@ public class NvHTTP {
                     .proxy(java.net.Proxy.NO_PROXY).callTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).build();
             client = privacyClient;
         }
+        // A Mac host confirms a fresh filtered encoded frame before masking.
+        // Keep the existing dispatcher so session cleanup still cancels it.
+        String operation = payload.optString("op");
+        if ("privacy".equals(endpoint) && ("start".equals(operation) || "renew".equals(operation))) {
+            client = client.newBuilder().callTimeout(15, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).build();
+        }
         byte[] bytes = payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
         if (bytes.length > 1024) throw new IOException("PRIVACY_BAD_REQUEST");
         return controlRequest(client, new Request.Builder().url(displayUrl(endpoint).build())

@@ -58,7 +58,7 @@ def build(output):
         for name in ['file-controller.cjs', 'file-protocol.cjs', 'file-storage.cjs', 'paired-store.cjs', 'paired-transport.cjs', 'paired-crypto.cjs',
                      'routed-store.cjs', 'paired-controller.cjs', 'pairing.cjs', 'paired-relay.cjs', 'pairing-feedback.cjs', 'clipboard-access.cjs', 'clipboard-protocol.cjs', 'terminal-controller.cjs', 'terminal-protocol.cjs', 'terminal-mouse.cjs', 'wake-protocol.cjs']:
             archive.add(ROOT/'windows/electron/mac'/name, arcname='windows/electron/mac/'+name)
-    manifest = {'role': 'host-companion', 'platform': 'macos', 'protocol': 1, 'nativeWorkers': False, 'pairingControl': 1, 'fileTransfer': 1, 'clipboardExchange': 1, 'terminalControl': 1, 'wakeControl': 1, 'privacyWorker': 1,
+    manifest = {'role': 'host-companion', 'platform': 'macos', 'protocol': 1, 'nativeWorkers': False, 'pairingControl': 1, 'fileTransfer': 1, 'clipboardExchange': 1, 'terminalControl': 1, 'wakeControl': 1, 'privacyWorker': 1, 'privacyControl': 1,
                 'files': {file.relative_to(output).as_posix(): hashlib.sha256(file.read_bytes()).hexdigest()
                           for file in sorted(output.rglob('*')) if file.is_file()}}
     (output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')

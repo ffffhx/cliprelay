@@ -54,6 +54,7 @@ function verify(directory,pin){
   if(Object.hasOwn(manifest,'wakeControl')){fields.push('wakeControl');if(manifest.wakeControl!==1)reject();}
   // Private worker availability is separate from a paired privacy capability.
   if(Object.hasOwn(manifest,'privacyWorker')){fields.push('privacyWorker');if(manifest.privacyWorker!==1)reject();}
+  if(Object.hasOwn(manifest,'privacyControl')){fields.push('privacyControl');if(manifest.privacyControl!==1||manifest.privacyWorker!==1)reject();}
   if(Object.hasOwn(manifest,'terminalControl')){fields.push('terminalControl');if(manifest.terminalControl!==1)reject();}
   if(!keys(manifest,fields) || manifest.role!=='host-companion' ||
       manifest.platform!=='macos' || manifest.protocol!==1 || manifest.nativeWorkers!==false || manifest.pairingControl!==1 || !keys(manifest.files,FILES))reject();

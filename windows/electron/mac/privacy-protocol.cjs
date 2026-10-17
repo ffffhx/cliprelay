@@ -25,8 +25,11 @@ async function request(host,identity,kind,binding,signal){
     catch(error){if(error.code==='BITRATE_INVALID_RESPONSE')throw fault('PRIVACY_INVALID_RESPONSE');throw error;}
   }
   const target=endpoint(host.address,host.port);
+  // Mac activation waits for a newly filtered encoded generation. The host
+  // still owns the independent 15-second grant while this request is pending.
+  const timeout=kind==='start'||kind==='renew'?15000:kind==='stop'?6000:4000;
   const result=await jsonRequest({...target,port:target.port+2,path:'/v1/privacy',method:'POST',body:body(kind,binding),
-    identity,trust:{cert:host.certificate},signal,timeout:4000,limit:4096,acceptStatuses:[200,409,503]});
+    identity,trust:{cert:host.certificate},signal,timeout,limit:4096,acceptStatuses:[200,409,503]});
   return state(result);
 }
 module.exports={state,body,request,presented:displayProtocol.presented};
