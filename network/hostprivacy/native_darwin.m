@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-only
+//go:build darwin && cgo
+
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #include <libproc.h>
