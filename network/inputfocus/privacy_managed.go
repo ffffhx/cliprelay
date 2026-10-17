@@ -4,6 +4,8 @@ import (
 	"cliprelay/network/hostprivacy"
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"slices"
 	"sync"
 	"time"
@@ -243,7 +245,7 @@ func (b *managedPrivacy) start(ctx context.Context, binding privacyBinding) (pri
 	}
 	prepared, workerDeadline, err := b.workerCall(ctx, "prepare")
 	if err != nil || !prepared.Prepared || prepared.Active {
-		return privacyResponse{}, errors.New("privacy preparation unavailable")
+		return privacyResponse{}, fmt.Errorf("privacy preparation unavailable: %v", err)
 	}
 	identity := *prepared.Identity
 	identity.Windows = append([]hostprivacy.Window(nil), prepared.Identity.Windows...)
@@ -254,7 +256,7 @@ func (b *managedPrivacy) start(ctx context.Context, binding privacyBinding) (pri
 	}
 	state, engineDeadline, err := b.engineCall(ctx, &privacyEngineRequest{Op: "prepare", privacyBinding: binding, Worker: b.identity})
 	if err != nil || state.Outcome != "accepted" {
-		return privacyResponse{}, errors.New("privacy filter not accepted")
+		return privacyResponse{}, fmt.Errorf("privacy filter not accepted: outcome=%s error=%v", state.Outcome, err)
 	}
 	b.epoch = state.Epoch
 	if !b.bound(state) {
@@ -270,7 +272,7 @@ func (b *managedPrivacy) start(ctx context.Context, binding privacyBinding) (pri
 		}
 		state, engineDeadline, err = b.engineCall(ctx, &privacyEngineRequest{Op: "status", privacyBinding: binding})
 		if err != nil || state.Outcome != "status" || !b.bound(state) {
-			return privacyResponse{}, errors.New("privacy filter withdrawn")
+			return privacyResponse{}, fmt.Errorf("privacy filter withdrawn: outcome=%s reason=%s error=%v", state.Outcome, state.Reason, err)
 		}
 		b.deadline = earlierPrivacyDeadline(b.deadline, engineDeadline)
 		if b.ready(state) {
@@ -287,7 +289,7 @@ func (b *managedPrivacy) start(ctx context.Context, binding privacyBinding) (pri
 	}
 	active, workerDeadline, err := b.workerCall(ctx, "activate")
 	if err != nil || !active.Active {
-		return privacyResponse{}, errors.New("privacy activation unavailable")
+		return privacyResponse{}, fmt.Errorf("privacy activation unavailable: %v", err)
 	}
 	b.deadline = earlierPrivacyDeadline(b.deadline, workerDeadline)
 	// Check the encoded generation again after showing the actual native mask.
@@ -369,6 +371,9 @@ func (b *managedPrivacy) handle(parent context.Context, op string, request priva
 			value = privacyResponse{}
 		}
 		if result != nil {
+			// Internal failures contain no credentials, lease or native identity.
+			// The public endpoint continues to return only its stable error code.
+			log.Printf("privacy operation %s failed: %v", op, result)
 			_ = b.restore()
 		}
 	}()

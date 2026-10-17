@@ -14,7 +14,7 @@ func configureManagedPrivacy(parent context.Context, control *privacyControl, st
 	}
 	broker := &managedPrivacy{parent: parent, now: time.Now, engine: enginePrivacyProviderWithAccess(access),
 		create: func() (privacyOwnedWorker, error) {
-			return &privacyProcess{probe: &probe{ctx: parent, executable: executable, observeExit: true, noRestart: true, maxOutput: 8192, timeout: 3 * time.Second,
+			return &privacyProcess{probe: &probe{ctx: parent, executable: executable, stderr: os.Stderr, observeExit: true, noRestart: true, maxOutput: 8192, timeout: 3 * time.Second,
 				arguments: []string{"--managed-privacy", "--owner-pid", strconv.Itoa(os.Getpid()), "--state-dir", stateDirectory}}}, nil
 		}}
 	control.managed = broker.handle

@@ -107,6 +107,7 @@ type probe struct {
 	started     bool
 	exitDone    chan struct{}
 	outputPipe  io.ReadCloser
+	stderr      io.Writer
 	cmd         *exec.Cmd
 	in          io.WriteCloser
 	out         *bufio.Reader
@@ -216,6 +217,7 @@ func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMe
 			arguments = []string{argument}
 		}
 		cmd := exec.Command(p.executable, arguments...)
+		cmd.Stderr = p.stderr
 		quietProcess(cmd)
 		in, err := cmd.StdinPipe()
 		if err != nil {

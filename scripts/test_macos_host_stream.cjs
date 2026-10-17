@@ -31,6 +31,7 @@ const protectedDirectories=[path.join(os.homedir(),'.config','sunshine'),path.jo
 const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
 const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cliprelay-native-mac-stream-')));
 const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[],debuggers=[],viewStates=[];
+let companionDiagnostics='';
 const windowObservations=[];
 const windowHelper=path.join(base,'inspect-stream-window');
 if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'){
@@ -86,7 +87,12 @@ const host=new HostController({directory,stateDirectory:path.join(base,'Host'),s
         (process.env.CLIPRELAY_MAC_STREAM_H264==='1'?'hevc_mode = 1\nav1_mode = 1\n':''));
       return result;
     };
-    const launch=(file,args,settings)=>{const child=spawn(file,args,settings);nativeChildren.push(child);return child;};
+    const launch=(file,args,settings)=>{
+      const companion=path.basename(file)==='cliprelay-host-network';
+      const child=spawn(file,args,companion?{...settings,stdio:['pipe','pipe','pipe']}:settings);nativeChildren.push(child);
+      if(companion)child.stderr.on('data',data=>{companionDiagnostics=(companionDiagnostics+data.toString('utf8')).slice(-8192);});
+      return child;
+    };
     const engine=new HostEngine({directory:path.join(directory,'host-engine'),pin:enginePin,state:hostState,launch});
     const companion=new HostCompanion({directory:path.join(directory,'host-companion'),pin:companionPin,state:hostState,launch});
     return {session:new HostSession({engine,companion,onUpdate}),companion};
@@ -155,7 +161,8 @@ async function closeRaw(item){
 }
 async function main(){
   const report={protocol:1,passed:false,testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.APP_SOURCE_COMMIT,
-    architecture:process.arch,cases:[],diagnosticOnly:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'||process.env.CLIPRELAY_MAC_STREAM_H264==='1',
+    architecture:process.arch,cases:[],componentOnly:process.env.CLIPRELAY_COMPONENT_PRIVACY_TEST==='1',
+    diagnosticOnly:process.env.CLIPRELAY_COMPONENT_PRIVACY_TEST==='1'||process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'||process.env.CLIPRELAY_MAC_STREAM_H264==='1',
     diagnosticCodec:process.env.CLIPRELAY_MAC_STREAM_H264==='1'?'h264':'auto',
     diagnosticViewerCommit:process.env.DIAGNOSTIC_VIEWER_COMMIT||null,
     windowObservations,
@@ -252,6 +259,7 @@ async function main(){
     if(viewerExits.some(exit=>exit.signal))await pause(10000);
     report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_host_stream\.cjs:\d+:\d+/)?.[0],
       host:host.snapshot().phase,viewer:viewer?.snapshot(),viewStates,viewerExits,
+      companionDiagnostics:companionDiagnostics.split('\n').filter(line=>/privacy operation|^HOST_[A-Z_]+$/.test(line)).map(line=>line.slice(0,400)).slice(-16),
       diagnostics:diagnostics.slice(-24),files:fileDiagnostics(),debuggers:debuggers.map(debug=>({exit:debug.exit,
         lines:debug.output.split('\n').filter(line=>/stop reason|error:|frame #|stop-reason|exited with status/.test(line))
           .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(0,60)}))};
