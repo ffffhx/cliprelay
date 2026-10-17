@@ -45,7 +45,7 @@ static void traverse(AXUIElementRef node,unsigned depth,unsigned &budget,NSMutab
   if(rows.count<100&&(title.length||description.length))[rows addObject:@{@"role":role,@"title":title,@"description":description,@"depth":@(depth)}];
   BOOL match=NO;
   if([command isEqualToString:@"menu"])match=[role isEqualToString:@"AXMenuBarItem"]&&([title isEqualToString:@"ClipRelay"]||[description isEqualToString:@"ClipRelay"]);
-  NSString *wanted=[@{@"host":@"允许其他设备连接这台 Mac…",@"paired":@"配对电脑与安全收发…",@"permissions":@"本机远程访问权限…"} objectForKey:command];
+  NSString *wanted=[@{@"host":@"允许其他设备连接这台 Mac…",@"paired":@"配对电脑与安全收发…",@"permissions":@"本机远程访问权限…",@"exit":@"退出 ClipRelay"} objectForKey:command];
   if(wanted)match=[role isEqualToString:@"AXMenuItem"]&&[title isEqualToString:wanted];
   if(match)[matches addObject:(__bridge id)node];
   // Follow children once. Rewalking menu-bar relations repeats the same tree
@@ -60,8 +60,8 @@ static void traverse(AXUIElementRef node,unsigned depth,unsigned &budget,NSMutab
     CFRelease(value);
   }
 }
-static void inspect(NSString *command){
-  if(!owned()){emit(@{@"event":@"error",@"code":@"APP_IDENTITY_CHANGED"});return;}
+static bool inspect(NSString *command){
+  if(!owned()){emit(@{@"event":@"error",@"code":@"APP_IDENTITY_CHANGED"});return false;}
   const BOOL trusted=AXIsProcessTrusted();NSMutableArray *rows=[NSMutableArray array],*matches=[NSMutableArray array];
   unsigned budget=250;AXError action=kAXErrorFailure;BOOL menu_root=NO;
   if(trusted){
@@ -86,10 +86,11 @@ static void inspect(NSString *command){
     @"menuRootAvailable":@(menu_root),@"remainingBudget":@(budget),@"attempted":@(attempted),
     @"pressed":@(attempted&&action==kAXErrorSuccess),
     @"completionUnknown":@(attempted&&action==kAXErrorCannotComplete),@"actionStatus":@(action),@"nodes":rows});
+  return attempted&&(action==kAXErrorSuccess||action==kAXErrorCannotComplete);
 }
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();
-  if(owned())[application terminate];
+  if(owned()&&!inspect(@"exit"))[application terminate];
 }
 int main(int argc,char **argv){
   @autoreleasepool {

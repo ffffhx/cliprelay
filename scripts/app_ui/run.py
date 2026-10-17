@@ -32,7 +32,7 @@ assert browser.is_file() and browser.resolve()==browser
 browser.chmod(0o700)
 env={name:os.environ[name] for name in ['PATH','HOME','TMPDIR','RUNNER_TEMP','GITHUB_ACTIONS','GITHUB_REPOSITORY'] if name in os.environ}
 assert subprocess.check_output([str(browser),'--version'],env=env,text=True,timeout=5).strip()=='agent-browser 0.34.0'
-name='cliprelay-app-ui-'+os.environ['GITHUB_RUN_ID'];namespace=name+'-'+os.environ['GITHUB_RUN_ATTEMPT']
+name='ui';namespace='crui-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
 config=Path.home()/'Library/Application Support/ClipRelay'
 assert not config.exists() and not config.is_symlink(), 'DEFAULT_PROFILE_ALREADY_EXISTS'
 with socket.socket() as reservation:
@@ -70,9 +70,17 @@ def browser_command(*args):
     call=subprocess.run([str(browser),'--namespace',namespace,'--session',name,'--json',*args],env=env,
                         capture_output=True,text=True,timeout=30)
     assert len(call.stdout)<65536 and len(call.stderr)<65536, 'BROWSER_OUTPUT_LIMIT'
+    if call.returncode!=0:
+        result.setdefault('browserFailures',[]).append({'command':args[0],'exit':call.returncode,'stdout':call.stdout[:8192],'stderr':call.stderr[:8192]})
     assert call.returncode==0, 'BROWSER_COMMAND_FAILED'
     value=json.loads(call.stdout);assert value.get('success') is True, 'BROWSER_COMMAND_FAILED'
     return value
+
+def browser_doctor():
+    call=subprocess.run([str(browser),'--namespace',namespace,'--session',name,'--json','doctor','--offline','--quick'],
+                        env=env,capture_output=True,text=True,timeout=20)
+    assert len(call.stdout)<65536 and len(call.stderr)<65536, 'BROWSER_OUTPUT_LIMIT'
+    result['browserDoctor']={'exit':call.returncode,'stdout':call.stdout,'stderr':call.stderr}
 def target(kind):
     deadline=time.monotonic()+10
     expected=(app/'Contents/Resources/app/mac/ui.html').as_uri()+'?kind='+kind
@@ -106,6 +114,7 @@ try:
     # popup first can leave Electron's AX handler waiting in its modal loop.
     stage='open-host';menu_action('host')
     result['hostRendererUrl']=target('host')
+    stage='browser-diagnostics';browser_doctor()
     stage='connect-owned-renderer';browser_command('connect',str(port));browser_connected=True
     stage='host-window';text=snapshot('host');assert '启动远程访问' in text and '检查系统权限' in text
     result['cases'].append('native-menu-opens-production-host-renderer')
