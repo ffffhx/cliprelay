@@ -20,10 +20,12 @@ function create({role,root,runner,env,machine,peerMachine}){
   const {pairHost}=moduleAt('pairing'),{jsonRequest}=moduleAt('paired-transport'),{envelope,executable}=moduleAt('stream-viewer');
   const ownedFile=name=>{const file=fs.realpathSync(process.env[name]);assert.ok(file.startsWith(runner+path.sep));assert.equal(file,process.env[name]);return file;};
   const toneFile=ownedFile('CLIPRELAY_AUDIO_TONE_FIXTURE'),observerFile=ownedFile('CLIPRELAY_AUDIO_OBSERVER');
+  const faultFile=ownedFile('CLIPRELAY_AUDIO_FAULT_FIXTURE');
   const pairingFile=ownedFile('CLIPRELAY_PAIRING_TEST_FIXTURE');
   const toneFixture=JSON.parse(fs.readFileSync(ownedFile('CLIPRELAY_AUDIO_FIXTURE_RECEIPT'),'utf8'));
   assert.equal(toneFixture.testCommit,process.env.GITHUB_SHA);assert.equal(toneFixture.files.tone.path,toneFile);
   assert.equal(toneFixture.files.tone.sha256,hash(toneFile));
+  assert.equal(toneFixture.files.fault.path,faultFile);assert.equal(toneFixture.files.fault.sha256,hash(faultFile));
   for(const [name,digest] of Object.entries(toneFixture.sources))assert.equal(hash(path.join(root,name)),digest);
   const observerFixture=JSON.parse(fs.readFileSync(ownedFile('CLIPRELAY_AUDIO_OBSERVER_RECEIPT'),'utf8'));
   assert.equal(observerFixture.testCommit,process.env.GITHUB_SHA);assert.equal(observerFixture.path,observerFile);
@@ -33,6 +35,8 @@ function create({role,root,runner,env,machine,peerMachine}){
   const viewerDirectory=path.join(directory,'stream-viewer'),viewerFile=executable(viewerDirectory);
   const viewerPin=JSON.parse(fs.readFileSync(path.join(directory,'stream-viewer-pin.json'),'utf8'));
   assert.equal(viewerPin.binarySha256,hash(viewerFile));assert.equal(viewerPin.manifestSha256,hash(path.join(viewerDirectory,'manifest.json')));
+  const sdlFile=path.join(viewerDirectory,'runtime/ClipRelayStream.app/Contents/Frameworks/libSDL2.dylib');
+  assert.equal(toneFixture.sdlSha256,hash(sdlFile));
   const sources={};
   for(const name of fs.readdirSync(directory).filter(name=>name.endsWith('.cjs'))){
     const file='windows/electron/mac/'+name;assert.equal(hash(path.join(directory,name)),hash(path.join(root,file)));sources[file]=hash(path.join(root,file));
@@ -51,16 +55,35 @@ function create({role,root,runner,env,machine,peerMachine}){
     sourceAndViewerShareAudioEnvironment:false,feedbackIsolationVerified:false,actualQtOutputObserved:false,
     physicalPlaybackVerified:false,productionPermissionUIVerified:false,videoPresentationVerified:false,
     microphoneInjectionVerified:false,automaticRecoveryVerified:false,productionRelayVerified:false,audioSamplesSaved:false,
-    observer:{...observerFixture,path:undefined},tone:{...toneFixture,files:{tone:{sha256:toneFixture.files.tone.sha256}}},
+    runtimeInstrumentation:role==='viewer'?'owned-viewer-only-dyld-one-real-SDL-queue-error':'none',
+    observer:{...observerFixture,path:undefined},tone:{...toneFixture,files:Object.fromEntries(
+      Object.entries(toneFixture.files).map(([name,value])=>[name,{sha256:value.sha256}]))},
     viewer:{run:viewerPin.run,commit:viewerPin.commit,outerSha256:viewerPin.outerSha256,archiveSha256:viewerPin.archiveSha256,
       manifestSha256:viewerPin.manifestSha256,binarySha256:viewerPin.binarySha256},
     components:JSON.parse(fs.readFileSync(path.join(root,'.tools/audio-stream-components.json'),'utf8')),
     testSha256:hash(__filename),sources,cases:[],observations:[],ciAudioConsent:[]};
   function launch(file,args=[]){
-    const child=spawn(file,args,{env:nativeEnv,stdio:['pipe','pipe','pipe'],cwd:directory});nativeChildren.push(child);
+    const instrument=file===viewerFile;
+    const child=spawn(file,args,{env:instrument?{...nativeEnv,DYLD_INSERT_LIBRARIES:faultFile,
+      CLIPRELAY_AUDIO_FAULT_OWNER:String(process.pid),CLIPRELAY_AUDIO_FAULT_VIEWER:viewerFile}:nativeEnv,
+      stdio:instrument?['pipe','pipe','pipe','pipe','pipe']:['pipe','pipe','pipe'],cwd:directory});nativeChildren.push(child);
     const item={child,exit:null,error:null,buffer:'',events:[],stderr:''};children.push(item);
     child.stdin.on('error',()=>{});child.once('error',()=>{item.error='AUDIO_CHILD_SPAWN'});child.once('close',(code,signal)=>{item.exit={code,signal}});
     child.stderr.on('data',data=>{item.stderr=(item.stderr+data.toString('utf8')).slice(-16384)});
+    if(instrument){
+      item.faultEvents=[];item.faultBuffer='';child.stdio[3].on('error',()=>{});child.stdio[4].on('error',()=>{});
+      child.stdio[4].on('data',data=>{
+        item.faultBuffer+=data.toString('utf8');
+        if(item.faultBuffer.length>8192){item.error='AUDIO_FAULT_OUTPUT_LIMIT';child.kill('SIGKILL');return}
+        while(item.faultBuffer.includes('\n')){
+          const index=item.faultBuffer.indexOf('\n'),line=item.faultBuffer.slice(0,index);item.faultBuffer=item.faultBuffer.slice(index+1);
+          try{
+            const value=JSON.parse(line);assert.ok(item.faultEvents.length<64);assert.equal(value.pid,child.pid);
+            assert.ok(['ready','opened','closed','queued','injected'].includes(value.event));item.faultEvents.push(value);
+          }catch{item.error='AUDIO_FAULT_OUTPUT_INVALID';child.kill('SIGKILL');return}
+        }
+      });
+    }
     child.stdout.on('data',data=>{
       item.buffer+=data.toString('utf8');if(item.buffer.length>65536){item.error='AUDIO_OUTPUT_LIMIT';child.kill('SIGKILL');return}
       while(item.buffer.includes('\n')){
@@ -84,6 +107,7 @@ function create({role,root,runner,env,machine,peerMachine}){
     report.failure={stage,code:/^[A-Z_0-9]{1,80}$/.test(error.code||'')?error.code:error.message?.slice(0,120),
       location:error.stack?.match(/mac_audio\.cjs:\d+:\d+/)?.[0],observer:tap?.events.at(-1),source:tone?.events.at(-1),
       video:viewer?.events.filter(v=>v.event==='progress').at(-1),viewerExit:viewer?.exit,viewerAudio:safeLines(viewer?.stderr||'')};
+    report.faultEvents=viewer?.faultEvents;
     try{report.failure.engine=safeLines(hostState.read('engine.log',4*1024*1024).toString('utf8'))}catch{}
     try{report.failure.viewerAudioFile=fs.readdirSync('/tmp').filter(name=>/^ClipRelayStream-[0-9]+\.log$/.test(name)&&!logsBefore.has(name)).slice(0,2).flatMap(name=>{
       const file=path.join('/tmp',name),s=fs.lstatSync(file);return s.isFile()&&!s.isSymbolicLink()&&s.uid===process.getuid()&&s.size<4*1024*1024?safeLines(fs.readFileSync(file,'utf8')):[];
@@ -181,6 +205,7 @@ function create({role,root,runner,env,machine,peerMachine}){
         assert.deepEqual(await rpc('approve',{verification:value.verification,owner}),{approved:true});
       }});
       stage='viewer-start';viewer=launch(viewerFile,['--cliprelay-session']);
+      await until(()=>{alive(viewer);return viewer.faultEvents[0]},v=>v?.event==='ready',5000);
       viewer.child.stdin.write(envelope({...peer,clientId:crypto.randomBytes(16).toString('hex')},identity,{width:1280,height:720,fps:30,bitrate:6000,fullscreen:false},true,false));
       await until(progress,v=>v?.received>=5&&v.receivedAgeMs<2000,60000);
       assert.deepEqual((await rpc('streams')).streams,[{owner}]);
@@ -195,8 +220,8 @@ function create({role,root,runner,env,machine,peerMachine}){
         }
       }
       await until(async()=>{await consent();return alive(tap)},v=>v?.event==='ready',15000);
-      for(const [index,[name,hz]] of [['quiet',0],['low',1000],['high',1600],['quiet',0]].entries()){
-        stage='output-'+index+'-'+name;const previous=await command(tap),video=progress(),source=await rpc('source',{tone:name});assert.equal(source.frequency,hz);
+      async function outputPhase(name,hz){
+        const previous=await command(tap),video=progress(),source=await rpc('source',{tone:name});assert.equal(source.frequency,hz);
         let last=previous.windows,matched=[];const deadline=Date.now()+15000;
         while(matched.length<2){
           assert.ok(Date.now()<deadline,'QT_AUDIO_PHASE_TIMEOUT');await consent();
@@ -208,14 +233,42 @@ function create({role,root,runner,env,machine,peerMachine}){
           }await pause(80);
         }
         const after=await rpc('source',{tone:'state'});assert.equal(after.errors,0);assert.ok(after.callbacks>source.callbacks);
-        report.observations.push({frequency:hz,afterWindow:previous.windows,sourceCallbacks:after.callbacks,windows:matched});
+        return {frequency:hz,afterWindow:previous.windows,sourceCallbacks:after.callbacks,windows:matched};
+      }
+      for(const [index,[name,hz]] of [['quiet',0],['low',1000],['high',1600],['quiet',0]].entries()){
+        stage='output-'+index+'-'+name;report.observations.push(await outputPhase(name,hz));
       }
       report.actualQtOutputObserved=true;report.feedbackIsolationVerified=true;
       report.cases.push('separate-Mac-shipped-Qt-output-silence-1000Hz-1600Hz-silence');
+      stage='recovery-before-fault';
+      const beforeOutput=await outputPhase('low',1000),beforeVideo=progress(),originalPid=viewer.child.pid;
+      const initial=viewer.faultEvents.filter(v=>v.event==='queued').at(-1);assert.ok(initial&&initial.generation>0);
+      assert.equal(viewer.faultEvents.filter(v=>v.event==='injected').length,0);
+      assert.deepEqual((await rpc('streams')).streams,[{owner}]);
+      stage='recovery-inject';viewer.child.stdio[3].write('F');
+      const recovered=await until(()=>{alive(viewer);return viewer.faultEvents.find(v=>v.event==='queued'&&v.generation>initial.generation)},Boolean,15000);
+      const injected=viewer.faultEvents.filter(v=>v.event==='injected');assert.equal(injected.length,1);
+      assert.ok(injected[0].result<0&&injected[0].errorPresent);assert.equal(injected[0].generation,initial.generation);
+      const lifecycle=viewer.faultEvents.slice(viewer.faultEvents.indexOf(injected[0]),viewer.faultEvents.indexOf(recovered)+1);
+      assert.deepEqual(lifecycle.map(v=>v.event),['injected','closed','opened','queued']);
+      assert.equal(lifecycle[1].device,initial.device);assert.equal(lifecycle[1].generation,initial.generation);
+      assert.equal(lifecycle[2].generation,initial.generation+1);assert.equal(recovered.generation,initial.generation+1);
+      assert.equal(lifecycle[2].device,recovered.device);assert.ok(recovered.device>0);
+      report.recovery={beforeOutput,pid:originalPid,owner,beforeVideo,lifecycle,observations:[]};
+      for(const [name,hz] of [['low',1000],['high',1600],['quiet',0]]){
+        stage='recovery-output-'+name;report.recovery.observations.push(await outputPhase(name,hz));
+      }
+      alive(viewer);assert.equal(viewer.child.pid,originalPid);assert.deepEqual((await rpc('streams')).streams,[{owner}]);
+      report.recovery.afterVideo=progress();assert.ok(report.recovery.afterVideo.received>beforeVideo.received);
+      assert.equal(hash(viewerFile),viewerPin.binarySha256);assert.equal(hash(sdlFile),toneFixture.sdlSha256);
+      report.recovery.sameProcessAndPair=true;report.recovery.viewerAndSDLBytesUnchanged=true;
+      report.automaticRecoveryVerified=true;report.cases.push('same-native-Session-recovers-one-real-SDL-queue-error-and-fresh-audio-output');
       stage='observer-eof';await closeChild(tap);assert.deepEqual(tap.exit,{code:0,signal:null});
       assert.deepEqual(tap.events.at(-1),{event:'closed',stopped:true,ioDestroyed:true,aggregateDestroyed:true,tapDestroyed:true});
       report.observerClosed=tap.events.at(-1);report.cases.push('observer-EOF-releases-private-tap-and-aggregate');
       stage='viewer-eof';await closeChild(viewer);assert.deepEqual(viewer.exit,{code:0,signal:null});
+      report.faultEvents=viewer.faultEvents;
+      assert.equal(viewer.faultEvents.at(-1).event,'closed');assert.equal(viewer.faultEvents.at(-1).generation,recovered.generation);
       await until(()=>rpc('streams'),v=>v.streams.length===0);report.cases.push('viewer-EOF-releases-native-stream');
       stage='host-finish';assert.deepEqual(await rpc('finish'),{finished:true,routePreserved:true,ownedChildrenReaped:true});
       stage='viewer-finish';await finish();finished=true;report.passed=true;

@@ -126,7 +126,7 @@ async function main(){
     assert.equal(peer.certificateSha256,hash(new crypto.X509Certificate(peer.certificate).raw));report.peerIdentity=peerRecord;
     if(nativeAudio){
       audio=createRequire(import.meta.url)('./mac_audio.cjs').create({role,root,runner,env:childEnv,machine,peerMachine:peer.machine});
-      report.audio=audio.report;report.scope='Disposable separate Mac environments with unchanged packaged host and shipping Qt viewer. Strict private process output measurements; no physical speakers, product permission UI, video presentation or production relay claim.';
+      report.audio=audio.report;report.scope='Disposable separate Mac environments with unchanged packaged bytes; owned shipping Qt viewer runtime instrumented for one real SDL queue error. Strict private process output and Session recovery measurements; no physical speakers, product permission UI, video presentation or production relay claim.';
     }
     if(role==='host'){
       stage='host-bridge';const started=await bridge(own,peer);activeBridge=started.item;
