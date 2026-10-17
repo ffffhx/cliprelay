@@ -81,10 +81,10 @@ function launchFixture(variable){
   });return item;
 }
 const alive=item=>{assert.equal(item.error,null);assert.equal(item.exit,null,'AUDIO_FIXTURE_EXIT');return item.events.at(-1);};
-async function command(value){
+async function command(value,event='state'){
   alive(tone);const after=tone.events.length;tone.child.stdin.write(value+'\n');
-  const state=await until(()=>{alive(tone);return tone.events.slice(after).find(event=>event.event==='state');},Boolean,5000);
-  assert.equal(state.errors,0);return state;
+  const state=await until(()=>{alive(tone);return tone.events.slice(after).find(item=>item.event===event);},Boolean,5000);
+  if(event==='state')assert.equal(state.errors,0);return state;
 }
 async function close(item){
   if(!item||item.exit)return;
@@ -101,8 +101,8 @@ function audioStack(){
   if(!engineChild||engineChild.exitCode!==null||engineChild.signalCode!==null)return {available:false,lines:[]};
   // Sample only the engine child this fixture owns; no process discovery or
   // memory dump. Keep audio/TCC stack symbols, never keys, arguments or frames.
-  const sampled=spawnSync('/usr/bin/sample',[String(engineChild.pid),'1','1','-mayDie'],
-    {encoding:'utf8',timeout:5000,maxBuffer:2*1024*1024});
+  const sampled=spawnSync('/usr/bin/sudo',['-n','/usr/bin/sample',String(engineChild.pid),'1','1','-mayDie'],
+    {encoding:'utf8',timeout:15000,maxBuffer:2*1024*1024});
   return {available:true,status:sampled.status,error:sampled.error?.code||null,
     lines:String(sampled.stdout||'').split('\n').filter(line=>/Audio|audio|TCC|tcc|microphone|setupSystemTap|createProcessTap/.test(line)&&
       !/PRIVATE KEY|authorization|credential|password|secret|token/i.test(line)).slice(0,50).map(line=>line.slice(0,400))};
@@ -110,10 +110,10 @@ function audioStack(){
 function audioConsentLog(){
   // Read only. The disposable runner's system consent decision is not changed.
   const query=spawnSync('/usr/bin/log',['show','--last','2m','--style','compact','--info','--debug','--predicate',
-    'process == "tccd" AND (eventMessage CONTAINS[c] "AudioCapture" OR eventMessage CONTAINS[c] "Sunshine" OR eventMessage CONTAINS[c] "cliprelay")'],
+    'process == "tccd" AND (eventMessage CONTAINS[c] "AudioCapture" OR eventMessage CONTAINS[c] "SystemAudio" OR eventMessage CONTAINS[c] "Microphone")'],
     {encoding:'utf8',timeout:7000,maxBuffer:512*1024});
   return {status:query.status,error:query.error?.code||null,lines:String(query.stdout||'').split('\n')
-    .filter(line=>/AudioCapture|Sunshine|cliprelay/.test(line)).slice(-50).map(line=>line.slice(0,700))};
+    .filter(line=>/AudioCapture|SystemAudio|Microphone/.test(line)).slice(-30).map(line=>line.slice(0,700))};
 }
 const report={protocol:1,testCommit:process.env.GITHUB_SHA,architecture:process.arch,passed:false,componentOnly:true,
   source:'owned-synthetic-tone',receiver:'standalone-opus-and-software-h264',productionPlaybackVerified:false,
@@ -187,9 +187,10 @@ async function main(){
     report.ownedChildrenReaped=true;report.cases.push('owned-processes-reaped-and-default-profile-preserved');report.passed=true;
   }catch(error){
     let source=tone?.events.at(-1);if(tone&&!tone.exit)try{source=await command('state');}catch{}
+    let consentWindows;if(tone&&!tone.exit)try{consentWindows=await command('consent-windows','consent-windows');}catch{}
     report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_host_audio\.cjs:\d+:\d+/)?.[0],
       host:host.snapshot(),tone:source,decoder:decoder?.events.at(-1),engine:diagnostics(),audioStack:audioStack(),
-      audioConsent:audioConsentLog()};process.exitCode=1;
+      audioConsent:audioConsentLog(),consentWindows};process.exitCode=1;
   }finally{
     const cleanup=[];
     for(const item of [decoder])try{await close(item);}catch{cleanup.push('receiver');}

@@ -3,6 +3,8 @@
 #import <Foundation/Foundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreAudio/CoreAudio.h>
+#import <AppKit/AppKit.h>
+#import <ApplicationServices/ApplicationServices.h>
 #include <atomic>
 #include <cmath>
 #include <thread>
@@ -45,6 +47,47 @@ static void report(const char *event) {
          event,frequency.load(),callbacks.load(),callback_error.load(),output,input,rate,frames);
   fflush(stdout);
 }
+static void consent_windows(void) {
+  // Read only, no AX actions and no permission request. Inspect only system
+  // consent brokers on this disposable runner, never ordinary applications.
+  NSMutableArray *observations=[NSMutableArray array];
+  const BOOL trusted=AXIsProcessTrusted();
+  const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+  NSSet *brokers=[NSSet setWithArray:@[@"com.apple.UserNotificationCenter",@"com.apple.notificationcenterui",
+    @"com.apple.SecurityAgent",@"com.apple.CoreServicesUIAgent",@"com.apple.controlcenter"]];
+  if (trusted) for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
+    if (![brokers containsObject:app.bundleIdentifier]) continue;
+    AXUIElementRef element=AXUIElementCreateApplication(app.processIdentifier);
+    AXUIElementSetMessagingTimeout(element,.1);
+    NSMutableArray *queue=[NSMutableArray arrayWithObject:(__bridge id)element],*texts=[NSMutableArray array];
+    CFRelease(element);NSUInteger count=0;AXError last=kAXErrorSuccess;
+    while (queue.count && count++<100 && texts.count<16 && std::chrono::steady_clock::now()<end) {
+      id node=queue.firstObject;[queue removeObjectAtIndex:0];
+      for (NSString *attribute in @[@"AXTitle",@"AXDescription",@"AXValue"]) {
+        CFTypeRef value=nullptr;last=AXUIElementCopyAttributeValue((__bridge AXUIElementRef)node,(__bridge CFStringRef)attribute,&value);
+        if (value) {
+          if (CFGetTypeID(value)==CFStringGetTypeID()) {
+            NSString *text=(__bridge NSString *)value;
+            if (text.length && ![texts containsObject:text]) [texts addObject:[text substringToIndex:MIN(text.length,(NSUInteger)240)]];
+          }
+          CFRelease(value);
+        }
+      }
+      CFTypeRef children=nullptr;
+      if (AXUIElementCopyAttributeValue((__bridge AXUIElementRef)node,kAXChildrenAttribute,&children)==kAXErrorSuccess && children) {
+        if (CFGetTypeID(children)==CFArrayGetTypeID()) for (id child in (__bridge NSArray *)children) {
+          if (queue.count<100 && CFGetTypeID((__bridge CFTypeRef)child)==AXUIElementGetTypeID()) [queue addObject:child];
+        }
+        CFRelease(children);
+      }
+    }
+    [observations addObject:@{@"bundle":app.bundleIdentifier,@"texts":texts,@"lastAXError":@(last)}];
+  }
+  NSData *json=[NSJSONSerialization dataWithJSONObject:@{@"event":@"consent-windows",@"trusted":@(trusted),@"brokers":observations}
+    options:0 error:nullptr];
+  if (!json || json.length>12000) _exit(3);
+  fwrite(json.bytes,1,json.length,stdout);fputc('\n',stdout);fflush(stdout);
+}
 int main(void) {
   @autoreleasepool {
     struct stat channel;
@@ -71,7 +114,8 @@ int main(void) {
     check(AudioQueueStart(queue,nullptr));report("ready");
     char command[32];bool valid=true;
     while (fgets(command,sizeof command,stdin)) {
-      if (!strcmp(command,"quiet\n")) frequency.store(0);
+      if (!strcmp(command,"consent-windows\n")) { consent_windows();continue; }
+      else if (!strcmp(command,"quiet\n")) frequency.store(0);
       else if (!strcmp(command,"low\n")) frequency.store(1000);
       else if (!strcmp(command,"high\n")) frequency.store(1600);
       else if (strcmp(command,"state\n")) { valid=false;break; }
