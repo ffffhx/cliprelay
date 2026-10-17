@@ -1,5 +1,8 @@
 name: macOS Privacy Stream Development
 on:
+  push:
+    branches: ['codex/desktop-client-input-*']
+    paths: ['.github/workflows/macos-privacy-stream.yml']
   workflow_dispatch:
     inputs:
       engine_run_id:
@@ -36,8 +39,8 @@ jobs:
       - name: Select immutable native engine and viewer
         env:
           GH_TOKEN: ${{ github.token }}
-          ENGINE_RUN: ${{ inputs.engine_run_id }}
-          VIEWER_RUN: ${{ inputs.viewer_run_id }}
+          ENGINE_RUN: ${{ inputs.engine_run_id || '38994396737' }}
+          VIEWER_RUN: ${{ inputs.viewer_run_id || '38973983319' }}
         run: |
           python3 scripts/fetch_sunshine_macos.py --run "$ENGINE_RUN" --arch x86_64 --directory .tools/privacy-engine
           python3 - <<'PY'
