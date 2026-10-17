@@ -101,7 +101,9 @@ try:
         if menu.get('menuRootAvailable') and any(row['role']=='AXMenuBarItem' and 'ClipRelay' in [row['title'],row['description']] for row in menu['nodes']):break
         assert time.monotonic()<menu_deadline,'STATUS_MENU_NOT_READY'
         time.sleep(.25)
-    stage='open-menu';menu_action('menu')
+    # The app exposes its complete status-menu items to Accessibility before
+    # popup tracking starts. Activate the exact item directly: opening the
+    # popup first can leave Electron's AX handler waiting in its modal loop.
     stage='open-host';menu_action('host')
     result['hostRendererUrl']=target('host')
     stage='connect-owned-renderer';browser_command('connect',str(port));browser_connected=True
