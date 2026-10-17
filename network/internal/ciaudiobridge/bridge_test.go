@@ -119,6 +119,9 @@ func udpEcho(t *testing.T) (Target, *atomic.Int64) {
 	}
 	var received atomic.Int64
 	t.Cleanup(func() { socket.Close() })
+	if err := socket.(*net.UDPConn).SetWriteBuffer(128 * 1024); err != nil {
+		t.Fatal(err)
+	}
 	go func() {
 		buffer := make([]byte, 65535)
 		for {

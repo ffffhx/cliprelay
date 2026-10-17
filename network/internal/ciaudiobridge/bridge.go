@@ -226,6 +226,13 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		}
 		s.dials.Add(1)
 		defer backend.Close()
+		// Darwin initializes UDP send space below the supported datagram limit.
+		// Reserve bounded space on this owned socket before acknowledging it.
+		if udp, ok := backend.(*net.UDPConn); ok {
+			if err := udp.SetWriteBuffer(128 * 1024); err != nil {
+				return
+			}
+		}
 		if _, err := secure.Write([]byte{1}); err != nil {
 			return
 		}

@@ -126,6 +126,7 @@ async function main(){
       const tcp=net.createServer(socket=>{accepted++;track(socket);socket.pipe(socket);});await listen(tcp,48789);
       const udp=dgram.createSocket('udp4');servers.push(udp);udp.on('message',(data,remote)=>{udpReceived++;udp.send(data,remote.port,remote.address)});
       await new Promise((resolve,reject)=>{udp.once('error',reject);udp.bind(48798,'127.0.0.1',resolve)});
+      udp.setSendBufferSize(128*1024);
       const control=http.createServer((req,res)=>{
         (async()=>{
           assert.equal(req.headers['content-length']||'0','0');
@@ -161,6 +162,7 @@ async function main(){
         socket.once('end',()=>resolve({bytes,sha256:digest.digest('hex')}));
       });assert.deepEqual(tcp,{bytes:payload.length,sha256:expected});report.tcp=tcp;report.cases.push('cross-job-TCP-content-and-half-close');
       stage='UDP-roundtrip';const udp=dgram.createSocket('udp4');servers.push(udp);await new Promise(resolve=>udp.bind(0,'127.0.0.1',resolve));
+      udp.setSendBufferSize(128*1024);
       report.datagrams=[];
       for(const size of [0,1,17,1400,8192,65507]){
         const payload=crypto.randomBytes(size),received=await new Promise((resolve,reject)=>{

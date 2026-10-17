@@ -157,6 +157,10 @@ func forward(ctx context.Context, client ciaudiobridge.Client, ready chan<- erro
 			return err
 		}
 		packets = append(packets, packet)
+		if err := packet.(*net.UDPConn).SetWriteBuffer(128 * 1024); err != nil {
+			ready <- errors.New("FORWARD_BUFFER_FAILED")
+			return err
+		}
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
