@@ -193,10 +193,10 @@ index 88d8b1c..cc7e14d 100644
 -
  @end
 diff --git a/src/platform/macos/av_video.m b/src/platform/macos/av_video.m
-index 17c21ac..dd0428b 100644
+index 17c21ac..f089b3d 100644
 --- a/src/platform/macos/av_video.m
 +++ b/src/platform/macos/av_video.m
-@@ -1,211 +1,344 @@
+@@ -1,211 +1,352 @@
 -/**
 - * @file src/platform/macos/av_video.m
 - * @brief Definitions for video capture on macOS.
@@ -376,6 +376,9 @@ index 17c21ac..dd0428b 100644
  }
  
  - (CMSampleBufferRef)copyNextFrameBefore:(dispatch_time_t)deadline {
++  // Sunshine calls this from a C++ capture thread without an AppKit event
++  // loop. In particular, per-frame conversion dictionaries need a local pool.
++  @autoreleasepool {
    [_frameLock lock];
    BOOL stopped = _stopped;
 +  uint64_t epoch = _epoch;
@@ -428,9 +431,11 @@ index 17c21ac..dd0428b 100644
 +    result = converted;
 +  }
    return result;
++  }
  }
  
  - (void)stop {
++  @autoreleasepool {
    [_stopLock lock];
    [_frameLock lock];
 -  if (!_stopped) {
@@ -465,6 +470,7 @@ index 17c21ac..dd0428b 100644
 +  if (_queue) dispatch_sync(_queue, ^{});
 +  if (old) CFRelease(old);
    [_stopLock unlock];
++  }
  }
  
  - (void)dealloc {
@@ -580,6 +586,7 @@ index 17c21ac..dd0428b 100644
 +  return [self newCaptureExcludingWindows:@[]];
 +}
 +- (AVVideoFrameSource *)newCaptureExcludingWindows:(NSArray<SCWindow *> *)windows {
++  @autoreleasepool {
 +  @synchronized(self) {
 +    id<ClipRelayCaptureStream> stream = [self newStreamExcludingWindows:windows];
 +    if (!stream) return nil;
@@ -587,6 +594,7 @@ index 17c21ac..dd0428b 100644
 +    [stream release];
 +    if (source) [self.frameSources addObject:source];
 +    return source;
++  }
    }
 -  [sources release];
 -  [self.frameSources release];
