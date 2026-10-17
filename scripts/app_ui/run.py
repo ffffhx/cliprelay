@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from permission_prompt import permission_prompt
 
 assert sys.platform=='darwin' and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('GITHUB_REPOSITORY')=='ffffhx/cliprelay'
 root=Path(__file__).resolve().parents[2];runner=Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
@@ -49,7 +50,8 @@ result={'protocol':1,'testCommit':os.environ['GITHUB_SHA'],'run':int(os.environ[
         'application':selection,'cases':[],'snapshots':{},'helperSha256':sha(helper),'agentBrowserSha256':sha(browser),
         'agentBrowserVersion':'0.34.0','sources':{str(file.relative_to(root)).replace('\\','/'):sha(file) for file in
         [Path(__file__),Path(__file__).with_name('owned_app.mm'),Path(__file__).with_name('fetch.py'),Path(__file__).with_name('package.json'),
-         Path(__file__).with_name('package-lock.json'),Path(__file__).with_name('application.json'),root/'.github/workflows/macos-app-ui.yml']}}
+         Path(__file__).with_name('package-lock.json'),Path(__file__).with_name('application.json'),
+         Path(__file__).with_name('permission_prompt.py'),Path(__file__).with_name('test_permission_prompt.py'),root/'.github/workflows/macos-app-ui.yml']}}
 def read_stdout():
     try:
         for line in child.stdout:
@@ -139,8 +141,7 @@ def probe_permission():
     while time.monotonic()<deadline:
         value=command('system-windows','consent-windows');assert value['owned'] and value['trusted']
         result['permissionRequest']['observations'].append(value)
-        content=json.dumps(value['brokers'],ensure_ascii=False).lower()
-        if ('cliprelay' in content or 'sunshine' in content) and any(term in content for term in ['screen','accessibility','屏幕','辅助功能']):
+        if permission_prompt(value['brokers'],permission_probe):
             observed=True;break
         time.sleep(.5)
     result['permissionRequest']['systemPromptObserved']=observed

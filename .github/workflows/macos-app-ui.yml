@@ -31,7 +31,9 @@ jobs:
       - name: Observe normal application menu and permission UI
         env:
           CLIPRELAY_PERMISSION_PROBE: ${{ inputs.permission_probe || 'none' }}
-        run: python3 scripts/app_ui/run.py
+        run: |
+          python3 -m unittest discover -s scripts/app_ui -p 'test_*.py'
+          python3 scripts/app_ui/run.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
