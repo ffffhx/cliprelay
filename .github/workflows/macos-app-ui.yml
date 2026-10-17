@@ -8,7 +8,7 @@ on:
       permission_probe:
         description: 'Observe the normal permission request UI on a disposable runner'
         type: choice
-        options: ['none', 'screen', 'input']
+        options: ['none', 'screen', 'input', 'screen-settings']
         default: 'none'
 permissions:
   contents: read

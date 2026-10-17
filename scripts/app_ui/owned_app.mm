@@ -134,6 +134,59 @@ static void permission_windows(){
   emit(@{@"event":@"consent-windows",@"owned":@(owned()),@"trusted":@(trusted),@"brokers":observations,@"remainingBudget":@(budget),
     @"systemApplications":system_apps,@"visibleWindowOwners":visible});
 }
+static void open_screen_settings(){
+  // The only system action here is the button already observed in ClipRelay's
+  // exact screen-recording dialog. Never accept a generic Allow/Settings button.
+  const BOOL trusted=AXIsProcessTrusted();NSMutableArray *candidates=[NSMutableArray array];unsigned budget=250;
+  const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+  if(owned()&&trusted)for(NSRunningApplication *broker in
+      [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.accessibility.universalAccessAuthWarn"]){
+    if(![broker.executableURL.path isEqualToString:@"/System/Library/PrivateFrameworks/UniversalAccess.framework/Versions/A/Resources/universalAccessAuthWarn.app/Contents/MacOS/universalAccessAuthWarn"])continue;
+    AXUIElementRef app=AXUIElementCreateApplication(broker.processIdentifier);AXUIElementSetMessagingTimeout(app,.1);
+    CFTypeRef windows=nullptr;
+    if(AXUIElementCopyAttributeValue(app,kAXWindowsAttribute,&windows)==kAXErrorSuccess&&windows){
+      if(CFGetTypeID(windows)==CFArrayGetTypeID())for(id window in (__bridge NSArray *)windows){
+        if(CFGetTypeID((__bridge CFTypeRef)window)!=AXUIElementGetTypeID())continue;
+        AXUIElementRef node=(__bridge AXUIElementRef)window;
+        if(![text(node,kAXTitleAttribute) isEqualToString:@"Screen Recording"])continue;
+        NSMutableArray *rows=[NSMutableArray array],*unused=[NSMutableArray array];
+        traverse(node,0,budget,rows,unused,@"windows",end);
+        BOOL exact=NO;unsigned deny=0,open=0;
+        for(NSDictionary *row in rows){
+          exact|=[row[@"role"] isEqualToString:@"AXStaticText"]&&[row[@"value"] isEqualToString:@"“ClipRelay” would like to record this computer’s screen and audio."];
+          if([row[@"role"] isEqualToString:@"AXButton"]){
+            deny+=[row[@"title"] isEqualToString:@"Deny"];open+=[row[@"title"] isEqualToString:@"Open System Settings"];
+          }
+        }
+        if(!exact||deny!=1||open!=1)continue;
+        CFTypeRef children=nullptr;
+        if(AXUIElementCopyAttributeValue(node,kAXChildrenAttribute,&children)==kAXErrorSuccess&&children){
+          if(CFGetTypeID(children)==CFArrayGetTypeID())for(id child in (__bridge NSArray *)children){
+            if(CFGetTypeID((__bridge CFTypeRef)child)==AXUIElementGetTypeID()&&
+               [text((__bridge AXUIElementRef)child,kAXRoleAttribute) isEqualToString:@"AXButton"]&&
+               [text((__bridge AXUIElementRef)child,kAXTitleAttribute) isEqualToString:@"Open System Settings"])[candidates addObject:child];
+          }
+          CFRelease(children);
+        }
+      }
+      CFRelease(windows);
+    }
+    CFRelease(app);
+  }
+  BOOL attempted=NO;AXError action=kAXErrorFailure;
+  if(owned()&&trusted&&candidates.count==1&&budget&&std::chrono::steady_clock::now()<end){
+    AXUIElementRef button=(__bridge AXUIElementRef)candidates[0];AXUIElementSetMessagingTimeout(button,.5);
+    CFTypeRef enabled=nullptr;
+    if(AXUIElementCopyAttributeValue(button,kAXEnabledAttribute,&enabled)==kAXErrorSuccess&&enabled){
+      if(CFGetTypeID(enabled)==CFBooleanGetTypeID()&&CFBooleanGetValue((CFBooleanRef)enabled)){
+        attempted=YES;action=AXUIElementPerformAction(button,kAXPressAction);
+      }
+      CFRelease(enabled);
+    }
+  }
+  emit(@{@"event":@"open-screen-settings",@"owned":@(owned()),@"trusted":@(trusted),@"candidates":@(candidates.count),
+    @"attempted":@(attempted),@"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action)});
+}
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();
   if(owned()&&!inspect(@"exit"))[application terminate];
@@ -210,6 +263,7 @@ int main(int argc,char **argv){
           dispatch_async(dispatch_get_main_queue(),^{
             if([command isEqualToString:@"quit"])close_owned();
             else if([command isEqualToString:@"system-windows"])permission_windows();
+            else if([command isEqualToString:@"open-screen-settings"])open_screen_settings();
             else if([@[@"inspect",@"menu",@"host",@"paired",@"permissions"] containsObject:command])inspect(command);
             else{emit(@{@"event":@"error",@"code":@"COMMAND_INVALID"});close_owned();}
           });

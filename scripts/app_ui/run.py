@@ -34,7 +34,9 @@ env={name:os.environ[name] for name in ['PATH','HOME','TMPDIR','RUNNER_TEMP','GI
 assert subprocess.check_output([str(browser),'--version'],env=env,text=True,timeout=5).strip()=='agent-browser 0.34.0'
 name='ui';namespace='crui-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
 permission_probe=os.environ.get('CLIPRELAY_PERMISSION_PROBE','none')
-assert permission_probe in ['none','screen','input']
+assert permission_probe in ['none','screen','input','screen-settings']
+open_permission_settings=permission_probe=='screen-settings'
+if open_permission_settings:permission_probe='screen'
 config=Path.home()/'Library/Application Support/ClipRelay'
 assert not config.exists() and not config.is_symlink(), 'DEFAULT_PROFILE_ALREADY_EXISTS'
 with socket.socket() as reservation:
@@ -43,6 +45,7 @@ events=queue.Queue();all_events=[];child=None;browser_connected=False;stage='lau
 result={'protocol':1,'testCommit':os.environ['GITHUB_SHA'],'run':int(os.environ['GITHUB_RUN_ID']),'architecture':'x64','passed':False,
         'discoveryOnly':True,'productionAudioVerified':False,'permissionGrantedByFixture':False,'keychainVerified':False,
         'permissionProbe':permission_probe,'permissionRequestedByFixture':permission_probe!='none',
+        'systemSettingsRequested':open_permission_settings,
         'application':selection,'cases':[],'snapshots':{},'helperSha256':sha(helper),'agentBrowserSha256':sha(browser),
         'agentBrowserVersion':'0.34.0','sources':{str(file.relative_to(root)).replace('\\','/'):sha(file) for file in
         [Path(__file__),Path(__file__).with_name('owned_app.mm'),Path(__file__).with_name('fetch.py'),Path(__file__).with_name('package.json'),
@@ -104,6 +107,21 @@ def snapshot(kind):
     result['snapshots'][kind]=value
     return json.dumps(value,ensure_ascii=False)
 
+def permission_diagnostics():
+    predicate='subsystem == "com.apple.TCC" AND (eventMessage CONTAINS[c] "com.cliprelay.desktop" OR eventMessage CONTAINS[c] "Sunshine" OR eventMessage CONTAINS[c] "PostEvent")'
+    try:
+        with tempfile.TemporaryFile() as output:
+            call=subprocess.run(['/usr/bin/log','show','--last','60s','--style','json','--info','--predicate',predicate],
+                                stdout=output,stderr=subprocess.DEVNULL,timeout=10)
+            length=output.tell();output.seek(0)
+            diagnostic={'exit':call.returncode,'bytes':length,'records':[]}
+            if call.returncode==0 and length<=1024*1024:
+                values=json.load(output);assert isinstance(values,list)
+                diagnostic['records']=[{key:str(row.get(key,''))[:2000] for key in
+                    ['timestamp','process','processID','subsystem','category','eventMessage']} for row in values[-80:]]
+            result['permissionDiagnostics']=diagnostic
+    except Exception as error:result['permissionDiagnostics']={'error':type(error).__name__}
+
 def probe_permission():
     label='屏幕录制' if permission_probe=='screen' else '键鼠控制'
     snapshot('host-permissions')
@@ -127,8 +145,23 @@ def probe_permission():
         time.sleep(.5)
     result['permissionRequest']['systemPromptObserved']=observed
     snapshot('host-permissions')
+    if not observed:permission_diagnostics()
     assert observed,'SYSTEM_PERMISSION_PROMPT_NOT_OBSERVED'
     result['cases'].append('production-renderer-requests-'+permission_probe+'-permission')
+    if open_permission_settings:
+        action=command('open-screen-settings','open-screen-settings');result['openScreenSettings']=action
+        assert action['owned'] and action['trusted'] and action['candidates']==1 and action['attempted'], 'SCREEN_SETTINGS_TARGET_INVALID'
+        assert action['pressed'] or action['actionStatus']==-25204, 'SCREEN_SETTINGS_ACTION_FAILED'
+        result['systemSettingsObservations']=[];deadline=time.monotonic()+15;found=False
+        while time.monotonic()<deadline:
+            value=command('system-windows','consent-windows');assert value['owned'] and value['trusted']
+            result['systemSettingsObservations'].append(value)
+            settings=[broker for broker in value['brokers'] if broker['bundle']=='com.apple.systempreferences']
+            content=json.dumps(settings,ensure_ascii=False)
+            if 'ClipRelay' in content and ('Screen' in content or 'screen' in content):found=True;break
+            time.sleep(.5)
+        assert found,'SCREEN_SETTINGS_ROW_NOT_OBSERVED'
+        result['cases'].append('exact-system-screen-dialog-opens-settings')
 try:
     child=subprocess.Popen([str(helper),str(app),str(port)],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                            text=True,bufsize=1)
