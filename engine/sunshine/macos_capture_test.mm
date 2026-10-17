@@ -14,84 +14,89 @@
   #include <memory>
   #include <thread>
 
-/** @brief Session boundary that never opens a camera or screen capture device. */
-@interface ClipRelayCaptureTestSession: NSObject
-@property (nonatomic, retain) NSMutableArray *outputs;  ///< Registered outputs.
-@property (nonatomic) BOOL running;  ///< Simulated session state.
-@property (nonatomic) BOOL refuse;  ///< Simulate unsupported output creation.
-@property (nonatomic) NSUInteger stops;  ///< Stop calls visible to this boundary.
-- (BOOL)canAddOutput:(id)output;  ///< Simulate output admission.
-- (void)addOutput:(id)output;  ///< Retain a registered output.
-- (void)removeOutput:(id)output;  ///< Remove exactly one output.
-- (void)beginConfiguration;  ///< Begin an inert configuration transaction.
-- (void)commitConfiguration;  ///< Commit an inert configuration transaction.
-- (BOOL)isRunning;  ///< Read the simulated running state.
-- (void)startRunning;  ///< Mark the fake session running.
-- (void)stopRunning;  ///< Mark the fake session stopped.
+/** @brief Native stream boundary that never opens a screen capture device. */
+@interface ClipRelayCaptureTestStream: NSObject <ClipRelayCaptureStream>
+@property (nonatomic, retain) id<SCStreamOutput> output;
+@property (nonatomic) dispatch_queue_t queue;
+@property (nonatomic) BOOL running;
+@property (nonatomic) BOOL refuse;
+@property (nonatomic) BOOL failStart;
+@property (nonatomic) BOOL delayStart;
+@property (nonatomic, copy) void (^pendingStart)(NSError *);
+@property (nonatomic) NSUInteger stops;
+- (void)finishStart;
 @end
 
-@implementation ClipRelayCaptureTestSession
-
-- (id)init {
-  self = [super init];
-  if (self) {
-    self.outputs = [NSMutableArray array];
+@implementation ClipRelayCaptureTestStream
+- (BOOL)addStreamOutput:(id<SCStreamOutput>)output type:(SCStreamOutputType)type sampleHandlerQueue:(dispatch_queue_t)queue error:(NSError **)error {
+  if (!output || self.refuse || self.output || type != SCStreamOutputTypeScreen) return NO;
+  self.output = output;
+  self.queue = queue;
+  return YES;
+}
+- (BOOL)removeStreamOutput:(id<SCStreamOutput>)output type:(SCStreamOutputType)type error:(NSError **)error {
+  if (self.output != output || type != SCStreamOutputTypeScreen) return NO;
+  self.output = nil;
+  return YES;
+}
+- (void)startCaptureWithCompletionHandler:(void (^)(NSError *))handler {
+  if (self.delayStart) {
+    self.pendingStart = handler;
+    return;
   }
-  return self;
+  self.running = !self.failStart;
+  handler(self.failStart ? [NSError errorWithDomain:@"fixture" code:1 userInfo:nil] : nil);
 }
-
-- (BOOL)canAddOutput:(id)output {
-  return output && !self.refuse;
-}
-
-- (void)addOutput:(id)output {
-  [self.outputs addObject:output];
-}
-
-- (void)removeOutput:(id)output {
-  [self.outputs removeObjectIdenticalTo:output];
-}
-
-- (void)beginConfiguration {
-}
-
-- (void)commitConfiguration {
-}
-
-- (BOOL)isRunning {
-  return self.running;
-}
-
-- (void)startRunning {
-  self.running = YES;
-}
-
-- (void)stopRunning {
+- (void)stopCaptureWithCompletionHandler:(void (^)(NSError *))handler {
   self.running = NO;
   self.stops++;
+  handler(nil);
 }
-
+- (void)finishStart {
+  auto callback = [self.pendingStart copy];
+  self.pendingStart = nil;
+  self.running = YES;
+  callback(nil);
+  [callback release];
+}
 - (void)dealloc {
-  [self.outputs release];
+  [self.output release];
+  [self.pendingStart release];
   [super dealloc];
 }
+@end
 
+/** @brief Real capture controller with only the system stream factory replaced. */
+@interface ClipRelayCaptureTestVideo: AVVideo
+@property (nonatomic, retain) NSMutableArray<ClipRelayCaptureTestStream *> *streams;
+@property (nonatomic) BOOL refuse;
+@end
+
+@implementation ClipRelayCaptureTestVideo
+- (id<ClipRelayCaptureStream>)newStreamExcludingWindows:(NSArray<SCWindow *> *)windows {
+  auto stream = [[ClipRelayCaptureTestStream alloc] init];
+  stream.refuse = self.refuse;
+  [self.streams addObject:stream];
+  return stream;
+}
+- (void)dealloc {
+  [self.streams release];
+  [super dealloc];
+}
 @end
 
 /** @brief Fixture with real mailbox/delegate/queues and a fake session boundary. */
 class ClipRelayMacCaptureTest: public ::testing::Test {
 protected:
-  AVVideo *owner = nil;  ///< Production session owner, with no native screen input.
-  ClipRelayCaptureTestSession *session = nil;  ///< Inert AVFoundation session boundary.
+  ClipRelayCaptureTestVideo *owner = nil;  ///< Production controller with an inert stream factory.
   std::atomic<int> freed {0};  ///< Exact lifetime of fixture-owned pixel storage.
   NSAutoreleasePool *pool = nil;  ///< Foundation allocations for this test thread.
 
   /** @brief Configure the owner without running initWithDisplay or capture APIs. */
   void SetUp() override {
     pool = [[NSAutoreleasePool alloc] init];
-    owner = [[AVVideo alloc] init];
-    session = [[ClipRelayCaptureTestSession alloc] init];
-    owner.session = (AVCaptureSession *) session;
+    owner = [[ClipRelayCaptureTestVideo alloc] init];
+    owner.streams = [NSMutableArray array];
     owner.frameSources = [[NSMutableArray alloc] init];
     owner.frameWidth = owner.frameHeight = 16;
     owner.pixelFormat = kCVPixelFormatType_32BGRA;
@@ -128,12 +133,17 @@ protected:
       CFRelease(format);
     }
     CFRelease(pixels);
+    if (value) {
+      auto attachments = CMSampleBufferGetSampleAttachmentsArray(value, YES);
+      auto metadata = (NSMutableDictionary *)CFArrayGetValueAtIndex(attachments, 0);
+      metadata[SCStreamFrameInfoStatus] = @(SCFrameStatusComplete);
+    }
     return value;
   }
 
-  /** @brief Deliver a synthetic frame through the real AVFoundation delegate method. */
+  /** @brief Deliver a synthetic image through the production ScreenCaptureKit callback. */
   static void deliver(AVVideoFrameSource *source, CMSampleBufferRef value) {
-    [source captureOutput:source.output didOutputSampleBuffer:value fromConnection:nil];
+    [source stream:(SCStream *)source.stream didOutputSampleBuffer:value ofType:SCStreamOutputTypeScreen];
   }
 };
 
@@ -204,7 +214,7 @@ TEST_F(ClipRelayMacCaptureTest, StopWaitsForQueuedDelegateWorkBeforeReturning) {
   using namespace std::chrono_literals;
   auto source = [owner newCapture];
   ASSERT_NE(source, nil);
-  auto queue = source.output.sampleBufferCallbackQueue;
+  auto queue = source.queue;
   auto gate = dispatch_semaphore_create(0);
   auto entered = dispatch_semaphore_create(0);
   auto value = sample();
@@ -236,12 +246,15 @@ TEST_F(ClipRelayMacCaptureTest, RemovingOneOutputPreservesAnotherOwnersCapture) 
   auto second = [owner newCapture];
   ASSERT_NE(first, nil);
   ASSERT_NE(second, nil);
-  EXPECT_EQ(session.outputs.count, 2U);
-  const auto stops = session.stops;
+  auto firstStream = (ClipRelayCaptureTestStream *)first.stream;
+  auto secondStream = (ClipRelayCaptureTestStream *)second.stream;
+  EXPECT_EQ(owner.frameSources.count, 2U);
   [owner stopCapture:first];
-  EXPECT_EQ(session.outputs.count, 1U);
-  EXPECT_EQ(session.stops, stops);
-  EXPECT_TRUE(session.running);
+  EXPECT_EQ(owner.frameSources.count, 1U);
+  EXPECT_EQ(firstStream.stops, 1U);
+  EXPECT_FALSE(firstStream.running);
+  EXPECT_EQ(secondStream.stops, 0U);
+  EXPECT_TRUE(secondStream.running);
   auto value = sample();
   deliver(second, value);
   CFRelease(value);
@@ -249,9 +262,9 @@ TEST_F(ClipRelayMacCaptureTest, RemovingOneOutputPreservesAnotherOwnersCapture) 
   ASSERT_NE(received, nullptr);
   CFRelease(received);
   [owner stopCapture:second];
-  EXPECT_FALSE(session.running);
-  EXPECT_EQ(session.outputs.count, 0U);
-  EXPECT_EQ(session.stops, stops + 1);
+  EXPECT_FALSE(secondStream.running);
+  EXPECT_EQ(owner.frameSources.count, 0U);
+  EXPECT_EQ(secondStream.stops, 1U);
   [first release];
   [second release];
 }
@@ -259,12 +272,92 @@ TEST_F(ClipRelayMacCaptureTest, RemovingOneOutputPreservesAnotherOwnersCapture) 
 TEST_F(ClipRelayMacCaptureTest, OutputAdmissionFailureLeavesExistingCaptureRunning) {
   auto first = [owner newCapture];
   ASSERT_NE(first, nil);
-  session.refuse = YES;
+  owner.refuse = YES;
   EXPECT_EQ([owner newCapture], nil);
-  EXPECT_EQ(session.outputs.count, 1U);
-  EXPECT_TRUE(session.running);
+  EXPECT_EQ(owner.frameSources.count, 1U);
+  EXPECT_TRUE(((ClipRelayCaptureTestStream *)first.stream).running);
   [owner stopCapture:first];
   [first release];
+}
+
+TEST_F(ClipRelayMacCaptureTest, StartFailureDetachesOutputAndStopsOnlyFailedStream) {
+  auto stream = [[ClipRelayCaptureTestStream alloc] init];
+  stream.failStart = YES;
+  EXPECT_EQ([[AVVideoFrameSource alloc] initWithStream:stream], nil);
+  EXPECT_EQ(stream.output, nil);
+  EXPECT_FALSE(stream.running);
+  EXPECT_EQ(stream.stops, 1U);
+  [stream release];
+}
+
+TEST_F(ClipRelayMacCaptureTest, LateSuccessfulStartAfterTimeoutIsStoppedAgain) {
+  using namespace std::chrono_literals;
+  auto stream = [[ClipRelayCaptureTestStream alloc] init];
+  stream.delayStart = YES;
+  const auto began = std::chrono::steady_clock::now();
+  EXPECT_EQ([[AVVideoFrameSource alloc] initWithStream:stream], nil);
+  EXPECT_LT(std::chrono::steady_clock::now() - began, 5s);
+  EXPECT_EQ(stream.output, nil);
+  EXPECT_EQ(stream.stops, 1U);
+  [stream finishStart];
+  EXPECT_FALSE(stream.running);
+  EXPECT_EQ(stream.stops, 2U);
+  [stream release];
+}
+
+TEST_F(ClipRelayMacCaptureTest, IdleBlankSuspendedAndStoppedNotificationsCannotBecomeFrames) {
+  auto source = [owner newCapture];
+  ASSERT_NE(source, nil);
+  auto value = sample();
+  auto metadata = (NSMutableDictionary *)CFArrayGetValueAtIndex(CMSampleBufferGetSampleAttachmentsArray(value, YES), 0);
+  for (auto status : {SCFrameStatusIdle, SCFrameStatusBlank, SCFrameStatusSuspended, SCFrameStatusStopped, SCFrameStatusStarted}) {
+    metadata[SCStreamFrameInfoStatus] = @(status);
+    deliver(source, value);
+    EXPECT_EQ([source copyNextFrameBefore:DISPATCH_TIME_NOW], nullptr);
+  }
+  metadata[SCStreamFrameInfoStatus] = @(SCFrameStatusComplete);
+  deliver(source, value);
+  auto received = [source copyNextFrameBefore:DISPATCH_TIME_NOW];
+  ASSERT_NE(received, nullptr);
+  CFRelease(received);
+  CFRelease(value);
+  [owner stopCapture:source];
+  [source release];
+  EXPECT_EQ(freed.load(), 1);
+}
+
+TEST_F(ClipRelayMacCaptureTest, MissingOrMalformedFrameStatusIsRejected) {
+  auto source = [owner newCapture];
+  ASSERT_NE(source, nil);
+  auto value = sample();
+  auto metadata = (NSMutableDictionary *)CFArrayGetValueAtIndex(CMSampleBufferGetSampleAttachmentsArray(value, YES), 0);
+  [metadata removeObjectForKey:SCStreamFrameInfoStatus];
+  deliver(source, value);
+  EXPECT_EQ([source copyNextFrameBefore:DISPATCH_TIME_NOW], nullptr);
+  metadata[SCStreamFrameInfoStatus] = @"complete";
+  deliver(source, value);
+  EXPECT_EQ([source copyNextFrameBefore:DISPATCH_TIME_NOW], nullptr);
+  CFRelease(value);
+  [owner stopCapture:source];
+  [source release];
+  EXPECT_EQ(freed.load(), 1);
+}
+
+TEST_F(ClipRelayMacCaptureTest, ForeignStreamAndAudioCallbacksCannotDeliverImages) {
+  auto source = [owner newCapture];
+  auto foreign = [owner newCapture];
+  ASSERT_NE(source, nil);
+  ASSERT_NE(foreign, nil);
+  auto value = sample();
+  [source stream:(SCStream *)foreign.stream didOutputSampleBuffer:value ofType:SCStreamOutputTypeScreen];
+  [source stream:(SCStream *)source.stream didOutputSampleBuffer:value ofType:SCStreamOutputTypeAudio];
+  EXPECT_EQ([source copyNextFrameBefore:DISPATCH_TIME_NOW], nullptr);
+  CFRelease(value);
+  [owner stopCapture:source];
+  [owner stopCapture:foreign];
+  [source release];
+  [foreign release];
+  EXPECT_EQ(freed.load(), 1);
 }
 
 TEST_F(ClipRelayMacCaptureTest, ForeignOwnerCannotStopAnotherOwnersOutput) {
@@ -297,7 +390,7 @@ TEST_F(ClipRelayMacCaptureTest, OwnerDestructionCancelsCallerRetainedSourceAndRe
   owner = nil;
   EXPECT_EQ(freed.load(), 1);
   EXPECT_EQ([source copyNextFrameBefore:DISPATCH_TIME_FOREVER], nullptr);
-  EXPECT_EQ(source.output.sampleBufferDelegate, nil);
+  EXPECT_EQ(((ClipRelayCaptureTestStream *)source.stream).output, nil);
   [source release];
 }
 

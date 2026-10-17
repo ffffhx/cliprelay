@@ -1,0 +1,671 @@
+diff --git a/cmake/compile_definitions/macos.cmake b/cmake/compile_definitions/macos.cmake
+index acf336c..1cf6e35 100644
+--- a/cmake/compile_definitions/macos.cmake
++++ b/cmake/compile_definitions/macos.cmake
+@@ -33,6 +33,7 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
+         ${AV_FOUNDATION_LIBRARY}
+         ${CORE_AUDIO_LIBRARY}
+         ${CORE_MEDIA_LIBRARY}
++        ${SCREEN_CAPTURE_KIT_LIBRARY}
+         ${CORE_VIDEO_LIBRARY}
+         ${FOUNDATION_LIBRARY}
+         ${IOKIT_LIBRARY}
+diff --git a/cmake/dependencies/macos.cmake b/cmake/dependencies/macos.cmake
+index 4a027ef..de7d14a 100644
+--- a/cmake/dependencies/macos.cmake
++++ b/cmake/dependencies/macos.cmake
+@@ -7,6 +7,7 @@ FIND_LIBRARY(AUDIO_UNIT_LIBRARY AudioUnit)
+ FIND_LIBRARY(AV_FOUNDATION_LIBRARY AVFoundation)
+ FIND_LIBRARY(CORE_AUDIO_LIBRARY CoreAudio)
+ FIND_LIBRARY(CORE_MEDIA_LIBRARY CoreMedia)
++FIND_LIBRARY(SCREEN_CAPTURE_KIT_LIBRARY ScreenCaptureKit REQUIRED)
+ FIND_LIBRARY(CORE_VIDEO_LIBRARY CoreVideo)
+ FIND_LIBRARY(FOUNDATION_LIBRARY Foundation)
+ FIND_LIBRARY(IOKIT_LIBRARY IOKit)
+diff --git a/src/platform/macos/av_video.h b/src/platform/macos/av_video.h
+index 88d8b1c..cc7e14d 100644
+--- a/src/platform/macos/av_video.h
++++ b/src/platform/macos/av_video.h
+@@ -1,116 +1,69 @@
+-/**
+- * @file src/platform/macos/av_video.h
+- * @brief Declarations for video capture on macOS.
+- */
++// SPDX-License-Identifier: GPL-3.0-only
+ #pragma once
+-
+-// platform includes
+-#import <AVFoundation/AVFoundation.h>
+ #import <CoreGraphics/CoreGraphics.h>
++#import <CoreMedia/CoreMedia.h>
++#import <ScreenCaptureKit/ScreenCaptureKit.h>
++#import <VideoToolbox/VideoToolbox.h>
++
++/** @brief Native stream boundary, also used by deterministic ownership tests. */
++@protocol ClipRelayCaptureStream <NSObject>
++- (BOOL)addStreamOutput:(id<SCStreamOutput>)output type:(SCStreamOutputType)type sampleHandlerQueue:(dispatch_queue_t)queue error:(NSError **)error;
++- (BOOL)removeStreamOutput:(id<SCStreamOutput>)output type:(SCStreamOutputType)type error:(NSError **)error;
++- (void)startCaptureWithCompletionHandler:(void (^)(NSError *))handler;
++- (void)stopCaptureWithCompletionHandler:(void (^)(NSError *))handler;
++@end
+ 
+-/**
+- * @brief One bounded latest-frame mailbox, independently owned by a capture loop.
+- *
+- * AVFoundation callbacks only retain the latest sample. Image conversion and
+- * encoding stay on the caller's capture thread. Stop detaches the delegate and
+- * drains its serial queue before releasing any pending sample or output.
+- */
+-@interface AVVideoFrameSource: NSObject <AVCaptureVideoDataOutputSampleBufferDelegate> {
++/** @brief One independently cancellable stream and bounded latest-frame mailbox. */
++@interface AVVideoFrameSource: NSObject <SCStreamOutput> {
+ @private
+-  AVCaptureVideoDataOutput *_output;  ///< Output retained until queue cleanup.
+-  dispatch_queue_t _queue;  ///< Serial system callback queue owned by this source.
+-  dispatch_semaphore_t _ready;  ///< Signals a pending frame or cancellation.
+-  NSLock *_frameLock;  ///< Protects the pending frame and stopped flag.
+-  NSLock *_stopLock;  ///< Serializes external stop and queue draining.
+-  CMSampleBufferRef _sample;  ///< Latest retained frame; at most one is queued.
+-  BOOL _stopped;  ///< Cancellation barrier for future frame delivery.
++  id<ClipRelayCaptureStream> _stream;
++  dispatch_queue_t _queue;
++  dispatch_semaphore_t _ready;
++  NSLock *_frameLock;
++  NSLock *_stopLock;
++  CMSampleBufferRef _sample;
++  SCContentFilter *_filter;
++  SCStreamConfiguration *_configuration;
++  BOOL _idle;
++  BOOL _observedImage;
++  BOOL _snapshotPending;
++  NSTimeInterval _lastSnapshot;
++  uint64_t _epoch;
++  OSType _outputPixelFormat;
++  VTPixelTransferSessionRef _transfer;
++  CVPixelBufferPoolRef _pixels;
++  NSLock *_conversionLock;
++  BOOL _stopped;
+ }
+-
+-/** @brief Output registered with the owner's AVFoundation session. */
+-@property (nonatomic, readonly) AVCaptureVideoDataOutput *output;
+-
+-/**
+- * @brief Attach a bounded mailbox to an output's serial callback queue.
+- * @param output Output configured by the owner before session registration.
+- * @return Owned frame source, or nil when allocation fails.
+- */
+-- (id)initWithOutput:(AVCaptureVideoDataOutput *)output;
+-
+-/**
+- * @brief Take the newest retained sample using a monotonic dispatch deadline.
+- * @param deadline Absolute dispatch deadline, including DISPATCH_TIME_NOW.
+- * @return Owned sample to CFRelease, or nil on timeout/cancellation.
+- */
++@property (nonatomic, readonly) id<ClipRelayCaptureStream> stream;
++@property (nonatomic, readonly) dispatch_queue_t queue;
++/** @brief Start with a bounded wait; failure detaches the callback and stops the stream. */
++- (id)initWithStream:(id<ClipRelayCaptureStream>)stream;
++- (id)initWithStream:(id<ClipRelayCaptureStream>)stream filter:(SCContentFilter *)filter configuration:(SCStreamConfiguration *)configuration;
++- (id)initWithStream:(id<ClipRelayCaptureStream>)stream filter:(SCContentFilter *)filter configuration:(SCStreamConfiguration *)configuration outputPixelFormat:(OSType)format;
++/** @brief Take one owned real sample, or NULL on timeout or cancellation. */
+ - (CMSampleBufferRef)copyNextFrameBefore:(dispatch_time_t)deadline;
+-
+-/**
+- * @brief Cancel delivery, wake the reader and drain the callback queue.
+- * @details Called by the owner, never from this source's callback queue.
+- */
++/** @brief Cancel and drain callbacks. Call outside the source's callback queue. */
+ - (void)stop;
+ @end
+ 
+-/**
+- * @brief AVFoundation video capture controller used by the macOS backend.
+- */
+-@interface AVVideo: NSObject
+-
+-/**
+- * @brief Display ID property.
+- */
++/** @brief ScreenCaptureKit capture controller; AVVideo name preserves the platform ABI. */
++@interface AVVideo: NSObject {
++  SCContentFilter *_captureFilter;
++  SCStreamConfiguration *_captureConfiguration;
++}
+ @property (nonatomic, assign) CGDirectDisplayID displayID;
+-/**
+- * @brief Min frame duration property.
+- */
+ @property (nonatomic, assign) CMTime minFrameDuration;
+-/**
+- * @brief Pixel format property.
+- */
+ @property (nonatomic, assign) OSType pixelFormat;
+-/**
+- * @brief Frame width property.
+- */
+ @property (nonatomic, assign) int frameWidth;
+-/**
+- * @brief Frame height property.
+- */
+ @property (nonatomic, assign) int frameHeight;
+-
+-/**
+- * @brief Capture session that owns the active AVFoundation inputs and outputs.
+- */
+-@property (nonatomic, assign) AVCaptureSession *session;
+-/**
+- * @brief Independently owned frame sources registered with the session.
+- */
+ @property (nonatomic, assign) NSMutableArray<AVVideoFrameSource *> *frameSources;
+-
+-/**
+- * @brief Initialize AVFoundation capture for a display and frame rate.
+- *
+- * @param displayID Display ID.
+- * @param frameRate Frame rate.
+- * @return Initialized AVVideo instance, or nil on failure.
+- */
+ - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate;
+-
+-/**
+- * @brief Set frame width frame height.
+- *
+- * @param frameWidth Frame width.
+- * @param frameHeight Frame height.
+- */
+ - (void)setFrameWidth:(int)frameWidth frameHeight:(int)frameHeight;
+-/**
+- * @brief Register a new independently cancellable capture output.
+- * @return Owned source; the caller must stopCapture: and release it.
+- */
++/** @brief Owned stream factory. Test overrides never request screen access. */
++- (id<ClipRelayCaptureStream>)newStreamExcludingWindows:(NSArray<SCWindow *> *)windows;
+ - (AVVideoFrameSource *)newCapture;
+-
+-/**
+- * @brief Remove only the specified output after its callbacks have drained.
+- * @param source Source returned by newCapture; repeated stops are harmless.
+- */
++/** @brief Exclude only native SCWindow objects selected by the local owner. */
++- (AVVideoFrameSource *)newCaptureExcludingWindows:(NSArray<SCWindow *> *)windows;
+ - (void)stopCapture:(AVVideoFrameSource *)source;
+-
+ @end
+diff --git a/src/platform/macos/av_video.m b/src/platform/macos/av_video.m
+index 17c21ac..dd0428b 100644
+--- a/src/platform/macos/av_video.m
++++ b/src/platform/macos/av_video.m
+@@ -1,211 +1,344 @@
+-/**
+- * @file src/platform/macos/av_video.m
+- * @brief Definitions for video capture on macOS.
+- */
+-// local includes
++// SPDX-License-Identifier: GPL-3.0-only
+ #import "av_video.h"
+ 
+-@implementation AVVideoFrameSource
+-@synthesize output = _output;
++/** @brief Heap-owned reply: late system completions never touch an expired stack. */
++@interface ClipRelayCaptureReply: NSObject {
++  NSLock *_lock;
++  dispatch_semaphore_t _ready;
++  id _value;
++  BOOL _finished;
++  BOOL _abandoned;
++  BOOL _success;
++}
++- (BOOL)complete:(id)value success:(BOOL)success;
++- (BOOL)wait;
++- (id)value;
++@end
+ 
+-- (id)initWithOutput:(AVCaptureVideoDataOutput *)output {
+-  self = [super init];
+-  if (!self) {
+-    return nil;
++@implementation ClipRelayCaptureReply
++- (id)init {
++  if ((self = [super init])) {
++    _lock = [[NSLock alloc] init];
++    _ready = dispatch_semaphore_create(0);
+   }
+-  _output = [output retain];
++  return self;
++}
++- (BOOL)complete:(id)value success:(BOOL)success {
++  [_lock lock];
++  BOOL accepted = !_abandoned && !_finished;
++  if (accepted) {
++    _value = [value retain];
++    _success = success;
++    _finished = YES;
++    dispatch_semaphore_signal(_ready);
++  }
++  [_lock unlock];
++  return accepted;
++}
++- (BOOL)wait {
++  dispatch_semaphore_wait(_ready, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
++  [_lock lock];
++  BOOL result = _finished && _success;
++  _abandoned = !_finished;
++  [_lock unlock];
++  return result;
++}
++- (id)value {
++  [_lock lock];
++  id result = [[_value retain] autorelease];
++  [_lock unlock];
++  return result;
++}
++- (void)dealloc {
++  [_value release];
++  [_lock release];
++  dispatch_release(_ready);
++  [super dealloc];
++}
++@end
++
++@interface AVVideoFrameSource ()
++- (void)acceptImage:(CMSampleBufferRef)sample epoch:(uint64_t)epoch;
++@end
++
++@implementation AVVideoFrameSource
++@synthesize stream = _stream;
++@synthesize queue = _queue;
++
++- (id)initWithStream:(id<ClipRelayCaptureStream>)stream {
++  return [self initWithStream:stream filter:nil configuration:nil];
++}
++- (id)initWithStream:(id<ClipRelayCaptureStream>)stream filter:(SCContentFilter *)filter configuration:(SCStreamConfiguration *)configuration {
++  return [self initWithStream:stream filter:filter configuration:configuration outputPixelFormat:configuration.pixelFormat];
++}
++- (id)initWithStream:(id<ClipRelayCaptureStream>)stream filter:(SCContentFilter *)filter configuration:(SCStreamConfiguration *)configuration outputPixelFormat:(OSType)format {
++  if (!(self = [super init])) return nil;
++  _stream = [stream retain];
++  _filter = [filter retain];
++  _configuration = [configuration retain];
++  _epoch = 1;
++  _outputPixelFormat = format;
++  _conversionLock = [[NSLock alloc] init];
+   _frameLock = [[NSLock alloc] init];
+   _stopLock = [[NSLock alloc] init];
+   _ready = dispatch_semaphore_create(0);
+   dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
+   _queue = dispatch_queue_create("cliprelay.video.frames", qos);
+-  [_output setSampleBufferDelegate:self queue:_queue];
++  if (format && configuration.pixelFormat != format) {
++    NSDictionary *attributes = @{
++      (NSString *)kCVPixelBufferPixelFormatTypeKey: @(format),
++      (NSString *)kCVPixelBufferWidthKey: @(configuration.width),
++      (NSString *)kCVPixelBufferHeightKey: @(configuration.height),
++      (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{},
++    };
++    if (VTPixelTransferSessionCreate(kCFAllocatorDefault, &_transfer) != noErr ||
++        CVPixelBufferPoolCreate(kCFAllocatorDefault, NULL, (CFDictionaryRef)attributes, &_pixels) != kCVReturnSuccess) {
++      [self release];
++      return nil;
++    }
++  }
++  NSError *error = nil;
++  if (!stream || ![_stream addStreamOutput:self type:SCStreamOutputTypeScreen sampleHandlerQueue:_queue error:&error]) {
++    [self release];
++    return nil;
++  }
++  ClipRelayCaptureReply *reply = [[ClipRelayCaptureReply alloc] init];
++  [_stream startCaptureWithCompletionHandler:^(NSError *failure) {
++    if (![reply complete:nil success:failure == nil] && !failure) {
++      // A start that completes after our deadline must not resurrect capture.
++      [stream stopCaptureWithCompletionHandler:^(NSError *ignored) {}];
++    }
++  }];
++  BOOL started = [reply wait];
++  [reply release];
++  if (!started) {
++    [self stop];
++    [self release];
++    return nil;
++  }
+   return self;
+ }
+ 
+-- (void)captureOutput:(AVCaptureOutput *)captureOutput
+-  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+-         fromConnection:(AVCaptureConnection *)connection {
+-  if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer) || !CMSampleBufferGetImageBuffer(sampleBuffer)) {
+-    return;
+-  }
++- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
++  if ((id)stream != _stream || type != SCStreamOutputTypeScreen || !sampleBuffer || !CMSampleBufferIsValid(sampleBuffer)) return;
++  CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, NO);
++  if (!attachments || CFArrayGetCount(attachments) == 0) return;
++  NSDictionary *metadata = (NSDictionary *)CFArrayGetValueAtIndex(attachments, 0);
++  NSNumber *status = metadata[SCStreamFrameInfoStatus];
++  if (![status isKindOfClass:[NSNumber class]]) return;
++  [_frameLock lock];
++  if (status.integerValue != SCFrameStatusIdle) ++_epoch;
++  _idle = status.integerValue == SCFrameStatusIdle && _observedImage;
++  [_frameLock unlock];
++  // Status notifications never become images or refresh a recovery deadline.
++  if (status.integerValue != SCFrameStatusComplete) return;
++  [self acceptImage:sampleBuffer epoch:0];
++}
++
++- (void)acceptImage:(CMSampleBufferRef)sampleBuffer epoch:(uint64_t)epoch {
++  if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer) || !CMSampleBufferDataIsReady(sampleBuffer) || !CMSampleBufferGetImageBuffer(sampleBuffer)) return;
+   [_frameLock lock];
+   CMSampleBufferRef old = NULL;
+-  if (!_stopped) {
++  if (!_stopped && (epoch == 0 || (epoch == _epoch && _idle))) {
++    _observedImage = YES;
+     old = _sample;
+-    _sample = (CMSampleBufferRef) CFRetain(sampleBuffer);
+-    if (!old) {
+-      dispatch_semaphore_signal(_ready);
+-    }
++    _sample = (CMSampleBufferRef)CFRetain(sampleBuffer);
++    if (!old) dispatch_semaphore_signal(_ready);
+   }
+   [_frameLock unlock];
+-  if (old) {
+-    CFRelease(old);
+-  }
++  if (old) CFRelease(old);
+ }
+ 
+ - (CMSampleBufferRef)copyNextFrameBefore:(dispatch_time_t)deadline {
+   [_frameLock lock];
+   BOOL stopped = _stopped;
++  uint64_t epoch = _epoch;
++  NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
++  BOOL snapshot = !stopped && _idle && !_sample && !_snapshotPending && _filter && now - _lastSnapshot >= 0.5;
++  if (snapshot) {
++    _snapshotPending = YES;
++    _lastSnapshot = now;
++  }
+   [_frameLock unlock];
+-  if (stopped || dispatch_semaphore_wait(_ready, deadline) != 0) {
+-    return NULL;
++  if (snapshot) {
++    // Static SCK streams may send no further full images. Request a real new
++    // screenshot through the same exclusion filter, never replay old pixels.
++    // At most one request is outstanding; late completion retains self and is
++    // rejected by acceptImage after stop. The caller still has its own deadline.
++    [SCScreenshotManager captureSampleBufferWithFilter:_filter configuration:_configuration completionHandler:^(CMSampleBufferRef sample, NSError *error) {
++      if (!error) [self acceptImage:sample epoch:epoch];
++      [_frameLock lock];
++      _snapshotPending = NO;
++      [_frameLock unlock];
++    }];
+   }
++  if (stopped || dispatch_semaphore_wait(_ready, deadline) != 0) return NULL;
+   [_frameLock lock];
+   CMSampleBufferRef result = _sample;
+   _sample = NULL;
+   [_frameLock unlock];
++  if (result && _transfer) {
++    // ScreenCaptureKit's supported ten-bit capture format is l10r. Preserve
++    // the encoder's existing P010 contract using VideoToolbox on the consumer
++    // thread; the system callback only ever updates the bounded mailbox.
++    [_conversionLock lock];
++    CVPixelBufferRef pixels = NULL;
++    CMVideoFormatDescriptionRef description = NULL;
++    CMSampleBufferRef converted = NULL;
++    NSDictionary *limit = @{(NSString *)kCVPixelBufferPoolAllocationThresholdKey: @8};
++    if (CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, _pixels, (CFDictionaryRef)limit, &pixels) == kCVReturnSuccess &&
++        VTPixelTransferSessionTransferImage(_transfer, CMSampleBufferGetImageBuffer(result), pixels) == noErr &&
++        CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixels, &description) == noErr) {
++      CMSampleTimingInfo timing;
++      if (CMSampleBufferGetSampleTimingInfo(result, 0, &timing) == noErr)
++        CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, pixels, description, &timing, &converted);
++    }
++    if (description) CFRelease(description);
++    if (pixels) CFRelease(pixels);
++    [_conversionLock unlock];
++    CFRelease(result);
++    result = converted;
++  }
+   return result;
+ }
+ 
+ - (void)stop {
+   [_stopLock lock];
+   [_frameLock lock];
+-  if (!_stopped) {
+-    _stopped = YES;
+-    dispatch_semaphore_signal(_ready);
+-  }
++  BOOL first = !_stopped;
++  _stopped = YES;
+   CMSampleBufferRef old = _sample;
+   _sample = NULL;
++  if (first) dispatch_semaphore_signal(_ready);
+   [_frameLock unlock];
+-  [_output setSampleBufferDelegate:nil queue:nil];
+-  // The callback never calls stop or waits for its owner. Once this barrier
+-  // finishes, no callback can retain another frame or touch released state.
+-  if (_queue) {
+-    dispatch_sync(_queue, ^ {});
+-  }
+-  if (old) {
+-    CFRelease(old);
++  if (first && _stream) {
++    NSError *error = nil;
++    [_stream removeStreamOutput:self type:SCStreamOutputTypeScreen error:&error];
++    ClipRelayCaptureReply *reply = [[ClipRelayCaptureReply alloc] init];
++    [_stream stopCaptureWithCompletionHandler:^(NSError *failure) {
++      [reply complete:nil success:failure == nil];
++    }];
++    [reply wait];
++    [reply release];
+   }
++  // No callback waits for stop, so this is a real cancellation barrier.
++  if (_queue) dispatch_sync(_queue, ^{});
++  if (old) CFRelease(old);
+   [_stopLock unlock];
+ }
+ 
+ - (void)dealloc {
+   [self stop];
+-  [_output release];
++  [_stream release];
++  [_filter release];
++  [_configuration release];
++  if (_transfer) { VTPixelTransferSessionInvalidate(_transfer); CFRelease(_transfer); }
++  if (_pixels) CFRelease(_pixels);
++  [_conversionLock release];
+   [_frameLock release];
+   [_stopLock release];
+-  if (_ready) {
+-    dispatch_release(_ready);
+-  }
+-  if (_queue) {
+-    dispatch_release(_queue);
+-  }
++  if (_ready) dispatch_release(_ready);
++  if (_queue) dispatch_release(_queue);
+   [super dealloc];
+ }
+-
+ @end
+ 
+ @implementation AVVideo
+-
+ - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
+-  self = [super init];
+-  if (!self) {
+-    return nil;
+-  }
+-
++  if (!(self = [super init])) return nil;
+   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+-  if (!mode) {
++  if (!mode || frameRate < 1 || frameRate > 1000) {
++    if (mode) CFRelease(mode);
+     [self release];
+     return nil;
+   }
+-
+   self.displayID = displayID;
+   self.pixelFormat = kCVPixelFormatType_32BGRA;
+-  self.frameWidth = (int) CGDisplayModeGetPixelWidth(mode);
+-  self.frameHeight = (int) CGDisplayModeGetPixelHeight(mode);
++  self.frameWidth = (int)CGDisplayModeGetPixelWidth(mode);
++  self.frameHeight = (int)CGDisplayModeGetPixelHeight(mode);
+   self.minFrameDuration = CMTimeMake(1, frameRate);
+-  self.session = [[AVCaptureSession alloc] init];
+   self.frameSources = [[NSMutableArray alloc] init];
+-
+   CFRelease(mode);
++  return self;
++}
+ 
+-  AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
+-  [screenInput setMinFrameDuration:self.minFrameDuration];
+-
+-  if (screenInput && [self.session canAddInput:screenInput]) {
+-    [self.session addInput:screenInput];
+-  } else {
+-    [screenInput release];
+-    [self release];
++- (id<ClipRelayCaptureStream>)newStreamExcludingWindows:(NSArray<SCWindow *> *)windows {
++  if (!CGPreflightScreenCaptureAccess() || !windows || self.frameWidth < 1 || self.frameHeight < 1) return nil;
++  ClipRelayCaptureReply *reply = [[ClipRelayCaptureReply alloc] init];
++  [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO completionHandler:^(SCShareableContent *content, NSError *error) {
++    [reply complete:content success:content != nil && error == nil];
++  }];
++  if (![reply wait]) {
++    [reply release];
+     return nil;
+   }
+-  [screenInput release];
+-
+-  return self;
++  SCShareableContent *content = [reply value];
++  SCDisplay *selected = nil;
++  for (SCDisplay *display in content.displays) {
++    if (display.displayID == self.displayID) selected = display;
++  }
++  if (!selected) {
++    [reply release];
++    return nil;
++  }
++  SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:selected excludingWindows:windows];
++  SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
++  configuration.width = self.frameWidth;
++  configuration.height = self.frameHeight;
++  configuration.pixelFormat = self.pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ? kCVPixelFormatType_ARGB2101010LEPacked : self.pixelFormat;
++  configuration.minimumFrameInterval = self.minFrameDuration;
++  configuration.queueDepth = 3;
++  configuration.showsCursor = YES;
++  configuration.capturesAudio = NO;
++  configuration.scalesToFit = YES;
++  configuration.preservesAspectRatio = YES;
++  SCStream *stream = [[SCStream alloc] initWithFilter:filter configuration:configuration delegate:nil];
++  [_captureFilter release];
++  [_captureConfiguration release];
++  _captureFilter = filter;
++  _captureConfiguration = configuration;
++  [reply release];
++  return (id<ClipRelayCaptureStream>)stream;
+ }
+ 
+-- (void)dealloc {
+-  NSArray *sources = [self.frameSources copy];
+-  for (AVVideoFrameSource *source in sources) {
+-    [self stopCapture:source];
++- (AVVideoFrameSource *)newCapture {
++  return [self newCaptureExcludingWindows:@[]];
++}
++- (AVVideoFrameSource *)newCaptureExcludingWindows:(NSArray<SCWindow *> *)windows {
++  @synchronized(self) {
++    id<ClipRelayCaptureStream> stream = [self newStreamExcludingWindows:windows];
++    if (!stream) return nil;
++    AVVideoFrameSource *source = [[AVVideoFrameSource alloc] initWithStream:stream filter:_captureFilter configuration:_captureConfiguration outputPixelFormat:self.pixelFormat];
++    [stream release];
++    if (source) [self.frameSources addObject:source];
++    return source;
+   }
+-  [sources release];
+-  [self.frameSources release];
+-  [self.session stopRunning];
+-  [self.session release];
+-  [super dealloc];
+ }
+-
+ - (void)setFrameWidth:(int)frameWidth frameHeight:(int)frameHeight {
+   @synchronized(self) {
+     self.frameWidth = frameWidth;
+     self.frameHeight = frameHeight;
+   }
+ }
+-
+-- (AVVideoFrameSource *)newCapture {
+-  @synchronized(self) {
+-    AVCaptureVideoDataOutput *videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+-
+-    [videoOutput setVideoSettings:@{
+-      (NSString *) kCVPixelBufferPixelFormatTypeKey: [NSNumber numberWithUnsignedInt:self.pixelFormat],
+-      (NSString *) kCVPixelBufferWidthKey: [NSNumber numberWithInt:self.frameWidth],
+-      (NSString *) kCVPixelBufferHeightKey: [NSNumber numberWithInt:self.frameHeight],
+-      (NSString *) AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
+-    }];
+-
+-    AVVideoFrameSource *source = [[AVVideoFrameSource alloc] initWithOutput:videoOutput];
+-    if (!source || ![self.session canAddOutput:videoOutput]) {
+-      [source release];
+-      [videoOutput release];
+-      return nil;
+-    }
+-    [self.session beginConfiguration];
+-    [self.session addOutput:videoOutput];
+-    [self.frameSources addObject:source];
+-    [self.session commitConfiguration];
+-    [videoOutput release];
+-    if (![self.session isRunning]) {
+-      [self.session startRunning];
+-    }
+-    return source;
+-  }
+-}
+-
+ - (void)stopCapture:(AVVideoFrameSource *)source {
+-  if (!source) {
+-    return;
+-  }
++  if (!source) return;
+   @synchronized(self) {
+-    if (![self.frameSources containsObject:source]) {
+-      return;
+-    }
++    if (![self.frameSources containsObject:source]) return;
+     [source retain];
+   }
+   [source stop];
+   @synchronized(self) {
+-    if ([self.frameSources containsObject:source]) {
+-      [self.session beginConfiguration];
+-      [self.session removeOutput:source.output];
+-      [self.frameSources removeObject:source];
+-      [self.session commitConfiguration];
+-      if (self.frameSources.count == 0) {
+-        [self.session stopRunning];
+-      }
+-    }
++    [self.frameSources removeObjectIdenticalTo:source];
+   }
+   [source release];
+ }
+-
++- (void)dealloc {
++  NSArray *sources = [self.frameSources copy];
++  for (AVVideoFrameSource *source in sources) [self stopCapture:source];
++  [sources release];
++  [self.frameSources release];
++  [_captureFilter release];
++  [_captureConfiguration release];
++  [super dealloc];
++}
+ @end

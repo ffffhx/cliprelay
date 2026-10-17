@@ -20,13 +20,16 @@ function fixture(t,arch='arm64'){
   t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   const source=path.join(directory,'source');fs.mkdirSync(source);
   const sources=[...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
-    'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch',
+    'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch','macos-capture.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h','macos_capture_test.mm',
     'macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp','cliprelay_owner.h','owner_test.cpp','macos_owner_test.cpp'].map(name=>'engine/sunshine/'+name),'scripts/prepare_sunshine.py',
-    'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py'];
+    'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py',
+    'scripts/test_macos_capture.py','scripts/test_macos_capture.mm'];
   const manifest={protocol:1,platform:'darwin',arch,sourceCommit:commit,
     upstreamCommit:'63d35f702ee9e362e43263742981836ec0710384',libvirtualhidCommit:'53e1a949fc0784af716b782ddfa6c647cafd1f05',
     executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,permissionCommand:1,stateCommand:1,ownerCommand:1,bundleIdentifier:'com.cliprelay.host-engine',files:{},symlinks:{},sourceHashes:{},
+    captureBackend:'screencapturekit',captureTests:['native-owned-mask-exclusion-and-source-isolation','native-static-desktop-current-images',
+      'native-mask-removal-restores-unfiltered-image','native-NV12-P010-geometry'],
     nativeMinimumOS:{[EXECUTABLE]:'14.2.0'},nativeDependencies:{[EXECUTABLE]:['/usr/lib/libSystem.B.dylib']},inputTests:[]};
   function put(name,data){const file=path.join(source,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,data);manifest.files[name]=sha(data);}
   for(const name of sources){const data=fs.readFileSync(path.join(root,name));put('source/'+name,data);manifest.sourceHashes[name]=sha(data);
@@ -37,6 +40,11 @@ function fixture(t,arch='arm64'){
     'dependency-licenses/icu/license.html','dependency-licenses/miniupnpc/LICENSE','dependency-licenses/openssl/LICENSE.txt',
     'dependency-licenses/opus/COPYING'])put(name,Buffer.from('fixture'));
   put(EXECUTABLE,native({arch}));
+  const captureSources=['engine/sunshine/control.patch','engine/sunshine/macos-control.patch','engine/sunshine/macos-capture.patch',
+    'scripts/test_macos_capture.py','scripts/test_macos_capture.mm'];
+  put('capture-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,architecture:arch,sourceCommit:commit,
+    upstreamCommit:manifest.upstreamCommit,binarySha256:'1'.repeat(64),cases:manifest.captureTests,
+    sourceHashes:Object.fromEntries(captureSources.map(name=>[name,manifest.sourceHashes[name]]))})));
   put('permission-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,applicationStateUnchanged:true,nativeRequestsExecuted:false,
     cases:['status','invalid-action','misplaced-option','repeat-status'],lastStatus:{protocol:1,screenRecording:false,inputControl:false,requested:'none'}})));
   put('state-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,defaultStateUnchanged:true,stateFilesPrivate:true,homeChanged:false,nativeRequestsExecuted:false,hostStarted:false,
@@ -49,7 +57,7 @@ function fixture(t,arch='arm64'){
 test('stages a complete pinned engine without starting it or replacing a destination',t=>{
   const f=fixture(t),pin=f.pin(),destination=path.join(f.directory,'staged');
   const result=stage(f.source,destination,pin);
-  assert.equal(result.inputTests.length,46);assert.equal(verify(destination,pin).sourceCommit,commit);
+  assert.equal(result.inputTests.length,51);assert.equal(verify(destination,pin).sourceCommit,commit);
   assert.deepEqual(fs.readFileSync(path.join(destination,EXECUTABLE)),fs.readFileSync(path.join(f.source,EXECUTABLE)));
   assert.throws(()=>stage(f.source,destination,pin),{code:'EEXIST'});
 });
@@ -119,5 +127,13 @@ test('owner evidence must include parent death with an open pipe and complete cl
   const f=fixture(t),receipt=JSON.parse(fs.readFileSync(path.join(f.source,'owner-tests.json'),'utf8'));
   for(const patch of [{ownedChildrenReaped:false},{hostStarted:true},{cases:receipt.cases.filter(name=>name!=='parent-crash-pipe-held')}]){
     f.put('owner-tests.json',Buffer.from(JSON.stringify({...receipt,...patch})));assert.throws(()=>verify(f.source,f.pin()));
+  }
+});
+
+test('capture evidence must prove actual filtered pixels for the exact source and architecture',t=>{
+  const f=fixture(t),receipt=JSON.parse(fs.readFileSync(path.join(f.source,'capture-tests.json'),'utf8'));
+  for(const patch of [{passed:false},{sourceCommit:'8'.repeat(40)},{architecture:'x86_64'},
+    {cases:receipt.cases.slice(1)},{sourceHashes:{...receipt.sourceHashes,'engine/sunshine/macos-capture.patch':'0'.repeat(64)}}]){
+    f.put('capture-tests.json',Buffer.from(JSON.stringify({...receipt,...patch})));assert.throws(()=>verify(f.source,f.pin()));
   }
 });

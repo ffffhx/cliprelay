@@ -3,9 +3,9 @@ name: Sunshine macOS Host Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', '.github/workflows/sunshine-macos.yml']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', 'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm', '.github/workflows/sunshine-macos.yml']
   pull_request:
-    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', '.github/workflows/sunshine-macos.yml']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', 'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm', '.github/workflows/sunshine-macos.yml']
   workflow_dispatch:
 
 permissions:
@@ -44,6 +44,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
+      - name: Verify native capture pixels and window exclusion
+        run: python3 scripts/test_macos_capture.py --source sunshine-source --output capture-tests.json
       - name: Install build tools
         run: brew install cmake ninja pkgconf
       - uses: actions/cache@v4
@@ -98,7 +100,7 @@ jobs:
           python3 scripts/package_sunshine_macos.py \
             --source sunshine-source --build sunshine-build --artifact engine-artifact \
             --arch '${{ matrix.arch }}' --test-results input-tests.xml \
-            --dependencies mac-dependencies/install --build-log engine-build.log
+            --dependencies mac-dependencies/install --build-log engine-build.log --capture-results capture-tests.json
           tar -czf 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' engine-artifact
           shasum -a 256 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' > 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz.sha256'
       - uses: actions/upload-artifact@v4
@@ -108,5 +110,6 @@ jobs:
             sunshine-cliprelay-macos-*.tar.gz
             sunshine-cliprelay-macos-*.tar.gz.sha256
             input-tests.xml
+            capture-tests.json
           if-no-files-found: error
           retention-days: 14

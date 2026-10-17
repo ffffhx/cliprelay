@@ -5,15 +5,18 @@ const UPSTREAM='63d35f702ee9e362e43263742981836ec0710384';
 const HID='53e1a949fc0784af716b782ddfa6c647cafd1f05';
 const SOURCES=[
   ...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
-    'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch',
+    'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch','macos-capture.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h',
     'macos_capture_test.mm','macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp','cliprelay_owner.h','owner_test.cpp','macos_owner_test.cpp'].map(name=>'engine/sunshine/'+name),
   'scripts/prepare_sunshine.py','scripts/package_sunshine_macos.py',
-  'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py'
+  'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py',
+  'scripts/test_macos_capture.py','scripts/test_macos_capture.mm'
 ];
+const CAPTURE_CASES=['native-owned-mask-exclusion-and-source-isolation','native-static-desktop-current-images',
+  'native-mask-removal-restores-unfiltered-image','native-NV12-P010-geometry'];
 const REQUIRED=[EXECUTABLE,'Sunshine.app/Contents/Info.plist','Sunshine.app/Contents/Resources/assets/apps.json',
   'Sunshine.app/Contents/Resources/assets/web/index.html','SUNSHINE-LICENSE','LIBVIRTUALHID-LICENSE',
-  'input-tests.xml','permission-tests.json','state-tests.json','owner-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
+  'input-tests.xml','capture-tests.json','permission-tests.json','state-tests.json','owner-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
   'dependency-licenses/icu/LICENSE','dependency-licenses/icu/license.html','dependency-licenses/miniupnpc/LICENSE',
   'dependency-licenses/openssl/LICENSE.txt','dependency-licenses/opus/COPYING',...SOURCES.map(name=>'source/'+name)];
 const hash=data=>crypto.createHash('sha256').update(data).digest('hex');
@@ -76,7 +79,8 @@ function verify(directory,pin){
       !object(manifest.files) || !sameKeys(manifest.sourceHashes,SOURCES) || !sameKeys(manifest.symlinks,[]) ||
       !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
-      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==46 || new Set(manifest.inputTests).size!==46)reject();
+      manifest.captureBackend!=='screencapturekit' || JSON.stringify(manifest.captureTests)!==JSON.stringify(CAPTURE_CASES) ||
+      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==51 || new Set(manifest.inputTests).size!==51)reject();
   const expected=Object.keys(manifest.files);
   if(expected.length>4096 || REQUIRED.some(name=>!Object.hasOwn(manifest.files,name)))reject();
   const names=new Set(['manifest.json']);
@@ -145,6 +149,13 @@ function verify(directory,pin){
       JSON.stringify(owner.cases)!==JSON.stringify(['missing-owner','malformed-owner','different-parent','init-parent','null-input','file-input',
         'tcp-input','datagram-input','malformed-command','pipe-check','unix-stream-check','pipe-eof','unexpected-input',
         'parent-exit-pipe-held','parent-crash-pipe-held','full-host-missing-owner']))reject();
+  const capture=JSON.parse(readFile(path.join(root,'capture-tests.json'),65536));
+  const captureSources=['engine/sunshine/control.patch','engine/sunshine/macos-control.patch','engine/sunshine/macos-capture.patch',
+    'scripts/test_macos_capture.py','scripts/test_macos_capture.mm'];
+  if(capture.protocol!==1 || capture.passed!==true || capture.architecture!==pin.arch || capture.sourceCommit!==pin.commit ||
+      capture.upstreamCommit!==UPSTREAM || !/^[a-f0-9]{64}$/.test(capture.binarySha256) ||
+      JSON.stringify(capture.cases)!==JSON.stringify(CAPTURE_CASES) || !sameKeys(capture.sourceHashes,captureSources) ||
+      captureSources.some(name=>capture.sourceHashes[name]!==manifest.sourceHashes[name]))reject();
   return manifest;
 }
 function stage(source,destination,pin){

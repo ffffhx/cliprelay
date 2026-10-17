@@ -61,7 +61,7 @@ def check_deployment(data, target):
     return '.'.join(map(str, actual))
 
 
-def package(source, build, artifact, arch, test_results, dependencies, build_log):
+def package(source, build, artifact, arch, test_results, dependencies, build_log, capture_results):
     if platform.system() != 'Darwin' or platform.machine() != arch:
         raise RuntimeError('Package verification requires the matching native macOS runner')
     root = Path(__file__).resolve().parents[1]
@@ -164,18 +164,30 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     tracked = ['engine/sunshine/' + name for name in [
         'upstream.json', 'control.patch', 'cliprelay_control.h', 'cliprelay_audio.h',
         'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md',
-        'macos-control.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp',
+        'macos-control.patch', 'macos-capture.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp',
         'cliprelay_capture.h', 'macos_capture_test.mm', 'cliprelay_permissions.h', 'permissions_test.cpp',
         'cliprelay_state.h', 'state_test.cpp', 'cliprelay_owner.h', 'owner_test.cpp', 'macos_owner_test.cpp']]
     tracked += ['engine/sunshine/macos-dependencies.json', 'scripts/prepare_sunshine.py',
                 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py',
-                '.github/workflows/sunshine-macos.yml', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py']
+                '.github/workflows/sunshine-macos.yml', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py',
+                'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm']
     source_hashes = {}
     for name in tracked:
         dest = artifact / 'source' / name
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / name, dest)
         source_hashes[name] = hashlib.sha256(dest.read_bytes()).hexdigest()
+    from test_macos_capture import CASES
+    capture = json.loads(capture_results.read_text())
+    capture_sources = ['engine/sunshine/' + name for name in ['control.patch', 'macos-control.patch', 'macos-capture.patch']]
+    capture_sources += ['scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm']
+    if (capture.get('protocol') != 1 or capture.get('passed') is not True or capture.get('architecture') != arch
+            or capture.get('sourceCommit') != command('git', '-C', str(root), 'rev-parse', 'HEAD')
+            or capture.get('upstreamCommit') != pinned['commit'] or capture.get('cases') != CASES
+            or capture.get('sourceHashes') != {name: source_hashes[name] for name in capture_sources}
+            or not re.fullmatch('[a-f0-9]{64}', capture.get('binarySha256', ''))):
+        raise RuntimeError('Native capture evidence does not match the packaged source')
+    shutil.copyfile(capture_results, artifact / 'capture-tests.json')
     shutil.copyfile(source / 'LICENSE', artifact / 'SUNSHINE-LICENSE')
     shutil.copyfile(source / 'third-party/libvirtualhid/LICENSE.md', artifact / 'LIBVIRTUALHID-LICENSE')
     shutil.copyfile(test_results, artifact / 'input-tests.xml')
@@ -201,8 +213,10 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'permissionCommand': 1,
         'stateCommand': 1,
         'ownerCommand': 1,
+        'captureBackend': 'screencapturekit',
+        'captureTests': CASES,
         'bundleIdentifier': plist['CFBundleIdentifier'],
-        'scope': 'Internal engine build only. No ClipRelay host UI, permission grant, capture, network listener or hardware streaming acceptance.',
+        'scope': 'Internal engine build with fixture-owned native capture and exclusion checks. No installed privacy lease, host UI, permission grant, encoded client or hardware streaming acceptance.',
         'files': {}, 'symlinks': {}
     }
     for path in sorted(artifact.rglob('*')):
@@ -218,8 +232,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    for option in ['source', 'build', 'artifact', 'test-results', 'dependencies', 'build-log']:
+    for option in ['source', 'build', 'artifact', 'test-results', 'dependencies', 'build-log', 'capture-results']:
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], required=True)
     args = parser.parse_args()
-    package(args.source, args.build, args.artifact, args.arch, args.test_results, args.dependencies, args.build_log)
+    package(args.source, args.build, args.artifact, args.arch, args.test_results, args.dependencies, args.build_log, args.capture_results)
