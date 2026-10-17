@@ -51,3 +51,48 @@ test('mode change loads the trusted page and preserves the native-selected devic
   let prevented=false;editor.webContents.emit('will-navigate',{preventDefault(){prevented=true;}});
   assert.equal(prevented,true);
 });
+
+test('preload presents the host error without Electron IPC implementation details',async()=>{
+  let api,reply=async()=>({ok:true});
+  const electron={contextBridge:{exposeInMainWorld:(_name,value)=>{api=value;}},ipcRenderer:{invoke:(...args)=>reply(...args)}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../electron/mac/preload.cjs'),'utf8'),{require:()=>electron});
+  assert.equal((await api.request('initial')).ok,true);
+  reply=async()=>{throw new Error("Error invoking remote method 'mac:request': Error: 请输入电脑的 IP 或主机名");};
+  await assert.rejects(api.request('pair-start'),error=>error.message==='请输入电脑的 IP 或主机名');
+  reply=async()=>{throw new Error('电脑已撤销授权，请重新配对');};
+  await assert.rejects(api.request('paired-send'),error=>error.message==='电脑已撤销授权，请重新配对');
+});
+
+test('pairing validation stays beside its own form through status polling and clears on retry',async()=>{
+  class Element{
+    constructor(tag){this.tag=tag;this.children=[];this.textContent='';this.value='';}
+    append(...nodes){this.children.push(...nodes);}setAttribute(name,value){this[name]=value;}
+    replaceChildren(...nodes){this.children=nodes;}
+    all(predicate){return this.children.flatMap(node=>[...(predicate(node)?[node]:[]),...node.all(predicate)]);}
+  }
+  const root=new Element('main');let poll,fail=true;
+  const state={hosts:[],pairing:{state:'idle'},viewer:{available:true},network:{available:true,computers:[],pairing:{state:'idle'}}};
+  const context={document:{createElement:tag=>new Element(tag)},window:{addEventListener(){}},setInterval:fn=>{poll=fn;},clearInterval(){}};
+  for(const name of ['mountFiles','mountBitrate','mountDisplays','mountInput','mountPrivacy','mountAudioMute','mountSessionLock','mountWake','mountClipboard'])context[name]=()=>({render(){}});
+  const source=fs.readFileSync(path.join(__dirname,'../electron/mac/paired-ui.js'),'utf8').replace(/^import .+;\r?$/gm,'').replace('export async function mount','async function mount');
+  vm.runInNewContext(source+'\nthis.mount=mount;',context);
+  await context.mount(root,{request:async action=>{
+    if(fail && action==='pair-start')throw new Error('请输入电脑的 IP 或主机名');
+    if(fail && action==='network-claim')throw new Error('请输入 8 位数字配对码');
+    return state;
+  }},()=>{},state);
+  const [localForm,networkForm]=root.all(e=>e.tag==='form');
+  const settle=()=>new Promise(resolve=>setImmediate(resolve));
+  localForm.onsubmit({preventDefault(){}});await settle();await poll();
+  const localMessage=root.children[root.children.indexOf(localForm)+2];
+  assert.equal(localMessage.textContent,'请输入电脑的 IP 或主机名');
+  networkForm.onsubmit({preventDefault(){}});await settle();await poll();
+  const networkSection=root.children.find(e=>e.children.includes(networkForm));
+  const networkMessage=networkSection.children[networkSection.children.indexOf(networkForm)+2];
+  assert.equal(networkMessage.textContent,'请输入 8 位数字配对码');
+  assert.equal(localMessage.textContent,'请输入电脑的 IP 或主机名');
+  fail=false;localForm.onsubmit({preventDefault(){}});await settle();
+  assert.equal(localMessage.textContent,'');
+  networkForm.onsubmit({preventDefault(){}});await settle();
+  assert.equal(networkMessage.textContent,'外网配对后，无需填写电脑 IP。');
+});

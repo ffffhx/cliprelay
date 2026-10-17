@@ -8,7 +8,7 @@ import {mountSessionLock} from './session-lock-ui.js';
 import {mountWake} from './wake-ui.js';
 import {mountClipboard} from './clipboard-ui.js';
 export async function mount(root,api,close,initial){
-  root.className='paired';let state=initial,closed=false,busy=false,feedbackText='',feedbackUntil=0;
+  root.className='paired';let state=initial,closed=false,busy=false,feedbackText='',feedbackUntil=0,pairError='',networkError='';
   const element=(tag,text)=>{const item=document.createElement(tag);if(text)item.textContent=text;return item;};
   root.append(element('h1',state.desktopOnly?'控制其他电脑':'配对电脑 · 加密收发'),element('p',state.desktopOnly?'选择电脑打开远程桌面，也可发送当前剪贴板中的文本或图片。':'选择一台电脑收发。Ctrl+Alt+G 发送选中文本；也可主动发送当前剪贴板中的文本或图片。'));
   const list=element('div');list.className='paired-hosts';list.setAttribute('aria-label','已配对电脑');root.append(list);
@@ -36,12 +36,12 @@ export async function mount(root,api,close,initial){
   const port=field('远控端口','48789','48789');port.inputMode='numeric';port.maxLength=5;
   const name=field('电脑名称（可选）','例如：家里的电脑');name.maxLength=128;
   const pair=element('button','发起配对'),cancelPair=element('button','取消配对');cancelPair.type='button';cancelPair.onclick=()=>run(async()=>{state=await api.request('pair-cancel');render();});
-  form.append(pair,cancelPair);form.onsubmit=event=>{event.preventDefault();run(async()=>{state=await api.request('pair-start',{address:address.value,port:Number(port.value),label:name.value});render();});};root.append(form);
+  form.append(pair,cancelPair);form.onsubmit=event=>{event.preventDefault();pairError='';run(async()=>{state=await api.request('pair-start',{address:address.value,port:Number(port.value),label:name.value});render();},error=>{pairError=error.message;});};root.append(form);
   const code=element('strong'),message=element('p');code.className='verification';code.setAttribute('aria-live','polite');message.setAttribute('aria-live','polite');root.append(code,message);
   const networkSection=element('section');networkSection.append(element('h2','外网配对'),element('p','在被控电脑的“手机远控 → 外网配对”中生成 8 位配对码。先允许这台电脑接入，再核对远控安全标识。'));
   const networkForm=element('form'),networkCode=element('input');networkCode.placeholder='8 位数字配对码';networkCode.ariaLabel=networkCode.placeholder;networkCode.inputMode='numeric';networkCode.maxLength=8;networkCode.autocomplete='off';
   const networkPair=element('button','连接电脑'),networkCancel=element('button','取消确认');networkCancel.type='button';networkCancel.onclick=()=>change('network-cancel');
-  networkForm.append(networkCode,networkPair,networkCancel);networkForm.onsubmit=event=>{event.preventDefault();change('network-claim',{code:networkCode.value.trim()});};
+  networkForm.append(networkCode,networkPair,networkCancel);networkForm.onsubmit=event=>{event.preventDefault();networkError='';change('network-claim',{code:networkCode.value.trim()},error=>{networkError=error.message;});};
   const networkVerification=element('strong'),networkMessage=element('p'),networkList=element('div');networkVerification.className='verification';networkVerification.setAttribute('aria-live','polite');networkMessage.setAttribute('aria-live','polite');
   networkSection.append(networkForm,networkVerification,networkMessage,networkList);root.append(networkSection);
   const footer=element('div');footer.className='actions';const done=element('button','关闭');done.onclick=close;footer.append(done);root.append(footer);
@@ -78,11 +78,11 @@ export async function mount(root,api,close,initial){
     const network=state.network || {available:false,computers:[],pairing:{state:'idle'}},external=network.pairing;
     const networkBusy=['preparing','approval','connecting','waiting'].includes(external.state);
     const pairing=['preparing','waiting'].includes(state.pairing.state);pair.disabled=busy || pairing || networkBusy;cancelPair.disabled=!pairing;
-    code.textContent=state.pairing.verification || '';message.textContent=state.pairing.message || '';
+    code.textContent=state.pairing.verification || '';message.textContent=pairError || state.pairing.message || '';
     networkPair.disabled=busy || pairing || networkBusy || !network.available;networkCancel.disabled=!networkBusy;networkCode.disabled=networkBusy;
     networkVerification.textContent=external.verification || '';
     const networkErrors={NETWORK_REVOKED:'电脑已撤销外网授权，请重新配对。',NETWORK_PEER_CHANGED:'电脑身份改变，连接已停止。',CANCELLED:'确认已取消；已保存的电脑仍保留。',TIMEOUT:'等待确认超时，请重试。',NETWORK_NOT_READY:'电脑尚未连通，上线后可继续安全配对。',PAIRING_CODE_EXPIRED:'配对码已失效，请在电脑重新生成。',HOST_CERT_CHANGED:'电脑证书改变，请核实身份后重新配对。',KEYCHAIN_UNAVAILABLE:'系统无法解锁配对信息。'};
-    networkMessage.textContent=!network.available?'当前安装尚未包含外网连接组件':external.state==='error'?(networkErrors[external.error] || '配对未完成，请检查网络和电脑端版本后重试。'):({idle:'外网配对后，无需填写电脑 IP。',preparing:'正在发送配对请求…',approval:'核对上方 6 位标识，在电脑端允许接入。',connecting:'正在连接电脑…',waiting:'核对上方安全标识，在电脑端确认远控配对。',paired:'配对完成，可在上方选择电脑打开远程桌面。'})[external.state];
+    networkMessage.textContent=networkError || (!network.available?'当前安装尚未包含外网连接组件':external.state==='error'?(networkErrors[external.error] || '配对未完成，请检查网络和电脑端版本后重试。'):({idle:'外网配对后，无需填写电脑 IP。',preparing:'正在发送配对请求…',approval:'核对上方 6 位标识，在电脑端允许接入。',connecting:'正在连接电脑…',waiting:'核对上方安全标识，在电脑端确认远控配对。',paired:'配对完成，可在上方选择电脑打开远程桌面。'})[external.state]);
     const networkKey=JSON.stringify([network.computers,networkBusy,pairing,busy]);if(networkKey!==networkRoster){networkRoster=networkKey;networkList.replaceChildren();
       for(const computer of network.computers){
         const row=element('div');row.className='paired-host';const info=element('div');
@@ -93,8 +93,8 @@ export async function mount(root,api,close,initial){
       }
     }
   }
-  async function run(action){if(busy)return;busy=true;send.disabled=true;pair.disabled=true;try{await action();}catch(error){feedback(error.message);}finally{busy=false;render();}}
-  function change(action,data){return run(async()=>{state=await api.request(action,data);render();});}
+  async function run(action,onError=error=>feedback(error.message)){if(busy)return;busy=true;send.disabled=true;pair.disabled=true;try{await action();}catch(error){onError(error);}finally{busy=false;render();}}
+  function change(action,data,onError){return run(async()=>{state=await api.request(action,data);render();},onError);}
   let polling=false;const timer=setInterval(async()=>{if(closed || polling || busy)return;polling=true;try{state=await api.request('paired-status');render();}catch{}finally{polling=false;}},750);
   window.addEventListener('beforeunload',()=>{closed=true;clearInterval(timer);},{once:true});render();
 }
