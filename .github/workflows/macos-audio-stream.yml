@@ -50,11 +50,16 @@ jobs:
         run: python3 scripts/build_macos_audio_fixture.py
       - name: Verify actual audio capture, encrypted Opus and changing tones
         run: node scripts/test_macos_host_audio.cjs .tools/audio-stream-mac audio-stream-development.json
+      - name: Build private process output observer
+        run: python3 scripts/build_macos_audio_observer.py
+      - name: Verify output observer isolates one owned process
+        run: node scripts/test_macos_audio_observer.cjs audio-observer-development.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ClipRelay-Audio-Stream-Development-${{ matrix.arch }}
           path: |
             audio-stream-development.json
+            audio-observer-development.json
             .tools/audio-stream-components.json
           if-no-files-found: error
