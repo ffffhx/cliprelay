@@ -153,11 +153,17 @@ public final class RemotePrivacy implements AutoCloseable {
         try {
             PrivacyState state = new PrivacyState(http.privacyRequest(PrivacyState.request("renew", instance, stream, lease)));
             if (!state.confirms(lease)) throw new IllegalStateException();
-        } catch (Exception e) { stop(); main.post(() -> { dismiss(); toast(R.string.privacy_restored); }); }
+        } catch (Exception e) {
+            boolean restored = stop();
+            main.post(() -> { dismiss(); toast(restored ? R.string.privacy_restored : R.string.privacy_unavailable); });
+        }
     }
-    private void stop() {
-        if (lease == null) return;
-        try { http.privacyRequest(PrivacyState.request("stop", instance, stream, lease)); } catch (Exception ignored) { /* host expires independently */ }
+    private boolean stop() {
+        if (lease == null) return true;
+        try {
+            PrivacyState state = new PrivacyState(http.privacyRequest(PrivacyState.request("stop", instance, stream, lease)));
+            return !state.active;
+        } catch (Exception ignored) { return false; /* host expires independently; recovery is unconfirmed */ }
         finally { lease = null; instance = null; stream = 0; }
     }
     private void startAudio() {
