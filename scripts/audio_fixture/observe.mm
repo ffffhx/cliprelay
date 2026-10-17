@@ -2,6 +2,7 @@
 // the callback. This fixture is not shipped and does not change default devices.
 #import <Foundation/Foundation.h>
 #import <CoreAudio/CoreAudio.h>
+#import <CoreAudio/AudioHardwareTapping.h>
 #import <CoreAudio/CATapDescription.h>
 #include <atomic>
 #include <chrono>
