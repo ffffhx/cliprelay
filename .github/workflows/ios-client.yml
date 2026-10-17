@@ -1,0 +1,32 @@
+name: iOS Client Development Build
+on:
+  push:
+    branches: ['codex/desktop-client-input-*']
+    paths: ['ios-app/**', 'scripts/build_ios_client.py', '.github/workflows/ios-client.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphonesimulator, iphoneos]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: moonlight-stream/moonlight-ios
+          ref: 02dc9780496eeeac6d01c8bbdccb8b6fe71ef28a
+          path: ios-source
+          submodules: recursive
+      - name: Build fixed native iOS foundation without device signing
+        run: python3 scripts/build_ios_client.py --sdk '${{ matrix.sdk }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-iOS-Development-${{ matrix.sdk }}
+          path: .tools/ios-client-${{ matrix.sdk }}/
+          if-no-files-found: warn
