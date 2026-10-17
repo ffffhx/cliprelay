@@ -11,7 +11,6 @@
 #include <libproc.h>
 #include <limits.h>
 #include <initializer_list>
-#include <mach-o/dyld-interposing.h>
 #include <mutex>
 #include <sys/stat.h>
 #include <time.h>
@@ -126,6 +125,16 @@ static int queueAudio(uint32_t device, const void* bytes, uint32_t length) {
     }
     return result;
 }
-DYLD_INTERPOSE(openDevice, SDL_OpenAudioDevice)
-DYLD_INTERPOSE(closeDevice, SDL_CloseAudioDevice)
-DYLD_INTERPOSE(queueAudio, SDL_QueueAudio)
+// Apple's dyld OSS header is not installed in the public macOS SDK. Emit its
+// documented replacement/original pointer pairs directly for x86_64 and arm64.
+// https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/dyld-interposing.h
+#if __has_feature(ptrauth_intrinsics)
+#error This CI fixture targets ordinary arm64 or x86_64, not arm64e.
+#endif
+struct Interposition { const void* replacement; const void* original; };
+__attribute__((used, section("__DATA,__interpose,interposing")))
+static const Interposition interpositions[] = {
+    {reinterpret_cast<const void*>(&openDevice), reinterpret_cast<const void*>(&SDL_OpenAudioDevice)},
+    {reinterpret_cast<const void*>(&closeDevice), reinterpret_cast<const void*>(&SDL_CloseAudioDevice)},
+    {reinterpret_cast<const void*>(&queueAudio), reinterpret_cast<const void*>(&SDL_QueueAudio)}
+};
