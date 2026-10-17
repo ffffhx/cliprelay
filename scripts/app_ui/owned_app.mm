@@ -188,25 +188,26 @@ static void open_screen_settings(){
     @"attempted":@(attempted),@"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action)});
 }
 static NSDictionary *screen_row(AXUIElementRef node,unsigned depth,unsigned &budget,std::chrono::steady_clock::time_point end){
-  NSMutableArray *buttons=[NSMutableArray array],*candidates=[NSMutableArray array];BOOL label=NO;
-  if(depth>16||!budget||std::chrono::steady_clock::now()>=end)return @{@"label":@NO,@"buttons":buttons,@"candidates":candidates};
+  NSMutableArray *buttons=[NSMutableArray array],*candidates=[NSMutableArray array];BOOL label=NO,foreign=NO;
+  if(depth>16||!budget||std::chrono::steady_clock::now()>=end)return @{@"label":@NO,@"foreign":@YES,@"buttons":buttons,@"candidates":candidates};
   --budget;AXUIElementSetMessagingTimeout(node,.05);
   NSString *role=text(node,kAXRoleAttribute);
   label=[role isEqualToString:@"AXStaticText"]&&[text(node,kAXValueAttribute) isEqualToString:@"ClipRelay"];
+  foreign=[role isEqualToString:@"AXStaticText"]&&!label&&text(node,kAXValueAttribute).length>0;
   if([role isEqualToString:@"AXCheckBox"])[buttons addObject:(__bridge id)node];
   CFTypeRef children=nullptr;
   if(AXUIElementCopyAttributeValue(node,kAXChildrenAttribute,&children)==kAXErrorSuccess&&children){
     if(CFGetTypeID(children)==CFArrayGetTypeID())for(id child in (__bridge NSArray *)children){
       if(CFGetTypeID((__bridge CFTypeRef)child)!=AXUIElementGetTypeID())continue;
       NSDictionary *part=screen_row((__bridge AXUIElementRef)child,depth+1,budget,end);
-      label|=[part[@"label"] boolValue];[buttons addObjectsFromArray:part[@"buttons"]];[candidates addObjectsFromArray:part[@"candidates"]];
+      label|=[part[@"label"] boolValue];foreign|=[part[@"foreign"] boolValue];[buttons addObjectsFromArray:part[@"buttons"]];[candidates addObjectsFromArray:part[@"candidates"]];
     }
     CFRelease(children);
   }
   // Select the smallest subtree containing exactly this app and one toggle.
   // Sibling rows for bash or the runner's own permission never qualify.
-  if(!candidates.count&&label&&buttons.count==1)[candidates addObject:buttons[0]];
-  return @{@"label":@(label),@"buttons":buttons,@"candidates":candidates};
+  if(!candidates.count&&label&&!foreign&&buttons.count==1)[candidates addObject:buttons[0]];
+  return @{@"label":@(label),@"foreign":@(foreign),@"buttons":buttons,@"candidates":candidates};
 }
 static void screen_setting(bool grant){
   const BOOL trusted=AXIsProcessTrusted();NSMutableArray *candidates=[NSMutableArray array];unsigned budget=350;
