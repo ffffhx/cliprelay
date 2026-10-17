@@ -13,8 +13,17 @@ assert not target.exists()
 shutil.copytree(root/'windows/electron/mac', target, symlinks=True)
 engine = json.loads((root/'.tools/audio-engine/selection.json').read_bytes())
 companion = root/'.tools/audio-companion'
-pin = {'commit': os.environ['GITHUB_SHA'],
-       'manifestSha256': hashlib.sha256((companion/'manifest.json').read_bytes()).hexdigest()}
+companion_selection = root/'.tools/audio-companion-download/selection.json'
+selected_companion = None
+if companion_selection.exists():
+    selected_companion = json.loads(companion_selection.read_bytes())
+    companion = Path(selected_companion['directory']).resolve(strict=True)
+    assert companion == root/'.tools/audio-companion-download/host-companion'
+    assert selected_companion['audioWorkerCasesVerified'] == 4
+    pin = selected_companion['pin']
+else:
+    pin = {'commit': os.environ['GITHUB_SHA'],
+           'manifestSha256': hashlib.sha256((companion/'manifest.json').read_bytes()).hexdigest()}
 for kind, source, selection in [('host-engine', Path(engine['directory']), engine['pin']),
                                 ('host-companion', companion, pin)]:
     subprocess.run(['node', '-e',
@@ -23,6 +32,8 @@ for kind, source, selection in [('host-engine', Path(engine['directory']), engin
     (target/(kind+'-pin.json')).write_text(json.dumps(selection)+'\n', encoding='utf-8')
 receipt = {'scope': 'Development components; no complete application acceptance',
            'testCommit': os.environ['GITHUB_SHA'], 'engine': engine, 'companion': pin}
+if selected_companion:
+    receipt['companionSelection'] = selected_companion
 viewer_selection=root/'.tools/audio-viewer-download/selection.json'
 if viewer_selection.exists():
     viewer=json.loads(viewer_selection.read_bytes())

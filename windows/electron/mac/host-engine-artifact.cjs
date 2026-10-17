@@ -3,6 +3,7 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const EXECUTABLE='Sunshine.app/Contents/MacOS/Sunshine';
 const UPSTREAM='63d35f702ee9e362e43263742981836ec0710384';
 const HID='53e1a949fc0784af716b782ddfa6c647cafd1f05';
+const AUDIO_SOURCE='engine/sunshine/macos-audio.patch';
 const PRIVACY_SOURCES=["engine/sunshine/control.patch","engine/sunshine/macos-control.patch","engine/sunshine/macos-capture.patch","engine/sunshine/macos-privacy.patch","engine/sunshine/cliprelay_control.h","engine/sunshine/cliprelay_input.h","engine/sunshine/cliprelay_owner.h","engine/sunshine/cliprelay_privacy.h","engine/sunshine/cliprelay_privacy_macos.mm","engine/sunshine/privacy_test.cpp","scripts/test_macos_privacy_filter.py","scripts/test_macos_privacy_filter.mm","scripts/privacy_fixture/main.go","network/go.mod","network/go.sum","LICENSE","network/hostprivacy/controller.go","network/hostprivacy/controller_test.go","network/hostprivacy/serve.go","network/hostprivacy/native_other.go","network/hostprivacy/native_darwin.go","network/hostprivacy/native_darwin.h","network/hostprivacy/native_darwin.m"];
 const PRIVACY_CASES=["native-foreign-process-window-and-layout-rejected","native-worker-mask-excluded-from-new-capture","native-release-retains-filter-while-worker-lives","native-confirmed-death-removes-filter-and-reconstructs-source"];
 const PRIVACY_POLICY_CASES=["filtered-source-and-real-encoded-generation-required","expiry-and-replays-retain-filter-without-renewal","foreign-and-malformed-native-bindings-are-rejected","unknown-worker-does-not-prove-restoration","source-and-observer-replays-cannot-claim-new-readiness","stream-display-and-capture-changes-withdraw-authorization","release-requires-confirmed-original-worker-death","concurrent-late-renewal-cannot-revive-expired-filter"];
@@ -75,11 +76,13 @@ function verify(directory,pin){
   const raw=readFile(path.join(root,'manifest.json'),1024*1024);
   if(hash(raw)!==pin.manifestSha256)reject();
   const manifest=JSON.parse(raw);
+  const audioSource=object(manifest.sourceHashes)&&Object.hasOwn(manifest.sourceHashes,AUDIO_SOURCE);
+  const sources=audioSource?[...SOURCES,AUDIO_SOURCE]:SOURCES;
   if(manifest.protocol!==1 || manifest.platform!=='darwin' || manifest.arch!==pin.arch || manifest.sourceCommit!==pin.commit ||
       manifest.upstreamCommit!==UPSTREAM || manifest.libvirtualhidCommit!==HID || manifest.executable!==EXECUTABLE ||
       manifest.deploymentTarget!=='14.2' || manifest.signature!=='ad-hoc' || manifest.notarized!==false ||
       manifest.permissionCommand!==1 || manifest.stateCommand!==1 || manifest.ownerCommand!==1 || manifest.bundleIdentifier!=='com.cliprelay.host-engine' ||
-      !object(manifest.files) || !sameKeys(manifest.sourceHashes,SOURCES) || !sameKeys(manifest.symlinks,[]) ||
+      !object(manifest.files) || !sameKeys(manifest.sourceHashes,sources) || !sameKeys(manifest.symlinks,[]) ||
       !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
       manifest.privacyFilter!==1 || JSON.stringify(manifest.privacyFilterTests)!==JSON.stringify(PRIVACY_CASES) ||
@@ -87,6 +90,7 @@ function verify(directory,pin){
       !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==51 || new Set(manifest.inputTests).size!==51)reject();
   const expected=Object.keys(manifest.files);
   if(expected.length>4096 || REQUIRED.some(name=>!Object.hasOwn(manifest.files,name)))reject();
+  if(audioSource&&!Object.hasOwn(manifest.files,'source/'+AUDIO_SOURCE))reject();
   const names=new Set(['manifest.json']);
   for(const name of expected){
     const folded=name.toLowerCase().normalize('NFC');

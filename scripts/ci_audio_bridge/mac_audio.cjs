@@ -18,6 +18,7 @@ function create({role,root,runner,env,machine,peerMachine}){
   const {HostController}=moduleAt('host-controller'),{HostState,configuration}=moduleAt('host-state');
   const {HostEngine}=moduleAt('host-engine'),{HostCompanion}=moduleAt('host-companion'),{HostSession}=moduleAt('host-session');
   const {pairHost}=moduleAt('pairing'),{jsonRequest}=moduleAt('paired-transport'),{envelope,executable}=moduleAt('stream-viewer');
+  const audioMute=moduleAt('audio-mute-protocol');
   const ownedFile=name=>{const file=fs.realpathSync(process.env[name]);assert.ok(file.startsWith(runner+path.sep));assert.equal(file,process.env[name]);return file;};
   const toneFile=ownedFile('CLIPRELAY_AUDIO_TONE_FIXTURE'),observerFile=ownedFile('CLIPRELAY_AUDIO_OBSERVER');
   const faultFile=ownedFile('CLIPRELAY_AUDIO_FAULT_FIXTURE');
@@ -49,12 +50,13 @@ function create({role,root,runner,env,machine,peerMachine}){
     path.join(os.homedir(),'Library/Application Support/ClipRelay/host'),path.join(os.homedir(),'.config/ClipRelay'),
     path.join(os.homedir(),'Library/Preferences/local.cliprelay.ClipRelay Stream.plist')];
   const before=protectedPaths.map(snapshot),base=fs.mkdtempSync(path.join(runner,'cliprelay-isolated-audio-'));
-  const children=[],nativeChildren=[];
-  let hostState,engineChild,host,tone,viewer,tap,started=false,finished=false,stage='prepare';
+  const children=[],nativeChildren=[],ownedWorkers=new Map();
+  let hostState,engineChild,companionChild,host,tone,viewer,tap,started=false,finished=false,stage='prepare';
   const report={protocol:1,testCommit:process.env.GITHUB_SHA,role,architecture:process.arch,machine,peerMachine,passed:false,
     sourceAndViewerShareAudioEnvironment:false,feedbackIsolationVerified:false,actualQtOutputObserved:false,
     physicalPlaybackVerified:false,productionPermissionUIVerified:false,videoPresentationVerified:false,
     microphoneInjectionVerified:false,automaticRecoveryVerified:false,productionRelayVerified:false,audioSamplesSaved:false,
+    leasedHostMuteStreamVerified:false,controllerMuteUIVerified:false,
     runtimeInstrumentation:role==='viewer'?'owned-viewer-only-dyld-one-real-SDL-queue-error':'none',
     observer:{...observerFixture,path:undefined},tone:{...toneFixture,files:Object.fromEntries(
       Object.entries(toneFixture.files).map(([name,value])=>[name,{sha256:value.sha256}]))},
@@ -113,6 +115,23 @@ function create({role,root,runner,env,machine,peerMachine}){
       const file=path.join('/tmp',name),s=fs.lstatSync(file);return s.isFile()&&!s.isSymbolicLink()&&s.uid===process.getuid()&&s.size<4*1024*1024?safeLines(fs.readFileSync(file,'utf8')):[];
     })}catch{}
   }
+  function processInventory(){
+    // Read only PID, parent, birth time and executable; never command arguments.
+    return execFileSync('/bin/ps',['-ww','-axo','pid=,ppid=,lstart=,comm='],{encoding:'utf8',timeout:3000,maxBuffer:1024*1024})
+      .split('\n').flatMap(line=>{
+        const match=line.match(/^\s*(\d+)\s+(\d+)\s+((?:\S+\s+){4}\S+)\s+(.+)$/);
+        return match?[{pid:Number(match[1]),parent:Number(match[2]),born:match[3].replace(/\s+/g,' '),file:match[4]}]:[];
+      });
+  }
+  function observeMuteWorkers(){
+    assert.ok(companionChild&&companionChild.exitCode===null&&companionChild.signalCode===null);
+    const file=path.join(directory,'host-companion/runtime/cliprelay-host-network');
+    const workers=processInventory().filter(value=>value.parent===companionChild.pid);
+    assert.ok(workers.length>0&&workers.length<=4,'AUDIO_OWNED_WORKER_MISSING');
+    for(const worker of workers){assert.equal(worker.file,file);ownedWorkers.set(worker.pid,worker)}
+    report.muteWorkerIdentities=[...ownedWorkers.values()].map(({pid,parent,born})=>({pid,parent,born}));
+    return {workers:workers.length};
+  }
   async function startTone(){tone=launch(toneFile);await until(()=>alive(tone),v=>v?.event==='ready');report.routeBefore=(await command(tone)).route}
   const admin=()=>jsonRequest({address:'127.0.0.1',port:48790,path:'/api/cliprelay/displays',method:'GET',identity,
     trust:{cert:hostState.read('cacert.pem',16384).toString('utf8')},headers:{Authorization:hostState.authorization()},timeout:3000,limit:65536});
@@ -125,7 +144,8 @@ function create({role,root,runner,env,machine,peerMachine}){
           'bind_address = 127.0.0.1\nmouse = disabled\nkeyboard = disabled\nstream_audio = enabled\n');return result};
         const launchNative=(file,args,settings)=>{
           const child=spawn(file,args,{...settings,env:{...nativeEnv,...Object.fromEntries(Object.entries(settings.env).filter(([key])=>['CLIPRELAY_HOST_STATE_DIR','CLIPRELAY_HOST_OWNER_PID'].includes(key)))}});
-          nativeChildren.push(child);if(path.basename(file)==='Sunshine')engineChild=child;return child;
+          nativeChildren.push(child);if(path.basename(file)==='Sunshine')engineChild=child;
+          if(path.basename(file)==='cliprelay-host-network')companionChild=child;return child;
         };
         const engine=new HostEngine({directory:path.join(directory,'host-engine'),pin:enginePin,state:hostState,launch:launchNative});
         const companion=new HostCompanion({directory:path.join(directory,'host-companion'),pin:companionPin,state:hostState,launch:launchNative});
@@ -164,6 +184,7 @@ function create({role,root,runner,env,machine,peerMachine}){
       assert.equal(keys,'');const value=await admin();assert.ok(Array.isArray(value.streams));
       assert.ok(value.streams.every(v=>v.owner===report.pairedOwner));return {streams:value.streams.map(v=>({owner:v.owner}))};
     }
+    if(name==='mute-workers'){assert.equal(keys,'');return observeMuteWorkers()}
     if(name==='finish'){
       assert.equal(keys,'');assert.equal((await admin()).streams.length,0);
       report.cases.push('viewer-EOF-releases-native-stream');await finish();finished=true;
@@ -173,7 +194,7 @@ function create({role,root,runner,env,machine,peerMachine}){
   }
   let busy=false;
   async function handle(req,res){
-    if(!/^\/audio\/(start|approve|consent|source|streams|finish)$/.test(req.url)||req.method!=='POST')return false;
+    if(!/^\/audio\/(start|approve|consent|source|streams|mute-workers|finish)$/.test(req.url)||req.method!=='POST')return false;
     assert.equal(busy,false);busy=true;
     try{
       assert.equal(req.headers['transfer-encoding'],undefined);const length=Number(req.headers['content-length']);
@@ -189,6 +210,13 @@ function create({role,root,runner,env,machine,peerMachine}){
   }
   async function finish(){
     await host?.close();
+    if(role==='host'){
+      assert.ok(ownedWorkers.size>0,'AUDIO_WORKER_LIFETIME_NOT_OBSERVED');
+      await until(()=>processInventory().some(value=>{
+        const old=ownedWorkers.get(value.pid);return old&&old.born===value.born&&old.file===value.file;
+      }),value=>!value,5000);
+      report.muteWorkersReaped=true;report.cases.push('owned-audio-worker-descendants-reaped');
+    }
     if(tone&&!tone.exit){await command(tone,'quiet');report.routeAfter=(await command(tone)).route;assert.deepEqual(report.routeAfter,report.routeBefore)}
     await closeChild(tone);assert.deepEqual(tone?.exit,{code:0,signal:null});
     for(const child of nativeChildren)assert.ok(child.exitCode!==null||child.signalCode!==null);
@@ -263,13 +291,47 @@ function create({role,root,runner,env,machine,peerMachine}){
       assert.equal(hash(viewerFile),viewerPin.binarySha256);assert.equal(hash(sdlFile),toneFixture.sdlSha256);
       report.recovery.sameProcessAndPair=true;report.recovery.viewerAndSDLBytesUnchanged=true;
       report.automaticRecoveryVerified=true;report.cases.push('same-native-Session-recovers-one-real-SDL-queue-error-and-fresh-audio-output');
+      // Exercise the production paired endpoint. Its native host guards still
+      // require one owned stream and fresh encoded system-tap audio. This is a
+      // protocol/stream test; the viewer's headless UI has no rendered-frame claim.
+      stage='mute-admission';
+      const muteCall=(op,binding)=>audioMute.request(peer,identity,op,binding);
+      const display=await until(()=>muteCall('displays'),value=>value.phase==='active'&&
+        value.stream?.generation===value.generation&&value.stream.firstFrame>0&&audioMute.safeAudio(value));
+      assert.equal(display.stream.audio.capture,'system-tap');
+      const initialMute=await muteCall('status');assert.ok(initialMute.supported&&!initialMute.active&&!initialMute.recovering);
+      const binding={instance:display.instance,stream:display.stream.id,audioGeneration:display.stream.audio.generation,lease:crypto.randomBytes(16).toString('hex')};
+      const stateReceipt=value=>({...value,lease:undefined,leaseSha256:value.lease?crypto.createHash('sha256').update(value.lease).digest('hex'):''});
+      const requireActive=value=>{assert.ok(value.supported&&value.active&&!value.recovering);assert.equal(value.lease,binding.lease);assert.equal(value.outputs,initialMute.outputs);return stateReceipt(value)};
+      report.mute={binding:{instance:binding.instance,stream:binding.stream,audioGeneration:binding.audioGeneration},
+        capture:display.stream.audio.capture,initial:stateReceipt(initialMute),start:requireActive(await muteCall('start',binding)),observations:[],states:[]};
+      assert.ok((await rpc('mute-workers')).workers>0);
+      for(const [name,hz] of [['low',1000],['high',1600],['quiet',0]]){
+        stage='mute-output-'+name;report.mute.states.push(requireActive(await muteCall('renew',binding)));
+        report.mute.observations.push(await outputPhase(name,hz));report.mute.states.push(requireActive(await muteCall('status')));
+      }
+      stage='mute-explicit-stop';const stopped=await muteCall('stop',binding);
+      assert.ok(stopped.supported&&!stopped.active&&!stopped.recovering);assert.equal(stopped.outputs,initialMute.outputs);
+      report.mute.stopped=stateReceipt(stopped);report.mute.afterStopOutput=await outputPhase('low',1000);
+      report.cases.push('paired-native-host-mute-preserves-fresh-Qt-audio-and-explicit-stop');
+      stage='mute-before-disconnect';binding.lease=crypto.randomBytes(16).toString('hex');
+      report.mute.disconnectStart=requireActive(await muteCall('start',binding));
+      assert.ok((await rpc('mute-workers')).workers>0);
+      report.mute.beforeDisconnectOutput=await outputPhase('high',1600);
+      report.mute.beforeDisconnect=requireActive(await muteCall('renew',binding));
+      assert.ok(report.mute.beforeDisconnect.expiresMs>10000);
       stage='observer-eof';await closeChild(tap);assert.deepEqual(tap.exit,{code:0,signal:null});
       assert.deepEqual(tap.events.at(-1),{event:'closed',stopped:true,ioDestroyed:true,aggregateDestroyed:true,tapDestroyed:true});
       report.observerClosed=tap.events.at(-1);report.cases.push('observer-EOF-releases-private-tap-and-aggregate');
-      stage='viewer-eof';await closeChild(viewer);assert.deepEqual(viewer.exit,{code:0,signal:null});
+      stage='viewer-eof';const disconnectedAt=Date.now();await closeChild(viewer);assert.deepEqual(viewer.exit,{code:0,signal:null});
       report.faultEvents=viewer.faultEvents;
       assert.equal(viewer.faultEvents.at(-1).event,'closed');assert.equal(viewer.faultEvents.at(-1).generation,recovered.generation);
       await until(()=>rpc('streams'),v=>v.streams.length===0);report.cases.push('viewer-EOF-releases-native-stream');
+      stage='mute-disconnect-restoration';const restored=await until(()=>muteCall('status'),value=>!value.active&&!value.recovering,5000);
+      assert.equal(restored.supported,false);assert.equal(restored.outputs,initialMute.outputs);
+      report.mute.afterDisconnect=stateReceipt(restored);report.mute.disconnectRecoveryMs=Date.now()-disconnectedAt;
+      assert.ok(report.mute.disconnectRecoveryMs<6000&&report.mute.disconnectRecoveryMs<report.mute.beforeDisconnect.expiresMs-1000);
+      report.leasedHostMuteStreamVerified=true;report.cases.push('active-host-mute-restores-on-native-stream-disconnect-before-lease-expiry');
       stage='host-finish';assert.deepEqual(await rpc('finish'),{finished:true,routePreserved:true,ownedChildrenReaped:true});
       stage='viewer-finish';await finish();finished=true;report.passed=true;
     }catch(error){diagnostic(error);throw error}
@@ -281,6 +343,10 @@ function create({role,root,runner,env,machine,peerMachine}){
     if(tone&&!tone.exit)try{await command(tone,'quiet')}catch{errors.push('quiet')}
     try{await closeChild(tone)}catch{errors.push('tone')}
     report.exits=children.map(v=>v.exit);report.nativeExits=nativeChildren.map(v=>({code:v.exitCode,signal:v.signalCode}));
+    if(role==='host'&&ownedWorkers.size){
+      report.muteWorkersReaped=!processInventory().some(value=>{const old=ownedWorkers.get(value.pid);return old&&old.born===value.born&&old.file===value.file});
+      if(!report.muteWorkersReaped)errors.push('audio-worker');
+    }
     if(errors.length||report.nativeExits.some(v=>v.code===null&&v.signal===null)){report.cleanupErrors=errors;report.passed=false;throw Error('AUDIO_CLEANUP_FAILED')}
   }
   return {report,run,handle,close,complete:()=>finished};

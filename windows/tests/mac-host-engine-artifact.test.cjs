@@ -73,6 +73,17 @@ test('manifest and source version must match the caller pin',t=>{
   f.manifest.scope='changed';f.pin();assert.throws(()=>verify(f.source,pin));
   f.manifest.bundleIdentifier='dev.lizardbyte.app.Sunshine';assert.throws(()=>verify(f.source,f.pin()));
 });
+test('system tap overlay is admitted only with its exact declared source payload',t=>{
+  const f=fixture(t),name='engine/sunshine/macos-audio.patch',data=fs.readFileSync(path.join(root,name));
+  f.manifest.sourceHashes[name]=sha(data);assert.throws(()=>verify(f.source,f.pin()));
+  f.put('source/'+name,data);assert.equal(verify(f.source,f.pin()).sourceHashes[name],sha(data));
+  fs.appendFileSync(path.join(f.source,'source/'+name),'modified');assert.throws(()=>verify(f.source,f.pin()));
+  f.put('source/'+name,data);f.manifest.sourceHashes[name]='0'.repeat(64);assert.throws(()=>verify(f.source,f.pin()));
+});
+test('unknown source overlays remain rejected',t=>{
+  const f=fixture(t),name='engine/sunshine/unknown.patch',data=Buffer.from('unknown overlay');
+  f.put('source/'+name,data);f.manifest.sourceHashes[name]=sha(data);assert.throws(()=>verify(f.source,f.pin()));
+});
 test('Intel artifacts have their own architecture pin and verified native binary',t=>{
   const f=fixture(t,'x86_64'),pin=f.pin();assert.equal(verify(f.source,pin).arch,'x86_64');
   assert.throws(()=>verify(f.source,{...pin,arch:'arm64'}));
