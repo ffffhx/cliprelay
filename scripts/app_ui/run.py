@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import urllib.request
-from permission_prompt import permission_prompt
+from permission_prompt import permission_prompt,settings_window
 
 assert sys.platform=='darwin' and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('GITHUB_REPOSITORY')=='ffffhx/cliprelay'
 root=Path(__file__).resolve().parents[2];runner=Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
@@ -35,20 +35,21 @@ env={name:os.environ[name] for name in ['PATH','HOME','TMPDIR','RUNNER_TEMP','GI
 assert subprocess.check_output([str(browser),'--version'],env=env,text=True,timeout=5).strip()=='agent-browser 0.34.0'
 name='ui';namespace='crui-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
 permission_probe=os.environ.get('CLIPRELAY_PERMISSION_PROBE','none')
-assert permission_probe in ['none','screen','input','screen-settings','screen-grant']
-grant_screen_permission=permission_probe=='screen-grant'
-open_permission_settings=permission_probe in ['screen-settings','screen-grant']
-if open_permission_settings:permission_probe='screen'
+assert permission_probe in ['none','screen','input','screen-settings','screen-grant','input-settings','input-grant']
+grant_permission=permission_probe.endswith('-grant')
+open_permission_settings=permission_probe.endswith('-settings') or grant_permission
+if open_permission_settings:permission_probe=permission_probe.split('-')[0]
 config=Path.home()/'Library/Application Support/ClipRelay'
 assert not config.exists() and not config.is_symlink(), 'DEFAULT_PROFILE_ALREADY_EXISTS'
 with socket.socket() as reservation:
     reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
 events=queue.Queue();all_events=[];child=None;browser_connected=False;stage='launch';failure=None
 result={'protocol':1,'testCommit':os.environ['GITHUB_SHA'],'run':int(os.environ['GITHUB_RUN_ID']),'architecture':'x64','passed':False,
-        'discoveryOnly':not grant_screen_permission,'productionAudioVerified':False,'permissionGrantedByFixture':False,'keychainVerified':False,
-        'permissionGrantRequested':grant_screen_permission,
+        'discoveryOnly':not grant_permission,'productionAudioVerified':False,'permissionGrantedByFixture':False,'keychainVerified':False,
+        'permissionGrantRequested':grant_permission,
         'permissionProbe':permission_probe,'permissionRequestedByFixture':permission_probe!='none',
         'systemSettingsRequested':open_permission_settings,
+        'settingsOpenedDirectly':open_permission_settings,
         'application':selection,'cases':[],'snapshots':{},'helperSha256':sha(helper),'agentBrowserSha256':sha(browser),
         'agentBrowserVersion':'0.34.0','sources':{str(file.relative_to(root)).replace('\\','/'):sha(file) for file in
         [Path(__file__),Path(__file__).with_name('owned_app.mm'),Path(__file__).with_name('fetch.py'),Path(__file__).with_name('package.json'),
@@ -143,49 +144,39 @@ def probe_permission():
     while time.monotonic()<deadline:
         value=command('system-windows','consent-windows');assert value['owned'] and value['trusted']
         result['permissionRequest']['observations'].append(value)
-        if permission_prompt(value['brokers'],permission_probe):
+        if (settings_window if open_permission_settings else permission_prompt)(value['brokers'],permission_probe):
             observed=True;break
         time.sleep(.5)
-    result['permissionRequest']['systemPromptObserved']=observed
+    result['permissionRequest']['systemPromptObserved']=observed and not open_permission_settings
+    result['permissionRequest']['systemSettingsObserved']=observed and open_permission_settings
     snapshot('host-permissions')
     if not observed:permission_diagnostics()
-    assert observed,'SYSTEM_PERMISSION_PROMPT_NOT_OBSERVED'
-    result['cases'].append('production-renderer-requests-'+permission_probe+'-permission')
+    assert observed,'SYSTEM_SETTINGS_NOT_OBSERVED' if open_permission_settings else 'SYSTEM_PERMISSION_PROMPT_NOT_OBSERVED'
+    result['cases'].append('production-renderer-opens-'+permission_probe+'-system-settings' if open_permission_settings else 'production-renderer-requests-'+permission_probe+'-permission')
     if open_permission_settings:
-        action=command('open-screen-settings','open-screen-settings');result['openScreenSettings']=action
-        assert action['owned'] and action['trusted'] and action['candidates']==1 and action['attempted'], 'SCREEN_SETTINGS_TARGET_INVALID'
-        assert action['pressed'] or action['actionStatus']==-25204, 'SCREEN_SETTINGS_ACTION_FAILED'
-        result['systemSettingsObservations']=[];deadline=time.monotonic()+15;found=False
-        while time.monotonic()<deadline:
-            value=command('system-windows','consent-windows');assert value['owned'] and value['trusted']
-            result['systemSettingsObservations'].append(value)
-            settings=[broker for broker in value['brokers'] if broker['bundle']=='com.apple.systempreferences']
-            content=json.dumps(settings,ensure_ascii=False)
-            if 'ClipRelay' in content and ('Screen' in content or 'screen' in content):found=True;break
-            time.sleep(.5)
-        assert found,'SCREEN_SETTINGS_ROW_NOT_OBSERVED'
-        result['cases'].append('exact-system-screen-dialog-opens-settings')
-        result['screenSettingsRow']=command('screen-setting-row','screen-setting')
-        if grant_screen_permission:
-            action=command('grant-screen','screen-setting');result['screenGrantAction']=action
-            assert action['owned'] and action['trusted'] and action['candidates']==1 and action['checkedBefore']==0 and action['enabled'], 'SCREEN_TOGGLE_INVALID'
-            assert action['attempted'] and (action['pressed'] or action['actionStatus']==-25204), 'SCREEN_TOGGLE_ACTION_FAILED'
-            result['screenGrantObservations']=[];deadline=time.monotonic()+20;granted=False
+        result['permissionSettingsRow']=command(permission_probe+'-setting-row','permission-setting')
+        if grant_permission:
+            action=command('grant-'+permission_probe,'permission-setting');result['permissionGrantAction']=action
+            assert action['owned'] and action['trusted'] and action['candidates']==1 and action['checkedBefore']==0 and action['enabled'], 'PERMISSION_TOGGLE_INVALID'
+            assert action['attempted'] and (action['pressed'] or action['actionStatus']==-25204), 'PERMISSION_TOGGLE_ACTION_FAILED'
+            result['permissionGrantObservations']=[];result['permissionToggleObservations']=[];deadline=time.monotonic()+20;granted=False
             while time.monotonic()<deadline:
                 value=command('system-windows','consent-windows');assert value['owned'] and value['trusted']
-                result['screenGrantObservations'].append(value)
+                result['permissionGrantObservations'].append(value)
+                result['permissionToggleObservations'].append(command(permission_probe+'-setting-row','permission-setting'))
                 snapshot('host-permissions')
                 browser_command('find','role','button','click','--name','重新检查')
                 browser_command('wait','--text','已读取当前系统状态')
                 snapshot('host-permissions');inside=False
                 for line in result['snapshots']['host-permissions']['data']['snapshot'].splitlines():
-                    if 'heading ' in line and 'level=2' in line:inside='"屏幕录制"' in line
+                    if 'heading ' in line and 'level=2' in line:inside='"'+label+'"' in line
                     if inside and 'StaticText "已允许"' in line:granted=True
                 if granted:break
                 time.sleep(.5)
             result['permissionGrantedByFixture']=granted
-            assert granted,'SCREEN_GRANT_NOT_READ_BACK'
-            result['cases'].append('screen-permission-granted-through-system-settings-and-read-back')
+            if not granted:permission_diagnostics()
+            assert granted,'PERMISSION_GRANT_NOT_READ_BACK'
+            result['cases'].append(permission_probe+'-permission-granted-through-system-settings-and-read-back')
 try:
     child=subprocess.Popen([str(helper),str(app),str(port)],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                            text=True,bufsize=1)
@@ -258,7 +249,10 @@ finally:
         assert config.resolve()==config and config.parent==(Path.home()/'Library/Application Support').resolve()
         shutil.rmtree(config);result['ownedProfileRemoved']=not config.exists()
     if cleanup:result['cleanupErrors']=cleanup
-    result['helperEvents']=all_events
+    # System windows are already stored in full under the corresponding phase;
+    # avoid serializing the large inventories twice in the bounded artifact.
+    result['consentEventCount']=sum(v.get('event')=='consent-windows' for v in all_events)
+    result['helperEvents']=[v for v in all_events if v.get('event')!='consent-windows']
     result['passed']=failure is None and not cleanup
     if result['passed']:result['cases'].append('normal-application-quit-and-owned-profile-cleanup')
     report=root/'macos-app-ui.json';report.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')

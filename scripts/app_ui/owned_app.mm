@@ -44,7 +44,7 @@ static void traverse(AXUIElementRef node,unsigned depth,unsigned &budget,NSMutab
                      std::chrono::steady_clock::time_point end){
   if(depth>12||!budget||std::chrono::steady_clock::now()>=end)return;--budget;AXUIElementSetMessagingTimeout(node,.05);
   NSString *role=text(node,kAXRoleAttribute),*title=text(node,kAXTitleAttribute),*description=text(node,kAXDescriptionAttribute);
-  NSString *value=[command isEqualToString:@"windows"]?text(node,kAXValueAttribute):@"";
+  NSString *value=[command isEqualToString:@"windows"]&&![role isEqualToString:@"AXSecureTextField"]?text(node,kAXValueAttribute):@"";
   if(rows.count<60&&(title.length||description.length||value.length))[rows addObject:@{@"role":role,@"title":title,@"description":description,@"value":value,@"depth":@(depth)}];
   BOOL match=NO;
   if([command isEqualToString:@"menu"])match=[role isEqualToString:@"AXMenuBarItem"]&&([title isEqualToString:@"ClipRelay"]||[description isEqualToString:@"ClipRelay"]);
@@ -122,7 +122,15 @@ static void permission_windows(){
     CFTypeRef windows=nullptr;NSMutableArray *rows=[NSMutableArray array],*matches=[NSMutableArray array];
     if(AXUIElementCopyAttributeValue(app,kAXWindowsAttribute,&windows)==kAXErrorSuccess&&windows){
       if(CFGetTypeID(windows)==CFArrayGetTypeID())for(id node in (__bridge NSArray *)windows){
-        if(CFGetTypeID((__bridge CFTypeRef)node)==AXUIElementGetTypeID())traverse((__bridge AXUIElementRef)node,0,budget,rows,matches,@"windows",end);
+        if(CFGetTypeID((__bridge CFTypeRef)node)!=AXUIElementGetTypeID())continue;
+        traverse((__bridge AXUIElementRef)node,0,budget,rows,matches,@"windows",end);
+        CFTypeRef sheets=nullptr;
+        if(AXUIElementCopyAttributeValue((__bridge AXUIElementRef)node,CFSTR("AXSheets"),&sheets)==kAXErrorSuccess&&sheets){
+          if(CFGetTypeID(sheets)==CFArrayGetTypeID())for(id sheet in (__bridge NSArray *)sheets){
+            if(CFGetTypeID((__bridge CFTypeRef)sheet)==AXUIElementGetTypeID())traverse((__bridge AXUIElementRef)sheet,0,budget,rows,matches,@"windows",end);
+          }
+          CFRelease(sheets);
+        }
       }
       CFRelease(windows);
     }
@@ -209,7 +217,7 @@ static NSDictionary *screen_row(AXUIElementRef node,unsigned depth,unsigned &bud
   if(!candidates.count&&label&&!foreign&&buttons.count==1)[candidates addObject:buttons[0]];
   return @{@"label":@(label),@"foreign":@(foreign),@"buttons":buttons,@"candidates":candidates};
 }
-static void screen_setting(bool grant){
+static void permission_setting(bool grant,bool input=false){
   const BOOL trusted=AXIsProcessTrusted();NSMutableArray *candidates=[NSMutableArray array];unsigned budget=350;
   const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);
   if(owned()&&trusted)for(NSRunningApplication *settings in
@@ -220,7 +228,7 @@ static void screen_setting(bool grant){
       if(CFGetTypeID(windows)==CFArrayGetTypeID())for(id window in (__bridge NSArray *)windows){
         if(CFGetTypeID((__bridge CFTypeRef)window)!=AXUIElementGetTypeID())continue;
         AXUIElementRef node=(__bridge AXUIElementRef)window;
-        if(![text(node,kAXTitleAttribute) isEqualToString:@"Screen & System Audio Recording"])continue;
+        if(![text(node,kAXTitleAttribute) isEqualToString:(input?@"Accessibility":@"Screen & System Audio Recording")])continue;
         NSDictionary *row=screen_row(node,0,budget,end);[candidates addObjectsFromArray:row[@"candidates"]];
       }
       CFRelease(windows);
@@ -242,7 +250,7 @@ static void screen_setting(bool grant){
     }
     if(grant&&checked==0&&enabled&&owned()){attempted=YES;action=AXUIElementPerformAction(button,kAXPressAction);}
   }
-  emit(@{@"event":@"screen-setting",@"owned":@(owned()),@"trusted":@(trusted),@"candidates":@(candidates.count),
+  emit(@{@"event":@"permission-setting",@"permission":(input?@"input":@"screen"),@"owned":@(owned()),@"trusted":@(trusted),@"candidates":@(candidates.count),
     @"remainingBudget":@(budget),@"checkedBefore":@(checked),@"enabled":@(enabled),@"grantRequested":@(grant),
     @"attempted":@(attempted),@"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action)});
 }
@@ -323,8 +331,10 @@ int main(int argc,char **argv){
             if([command isEqualToString:@"quit"])close_owned();
             else if([command isEqualToString:@"system-windows"])permission_windows();
             else if([command isEqualToString:@"open-screen-settings"])open_screen_settings();
-            else if([command isEqualToString:@"screen-setting-row"])screen_setting(false);
-            else if([command isEqualToString:@"grant-screen"])screen_setting(true);
+            else if([command isEqualToString:@"screen-setting-row"])permission_setting(false);
+            else if([command isEqualToString:@"grant-screen"])permission_setting(true);
+            else if([command isEqualToString:@"input-setting-row"])permission_setting(false,true);
+            else if([command isEqualToString:@"grant-input"])permission_setting(true,true);
             else if([@[@"inspect",@"menu",@"host",@"paired",@"permissions"] containsObject:command])inspect(command);
             else{emit(@{@"event":@"error",@"code":@"COMMAND_INVALID"});close_owned();}
           });

@@ -1,13 +1,13 @@
 {
   "repository": "ffffhx/cliprelay",
-  "run": 39018206671,
-  "commit": "662cbd315a60eab2789fa55d8a3186c9bec27f19",
-  "artifactId": 12095552990,
+  "run": 39021464747,
+  "commit": "c4586804e392044d8992d2cf61d81c5fcd5083f6",
+  "artifactId": 12097630877,
   "artifactName": "ClipRelay-macOS-x64",
-  "artifactBytes": 255602820,
-  "artifactSha256": "5e9e089868a7714c20f1668841c314035ab3039352918f0c738d088885f607c6",
+  "artifactBytes": 255603293,
+  "artifactSha256": "314468e9a1fd5044db8bad2c20df40593e72783dd0d47f84fde55aa6cf7da21c",
   "archiveName": "ClipRelay-macOS-x64-0.4.0.zip",
-  "archiveSha256": "2f191eec94507de8f25ef9843f633d365e73d61c9fc019111b0bfedb03f83063",
+  "archiveSha256": "a975a1fdf684166bd7b4a9368587180786b653a1fc0b08237c170fb4d3503393",
   "viewerManifestSha256": "c7df330e8a6367f271575e4923c3354867bdb5474214dc61952ad39106ad1c37",
   "viewerBinarySha256": "53bf5aacfdb07fcb0d5bc4cbace58905808b5a56222ad382cfacf1d0ccd8c14f"
 }
