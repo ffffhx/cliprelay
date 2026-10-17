@@ -19,15 +19,17 @@ function fixture(t,arch='arm64'){
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-host-artifact-'));
   t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   const source=path.join(directory,'source');fs.mkdirSync(source);
-  const sources=[...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
+  const privacySources=["engine/sunshine/control.patch","engine/sunshine/macos-control.patch","engine/sunshine/macos-capture.patch","engine/sunshine/macos-privacy.patch","engine/sunshine/cliprelay_control.h","engine/sunshine/cliprelay_input.h","engine/sunshine/cliprelay_owner.h","engine/sunshine/cliprelay_privacy.h","engine/sunshine/cliprelay_privacy_macos.mm","engine/sunshine/privacy_test.cpp","scripts/test_macos_privacy_filter.py","scripts/test_macos_privacy_filter.mm","scripts/privacy_fixture/main.go","network/go.mod","network/go.sum","LICENSE","network/hostprivacy/controller.go","network/hostprivacy/controller_test.go","network/hostprivacy/serve.go","network/hostprivacy/native_other.go","network/hostprivacy/native_darwin.go","network/hostprivacy/native_darwin.h","network/hostprivacy/native_darwin.m"];
+  const sources=[...new Set([...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
     'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch','macos-capture.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h','macos_capture_test.mm',
     'macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp','cliprelay_owner.h','owner_test.cpp','macos_owner_test.cpp'].map(name=>'engine/sunshine/'+name),'scripts/prepare_sunshine.py',
     'scripts/package_sunshine_macos.py','scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py',
-    'scripts/test_macos_capture.py','scripts/test_macos_capture.mm'];
+    'scripts/test_macos_capture.py','scripts/test_macos_capture.mm',...privacySources])];
   const manifest={protocol:1,platform:'darwin',arch,sourceCommit:commit,
     upstreamCommit:'63d35f702ee9e362e43263742981836ec0710384',libvirtualhidCommit:'53e1a949fc0784af716b782ddfa6c647cafd1f05',
     executable:EXECUTABLE,deploymentTarget:'14.2',signature:'ad-hoc',notarized:false,permissionCommand:1,stateCommand:1,ownerCommand:1,bundleIdentifier:'com.cliprelay.host-engine',files:{},symlinks:{},sourceHashes:{},
+    privacyFilter:1,privacyFilterTests:["native-foreign-process-window-and-layout-rejected","native-worker-mask-excluded-from-new-capture","native-release-retains-filter-while-worker-lives","native-confirmed-death-removes-filter-and-reconstructs-source"],
     captureBackend:'screencapturekit',captureTests:['native-owned-mask-exclusion-and-source-isolation','native-static-desktop-current-images',
       'native-mask-removal-restores-unfiltered-image','native-NV12-P010-geometry'],
     nativeMinimumOS:{[EXECUTABLE]:'14.2.0'},nativeDependencies:{[EXECUTABLE]:['/usr/lib/libSystem.B.dylib']},inputTests:[]};
@@ -45,6 +47,10 @@ function fixture(t,arch='arm64'){
   put('capture-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,architecture:arch,sourceCommit:commit,
     upstreamCommit:manifest.upstreamCommit,binarySha256:'1'.repeat(64),cases:manifest.captureTests,
     sourceHashes:Object.fromEntries(captureSources.map(name=>[name,manifest.sourceHashes[name]]))})));
+  put('privacy-filter-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,architecture:arch,sourceCommit:commit,
+    upstreamCommit:manifest.upstreamCommit,binarySha256:'1'.repeat(64),workerSha256:'2'.repeat(64),cases:manifest.privacyFilterTests,
+    actualEncodedReadiness:false,pairedClientAccepted:false,policyCases:["filtered-source-and-real-encoded-generation-required","expiry-and-replays-retain-filter-without-renewal","foreign-and-malformed-native-bindings-are-rejected","unknown-worker-does-not-prove-restoration","source-and-observer-replays-cannot-claim-new-readiness","stream-display-and-capture-changes-withdraw-authorization","release-requires-confirmed-original-worker-death","concurrent-late-renewal-cannot-revive-expired-filter"],
+    sourceHashes:Object.fromEntries(privacySources.map(name=>[name,manifest.sourceHashes[name]]))})));
   put('permission-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,applicationStateUnchanged:true,nativeRequestsExecuted:false,
     cases:['status','invalid-action','misplaced-option','repeat-status'],lastStatus:{protocol:1,screenRecording:false,inputControl:false,requested:'none'}})));
   put('state-tests.json',Buffer.from(JSON.stringify({protocol:1,passed:true,defaultStateUnchanged:true,stateFilesPrivate:true,homeChanged:false,nativeRequestsExecuted:false,hostStarted:false,
@@ -136,4 +142,17 @@ test('capture evidence must prove actual filtered pixels for the exact source an
     {cases:receipt.cases.slice(1)},{sourceHashes:{...receipt.sourceHashes,'engine/sunshine/macos-capture.patch':'0'.repeat(64)}}]){
     f.put('capture-tests.json',Buffer.from(JSON.stringify({...receipt,...patch})));assert.throws(()=>verify(f.source,f.pin()));
   }
+});
+
+
+test('native privacy proof cannot omit identity checks, change revision or claim encoded readiness',t=>{
+  const f=fixture(t),receipt=JSON.parse(fs.readFileSync(path.join(f.source,'privacy-filter-tests.json'),'utf8'));
+  for(const patch of [{passed:false},{architecture:'x86_64'},{sourceCommit:'0'.repeat(40)},
+      {actualEncodedReadiness:true},{pairedClientAccepted:true},{cases:receipt.cases.slice(1)},
+      {policyCases:receipt.policyCases.slice(1)},{workerSha256:'bad'},{sourceHashes:{}}]){
+    f.put('privacy-filter-tests.json',Buffer.from(JSON.stringify({...receipt,...patch})));
+    assert.throws(()=>verify(f.source,f.pin()));
+  }
+  f.put('privacy-filter-tests.json',Buffer.from(JSON.stringify(receipt)));
+  delete f.manifest.privacyFilter;assert.throws(()=>verify(f.source,f.pin()));
 });

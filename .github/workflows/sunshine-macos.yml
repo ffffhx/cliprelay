@@ -3,9 +3,9 @@ name: Sunshine macOS Host Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', 'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm', '.github/workflows/sunshine-macos.yml']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', 'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm', 'scripts/test_macos_privacy_filter.py', 'scripts/test_macos_privacy_filter.mm', 'scripts/privacy_fixture/main.go', 'network/hostprivacy/**', 'network/go.mod', 'network/go.sum', '.github/workflows/sunshine-macos.yml']
   pull_request:
-    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', 'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm', '.github/workflows/sunshine-macos.yml']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py', 'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm', 'scripts/test_macos_privacy_filter.py', 'scripts/test_macos_privacy_filter.mm', 'scripts/privacy_fixture/main.go', 'network/hostprivacy/**', 'network/go.mod', 'network/go.sum', '.github/workflows/sunshine-macos.yml']
   workflow_dispatch:
 
 permissions:
@@ -44,6 +44,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Verify native privacy filter and owned worker identity
+        run: python3 scripts/test_macos_privacy_filter.py --source sunshine-source --output privacy-filter-tests.json
       - name: Verify native capture pixels and window exclusion
         run: python3 scripts/test_macos_capture.py --source sunshine-source --output capture-tests.json
       - name: Install build tools
@@ -100,7 +106,7 @@ jobs:
           python3 scripts/package_sunshine_macos.py \
             --source sunshine-source --build sunshine-build --artifact engine-artifact \
             --arch '${{ matrix.arch }}' --test-results input-tests.xml \
-            --dependencies mac-dependencies/install --build-log engine-build.log --capture-results capture-tests.json
+            --dependencies mac-dependencies/install --build-log engine-build.log --capture-results capture-tests.json --privacy-results privacy-filter-tests.json
           tar -czf 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' engine-artifact
           shasum -a 256 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz' > 'sunshine-cliprelay-macos-${{ matrix.arch }}.tar.gz.sha256'
       - uses: actions/upload-artifact@v4
@@ -111,5 +117,6 @@ jobs:
             sunshine-cliprelay-macos-*.tar.gz.sha256
             input-tests.xml
             capture-tests.json
+            privacy-filter-tests.json
           if-no-files-found: error
           retention-days: 14

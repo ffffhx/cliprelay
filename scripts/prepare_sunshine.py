@@ -22,7 +22,8 @@ def prepare(source: Path, check: bool = False, macos_host: bool = False) -> None
         raise RuntimeError("Refusing to patch an already modified Sunshine source tree")
     headers = ["cliprelay_control.h", "cliprelay_audio.h", "cliprelay_input.h"]
     if macos_host:
-        headers.extend(["cliprelay_macos.h", "cliprelay_capture.h", "cliprelay_permissions.h", "cliprelay_state.h", "cliprelay_owner.h"])
+        headers.extend(["cliprelay_macos.h", "cliprelay_capture.h", "cliprelay_permissions.h", "cliprelay_state.h", "cliprelay_owner.h",
+                        "cliprelay_privacy.h", "cliprelay_privacy_macos.mm"])
     if any((source / "src" / name).exists() for name in headers):
         raise RuntimeError("Refusing to replace an existing ClipRelay header")
     input_test = source / "tests/unit/test_cliprelay_input.cpp"
@@ -47,7 +48,7 @@ def prepare(source: Path, check: bool = False, macos_host: bool = False) -> None
             raise RuntimeError("libvirtualhid checkout does not match the pinned gitlink")
         if subprocess.check_output(["git", "-C", str(hid), "diff", "HEAD"], text=True):
             raise RuntimeError("Refusing to patch an already modified libvirtualhid source tree")
-        patches += [(source, "macos-control.patch"), (source, "macos-capture.patch"), (hid, "libvirtualhid-macos.patch")]
+        patches += [(source, "macos-control.patch"), (source, "macos-capture.patch"), (source, "macos-privacy.patch"), (hid, "libvirtualhid-macos.patch")]
     # A Windows archive/checkout may carry CRLF even when the upstream tree is LF.
     # Normalize the patch syntax without changing the caller's source files.
     with tempfile.TemporaryDirectory(prefix="cliprelay-sunshine-") as temporary:

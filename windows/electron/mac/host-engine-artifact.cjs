@@ -3,20 +3,23 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const EXECUTABLE='Sunshine.app/Contents/MacOS/Sunshine';
 const UPSTREAM='63d35f702ee9e362e43263742981836ec0710384';
 const HID='53e1a949fc0784af716b782ddfa6c647cafd1f05';
-const SOURCES=[
+const PRIVACY_SOURCES=["engine/sunshine/control.patch","engine/sunshine/macos-control.patch","engine/sunshine/macos-capture.patch","engine/sunshine/macos-privacy.patch","engine/sunshine/cliprelay_control.h","engine/sunshine/cliprelay_input.h","engine/sunshine/cliprelay_owner.h","engine/sunshine/cliprelay_privacy.h","engine/sunshine/cliprelay_privacy_macos.mm","engine/sunshine/privacy_test.cpp","scripts/test_macos_privacy_filter.py","scripts/test_macos_privacy_filter.mm","scripts/privacy_fixture/main.go","network/go.mod","network/go.sum","LICENSE","network/hostprivacy/controller.go","network/hostprivacy/controller_test.go","network/hostprivacy/serve.go","network/hostprivacy/native_other.go","network/hostprivacy/native_darwin.go","network/hostprivacy/native_darwin.h","network/hostprivacy/native_darwin.m"];
+const PRIVACY_CASES=["native-foreign-process-window-and-layout-rejected","native-worker-mask-excluded-from-new-capture","native-release-retains-filter-while-worker-lives","native-confirmed-death-removes-filter-and-reconstructs-source"];
+const PRIVACY_POLICY_CASES=["filtered-source-and-real-encoded-generation-required","expiry-and-replays-retain-filter-without-renewal","foreign-and-malformed-native-bindings-are-rejected","unknown-worker-does-not-prove-restoration","source-and-observer-replays-cannot-claim-new-readiness","stream-display-and-capture-changes-withdraw-authorization","release-requires-confirmed-original-worker-death","concurrent-late-renewal-cannot-revive-expired-filter"];
+const SOURCES=[...new Set([
   ...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
     'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch','macos-capture.patch',
     'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h',
     'macos_capture_test.mm','macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp','cliprelay_owner.h','owner_test.cpp','macos_owner_test.cpp'].map(name=>'engine/sunshine/'+name),
   'scripts/prepare_sunshine.py','scripts/package_sunshine_macos.py',
   'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py',
-  'scripts/test_macos_capture.py','scripts/test_macos_capture.mm'
-];
+  'scripts/test_macos_capture.py','scripts/test_macos_capture.mm',...PRIVACY_SOURCES
+])];
 const CAPTURE_CASES=['native-owned-mask-exclusion-and-source-isolation','native-static-desktop-current-images',
   'native-mask-removal-restores-unfiltered-image','native-NV12-P010-geometry'];
 const REQUIRED=[EXECUTABLE,'Sunshine.app/Contents/Info.plist','Sunshine.app/Contents/Resources/assets/apps.json',
   'Sunshine.app/Contents/Resources/assets/web/index.html','SUNSHINE-LICENSE','LIBVIRTUALHID-LICENSE',
-  'input-tests.xml','capture-tests.json','permission-tests.json','state-tests.json','owner-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
+  'input-tests.xml','capture-tests.json','privacy-filter-tests.json','permission-tests.json','state-tests.json','owner-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
   'dependency-licenses/icu/LICENSE','dependency-licenses/icu/license.html','dependency-licenses/miniupnpc/LICENSE',
   'dependency-licenses/openssl/LICENSE.txt','dependency-licenses/opus/COPYING',...SOURCES.map(name=>'source/'+name)];
 const hash=data=>crypto.createHash('sha256').update(data).digest('hex');
@@ -79,6 +82,7 @@ function verify(directory,pin){
       !object(manifest.files) || !sameKeys(manifest.sourceHashes,SOURCES) || !sameKeys(manifest.symlinks,[]) ||
       !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
+      manifest.privacyFilter!==1 || JSON.stringify(manifest.privacyFilterTests)!==JSON.stringify(PRIVACY_CASES) ||
       manifest.captureBackend!=='screencapturekit' || JSON.stringify(manifest.captureTests)!==JSON.stringify(CAPTURE_CASES) ||
       !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==51 || new Set(manifest.inputTests).size!==51)reject();
   const expected=Object.keys(manifest.files);
@@ -156,6 +160,12 @@ function verify(directory,pin){
       capture.upstreamCommit!==UPSTREAM || !/^[a-f0-9]{64}$/.test(capture.binarySha256) ||
       JSON.stringify(capture.cases)!==JSON.stringify(CAPTURE_CASES) || !sameKeys(capture.sourceHashes,captureSources) ||
       captureSources.some(name=>capture.sourceHashes[name]!==manifest.sourceHashes[name]))reject();
+  const privacy=JSON.parse(readFile(path.join(root,'privacy-filter-tests.json'),65536));
+  if(privacy.protocol!==1 || privacy.passed!==true || privacy.architecture!==pin.arch || privacy.sourceCommit!==pin.commit ||
+      privacy.upstreamCommit!==UPSTREAM || !/^[a-f0-9]{64}$/.test(privacy.binarySha256) || !/^[a-f0-9]{64}$/.test(privacy.workerSha256) ||
+      privacy.actualEncodedReadiness!==false || privacy.pairedClientAccepted!==false ||
+      JSON.stringify(privacy.cases)!==JSON.stringify(PRIVACY_CASES) || JSON.stringify(privacy.policyCases)!==JSON.stringify(PRIVACY_POLICY_CASES) ||
+      !sameKeys(privacy.sourceHashes,PRIVACY_SOURCES) || PRIVACY_SOURCES.some(name=>privacy.sourceHashes[name]!==manifest.sourceHashes[name]))reject();
   return manifest;
 }
 function stage(source,destination,pin){

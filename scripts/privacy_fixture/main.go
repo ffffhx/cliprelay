@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"golang.org/x/sys/unix"
 	"os"
+	"os/exec"
 	"runtime"
 	"time"
 )
@@ -49,6 +50,25 @@ func main() {
 			}
 		}
 	}()
+	if len(os.Args) == 2 && os.Args[1] == "--owner" {
+		// Model the production companion/worker ancestry with this CI-only
+		// executable. The child still runs the unchanged native mask library.
+		runtime.UnlockOSThread()
+		executable, err := os.Executable()
+		if err != nil {
+			panic(err)
+		}
+		child := exec.CommandContext(ctx, executable)
+		child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := child.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) != 1 {
+		os.Exit(2)
+	}
 	if err := hostprivacy.RunNative(ctx, channel(os.Stdin), channel(os.Stdout)); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

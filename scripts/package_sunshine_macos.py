@@ -61,7 +61,7 @@ def check_deployment(data, target):
     return '.'.join(map(str, actual))
 
 
-def package(source, build, artifact, arch, test_results, dependencies, build_log, capture_results):
+def package(source, build, artifact, arch, test_results, dependencies, build_log, capture_results, privacy_results):
     if platform.system() != 'Darwin' or platform.machine() != arch:
         raise RuntimeError('Package verification requires the matching native macOS runner')
     root = Path(__file__).resolve().parents[1]
@@ -171,6 +171,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
                 'scripts/package_sunshine_macos.py', 'scripts/build_sunshine_macos_dependencies.py',
                 '.github/workflows/sunshine-macos.yml', 'scripts/test_sunshine_macos_permissions.py', 'scripts/test_sunshine_macos_state.py', 'scripts/test_sunshine_macos_owner.py',
                 'scripts/test_macos_capture.py', 'scripts/test_macos_capture.mm']
+    from test_macos_privacy_filter import CASES as PRIVACY_CASES, POLICY_CASES, SOURCES as PRIVACY_SOURCES
+    tracked = list(dict.fromkeys(tracked + PRIVACY_SOURCES))
     source_hashes = {}
     for name in tracked:
         dest = artifact / 'source' / name
@@ -188,6 +190,17 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
             or not re.fullmatch('[a-f0-9]{64}', capture.get('binarySha256', ''))):
         raise RuntimeError('Native capture evidence does not match the packaged source')
     shutil.copyfile(capture_results, artifact / 'capture-tests.json')
+    privacy = json.loads(privacy_results.read_text())
+    if (privacy.get('protocol') != 1 or privacy.get('passed') is not True or privacy.get('architecture') != arch
+            or privacy.get('sourceCommit') != command('git', '-C', str(root), 'rev-parse', 'HEAD')
+            or privacy.get('upstreamCommit') != pinned['commit'] or privacy.get('cases') != PRIVACY_CASES
+            or privacy.get('policyCases') != POLICY_CASES or privacy.get('actualEncodedReadiness') is not False
+            or privacy.get('pairedClientAccepted') is not False
+            or privacy.get('sourceHashes') != {name: source_hashes[name] for name in PRIVACY_SOURCES}
+            or not re.fullmatch('[a-f0-9]{64}', privacy.get('binarySha256', ''))
+            or not re.fullmatch('[a-f0-9]{64}', privacy.get('workerSha256', ''))):
+        raise RuntimeError('Native privacy filter evidence does not match the packaged source')
+    shutil.copyfile(privacy_results, artifact / 'privacy-filter-tests.json')
     shutil.copyfile(source / 'LICENSE', artifact / 'SUNSHINE-LICENSE')
     shutil.copyfile(source / 'third-party/libvirtualhid/LICENSE.md', artifact / 'LIBVIRTUALHID-LICENSE')
     shutil.copyfile(test_results, artifact / 'input-tests.xml')
@@ -215,6 +228,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
         'ownerCommand': 1,
         'captureBackend': 'screencapturekit',
         'captureTests': CASES,
+        'privacyFilter': 1,
+        'privacyFilterTests': PRIVACY_CASES,
         'bundleIdentifier': plist['CFBundleIdentifier'],
         'scope': 'Internal engine build with fixture-owned native capture and exclusion checks. No installed privacy lease, host UI, permission grant, encoded client or hardware streaming acceptance.',
         'files': {}, 'symlinks': {}
@@ -232,8 +247,8 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    for option in ['source', 'build', 'artifact', 'test-results', 'dependencies', 'build-log', 'capture-results']:
+    for option in ['source', 'build', 'artifact', 'test-results', 'dependencies', 'build-log', 'capture-results', 'privacy-results']:
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], required=True)
     args = parser.parse_args()
-    package(args.source, args.build, args.artifact, args.arch, args.test_results, args.dependencies, args.build_log, args.capture_results)
+    package(args.source, args.build, args.artifact, args.arch, args.test_results, args.dependencies, args.build_log, args.capture_results, args.privacy_results)
