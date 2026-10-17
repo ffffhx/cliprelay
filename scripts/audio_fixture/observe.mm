@@ -1,4 +1,4 @@
-// Disposable CI only: observe one verified sibling tone process. No PCM leaves
+// Disposable CI only: observe one verified sibling tone or staged Qt process. No PCM leaves
 // the callback. This fixture is not shipped and does not change default devices.
 #import <Foundation/Foundation.h>
 #import <CoreAudio/CoreAudio.h>
@@ -96,18 +96,25 @@ static void report(const char *event) {
 int main(int argc,char **argv) {
   @autoreleasepool {
     struct stat channel;const pid_t owner=getppid();
-    require(argc==2 && getenv("GITHUB_ACTIONS") && !strcmp(getenv("GITHUB_ACTIONS"),"true") && owner>1 &&
+    const bool viewer=argc==3 && !strcmp(argv[1],"--viewer");
+    require((argc==2 || viewer) && getenv("GITHUB_ACTIONS") && !strcmp(getenv("GITHUB_ACTIONS"),"true") && owner>1 &&
       fstat(STDIN_FILENO,&channel)==0 && (S_ISFIFO(channel.st_mode)||S_ISSOCK(channel.st_mode)),"admission");
-    char *end=nullptr;const long parsed=strtol(argv[1],&end,10);
+    char *end=nullptr;const long parsed=strtol(argv[viewer?2:1],&end,10);
     require(parsed>1 && parsed<=INT_MAX && end && !*end,"pid");const pid_t source=(pid_t)parsed;
     char root[PATH_MAX]={},expected[PATH_MAX]={};
-    require(getenv("RUNNER_TEMP") && realpath(getenv("RUNNER_TEMP"),root) && strcmp(root,"/") &&
-      getenv("CLIPRELAY_AUDIO_TONE_FIXTURE") && realpath(getenv("CLIPRELAY_AUDIO_TONE_FIXTURE"),expected),"source-path");
-    NSString *prefix=[@(root) stringByAppendingString:@"/"];NSString *file=@(expected);
-    require([file hasPrefix:prefix],"source-root");
-    NSArray *parts=[[file substringFromIndex:prefix.length] pathComponents];
-    require(parts.count==2 && [parts[0] hasPrefix:@"cliprelay-audio-fixture-"] &&
-      [parts[1] isEqualToString:@"cliprelay-audio-tone"],"source-allowlist");
+    if (viewer) {
+      require(getenv("GITHUB_WORKSPACE") && realpath(getenv("GITHUB_WORKSPACE"),root) && strcmp(root,"/"),"viewer-root");
+      NSString *file=[@(root) stringByAppendingString:@"/.tools/audio-stream-mac/stream-viewer/runtime/ClipRelayStream.app/Contents/MacOS/Moonlight"];
+      require(realpath(file.fileSystemRepresentation,expected) && !strcmp(file.fileSystemRepresentation,expected),"viewer-allowlist");
+    } else {
+      require(getenv("RUNNER_TEMP") && realpath(getenv("RUNNER_TEMP"),root) && strcmp(root,"/") &&
+        getenv("CLIPRELAY_AUDIO_TONE_FIXTURE") && realpath(getenv("CLIPRELAY_AUDIO_TONE_FIXTURE"),expected),"source-path");
+      NSString *prefix=[@(root) stringByAppendingString:@"/"];NSString *file=@(expected);
+      require([file hasPrefix:prefix],"source-root");
+      NSArray *parts=[[file substringFromIndex:prefix.length] pathComponents];
+      require(parts.count==2 && [parts[0] hasPrefix:@"cliprelay-audio-fixture-"] &&
+        [parts[1] isEqualToString:@"cliprelay-audio-tone"],"source-allowlist");
+    }
     struct proc_bsdinfo original={};
     require(proc_pidinfo(source,PROC_PIDTBSDINFO,0,&original,sizeof original)==sizeof original,"source-identity");
     require(identity(source,owner,expected,original.pbi_start_tvsec,original.pbi_start_tvusec),"source-owner");

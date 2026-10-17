@@ -23,4 +23,14 @@ for kind, source, selection in [('host-engine', Path(engine['directory']), engin
     (target/(kind+'-pin.json')).write_text(json.dumps(selection)+'\n', encoding='utf-8')
 receipt = {'scope': 'Development components; no complete application acceptance',
            'testCommit': os.environ['GITHUB_SHA'], 'engine': engine, 'companion': pin}
+viewer_selection=root/'.tools/audio-viewer-download/selection.json'
+if viewer_selection.exists():
+    viewer=json.loads(viewer_selection.read_bytes())
+    source=Path(viewer['directory']).resolve(strict=True)
+    assert source==root/'.tools/audio-viewer-download/ClipRelay-Stream-macOS'
+    assert hashlib.sha256((source/'manifest.json').read_bytes()).hexdigest()==viewer['manifestSha256']
+    subprocess.run(['node','-e',"require('./windows/electron/mac/stream-viewer.cjs').executable(process.argv[1],'darwin');",str(source)],cwd=root,check=True)
+    shutil.copytree(source,target/'stream-viewer',symlinks=True)
+    (target/'stream-viewer-pin.json').write_text(json.dumps(viewer)+'\n',encoding='utf-8')
+    receipt['viewer']=viewer
 (root/'.tools/audio-stream-components.json').write_text(json.dumps(receipt, indent=2)+'\n', encoding='utf-8')

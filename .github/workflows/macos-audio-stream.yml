@@ -10,6 +10,11 @@ on:
         type: string
         default: '38994396737'
         required: true
+      viewer_run_id:
+        description: 'Successful shipping desktop viewer build'
+        type: string
+        default: '39006823440'
+        required: true
 permissions:
   contents: read
   actions: read
@@ -45,7 +50,12 @@ jobs:
           ENGINE_RUN: ${{ inputs.engine_run_id || '38994396737' }}
         run: python3 scripts/fetch_sunshine_macos.py --run "$ENGINE_RUN" --arch '${{ matrix.arch }}' --directory .tools/audio-engine
       - name: Stage verified components
-        run: python3 scripts/stage_host_audio.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VIEWER_RUN: ${{ inputs.viewer_run_id || '39006823440' }}
+        run: |
+          python3 scripts/fetch_audio_viewer.py "$VIEWER_RUN"
+          python3 scripts/stage_host_audio.py
       - name: Build owned tone and pinned encrypted receiver
         run: python3 scripts/build_macos_audio_fixture.py
       - name: Verify actual audio capture, encrypted Opus and changing tones
@@ -54,6 +64,8 @@ jobs:
         run: python3 scripts/build_macos_audio_observer.py
       - name: Verify output observer isolates one owned process
         run: node scripts/test_macos_audio_observer.cjs audio-observer-development.json
+      - name: Verify shipping Qt viewer actual audio output
+        run: node scripts/test_macos_audio_playback.cjs .tools/audio-stream-mac audio-playback-development.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -61,5 +73,6 @@ jobs:
           path: |
             audio-stream-development.json
             audio-observer-development.json
+            audio-playback-development.json
             .tools/audio-stream-components.json
           if-no-files-found: error
