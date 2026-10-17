@@ -86,7 +86,12 @@ try:
     ready=event('ready',20);assert ready['owned'] is True and ready['launchedThroughNSWorkspace'] is True
     assert ready['parentPid']!=child.pid and ready['bundleIdentifier']=='com.cliprelay.desktop'
     result['launch']=ready;result['cases'].append('unchanged-complete-app-launched-through-NSWorkspace')
-    stage='inspect-menu';result['initialMenu']=command('inspect')
+    stage='inspect-menu';menu_deadline=time.monotonic()+15
+    while True:
+        menu=command('inspect');result['initialMenu']=menu
+        if menu.get('menuRootAvailable') and any(row['role']=='AXMenuBarItem' and 'ClipRelay' in [row['title'],row['description']] for row in menu['nodes']):break
+        assert time.monotonic()<menu_deadline,'STATUS_MENU_NOT_READY'
+        time.sleep(.1)
     stage='open-menu';opened=command('menu');result['openMenu']=opened;assert opened['pressed'] is True
     stage='open-host';opened=command('host');result['openHost']=opened;assert opened['pressed'] is True
     target('host')

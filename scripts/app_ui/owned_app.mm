@@ -48,8 +48,9 @@ static void traverse(AXUIElementRef node,unsigned depth,unsigned &budget,NSMutab
   NSString *wanted=[@{@"host":@"允许其他设备连接这台 Mac…",@"paired":@"配对电脑与安全收发…",@"permissions":@"本机远程访问权限…"} objectForKey:command];
   if(wanted)match=[role isEqualToString:@"AXMenuItem"]&&[title isEqualToString:wanted];
   if(match)[matches addObject:(__bridge id)node];
-  // Extra menu-bar items are separate from the application's ordinary menu.
-  for(NSString *key in @[@"AXChildren",@"AXMenuBar",@"AXExtrasMenuBar"]){
+  // Follow children once. Rewalking menu-bar relations repeats the same tree
+  // and can exhaust the bound before reaching the application's status item.
+  for(NSString *key in @[@"AXChildren"]){
     CFTypeRef value=nullptr;
     if(AXUIElementCopyAttributeValue(node,(__bridge CFStringRef)key,&value)!=kAXErrorSuccess||!value)continue;
     if(CFGetTypeID(value)==AXUIElementGetTypeID())traverse((AXUIElementRef)value,depth+1,budget,rows,matches,command,end);
@@ -62,10 +63,17 @@ static void traverse(AXUIElementRef node,unsigned depth,unsigned &budget,NSMutab
 static void inspect(NSString *command){
   if(!owned()){emit(@{@"event":@"error",@"code":@"APP_IDENTITY_CHANGED"});return;}
   const BOOL trusted=AXIsProcessTrusted();NSMutableArray *rows=[NSMutableArray array],*matches=[NSMutableArray array];
-  unsigned budget=250;AXError action=kAXErrorFailure;
+  unsigned budget=250;AXError action=kAXErrorFailure;BOOL menu_root=NO;
   if(trusted){
     AXUIElementRef app=AXUIElementCreateApplication(application.processIdentifier);
-    traverse(app,0,budget,rows,matches,command,std::chrono::steady_clock::now()+std::chrono::seconds(3));CFRelease(app);
+    AXUIElementSetMessagingTimeout(app,.1);CFTypeRef extra=nullptr;
+    if(AXUIElementCopyAttributeValue(app,CFSTR("AXExtrasMenuBar"),&extra)==kAXErrorSuccess&&extra){
+      if(CFGetTypeID(extra)==AXUIElementGetTypeID()){
+        menu_root=YES;traverse((AXUIElementRef)extra,0,budget,rows,matches,command,std::chrono::steady_clock::now()+std::chrono::seconds(3));
+      }
+      CFRelease(extra);
+    }
+    CFRelease(app);
   }
   // AX relations can repeat the same object; collapse identity-equal nodes.
   NSMutableArray *unique=[NSMutableArray array];for(id node in matches)if(![unique containsObject:node])[unique addObject:node];
@@ -74,7 +82,8 @@ static void inspect(NSString *command){
     attempted=YES;action=AXUIElementPerformAction((__bridge AXUIElementRef)unique[0],kAXPressAction);
   }
   emit(@{@"event":@"ui",@"command":command,@"owned":@(owned()),@"trusted":@(trusted),@"matches":@(unique.count),
-    @"attempted":@(attempted),@"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action),@"nodes":rows});
+    @"menuRootAvailable":@(menu_root),@"remainingBudget":@(budget),@"attempted":@(attempted),
+    @"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action),@"nodes":rows});
 }
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();
