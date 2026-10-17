@@ -53,14 +53,16 @@ test('mode change loads the trusted page and preserves the native-selected devic
 });
 
 test('preload presents the host error without Electron IPC implementation details',async()=>{
+  for(const [file,channel] of [['preload.cjs','mac:request'],['terminal-preload.cjs','terminal:request']]){
   let api,reply=async()=>({ok:true});
   const electron={contextBridge:{exposeInMainWorld:(_name,value)=>{api=value;}},ipcRenderer:{invoke:(...args)=>reply(...args)}};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../electron/mac/preload.cjs'),'utf8'),{require:()=>electron});
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../electron/mac',file),'utf8'),{require:()=>electron});
   assert.equal((await api.request('initial')).ok,true);
-  reply=async()=>{throw new Error("Error invoking remote method 'mac:request': Error: 请输入电脑的 IP 或主机名");};
+  reply=async()=>{throw new Error(`Error invoking remote method '${channel}': Error: 请输入电脑的 IP 或主机名`);};
   await assert.rejects(api.request('pair-start'),error=>error.message==='请输入电脑的 IP 或主机名');
   reply=async()=>{throw new Error('电脑已撤销授权，请重新配对');};
   await assert.rejects(api.request('paired-send'),error=>error.message==='电脑已撤销授权，请重新配对');
+  }
 });
 
 test('pairing validation stays beside its own form through status polling and clears on retry',async()=>{
