@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <libproc.h>
 #include <unistd.h>
 
 using namespace cliprelay;
@@ -95,7 +96,25 @@ int main() {
         wrong = identity; wrong.windows[0].display = UINT32_MAX;
         require(prepare_native(session, wrong) != "accepted" && !native_state().retained, "foreign display rejected");
         event("native-foreign-process-window-and-layout-rejected");
-        require(prepare_native(session, identity) == "accepted", "admit actual native mask windows");
+        const auto admitted = prepare_native(session, identity);
+        if (admitted != "accepted") {
+          const auto display = displays.snapshot();
+          fprintf(stderr, "native admission outcome=%s supported=%d phase=%s streams=%zu generation=%llu\n", admitted.c_str(), native_supported(),
+                  display.phase.c_str(), display.streams.size(), static_cast<unsigned long long>(display.generation));
+          for (int pid = identity.pid, level = 0; pid > 1 && level < 3; ++level) {
+            proc_bsdinfo info {}; const auto size = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info));
+            fprintf(stderr, "owned fixture ancestry level=%d pid=%d parent=%u uid=%u birth=%llu.%u query=%d\n", level, pid, info.pbi_ppid,
+                    info.pbi_uid, static_cast<unsigned long long>(info.pbi_start_tvsec), static_cast<unsigned int>(info.pbi_start_tvusec), size);
+            if (size != sizeof(info)) break;
+            pid = info.pbi_ppid;
+          }
+          for (const auto &window : identity.windows) {
+            const auto info = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, window.id);
+            fprintf(stderr, "owned fixture window=%u display=%u metadata=%s\n", window.id, window.display, [[(NSArray *)info description] UTF8String]);
+            if (info) CFRelease(info);
+          }
+        }
+        require(admitted == "accepted", "admit actual native mask windows");
         const auto epoch = native_state().epoch;
         require(native_state().authorized && !native_state().ready, "accepted filter is not encoded readiness");
         event("prepared");
