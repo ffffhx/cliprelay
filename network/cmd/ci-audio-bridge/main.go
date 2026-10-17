@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -49,12 +51,44 @@ var runID = regexp.MustCompile(`^[1-9][0-9]{0,15}$`)
 var tunnelName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]\.trycloudflare\.com$`)
 
 type initialization struct {
-	Version         int    `json:"version"`
-	Role            string `json:"role"`
-	Mode            string `json:"mode,omitempty"`
-	Directory       string `json:"directory"`
-	PeerCertificate string `json:"peerCertificate"`
-	URL             string `json:"url,omitempty"`
+	Version         int      `json:"version"`
+	Role            string   `json:"role"`
+	Mode            string   `json:"mode,omitempty"`
+	Directory       string   `json:"directory"`
+	PeerCertificate string   `json:"peerCertificate"`
+	URL             string   `json:"url,omitempty"`
+	RouteAddresses  []string `json:"routeAddresses,omitempty"`
+}
+
+func routeClient(host string, addresses []string) (*http.Client, error) {
+	if !tunnelName.MatchString(host) || len(addresses) == 0 || len(addresses) > 8 {
+		return nil, errors.New("ROUTE_ADDRESSES_INVALID")
+	}
+	for _, raw := range addresses {
+		ip, err := netip.ParseAddr(raw)
+		if err != nil || !ip.Is4() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
+			ip.As4()[0] == 0 || ip.As4()[0] >= 224 || netip.MustParsePrefix("100.64.0.0/10").Contains(ip) {
+			return nil, errors.New("ROUTE_ADDRESSES_INVALID")
+		}
+	}
+	// DNS answers only select the TCP destination. net/http still verifies the
+	// original URL hostname through TLS before any WebSocket bytes are sent.
+	transport := &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if network != "tcp" || address != net.JoinHostPort(host, "443") {
+				return nil, errors.New("ROUTE_TARGET_CHANGED")
+			}
+			var last error
+			for _, ip := range addresses {
+				connection, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp4", net.JoinHostPort(ip, "443"))
+				if err == nil {
+					return connection, nil
+				}
+				last = err
+			}
+			return nil, last
+		}}
+	return &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("ROUTE_REDIRECT_DENIED") }}, nil
 }
 
 func allowedRoot() (string, error) {
@@ -263,7 +297,7 @@ func serve(root string) error {
 	if err != nil {
 		return errors.New("PEER_INVALID")
 	}
-	if init.Role == "host" && init.URL != "" {
+	if init.Role == "host" && (init.URL != "" || len(init.RouteAddresses) != 0) {
 		return errors.New("ROUTE_INVALID")
 	}
 	if init.Role == "viewer" {
@@ -293,6 +327,14 @@ func serve(root string) error {
 	} else {
 		ready := make(chan error, 1)
 		client := ciaudiobridge.Client{Context: ctx, URL: init.URL, TLS: config}
+		if len(init.RouteAddresses) > 0 {
+			u, _ := url.Parse(init.URL)
+			client.HTTPClient, err = routeClient(u.Hostname(), init.RouteAddresses)
+			if err != nil {
+				return err
+			}
+			defer client.HTTPClient.CloseIdleConnections()
+		}
 		go func() { done <- forward(ctx, client, ready, tcpPorts, udpPorts) }()
 		if err = <-ready; err != nil {
 			return err

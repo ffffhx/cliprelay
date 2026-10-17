@@ -57,6 +57,7 @@ jobs:
         run: python3 scripts/build_macos_isolated_audio.py
       - name: Prepare pinned action and native bridge
         run: |
+          node --test scripts/ci_audio_bridge/route.test.mjs
           npm ci --prefix scripts/ci_audio_bridge --ignore-scripts --no-audit --no-fund
           python3 scripts/ci_audio_bridge/build.py
       - name: Verify actual audio between independent Mac environments

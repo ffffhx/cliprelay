@@ -12,6 +12,7 @@ import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
 import {DefaultArtifactClient} from '@actions/artifact';
+import {resolveRoute,probeRoute} from './route.mjs';
 
 assert.equal(process.env.GITHUB_ACTIONS,'true');assert.equal(process.env.GITHUB_REPOSITORY,'ffffhx/cliprelay');
 const role=process.env.CLIPRELAY_BRIDGE_ROLE,pair=process.env.CLIPRELAY_BRIDGE_PAIR;
@@ -84,8 +85,8 @@ async function readPublic(kind,side){
   assert.notEqual(v.machine,machine);assert.match(v.machine,/^[a-f0-9]{64}$/);
   return record;
 }
-async function bridge(own,peer,route){
-  const item=launch(binary,['serve']);item.child.stdin.write(JSON.stringify({version:1,role,mode,directory:own.directory,peerCertificate:peer.certificate,...(route?{url:route}:{})})+'\n');
+async function bridge(own,peer,route,routeAddresses){
+  const item=launch(binary,['serve']);item.child.stdin.write(JSON.stringify({version:1,role,mode,directory:own.directory,peerCertificate:peer.certificate,...(route?{url:route,routeAddresses}:{})})+'\n');
   const ready=await until(()=>alive(item),v=>v?.event==='ready');
   assert.equal(ready.certificateSha256,own.certificateSha256);assert.equal(ready.peerCertificateSha256,peer.certificateSha256);
   return {item,ready};
@@ -100,9 +101,9 @@ async function request(endpoint,method='GET'){
   const response=await fetch('http://127.0.0.1:48830/'+endpoint,{method,signal:AbortSignal.timeout(5000),headers:{Connection:'close'}});
   assert.equal(response.status,200);return response.json();
 }
-async function rejectUntrusted(own,peer,route){
+async function rejectUntrusted(own,peer,route,routeAddresses){
   const wrong=identity();assert.notEqual(wrong.certificateSha256,own.certificateSha256);
-  const {item}=await bridge(wrong,peer,route);
+  const {item}=await bridge(wrong,peer,route,routeAddresses);
   try{
     await new Promise((resolve,reject)=>{
       const client=net.connect({host:'127.0.0.1',port:48789});track(client);let bytes=0;
@@ -151,14 +152,25 @@ async function main(){
       stage='connector-route-discovery';
       const publicURL=await until(()=>{alive(connector);return connector.route},Boolean,45000);
       stage='connector-route-readiness';report.edgeResponses=[];
+      let routeAddresses;
       await until(async()=>{
         alive(connector);let result;
         try{const response=await fetch(publicURL+'/',{signal:AbortSignal.timeout(3000)});result={status:response.status,marker:response.headers.get('x-cliprelay-fixture')==='audio-bridge-v1'};await response.body?.cancel();}
-        catch(error){result={status:0,error:/^[A-Z_0-9]{1,64}$/.test(error.cause?.code||'')?error.cause.code:error.name};}
+        catch(error){
+          result={status:0,error:/^[A-Z_0-9]{1,64}$/.test(error.cause?.code||'')?error.cause.code:error.name};
+          try{
+            routeAddresses=await resolveRoute(new URL(publicURL).hostname);
+            const direct=await probeRoute(publicURL+'/',routeAddresses);
+            result={...direct,systemError:result.error,resolver:'cloudflare-HTTPS',addressCount:routeAddresses.length};
+          }catch(fallback){result.resolverError=/^[A-Z_0-9]{1,64}$/.test(fallback.message||'')?fallback.message:fallback.name}
+        }
         report.edgeResponses.push(result);if(report.edgeResponses.length>8)report.edgeResponses.shift();
         return result.status===404&&result.marker;
       },Boolean,60000);
-      report.routeArtifact=await publish('route',{url:publicURL.replace('https:','wss:')+'/bridge',certificateSha256:own.certificateSha256});
+      // Resolve for the peer as well: its system resolver may have a different
+      // view of the freshly created DNS name. TLS continues to verify that name.
+      routeAddresses??=await resolveRoute(new URL(publicURL).hostname);
+      report.routeArtifact=await publish('route',{url:publicURL.replace('https:','wss:')+'/bridge',certificateSha256:own.certificateSha256,routeAddresses});
       stage='remote-exchange';await until(()=>{alive(activeBridge);alive(connector);return done},Boolean,180000);
       report.host={accepted,udpReceived,bridge:(await bridgeState(activeBridge)).counters};
       assert.ok(report.host.bridge.Rejected>=1);
@@ -167,8 +179,8 @@ async function main(){
     }else{
       stage='route';const routeRecord=await readPublic('route','host'),route=routeRecord.state;
       assert.equal(route.certificateSha256,peer.certificateSha256);report.route=routeRecord;
-      stage='reject-untrusted';await rejectUntrusted(own,peer,route.url);
-      stage='viewer-bridge';activeBridge=(await bridge(own,peer,route.url)).item;
+      stage='reject-untrusted';await rejectUntrusted(own,peer,route.url,route.routeAddresses);
+      stage='viewer-bridge';activeBridge=(await bridge(own,peer,route.url,route.routeAddresses)).item;
       const before=await request('stats');assert.equal(before.accepted,0);assert.equal(before.udpReceived,0);assert.ok(before.bridge.Rejected>=1);assert.equal(before.machine,peer.machine);
       report.cases.push('untrusted-peer-rejected-before-echo-backend');
       if(nativeAudio){

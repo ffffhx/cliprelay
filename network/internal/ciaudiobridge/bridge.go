@@ -310,9 +310,10 @@ func relayPackets(ctx context.Context, left, right net.Conn) {
 }
 
 type Client struct {
-	Context context.Context
-	URL     string
-	TLS     *tls.Config
+	HTTPClient *http.Client // Optional owned endpoint resolver; public TLS verification remains enabled.
+	Context    context.Context
+	URL        string
+	TLS        *tls.Config
 }
 
 func (c Client) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -333,7 +334,7 @@ func (c Client) DialContext(ctx context.Context, network, address string) (net.C
 	if _, err := target.address(); err != nil {
 		return nil, err
 	}
-	ws, _, err := websocket.Dial(ctx, c.URL, &websocket.DialOptions{CompressionMode: websocket.CompressionDisabled})
+	ws, _, err := websocket.Dial(ctx, c.URL, &websocket.DialOptions{CompressionMode: websocket.CompressionDisabled, HTTPClient: c.HTTPClient})
 	if err != nil {
 		return nil, errors.New("route unavailable")
 	}
