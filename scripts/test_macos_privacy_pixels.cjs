@@ -66,10 +66,14 @@ async function verify({directory,host,identity,hostState,admin,until,nativeChild
     const owned=await until(()=>alive(colors),value=>value?.event==='ready',10000);assert.ok(owned.window>0&&owned.display>0);
     await local('red');
     const info=await nvhttp('serverinfo'),apps=await nvhttp('applist'),appid=xmlValue(apps,'ID');assert.match(appid,/^[1-9][0-9]*$/);
+    const current=xmlValue(info,'currentgame');assert.ok(current==='0'||current===appid,'UNEXPECTED_RUNNING_FIXTURE_APP');
+    // Closing the prior owned Qt viewer can leave Sunshine's desktop app
+    // running. Resume that exact app; launching a second one is rejected.
+    const operation=current==='0'?'launch':'resume';
     const key=crypto.randomBytes(16).toString('hex'),keyID=1060,iv=Buffer.alloc(16);iv.writeUInt32BE(keyID);
-    const launched=await nvhttp('launch',{appid,mode:'1280x720x30',sops:0,rikey:key,rikeyid:keyID,localAudioPlayMode:1,
+    const launched=await nvhttp(operation,{appid,mode:'1280x720x30',sops:0,rikey:key,rikeyid:keyID,localAudioPlayMode:1,
       surroundAudioInfo:196610,remoteControllersBitmap:0,gcmap:0,gcpersist:0,corever:1});
-    assert.equal(xmlValue(launched,'gamesession'),'1');
+    assert.equal(xmlValue(launched,operation==='launch'?'gamesession':'resume'),'1');
     const url=xmlValue(launched,'sessionUrl0');assert.match(url,/^rtspenc:\/\/127\.0\.0\.1:[0-9]{1,5}$/);
     decoder=child('CLIPRELAY_PRIVACY_DECODE_FIXTURE');
     decoder.child.stdin.write([xmlValue(info,'appversion'),xmlValue(info,'GfeVersion')||'3.23.0.74',url,key,iv.toString('hex'),''].join('\n'));
