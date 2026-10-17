@@ -32,7 +32,7 @@ class DisplayController{
   async poll(r){
     if(!this.current(r)||r.pending||r.polling)return;r.polling=true;
     try{const d=await this.read(r);if(r.pending)return;this.binding(r,d);r.latest={d,at:this.now()};r.error=d.inputEpochSelection?'':'DISPLAY_UNSUPPORTED';}
-    catch(error){if(this.current(r)&&!r.pending){if(terminal.has(error.code)){this.viewer.reconcile(error.code);this.reconcile();}else r.error=error.code==='UPDATE_HOST'?'DISPLAY_UNSUPPORTED':error.code||'DISPLAY_UNAVAILABLE';}}
+    catch(error){if(this.current(r)&&!r.pending){if(terminal.has(error.code)){this.viewer.reconcile(error.code);this.reconcile();}else if(!(error.code==='HTTP_429'&&r.latest&&this.now()-r.latest.at<4000))r.error=error.code==='UPDATE_HOST'?'DISPLAY_UNSUPPORTED':error.code||'DISPLAY_UNAVAILABLE';}}
     finally{r.polling=false;this.schedule(r);}
   }
   snapshot(){

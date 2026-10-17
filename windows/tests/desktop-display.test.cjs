@@ -53,6 +53,20 @@ test('paired display selection pauses through host encoding and actual native pr
   assert.deepEqual(f.commands.slice(-2),[[4,2],[4,3]]);assert.equal(f.input.phase,'active');assert.equal(f.viewer.session,f.session);
   assert.equal(f.controller.snapshot().capture,'right');assert.equal(f.posts.length,1);
 });
+
+test('a concurrent status read keeps only fresh display evidence usable',async t=>{
+  const f=await fixture(t);await until(()=>f.controller.snapshot().canSelect);
+  const controller=f.controller,record=controller.record,request=controller.request;
+  controller.pollMs=60000;clearTimeout(record.timer);
+  let now=controller.now();controller.now=()=>now;
+  controller.request=async()=>{throw Object.assign(new Error('busy'),{code:'HTTP_429'});};
+  await controller.poll(record);
+  assert.equal(controller.snapshot().phase,'ready');assert.equal(controller.snapshot().canSelect,true);
+  now+=4001;await controller.poll(record);
+  assert.equal(controller.snapshot().phase,'unavailable');assert.equal(controller.snapshot().canSelect,false);
+  controller.request=request;await controller.poll(record);
+  assert.equal(controller.snapshot().phase,'ready');assert.equal(controller.snapshot().canSelect,true);
+});
 test('manual pause survives display selection and explicit resume requires a new presented frame',async t=>{
   const f=await fixture(t);await until(()=>f.controller.snapshot().input.canPause);f.setInput(true);await until(()=>f.controller.snapshot().input.canResume);
   assert.equal(f.viewer.manualPaused,true);assert.equal(f.input.epoch,3);

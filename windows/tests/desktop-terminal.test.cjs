@@ -210,7 +210,11 @@ test('real ConPTY over pinned mutual TLS confirms input deduplication and reconn
   drop=true;f.controller.submitPaste({...draft,bracketed:false});await poll(f);await poll(f);f.advance(1000);await drain(f);
   output='';for(let i=0;i<150 && !output.includes('PASTE_COUNT_1');i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/PASTE_COUNT_1/);assert.ok(!output.includes('PASTE_COUNT_2'));
   f.controller.end({view:f.controller.view,id});await drain(f);assert.equal(f.controller.states.get(id).snapshot.state,'closed');
-  const ps=await open(f,'powershell');input(f,"Write-Output ('POWER'+'SHELL_OK')\r");await drain(f);
+  const ps=await open(f,'powershell');
+  // Process creation precedes PowerShell's console/line-editor initialization.
+  // Wait for its actual prompt before sending the command, as the GUI user does.
+  output='';for(let i=0;i<250 && !/PS [^\r\n]*>/.test(output);i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/PS [^\r\n]*>/,'PowerShell did not become ready');
+  input(f,"Write-Output ('POWER'+'SHELL_OK')\r");await drain(f);
   output='';for(let i=0;i<150 && !output.includes('POWERSHELL_OK');i++){const result=await poll(f);if(result.frame)output+=Buffer.from(result.frame.data,'base64').toString();await sleep(20);}assert.match(output,/POWERSHELL_OK/);
   f.controller.resize({view:f.controller.view,id:ps,columns:110,rows:35});for(let i=0;i<5 && f.controller.states.get(ps).snapshot.columns!==110;i++)await poll(f);assert.equal(f.controller.states.get(ps).snapshot.columns,110);assert.equal(f.controller.states.get(ps).snapshot.rows,35);
   f.controller.end({view:f.controller.view,id:ps});await drain(f);assert.equal(f.controller.states.get(ps).snapshot.state,'closed');
