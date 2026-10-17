@@ -61,7 +61,8 @@ def run(source, output):
         stage = Path(temporary)
         helper, binary, policy = stage/'worker', stage/'filter', stage/'policy'
         subprocess.run(['go', 'build', '-mod=readonly', '-o', str(helper), str(root/'scripts/privacy_fixture/main.go')],
-                       cwd=root/'network', check=True)
+                       cwd=root/'network', check=True, env=dict(os.environ, MACOSX_DEPLOYMENT_TARGET='14.2',
+                       CGO_CFLAGS='-mmacosx-version-min=14.2', CGO_LDFLAGS='-mmacosx-version-min=14.2'))
         subprocess.run(['clang++', '-std=c++23', '-Wall', '-Wextra', '-Werror', '-UNDEBUG', '-pthread',
                         str(root/'engine/sunshine/privacy_test.cpp'), '-o', str(policy)], check=True)
         policy_report = json.loads(subprocess.check_output([str(policy)], timeout=15))

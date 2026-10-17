@@ -121,6 +121,11 @@ int main() {
         require(admitted == "accepted", "admit actual native mask windows");
         const auto epoch = native_state().epoch;
         require(native_state().authorized && !native_state().ready, "accepted filter is not encoded readiness");
+        AVVideo *invisible_owner = [[AVVideo alloc] initWithDisplay:display_id frameRate:60];
+        require(invisible_owner != nil, "prepared capture owner");
+        auto invisible = [invisible_owner newCapture]; require(invisible != nil, "prepared unfiltered capture");
+        pixel(invisible, invisible_owner, point, true);
+        stop(invisible_owner, invisible); [invisible_owner release];
         event("prepared");
         require(line() == "active", "mask activation message");
         AVVideo *owner = [[AVVideo alloc] initWithDisplay:display_id frameRate:60];

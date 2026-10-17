@@ -99,7 +99,10 @@ namespace cliprelay::privacy {
       // not a single-window lookup. Include offscreen/transparent windows and
       // then require exactly one native record for each registered identifier.
       NSArray *information = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
-      if (!information) return nil;
+      NSArray *onscreen = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
+      if (!information || !onscreen) return nil;
+      std::set<std::uint32_t> visible;
+      for (NSDictionary *window in onscreen) visible.insert([window[(__bridge NSString *)kCGWindowNumber] unsignedIntValue]);
       for (const auto &item : identity.windows) {
         if (!expected.erase(item.display)) return nil;
         NSDictionary *window = nil;
@@ -109,7 +112,11 @@ namespace cliprelay::privacy {
           window = candidate;
         }
         if (!window || [window[(__bridge NSString *)kCGWindowOwnerPID] intValue] != identity.pid ||
-            !window[(__bridge NSString *)kCGWindowAlpha] || [window[(__bridge NSString *)kCGWindowAlpha] doubleValue] != 0) return nil;
+            !window[(__bridge NSString *)kCGWindowAlpha]) return nil;
+        // A prepared AppKit window can retain alpha=1 in the offscreen native
+        // record. Require either zero alpha or confirmed absence from the
+        // independent onscreen list; a missing optional flag is not evidence.
+        if (visible.contains(item.id) && [window[(__bridge NSString *)kCGWindowAlpha] doubleValue] != 0) return nil;
       }
       auto reply = std::make_shared<content_reply>();
       [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO completionHandler:^(SCShareableContent *content, NSError *error) {
