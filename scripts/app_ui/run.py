@@ -88,12 +88,16 @@ def target(kind):
         with urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=2) as response:
             raw=response.read(65537);assert len(raw)<65537
             pages=json.loads(raw)
-        if any(page.get('type')=='page' and page.get('url')==expected for page in pages):return expected
+        matches=[page for page in pages if page.get('type')=='page' and page.get('url')==expected]
+        if len(matches)==1:
+            assert re.fullmatch('[A-Fa-f0-9-]{16,64}',matches[0]['id']), 'TARGET_ID_INVALID'
+            return {'id':matches[0]['id'],'url':expected}
         time.sleep(.1)
     raise RuntimeError('APP_WINDOW_MISSING')
 def snapshot(kind):
-    target(kind);browser_command('tab','--url','*kind='+kind)
+    selected=target(kind);browser_command('tab',selected['id'])
     value=browser_command('snapshot')
+    assert value['data']['origin']==selected['url'], 'RENDERER_ORIGIN_MISMATCH'
     result['snapshots'][kind]=value
     return json.dumps(value,ensure_ascii=False)
 try:
@@ -113,7 +117,7 @@ try:
     # popup tracking starts. Activate the exact item directly: opening the
     # popup first can leave Electron's AX handler waiting in its modal loop.
     stage='open-host';menu_action('host')
-    result['hostRendererUrl']=target('host')
+    result['hostRendererUrl']=target('host')['url']
     stage='browser-diagnostics';browser_doctor()
     stage='connect-owned-renderer';browser_command('connect',str(port));browser_connected=True
     stage='host-window';text=snapshot('host');assert '启动远程访问' in text and '检查系统权限' in text
@@ -140,7 +144,16 @@ finally:
     cleanup=[]
     if child:
         try:
-            if child.poll() is None:child.stdin.close()
+            if child.poll() is None:
+                child.stdin.write('quit\n');child.stdin.flush()
+                if browser_connected:
+                    time.sleep(2)
+                    if child.poll() is None:
+                        observed=subprocess.run([str(browser),'--namespace',namespace,'--session',name,'--json','snapshot'],
+                                                env=env,capture_output=True,text=True,timeout=3)
+                        if observed.returncode==0 and len(observed.stdout)<65536:
+                            result['quitSnapshot']=json.loads(observed.stdout)
+                child.stdin.close()
             child.wait(timeout=15)
             closed=next((v for v in reversed(all_events) if v.get('event')=='closed'),None)
             assert child.returncode==0 and closed=={'event':'closed','terminated':True,'forced':False}
