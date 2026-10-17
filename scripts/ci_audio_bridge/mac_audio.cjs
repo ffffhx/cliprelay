@@ -310,7 +310,12 @@ function create({role,root,runner,env,machine,peerMachine}){
         stage='mute-output-'+name;report.mute.states.push(requireActive(await muteCall('renew',binding)));
         report.mute.observations.push(await outputPhase(name,hz));report.mute.states.push(requireActive(await muteCall('status')));
       }
-      stage='mute-explicit-stop';const stopped=await muteCall('stop',binding);
+      stage='mute-explicit-stop';const stopAcknowledgement=await muteCall('stop',binding);
+      report.mute.stopAcknowledgement=stateReceipt(stopAcknowledgement);
+      // Stop acknowledges restoration with a minimal response. Query status
+      // separately for the live capability and native output inventory.
+      assert.ok(!stopAcknowledgement.active&&!stopAcknowledgement.recovering);
+      const stopped=await muteCall('status');
       assert.ok(stopped.supported&&!stopped.active&&!stopped.recovering);assert.equal(stopped.outputs,initialMute.outputs);
       report.mute.stopped=stateReceipt(stopped);report.mute.afterStopOutput=await outputPhase('low',1000);
       report.cases.push('paired-native-host-mute-preserves-fresh-Qt-audio-and-explicit-stop');
