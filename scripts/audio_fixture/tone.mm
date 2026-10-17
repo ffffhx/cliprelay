@@ -138,10 +138,20 @@ static NSDictionary *audio_dialog(AXUIElementRef node,unsigned depth,unsigned &b
 static void allow_owned_audio(pid_t engine) {
   struct proc_bsdinfo info={};char executable[PROC_PIDPATHINFO_MAXSIZE]={};
   const char *workspace=getenv("GITHUB_WORKSPACE");
-  NSString *expected=workspace ? [@(workspace) stringByAppendingPathComponent:@".tools/audio-stream-mac/host-engine/Sunshine.app/Contents/MacOS/Sunshine"] : @"";
+  NSMutableArray *expected=[NSMutableArray array];
+  if (workspace) {
+    [expected addObject:[@(workspace) stringByAppendingPathComponent:@".tools/audio-stream-mac/host-engine/Sunshine.app/Contents/MacOS/Sunshine"]];
+#if defined(__arm64__)
+    NSString *architecture=@"arm64";
+#else
+    NSString *architecture=@"x64";
+#endif
+    NSString *packaged=[NSString stringWithFormat:@".tools/mac-electron/ClipRelay-darwin-%@/ClipRelay.app/Contents/Resources/app/mac/host-engine/Sunshine.app/Contents/MacOS/Sunshine",architecture];
+    [expected addObject:[@(workspace) stringByAppendingPathComponent:packaged]];
+  }
   const BOOL verified=engine>1 && proc_pidinfo(engine,PROC_PIDTBSDINFO,0,&info,sizeof info)==sizeof info &&
     info.pbi_ppid==(unsigned)getppid() && info.pbi_uid==getuid() && proc_pidpath(engine,executable,sizeof executable)>0 &&
-    [@(executable) isEqualToString:expected];
+    [expected containsObject:@(executable)];
   NSMutableArray *candidates=[NSMutableArray array];AXError action=kAXErrorFailure;
   const BOOL trusted=AXIsProcessTrusted();
   unsigned budget=300;const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);

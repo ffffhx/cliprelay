@@ -55,7 +55,10 @@ async function build(){
     const output=path.resolve(repo,'.tools','mac-electron');
     // npm ci --omit=dev already created the production-only dependency tree.
     // A second prune incorrectly resolves intentionally absent build tools.
-    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp'],...(hostPin?{LSMinimumSystemVersion:'14.2'}:{})}});
+    const hostUsage=hostPin?{LSMinimumSystemVersion:'14.2',
+      NSAudioCaptureUsageDescription:'用于将这台 Mac 的系统声音传输到你批准连接的设备。',
+      NSMicrophoneUsageDescription:'用于在你选择麦克风作为音频来源时，将声音传输到已配对设备。'}:{};
+    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp'],...hostUsage}});
     for(const bundle of built){
       if(process.env.CI==='true' && process.env.GITHUB_ACTIONS==='true'){
         execFileSync('python3',[path.join(repo,'scripts','test_macos_login_startup.py'),'--runtime',path.join(bundle,'ClipRelay.app'),'--modules',path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac'),'--report',path.join(output,`native-login-startup-${architecture}.json`)],{stdio:'inherit',timeout:180000});
@@ -67,6 +70,10 @@ async function build(){
         if(JSON.stringify(JSON.parse(fs.readFileSync(path.join(path.dirname(packaged),'host-engine-pin.json'),'utf8')))!==JSON.stringify(hostPin))throw new Error('Packaged host engine pin changed');
         const minimum=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :LSMinimumSystemVersion',path.join(bundle,'ClipRelay.app','Contents','Info.plist')],{encoding:'utf8'}).trim();
         if(minimum!=='14.2')throw new Error('Host application must require macOS 14.2');
+        for(const key of ['NSAudioCaptureUsageDescription','NSMicrophoneUsageDescription']){
+          const description=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :'+key,path.join(bundle,'ClipRelay.app','Contents','Info.plist')],{encoding:'utf8'}).trim();
+          if(description!==hostUsage[key])throw new Error('Host application audio usage description missing');
+        }
         execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',path.join(packaged,'Sunshine.app')],{stdio:'inherit'});
         const permissionCommands=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_permissions.cjs'),packaged],{encoding:'utf8',timeout:30000,maxBuffer:65536}));
         if(permissionCommands.passed!==true || permissionCommands.nativeRequestsExecuted!==false || permissionCommands.ownedChildrenReaped!==true)throw new Error('Packaged host permission command check failed');
@@ -202,6 +209,13 @@ async function build(){
           report.applicationCommit!==process.env.GITHUB_SHA || JSON.stringify(report.cases)!==JSON.stringify(expected) ||
           report.ownedChildrenReaped!==true || report.revocation?.ownerPipeStayedOpen!==true)
           throw new Error('Packaged native Mac streaming acceptance did not complete');
+        if(!env.CLIPRELAY_AUDIO_DECODE_FIXTURE||!env.CLIPRELAY_AUDIO_TONE_FIXTURE||!env.CLIPRELAY_AUDIO_FIXTURE_RECEIPT)
+          throw new Error('Packaged audio acceptance requires native tone fixtures');
+        const audioPath=path.join(output,`native-audio-bundle-${architecture}.json`);
+        execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_audio.cjs'),appDirectory,audioPath],
+          {env:{...env,CLIPRELAY_COMPLETE_AUDIO_TEST:'1'},stdio:'inherit',timeout:180000});
+        require('../../scripts/audio_fixture/receipt.cjs').validate(JSON.parse(fs.readFileSync(audioPath,'utf8')),
+          {testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.GITHUB_SHA,architecture,hostScope:'complete-app-host'});
       }
       const zip=path.join(output,`ClipRelay-macOS-${architecture}-${version.versionName}.zip`);execFileSync('/usr/bin/ditto',['-c','-k','--sequesterRsrc','--keepParent',path.join(bundle,'ClipRelay.app'),zip]);console.log(zip);
     }

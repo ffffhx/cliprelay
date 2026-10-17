@@ -1,13 +1,14 @@
 export function mount(root,api,cancel,initial){
   root.className='host-permissions';let state=initial,pending=false,disposed=false,generation=0;
   const element=(tag,text)=>{const item=document.createElement(tag);item.textContent=text;return item;};
-  root.append(element('h1','本机远程访问权限'),element('p','屏幕录制用于传输本机画面，键鼠控制用于接收远程操作。仅在你点击授权时发起对应的系统请求。'));
+  root.append(element('h1','本机远程访问权限'),element('p','屏幕录制用于传输本机画面，键鼠控制用于接收远程操作。可通过下方按钮分别授权。'));
   const rows={};
   for(const [key,label,detail] of [['screenRecording','屏幕录制','允许读取本机屏幕画面'],['inputControl','键鼠控制','允许在本机执行远程鼠标和键盘操作']]){
     const row=element('section',''),title=element('h2',label),description=element('p',detail),status=element('span','未检查'),button=element('button','前往授权');
     status.setAttribute('aria-live','polite');button.type='button';button.onclick=()=>{if(!button.disabled)return perform('host-permissions-request',{permission:key});};
     row.append(title,description,status,button);root.append(row);rows[key]={status,button};
   }
+  root.append(element('p','首次传输这台 Mac 的声音时，macOS 会单独请求录制系统声音，请在系统弹窗中确认。未允许时可能有画面但无声音；此窗口的检查结果仅包含屏幕录制与键鼠控制。'));
   const notice=element('p',''),actions=element('div',''),refresh=element('button','重新检查'),close=element('button','关闭');
   notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');actions.className='permission-actions';
   refresh.onclick=()=>{if(!refresh.disabled)return perform('host-permissions-check');};close.onclick=cancel;actions.append(refresh,close);root.append(notice,actions);

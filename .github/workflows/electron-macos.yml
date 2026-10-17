@@ -146,6 +146,11 @@ jobs:
         run: |
           node --test scripts/tests/mac-privacy-receipt.test.cjs
           python3 scripts/build_privacy_pixel_fixtures.py
+      - name: Build owned tone and decoder for complete host audio acceptance
+        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != ''
+        run: |
+          node --test scripts/tests/mac-audio-receipt.test.cjs
+          python3 scripts/build_macos_audio_fixture.py
       - run: npm run build:mac -- ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
@@ -162,6 +167,7 @@ jobs:
             .tools/mac-electron/native-clipboard-bundle-*.json
             .tools/mac-electron/native-login-startup-*.json
             .tools/mac-electron/native-stream-bundle-*.json
+            .tools/mac-electron/native-audio-bundle-*.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -174,4 +180,10 @@ jobs:
         with:
           name: ClipRelay-Mac-Native-Stream-Failure-${{ matrix.arch }}
           path: .tools/mac-electron/native-stream-bundle-*.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ClipRelay-Mac-Native-Audio-Failure-${{ matrix.arch }}
+          path: .tools/mac-electron/native-audio-bundle-*.json
           if-no-files-found: ignore

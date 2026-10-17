@@ -4,8 +4,14 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawn,spawnSync}=require('node:child_process');
 const {snapshot,encryptedStorage}=require('./test_macos_host_state.cjs');
+const {validate:validateReceipt,SOURCES}=require('./audio_fixture/receipt.cjs');
 assert.equal(process.platform,'darwin');assert.equal(process.env.GITHUB_ACTIONS,'true');
 const directory=path.resolve(process.argv[2]),reportPath=path.resolve(process.argv[3]);
+const complete=process.env.CLIPRELAY_COMPLETE_AUDIO_TEST==='1';
+const expectedDirectory=path.join(process.env.GITHUB_WORKSPACE,complete?
+  `.tools/mac-electron/ClipRelay-darwin-${process.arch}/ClipRelay.app/Contents/Resources/app/mac`:'.tools/audio-stream-mac');
+assert.equal(fs.realpathSync(directory),expectedDirectory);
+if(complete)assert.equal(process.env.APP_SOURCE_COMMIT,process.env.GITHUB_SHA);
 const {HostController}=require(path.join(directory,'host-controller.cjs'));
 const {HostState,configuration}=require(path.join(directory,'host-state.cjs'));
 const {HostEngine}=require(path.join(directory,'host-engine.cjs'));
@@ -50,8 +56,7 @@ function verifyFixture(){
   assert.ok(file.startsWith(root)&&fs.statSync(file).size<16384);
   const receipt=JSON.parse(fs.readFileSync(file,'utf8'));
   assert.equal(receipt.protocol,1);assert.equal(receipt.testCommit,process.env.GITHUB_SHA);assert.equal(receipt.architecture,process.arch);
-  const sources=['scripts/privacy_fixture/decode.c','scripts/audio_fixture/opus.h','scripts/audio_fixture/tone.mm',
-    'scripts/audio_fixture/CMakeLists.txt','scripts/build_macos_audio_fixture.py','engine/desktop-client/upstream.json'];
+  const sources=[...SOURCES];
   assert.deepEqual(Object.keys(receipt.sources).sort(),sources.sort());
   const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   for(const name of sources)assert.equal(hash(path.join(__dirname,'..',name)),receipt.sources[name]);
@@ -115,9 +120,10 @@ function audioConsentLog(){
   return {status:query.status,error:query.error?.code||null,lines:String(query.stdout||'').split('\n')
     .filter(line=>/AudioCapture|SystemAudio|Microphone/.test(line)).slice(-30).map(line=>line.slice(0,700))};
 }
-const report={protocol:1,testCommit:process.env.GITHUB_SHA,architecture:process.arch,passed:false,componentOnly:true,
+const report={protocol:1,testCommit:process.env.GITHUB_SHA,applicationCommit:complete?process.env.APP_SOURCE_COMMIT:null,
+  architecture:process.arch,passed:false,componentOnly:!complete,hostScope:complete?'complete-app-host':'development-components',
   source:'owned-synthetic-tone',receiver:'standalone-opus-and-software-h264',productionPlaybackVerified:false,
-  microphoneInjectionVerified:false,keychainValidated:false,audioSamplesSaved:false,cases:[],observations:[]};
+  productionPermissionUIVerified:false,microphoneInjectionVerified:false,keychainValidated:false,audioSamplesSaved:false,cases:[],observations:[]};
 async function main(){
   try{
     report.fixture=verifyFixture();
@@ -209,6 +215,9 @@ async function main(){
     try{await close(tone);}catch{cleanup.push('tone');}
     report.exits=fixtures.map(item=>({exit:item.exit,error:item.error}));
     if(cleanup.length){report.cleanupErrors=cleanup;report.passed=false;process.exitCode=1;}
+    if(report.passed)try{validateReceipt(report,{testCommit:process.env.GITHUB_SHA,architecture:process.arch,
+      hostScope:report.hostScope,applicationCommit:report.applicationCommit});}
+    catch(error){report.passed=false;report.failure={stage:'receipt',code:error.code||'AUDIO_RECEIPT_INVALID'};process.exitCode=1;}
     fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n');
     console.log(JSON.stringify({passed:report.passed,stage,cases:report.cases,architecture:process.arch}));
   }
