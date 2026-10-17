@@ -125,7 +125,16 @@ static int receive_frame(PDECODE_UNIT unit) {
 static void cleanup(void) { av_packet_free(&packet); av_frame_free(&image); avcodec_free_context(&decoder); }
 static void ended(int reason) { atomic_store(&termination, reason); atomic_store(&stopped, 1); }
 static void stage_failed(int stage,int code) { printf("{\"event\":\"stage-failed\",\"stage\":%d,\"code\":%d}\n",stage,code);fflush(stdout); }
-static void silent_log(const char *format, ...) { (void)format; }
+#ifdef CLIPRELAY_AUDIO_FIXTURE
+static void audio_log(const char *format);
+#endif
+static void silent_log(const char *format, ...) {
+#ifdef CLIPRELAY_AUDIO_FIXTURE
+  audio_log(format);
+#else
+  (void)format;
+#endif
+}
 static void *watch(void *ignored) {
   (void)ignored;
   while (!atomic_load(&finished)) {
