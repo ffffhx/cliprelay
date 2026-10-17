@@ -95,13 +95,20 @@ namespace cliprelay::privacy {
       std::array<CGDirectDisplayID, 16> active {};
       if (CGGetActiveDisplayList(active.size(), active.data(), &count) != kCGErrorSuccess || count != identity.windows.size()) return nil;
       std::set<std::uint32_t> expected(active.begin(), active.begin() + count);
+      // optionIncludingWindow modifies an above/below query; by itself it is
+      // not a single-window lookup. Include offscreen/transparent windows and
+      // then require exactly one native record for each registered identifier.
+      NSArray *information = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
+      if (!information) return nil;
       for (const auto &item : identity.windows) {
         if (!expected.erase(item.display)) return nil;
-        NSArray *info = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, item.id));
-        if (info.count != 1) return nil;
-        NSDictionary *window = info[0];
-        if ([window[(__bridge NSString *)kCGWindowOwnerPID] intValue] != identity.pid ||
-            [window[(__bridge NSString *)kCGWindowNumber] unsignedIntValue] != item.id ||
+        NSDictionary *window = nil;
+        for (NSDictionary *candidate in information) {
+          if ([candidate[(__bridge NSString *)kCGWindowNumber] unsignedIntValue] != item.id) continue;
+          if (window) return nil;
+          window = candidate;
+        }
+        if (!window || [window[(__bridge NSString *)kCGWindowOwnerPID] intValue] != identity.pid ||
             !window[(__bridge NSString *)kCGWindowAlpha] || [window[(__bridge NSString *)kCGWindowAlpha] doubleValue] != 0) return nil;
       }
       auto reply = std::make_shared<content_reply>();

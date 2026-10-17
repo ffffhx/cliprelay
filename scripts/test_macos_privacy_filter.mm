@@ -109,8 +109,12 @@ int main() {
             pid = info.pbi_ppid;
           }
           for (const auto &window : identity.windows) {
-            const auto info = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, window.id);
-            fprintf(stderr, "owned fixture window=%u display=%u metadata=%s\n", window.id, window.display, [[(NSArray *)info description] UTF8String]);
+            const auto info = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+            for (NSDictionary *candidate in (NSArray *)info) {
+              if ([candidate[(NSString *)kCGWindowNumber] unsignedIntValue] != window.id) continue;
+              fprintf(stderr, "owned fixture window=%u display=%u pid=%d alpha=%f\n", window.id, window.display,
+                      [candidate[(NSString *)kCGWindowOwnerPID] intValue], [candidate[(NSString *)kCGWindowAlpha] doubleValue]);
+            }
             if (info) CFRelease(info);
           }
         }
