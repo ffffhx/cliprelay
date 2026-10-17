@@ -9,6 +9,7 @@ import select
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -52,6 +53,18 @@ def run(output, selected_binary=None):
         raise RuntimeError('Requires a disposable Mac CI runner')
     root = Path(__file__).resolve().parents[1]
     cases, observations = [], []
+    native_sources = [p for p in (root/'network/hostprivacy').iterdir() if p.suffix in ('.go','.h','.m')]
+    native_sources += [root/'network/cmd/cliprelay-host-network/main.go', root/'network/cmd/cliprelay-host-network/input_unix.go',
+                       root/'network/go.mod', root/'network/go.sum']
+    if selected_binary is not None:
+        artifact = selected_binary.parent.parent
+        manifest = json.loads((artifact/'manifest.json').read_bytes())
+        if manifest.get('privacyWorker') != 1 or hashlib.sha256(selected_binary.read_bytes()).hexdigest() != manifest['files']['runtime/cliprelay-host-network']:
+            raise RuntimeError('Selected binary is not the pinned private mask worker')
+        with tarfile.open(artifact/'cliprelay-host-source.tar.gz') as archive:
+            for source in native_sources:
+                if archive.extractfile(source.relative_to(root).as_posix()).read() != source.read_bytes():
+                    raise RuntimeError('Selected privacy worker core does not match the test revision')
     with tempfile.TemporaryDirectory(prefix='cliprelay-privacy-worker-') as temporary:
         stage = Path(temporary)
         binary, auditor = selected_binary or stage/'worker', stage/'audit'
@@ -195,9 +208,7 @@ def run(output, selected_binary=None):
                 diagnostic = log.read()[-4096:].decode(errors='replace')
                 if diagnostic: print(diagnostic, file=sys.stderr)
                 log.close()
-        sources = [p for p in (root/'network/hostprivacy').iterdir() if p.suffix in ('.go','.h','.m')]
-        sources += [root/'network/cmd/cliprelay-host-network/main.go',root/'network/cmd/cliprelay-host-network/input_unix.go',
-                    root/'network/go.mod',root/'network/go.sum',root/'scripts/privacy_fixture/audit.mm',Path(__file__).resolve()]
+        sources = native_sources + [root/'scripts/privacy_fixture/audit.mm',Path(__file__).resolve()]
         report={'protocol':1,'passed':True,'architecture':platform.machine(), 'cases':cases,'observations':observations,
                 'sourceCommit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
                 'sourceHashes':{p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},

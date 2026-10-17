@@ -100,8 +100,21 @@ async function build(){
               (terminalCases.length && files.terminalControl!==1) || (wakeCases.length && files.wakeControl!==1) || JSON.stringify(files.cases.slice(0,expected.length))!==JSON.stringify(expected) ||
               files.executableSha256!==result.manifest.files['runtime/cliprelay-host-network'])throw new Error('Packaged Mac file acceptance failed');
         }
+        let privacyWorker;
+        if(result.manifest.privacyWorker===1){
+          const reportPath=path.join(output,`native-privacy-worker-${architecture}.json`);
+          execFileSync('python3',[path.join(repo,'scripts','test_macos_privacy_worker.py'),'--binary',path.join(appDirectory,'host-companion','runtime','cliprelay-host-network'),
+            '--output',reportPath],{stdio:'inherit',timeout:90000});
+          privacyWorker=JSON.parse(fs.readFileSync(reportPath,'utf8'));
+          const expected=['native-prepare-invisible-activate-visible-stop-restores','native-deadline-exits-and-removes-owned-masks',
+            'native-owner-channel-EOF-removes-owned-masks','native-worker-crash-removes-owned-masks','privacy-production-owner-and-channel-admission',
+            'privacy-parent-exit-with-writer-held','privacy-parent-crash-with-writer-held','privacy-signal-hides-owned-masks'];
+          if(privacyWorker.passed!==true || privacyWorker.productionCLI!==true || privacyWorker.protocol!==1 ||
+              privacyWorker.architecture!==(architecture==='x64'?'x86_64':'arm64') || JSON.stringify(privacyWorker.cases)!==JSON.stringify(expected) ||
+              privacyWorker.workerSha256!==result.manifest.files['runtime/cliprelay-host-network'])throw new Error('Packaged private mask worker acceptance failed');
+        }
         fs.writeFileSync(path.join(output,`host-companion-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,pin:companionPin,
-          verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session,...(files?{files}:{})},null,2));
+          verifiedFiles:Object.keys(result.manifest.files).length,nativeMinimumOS:result.nativeMinimumOS,session,...(files?{files}:{}),...(privacyWorker?{privacyWorker}:{})},null,2));
         // Includes three independent production two-minute expiry checks.
         const pairing=JSON.parse(execFileSync(process.execPath,[path.join(repo,'scripts','test_macos_host_pairing.cjs'),appDirectory],{encoding:'utf8',timeout:480000,maxBuffer:65536}));
         if(pairing.passed!==true || pairing.actualChildStarts!==4 || pairing.realNativePairing!==true || pairing.pairedClientPersisted!==true ||
