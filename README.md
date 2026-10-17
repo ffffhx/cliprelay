@@ -82,6 +82,8 @@ Mac 系统声音的[Intel、ARM 开发组件链路验收](https://github.com/fff
 
 正式 Qt 输出已接入，但同机音频验收仍有隔离缺口。[Intel、ARM 受控实验](https://github.com/ffffhx/cliprelay/actions/runs/39010420208)均确认，私有 `CATapMuted` 不会把音源排除出主机的全局采集：静音前后收到的 1000 Hz 幅度几乎不变，音源自身停止后才恢复静音。两端均通过原有 5 项音频链路及 3 项采样工具检查，Qt 日志确认 CoreAudio 输出与音频首包；实际输出仍分别在 1600 Hz 和恢复静音阶段失败。[此前一次 Intel Qt 测量通过](https://github.com/ffffhx/cliprelay/actions/runs/39010012510)不能证明反馈隔离或异机音质，需要独立的主机和播放器音频环境继续验证。同轮 ARM 独立接收器无音频回调的问题本次未复现，原因仍保留待查。完整回执、源码与产物摘要已独立核对，见 `.tools/uu-parity/mac-audio-stream-39010420208.json` 和 `.tools/uu-parity/mac-audio-muted-recapture-both.json`；原有音质与静音阈值未放宽。
 
+独立环境所需的[临时 CI 通道](https://github.com/ffffhx/cliprelay/actions/runs/39013008259)已通过跨机器验收：Linux、Intel Mac、ARM Mac 各通过 7 组带竞争检测的原生检查；两个独立 Linux 作业通过临时外网入口，以内层双向 TLS 认证传输 2 MiB TCP 数据和 0～65507 字节的六种 UDP 数据包，并校验内容、半关闭、未授权身份拒绝和退出清理。证书绑定、产物摘要、源码及回执已独立核对，所有子进程退出、主机活动连接归零，记录见 `.tools/uu-parity/audio-environment-bridge-artifacts.json`。验收范围是测试通道，正式 Mac 音频输出仍待接入独立环境；临时入口准备期间曾出现 DNS 和连接错误，后续可达，一次成功不证明该临时服务的稳定性。
+
 Mac 远控会话使用原生 Metal 渲染，能力探测和软件解码回退也避免进入已触发虚拟 GPU 崩溃的 MoltenVK 路径。[Intel Mac 完整包验收](https://github.com/ffffhx/cliprelay/actions/runs/38975309199)通过 6 项实际串流场景：包内主机采集与编码、加密传输、Qt 播放器呈现 1280×720 画面、暂停输入后的显示重建与新画面确认、控制端退出清理，以及撤销当前设备后正常结束并保留另一台设备的连接能力。此次撤销约 822 毫秒完成；同一包另通过 16 项真实 Electron 剪贴板场景。下载包的源码、组件程序与测试回执均已核对，记录见 `.tools/uu-parity/mac-host-stream-artifacts.json`。验收对应应用提交 `60b1096` 和播放器提交 `0bc76ac`，不代表物理键鼠输入效果、两台真实电脑、公网体验、系统权限交互或钥匙串已验收。
 
 Apple Silicon 的实际画面呈现仍未通过验收。当前 macOS 15／26 ARM 云机器在与 ClipRelay 无关的[独立 MetalKit 对照测试](https://github.com/ffffhx/cliprelay/actions/runs/38974945954)中，同样没有返回有效的画面呈现时间；窗口可见、应用激活和唤醒显示器后仍如此，Intel 对照则正常。串流失败后在同一 ARM 机器运行独立对照也复现这一限制。因此继续保留真实呈现与新画面确认要求，不把帧提交或 GPU 执行完成当作成功显示，也不据此判断实体 Apple Silicon Mac 的行为。开发包尚未替换用户安装或公开发布。
