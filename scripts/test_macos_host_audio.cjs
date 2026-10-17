@@ -153,7 +153,17 @@ async function main(){
     decoder=launchFixture('CLIPRELAY_AUDIO_DECODE_FIXTURE');
     decoder.child.stdin.write([xmlValue(info,'appversion'),xmlValue(info,'GfeVersion')||'3.23.0.74',url,key,iv.toString('hex'),''].join('\n'));
     stage='quiet-baseline';
-    const baseline=await until(()=>alive(decoder),value=>value?.decoded>=5&&value.audio?.windows>=2&&value.audio.packets>0,30000);
+    report.ciAudioConsent=[];let consentPressed=false,nextConsent=Date.now()+2000;
+    const baseline=await until(async()=>{
+      const value=alive(decoder);
+      if(!value?.audio?.packets&&!consentPressed&&Date.now()>=nextConsent&&report.ciAudioConsent.length<8){
+        assert.ok(engineChild&&engineChild.exitCode===null&&engineChild.signalCode===null);
+        const decision=await command('allow-audio '+engineChild.pid,'audio-consent');
+        assert.equal(decision.ownedEngineVerified,true);report.ciAudioConsent.push(decision);
+        consentPressed=decision.pressed;nextConsent=Date.now()+2000;
+      }
+      return value;
+    },value=>value?.decoded>=5&&value.audio?.windows>=2&&value.audio.packets>0,30000);
     const active=await admin();assert.equal(active.streams.length,1);
     assert.equal(active.streams[0].owner,new crypto.X509Certificate(identity.cert).fingerprint256.replaceAll(':','').toLowerCase());
     assert.equal(baseline.errors,0);assert.equal(baseline.audio.errors,0);

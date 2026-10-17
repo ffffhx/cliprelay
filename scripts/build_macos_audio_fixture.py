@@ -51,7 +51,7 @@ def build():
     run('clang++', '-std=c++17', '-fobjc-arc', '-Wall', '-Wextra', '-Werror', '-mmacosx-version-min=14.2',
         str(ROOT/'scripts/audio_fixture/tone.mm'), '-framework', 'Foundation',
         '-framework', 'AudioToolbox', '-framework', 'CoreAudio', '-framework', 'AppKit',
-        '-framework', 'ApplicationServices', '-o', str(tone))
+        '-framework', 'ApplicationServices', '-lproc', '-o', str(tone))
     decoder = build_dir/'cliprelay-audio-decode'
     receipt = {'protocol': 1, 'testCommit': commit,
                'architecture': {'x86_64': 'x64', 'arm64': 'arm64'}[platform.machine()],
