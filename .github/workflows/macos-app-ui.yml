@@ -4,6 +4,12 @@ on:
     branches: ['codex/desktop-client-input-*']
     paths: ['.github/workflows/macos-app-ui.yml']
   workflow_dispatch:
+    inputs:
+      permission_probe:
+        description: 'Observe the normal permission request UI on a disposable runner'
+        type: choice
+        options: ['none', 'screen', 'input']
+        default: 'none'
 permissions:
   contents: read
   actions: read
@@ -23,6 +29,8 @@ jobs:
       - name: Install pinned UI automation without install hooks or browser downloads
         run: npm ci --prefix scripts/app_ui --ignore-scripts --no-audit --no-fund
       - name: Observe normal application menu and permission UI
+        env:
+          CLIPRELAY_PERMISSION_PROBE: ${{ inputs.permission_probe || 'none' }}
         run: python3 scripts/app_ui/run.py
       - uses: actions/upload-artifact@v4
         if: always()

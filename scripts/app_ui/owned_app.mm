@@ -38,7 +38,7 @@ static NSString *text(AXUIElementRef node,CFStringRef key){
   if(AXUIElementCopyAttributeValue(node,key,&value)==kAXErrorSuccess&&value){
     if(CFGetTypeID(value)==CFStringGetTypeID())result=[(__bridge NSString *)value copy];CFRelease(value);
   }
-  return result.length<=200?result:@"";
+  return result.length<=200?result:[result substringToIndex:200];
 }
 static void traverse(AXUIElementRef node,unsigned depth,unsigned &budget,NSMutableArray *rows,NSMutableArray *matches,NSString *command,
                      std::chrono::steady_clock::time_point end){
@@ -90,6 +90,33 @@ static bool inspect(NSString *command){
     @"pressed":@(attempted&&action==kAXErrorSuccess),
     @"completionUnknown":@(attempted&&action==kAXErrorCannotComplete),@"actionStatus":@(action),@"nodes":rows});
   return attempted&&(action==kAXErrorSuccess||action==kAXErrorCannotComplete);
+}
+static void permission_windows(){
+  if(!owned()){emit(@{@"event":@"error",@"code":@"APP_IDENTITY_CHANGED"});return;}
+  // Read only the system consent/settings windows on this disposable runner.
+  // No permission is granted here, and no native system control is pressed.
+  NSSet *allowed=[NSSet setWithArray:@[@"com.apple.UserNotificationCenter",@"com.apple.notificationcenterui",
+    @"com.apple.SecurityAgent",@"com.apple.CoreServicesUIAgent",@"com.apple.systempreferences"]];
+  NSMutableArray *observations=[NSMutableArray array];unsigned budget=250,remaining_rows=60;
+  const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);const BOOL trusted=AXIsProcessTrusted();
+  if(trusted)for(NSRunningApplication *broker in NSWorkspace.sharedWorkspace.runningApplications){
+    if(![allowed containsObject:broker.bundleIdentifier]||!remaining_rows||!budget||std::chrono::steady_clock::now()>=end)continue;
+    NSString *path=broker.executableURL.path;
+    if(![path hasPrefix:@"/System/"])continue;
+    AXUIElementRef app=AXUIElementCreateApplication(broker.processIdentifier);AXUIElementSetMessagingTimeout(app,.1);
+    CFTypeRef windows=nullptr;NSMutableArray *rows=[NSMutableArray array],*matches=[NSMutableArray array];
+    if(AXUIElementCopyAttributeValue(app,kAXWindowsAttribute,&windows)==kAXErrorSuccess&&windows){
+      if(CFGetTypeID(windows)==CFArrayGetTypeID())for(id node in (__bridge NSArray *)windows){
+        if(CFGetTypeID((__bridge CFTypeRef)node)==AXUIElementGetTypeID())traverse((__bridge AXUIElementRef)node,0,budget,rows,matches,@"windows",end);
+      }
+      CFRelease(windows);
+    }
+    CFRelease(app);
+    NSUInteger count=MIN(rows.count,(NSUInteger)remaining_rows);remaining_rows-=(unsigned)count;
+    [observations addObject:@{@"bundle":broker.bundleIdentifier,@"pid":@(broker.processIdentifier),@"path":path,
+      @"nodes":[rows subarrayWithRange:NSMakeRange(0,count)]}];
+  }
+  emit(@{@"event":@"consent-windows",@"owned":@(owned()),@"trusted":@(trusted),@"brokers":observations,@"remainingBudget":@(budget)});
 }
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();
@@ -166,6 +193,7 @@ int main(int argc,char **argv){
           NSString *command=[@(line) stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet];
           dispatch_async(dispatch_get_main_queue(),^{
             if([command isEqualToString:@"quit"])close_owned();
+            else if([command isEqualToString:@"system-windows"])permission_windows();
             else if([@[@"inspect",@"menu",@"host",@"paired",@"permissions"] containsObject:command])inspect(command);
             else{emit(@{@"event":@"error",@"code":@"COMMAND_INVALID"});close_owned();}
           });

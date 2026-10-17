@@ -33,6 +33,8 @@ browser.chmod(0o700)
 env={name:os.environ[name] for name in ['PATH','HOME','TMPDIR','RUNNER_TEMP','GITHUB_ACTIONS','GITHUB_REPOSITORY'] if name in os.environ}
 assert subprocess.check_output([str(browser),'--version'],env=env,text=True,timeout=5).strip()=='agent-browser 0.34.0'
 name='ui';namespace='crui-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
+permission_probe=os.environ.get('CLIPRELAY_PERMISSION_PROBE','none')
+assert permission_probe in ['none','screen','input']
 config=Path.home()/'Library/Application Support/ClipRelay'
 assert not config.exists() and not config.is_symlink(), 'DEFAULT_PROFILE_ALREADY_EXISTS'
 with socket.socket() as reservation:
@@ -40,6 +42,7 @@ with socket.socket() as reservation:
 events=queue.Queue();all_events=[];child=None;browser_connected=False;stage='launch';failure=None
 result={'protocol':1,'testCommit':os.environ['GITHUB_SHA'],'run':int(os.environ['GITHUB_RUN_ID']),'architecture':'x64','passed':False,
         'discoveryOnly':True,'productionAudioVerified':False,'permissionGrantedByFixture':False,'keychainVerified':False,
+        'permissionProbe':permission_probe,'permissionRequestedByFixture':permission_probe!='none',
         'application':selection,'cases':[],'snapshots':{},'helperSha256':sha(helper),'agentBrowserSha256':sha(browser),
         'agentBrowserVersion':'0.34.0','sources':{str(file.relative_to(root)).replace('\\','/'):sha(file) for file in
         [Path(__file__),Path(__file__).with_name('owned_app.mm'),Path(__file__).with_name('fetch.py'),Path(__file__).with_name('package.json'),
@@ -54,9 +57,9 @@ def event(kind,timeout=10):
     value=events.get(timeout=timeout)
     assert value.get('event')==kind, 'HELPER_EVENT_FAILED'
     return value
-def command(name):
+def command(name,kind='ui'):
     assert child.poll() is None
-    child.stdin.write(name+'\n');child.stdin.flush();return event('ui',8)
+    child.stdin.write(name+'\n');child.stdin.flush();return event(kind,8)
 
 def menu_action(name):
     value=command(name)
@@ -100,6 +103,32 @@ def snapshot(kind):
     assert value['data']['origin']==selected['url'], 'RENDERER_ORIGIN_MISMATCH'
     result['snapshots'][kind]=value
     return json.dumps(value,ensure_ascii=False)
+
+def probe_permission():
+    label='屏幕录制' if permission_probe=='screen' else '键鼠控制'
+    snapshot('host-permissions')
+    current=result['snapshots']['host-permissions']['data'];lines=current['snapshot'].splitlines();inside=False;refs=[]
+    for line in lines:
+        if 'heading ' in line and 'level=2' in line:inside='"'+label+'"' in line
+        if inside and 'button "前往授权"' in line and '[disabled' not in line:
+            found=re.search(r'ref=(e[0-9]+)',line)
+            if found:refs.append(found.group(1))
+    assert len(refs)==1 and current['refs'][refs[0]]=={'name':'前往授权','role':'button'}, 'PERMISSION_BUTTON_INVALID'
+    before=command('system-windows','consent-windows');assert before['owned'] and before['trusted']
+    result['permissionRequest']={'permission':permission_probe,'before':before,'observations':[]}
+    browser_command('click','@'+refs[0])
+    deadline=time.monotonic()+10;observed=False
+    while time.monotonic()<deadline:
+        value=command('system-windows','consent-windows');assert value['owned'] and value['trusted']
+        result['permissionRequest']['observations'].append(value)
+        content=json.dumps(value['brokers'],ensure_ascii=False).lower()
+        if ('cliprelay' in content or 'sunshine' in content) and any(term in content for term in ['screen','accessibility','屏幕','辅助功能']):
+            observed=True;break
+        time.sleep(.5)
+    result['permissionRequest']['systemPromptObserved']=observed
+    snapshot('host-permissions')
+    assert observed,'SYSTEM_PERMISSION_PROMPT_NOT_OBSERVED'
+    result['cases'].append('production-renderer-requests-'+permission_probe+'-permission')
 try:
     child=subprocess.Popen([str(helper),str(app),str(port)],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                            text=True,bufsize=1)
@@ -127,6 +156,8 @@ try:
     browser_command('wait','--text','已读取当前系统状态')
     text=snapshot('host-permissions');assert '屏幕录制' in text and '键鼠控制' in text
     result['cases'].append('production-renderer-opens-read-only-system-permission-check')
+    if permission_probe!='none':
+        stage='request-permission';probe_permission()
     settings=json.loads((config/'config.json').read_bytes());assert settings['hostAutoStart'] is False and settings['legacyEnabled'] is False
     result['defaultHostAndLegacyRemainOff']=True
     assert sha(app/'Contents/MacOS/ClipRelay')==selection['executableSha256']
