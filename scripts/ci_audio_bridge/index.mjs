@@ -135,12 +135,18 @@ async function main(){
           else{res.statusCode=404;res.end();}
         })().catch(()=>{res.statusCode=500;res.end();});
       });control.on('connection',track);await listen(control,48830);
-      stage='connector';report.connector=await downloaded(['connector']);
+      stage='connector-download';report.connector=await downloaded(['connector']);
       const config=path.join(state,'cloudflared.yml');fs.writeFileSync(config,'{}\n');
       connector=launch(report.connector.path,['tunnel','--config',config,'--no-autoupdate','--url','http://'+started.ready.address,'--protocol','http2','--metrics','127.0.0.1:0'],{json:false});
+      stage='connector-route-discovery';
       const publicURL=await until(()=>{alive(connector);return connector.route},Boolean,45000);
+      stage='connector-route-readiness';report.edgeResponses=[];
       await until(async()=>{
-        alive(connector);try{const response=await fetch(publicURL+'/',{signal:AbortSignal.timeout(3000)});return response.status===404&&response.headers.get('x-cliprelay-fixture')==='audio-bridge-v1';}catch{return false}
+        alive(connector);let result;
+        try{const response=await fetch(publicURL+'/',{signal:AbortSignal.timeout(3000)});result={status:response.status,marker:response.headers.get('x-cliprelay-fixture')==='audio-bridge-v1'};await response.body?.cancel();}
+        catch(error){result={status:0,error:/^[A-Z_0-9]{1,64}$/.test(error.cause?.code||'')?error.cause.code:error.name};}
+        report.edgeResponses.push(result);if(report.edgeResponses.length>8)report.edgeResponses.shift();
+        return result.status===404&&result.marker;
       },Boolean,60000);
       report.routeArtifact=await publish('route',{url:publicURL.replace('https:','wss:')+'/bridge',certificateSha256:own.certificateSha256});
       stage='remote-exchange';await until(()=>{alive(activeBridge);alive(connector);return done},Boolean,180000);
@@ -183,6 +189,12 @@ async function main(){
     assert.ok(children.every(item=>item.exit));report.cases.push('owned-children-and-sockets-closed');report.passed=true;
   }catch(error){
     report.failure={stage,code:error.code||error.name,location:error.stack?.match(/index\.mjs:\d+:\d+/)?.[0]};process.exitCode=1;
+    if(connector){
+      report.failure.routeDiscovered=!!connector.route;
+      report.failure.connectorLines=connector.buffer.split('\n').filter(line=>/ERR|WRN|registered|connection|config/i.test(line)&&
+        !/PRIVATE KEY|authorization|credential|password|secret|token/i.test(line)).slice(-20)
+        .map(line=>line.replace(/https?:\/\/[^\s]+/g,'[URL]').slice(0,350));
+    }
   }finally{
     for(const child of children)try{await stop(child,child===connector)}catch{report.cleanupFailed=true;report.passed=false;process.exitCode=1}
     for(const socket of sockets)socket.destroy();
