@@ -74,6 +74,12 @@
 
 @implementation ClipRelayCaptureTestVideo
 - (id<ClipRelayCaptureStream>)newStreamExcludingWindows:(NSArray<SCWindow *> *)windows {
+  // The real factory records the stream configuration for per-source format
+  // conversion. Supply the same metadata while keeping screen access inert.
+  if (!_captureConfiguration) _captureConfiguration = [[SCStreamConfiguration alloc] init];
+  _captureConfiguration.width = self.frameWidth;
+  _captureConfiguration.height = self.frameHeight;
+  _captureConfiguration.pixelFormat = self.pixelFormat;
   auto stream = [[ClipRelayCaptureTestStream alloc] init];
   stream.refuse = self.refuse;
   [self.streams addObject:stream];

@@ -34,11 +34,13 @@ def run(output):
         subprocess.run(['go', 'build', '-mod=readonly', '-o', str(binary), str(root/'scripts/privacy_fixture/main.go')], cwd=root/'network', check=True)
         subprocess.run(['clang++', '-fobjc-arc', '-mmacosx-version-min=14.2', str(root/'scripts/privacy_fixture/audit.mm'),
                         '-framework', 'Foundation', '-framework', 'CoreGraphics', '-o', str(auditor)], check=True)
-        children = []
+        children, logs = [], []
         def audit(pid):
             return json.loads(subprocess.check_output([str(auditor), str(pid)], timeout=5))
         def start():
-            child = subprocess.Popen([str(binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            log = (stage/f'worker-{len(children)}.log').open('w+b')
+            logs.append(log)
+            child = subprocess.Popen([str(binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
             children.append(child)
             return child
         def command(child, op):
@@ -71,11 +73,17 @@ def run(output):
                 if not audit(pid): return
                 time.sleep(.05)
             raise RuntimeError('Native windows outlived the worker')
+        def hidden(pid):
+            until = time.monotonic()+2
+            while time.monotonic() < until:
+                if not any(w['alpha'] > 0 and w['onScreen'] for w in audit(pid)): return
+                time.sleep(.05)
+            raise RuntimeError('Native stop did not hide masks')
         try:
             child=start(); identifiers=prepare(child); activate(child,identifiers)
             response=command(child,'stop')
             assert not response['active'] and not response['prepared'] and 'identity' not in response
-            assert not any(w['alpha'] > 0 and w['onScreen'] for w in audit(child.pid))
+            hidden(child.pid)
             child.stdin.close(); child.wait(timeout=2); gone(child.pid)
             cases.append('native-prepare-invisible-activate-visible-stop-restores')
 
@@ -98,6 +106,11 @@ def run(output):
                 if child.poll() is None: child.kill(); child.wait(timeout=5)
                 for stream in (child.stdin,child.stdout):
                     if stream and not stream.closed: stream.close()
+            for log in logs:
+                log.flush(); log.seek(0)
+                diagnostic = log.read()[-4096:].decode(errors='replace')
+                if diagnostic: print(diagnostic, file=sys.stderr)
+                log.close()
         sources = [p for p in (root/'network/hostprivacy').iterdir() if p.suffix in ('.go','.h','.m')]
         sources += [root/'scripts/privacy_fixture/main.go',root/'scripts/privacy_fixture/audit.mm',Path(__file__).resolve()]
         report={'protocol':1,'passed':True,'architecture':platform.machine(), 'cases':cases,'observations':observations,
