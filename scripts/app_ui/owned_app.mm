@@ -17,6 +17,8 @@ static NSRunningApplication *application;
 static NSString *expected_path;
 static struct proc_bsdinfo original;
 static pid_t owner;
+static NSString *sample_path;
+static NSTask *sampler;
 static bool closing=false,forced=false,quit_observed=false;
 static std::chrono::steady_clock::time_point close_at,deadline;
 static void emit(NSDictionary *value){
@@ -105,6 +107,23 @@ static void observe_quit(){
     CFRelease(windows);
   }
   CFRelease(app);emit(@{@"event":@"quit-windows",@"owned":@(owned()),@"nodes":rows,@"remainingBudget":@(budget)});
+  if(!owned())return;
+  // Read-only one-second stack sample of the still-owned CI app. This runs
+  // only after normal quit remains pending; no debugger evaluates app code.
+  sampler=[NSTask new];sampler.executableURL=[NSURL fileURLWithPath:@"/usr/bin/sample"];
+  sampler.arguments=@[[@(application.processIdentifier) stringValue],@"1",@"10",@"-file",sample_path];
+  sampler.standardOutput=NSFileHandle.fileHandleWithNullDevice;sampler.standardError=NSFileHandle.fileHandleWithNullDevice;
+  sampler.terminationHandler=^(NSTask *task){dispatch_async(dispatch_get_main_queue(),^{
+    NSDictionary *info=[NSFileManager.defaultManager attributesOfItemAtPath:sample_path error:nullptr];
+    NSString *sample=@"";
+    if([info[NSFileType] isEqual:NSFileTypeRegular]&&[info[NSFileSize] unsignedLongLongValue]<1024*1024){
+      sample=[NSString stringWithContentsOfFile:sample_path encoding:NSUTF8StringEncoding error:nullptr]?:@"";
+      if(sample.length>18000)sample=[sample substringToIndex:18000];
+    }
+    unlink(sample_path.fileSystemRepresentation);
+    emit(@{@"event":@"quit-sample",@"exit":@(task.terminationStatus),@"sample":sample});
+  });};
+  NSError *error=nil;if(![sampler launchAndReturnError:&error])emit(@{@"event":@"quit-sample-error"});
 }
 int main(int argc,char **argv){
   @autoreleasepool {
@@ -123,6 +142,8 @@ int main(int argc,char **argv){
        ![[bundle objectForInfoDictionaryKey:@"CFBundleExecutable"] isEqualToString:@"ClipRelay"]||
        [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.cliprelay.desktop"].count)return 2;
     expected_path=[location stringByAppendingPathComponent:@"Contents/MacOS/ClipRelay"];
+    char pattern[PATH_MAX];if(snprintf(pattern,sizeof pattern,"%s/cliprelay-app-quit-XXXXXX",root)>=(int)sizeof pattern)return 2;
+    int sample_fd=mkstemp(pattern);if(sample_fd<0)return 2;close(sample_fd);sample_path=@(pattern);
     owner=getppid();deadline=std::chrono::steady_clock::now()+std::chrono::seconds(180);
     NSWorkspaceOpenConfiguration *configuration=[NSWorkspaceOpenConfiguration configuration];
     configuration.activates=YES;configuration.createsNewApplicationInstance=YES;configuration.addsToRecentItems=NO;
