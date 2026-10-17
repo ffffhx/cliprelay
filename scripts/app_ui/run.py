@@ -35,8 +35,9 @@ env={name:os.environ[name] for name in ['PATH','HOME','TMPDIR','RUNNER_TEMP','GI
 assert subprocess.check_output([str(browser),'--version'],env=env,text=True,timeout=5).strip()=='agent-browser 0.34.0'
 name='ui';namespace='crui-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
 permission_probe=os.environ.get('CLIPRELAY_PERMISSION_PROBE','none')
-assert permission_probe in ['none','screen','input','screen-settings']
-open_permission_settings=permission_probe=='screen-settings'
+assert permission_probe in ['none','screen','input','screen-settings','screen-grant']
+grant_screen_permission=permission_probe=='screen-grant'
+open_permission_settings=permission_probe in ['screen-settings','screen-grant']
 if open_permission_settings:permission_probe='screen'
 config=Path.home()/'Library/Application Support/ClipRelay'
 assert not config.exists() and not config.is_symlink(), 'DEFAULT_PROFILE_ALREADY_EXISTS'
@@ -44,7 +45,8 @@ with socket.socket() as reservation:
     reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
 events=queue.Queue();all_events=[];child=None;browser_connected=False;stage='launch';failure=None
 result={'protocol':1,'testCommit':os.environ['GITHUB_SHA'],'run':int(os.environ['GITHUB_RUN_ID']),'architecture':'x64','passed':False,
-        'discoveryOnly':True,'productionAudioVerified':False,'permissionGrantedByFixture':False,'keychainVerified':False,
+        'discoveryOnly':not grant_screen_permission,'productionAudioVerified':False,'permissionGrantedByFixture':False,'keychainVerified':False,
+        'permissionGrantRequested':grant_screen_permission,
         'permissionProbe':permission_probe,'permissionRequestedByFixture':permission_probe!='none',
         'systemSettingsRequested':open_permission_settings,
         'application':selection,'cases':[],'snapshots':{},'helperSha256':sha(helper),'agentBrowserSha256':sha(browser),
@@ -163,6 +165,27 @@ def probe_permission():
             time.sleep(.5)
         assert found,'SCREEN_SETTINGS_ROW_NOT_OBSERVED'
         result['cases'].append('exact-system-screen-dialog-opens-settings')
+        result['screenSettingsRow']=command('screen-setting-row','screen-setting')
+        if grant_screen_permission:
+            action=command('grant-screen','screen-setting');result['screenGrantAction']=action
+            assert action['owned'] and action['trusted'] and action['candidates']==1 and action['checkedBefore']==0 and action['enabled'], 'SCREEN_TOGGLE_INVALID'
+            assert action['attempted'] and (action['pressed'] or action['actionStatus']==-25204), 'SCREEN_TOGGLE_ACTION_FAILED'
+            result['screenGrantObservations']=[];deadline=time.monotonic()+20;granted=False
+            while time.monotonic()<deadline:
+                value=command('system-windows','consent-windows');assert value['owned'] and value['trusted']
+                result['screenGrantObservations'].append(value)
+                snapshot('host-permissions')
+                browser_command('find','role','button','click','--name','重新检查')
+                browser_command('wait','--text','已读取当前系统状态')
+                snapshot('host-permissions');inside=False
+                for line in result['snapshots']['host-permissions']['data']['snapshot'].splitlines():
+                    if 'heading ' in line and 'level=2' in line:inside='"屏幕录制"' in line
+                    if inside and 'StaticText "已允许"' in line:granted=True
+                if granted:break
+                time.sleep(.5)
+            result['permissionGrantedByFixture']=granted
+            assert granted,'SCREEN_GRANT_NOT_READ_BACK'
+            result['cases'].append('screen-permission-granted-through-system-settings-and-read-back')
 try:
     child=subprocess.Popen([str(helper),str(app),str(port)],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                            text=True,bufsize=1)

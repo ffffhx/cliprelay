@@ -187,6 +187,64 @@ static void open_screen_settings(){
   emit(@{@"event":@"open-screen-settings",@"owned":@(owned()),@"trusted":@(trusted),@"candidates":@(candidates.count),
     @"attempted":@(attempted),@"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action)});
 }
+static NSDictionary *screen_row(AXUIElementRef node,unsigned depth,unsigned &budget,std::chrono::steady_clock::time_point end){
+  NSMutableArray *buttons=[NSMutableArray array],*candidates=[NSMutableArray array];BOOL label=NO;
+  if(depth>16||!budget||std::chrono::steady_clock::now()>=end)return @{@"label":@NO,@"buttons":buttons,@"candidates":candidates};
+  --budget;AXUIElementSetMessagingTimeout(node,.05);
+  NSString *role=text(node,kAXRoleAttribute);
+  label=[role isEqualToString:@"AXStaticText"]&&[text(node,kAXValueAttribute) isEqualToString:@"ClipRelay"];
+  if([role isEqualToString:@"AXCheckBox"])[buttons addObject:(__bridge id)node];
+  CFTypeRef children=nullptr;
+  if(AXUIElementCopyAttributeValue(node,kAXChildrenAttribute,&children)==kAXErrorSuccess&&children){
+    if(CFGetTypeID(children)==CFArrayGetTypeID())for(id child in (__bridge NSArray *)children){
+      if(CFGetTypeID((__bridge CFTypeRef)child)!=AXUIElementGetTypeID())continue;
+      NSDictionary *part=screen_row((__bridge AXUIElementRef)child,depth+1,budget,end);
+      label|=[part[@"label"] boolValue];[buttons addObjectsFromArray:part[@"buttons"]];[candidates addObjectsFromArray:part[@"candidates"]];
+    }
+    CFRelease(children);
+  }
+  // Select the smallest subtree containing exactly this app and one toggle.
+  // Sibling rows for bash or the runner's own permission never qualify.
+  if(!candidates.count&&label&&buttons.count==1)[candidates addObject:buttons[0]];
+  return @{@"label":@(label),@"buttons":buttons,@"candidates":candidates};
+}
+static void screen_setting(bool grant){
+  const BOOL trusted=AXIsProcessTrusted();NSMutableArray *candidates=[NSMutableArray array];unsigned budget=350;
+  const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+  if(owned()&&trusted)for(NSRunningApplication *settings in
+      [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.systempreferences"]){
+    if(![settings.executableURL.path isEqualToString:@"/System/Applications/System Settings.app/Contents/MacOS/System Settings"])continue;
+    AXUIElementRef app=AXUIElementCreateApplication(settings.processIdentifier);AXUIElementSetMessagingTimeout(app,.1);CFTypeRef windows=nullptr;
+    if(AXUIElementCopyAttributeValue(app,kAXWindowsAttribute,&windows)==kAXErrorSuccess&&windows){
+      if(CFGetTypeID(windows)==CFArrayGetTypeID())for(id window in (__bridge NSArray *)windows){
+        if(CFGetTypeID((__bridge CFTypeRef)window)!=AXUIElementGetTypeID())continue;
+        AXUIElementRef node=(__bridge AXUIElementRef)window;
+        if(![text(node,kAXTitleAttribute) isEqualToString:@"Screen & System Audio Recording"])continue;
+        NSDictionary *row=screen_row(node,0,budget,end);[candidates addObjectsFromArray:row[@"candidates"]];
+      }
+      CFRelease(windows);
+    }
+    CFRelease(app);
+  }
+  NSInteger checked=-1;BOOL enabled=NO,attempted=NO;AXError action=kAXErrorFailure;
+  if(owned()&&trusted&&candidates.count==1&&budget&&std::chrono::steady_clock::now()<end){
+    AXUIElementRef button=(__bridge AXUIElementRef)candidates[0];AXUIElementSetMessagingTimeout(button,.5);
+    CFTypeRef value=nullptr;
+    if(AXUIElementCopyAttributeValue(button,kAXValueAttribute,&value)==kAXErrorSuccess&&value){
+      int number=-1;if(CFGetTypeID(value)==CFNumberGetTypeID()&&CFNumberGetValue((CFNumberRef)value,kCFNumberIntType,&number)&&(number==0||number==1))checked=number;
+      else if(CFGetTypeID(value)==CFBooleanGetTypeID())checked=CFBooleanGetValue((CFBooleanRef)value)?1:0;
+      CFRelease(value);
+    }
+    value=nullptr;
+    if(AXUIElementCopyAttributeValue(button,kAXEnabledAttribute,&value)==kAXErrorSuccess&&value){
+      enabled=CFGetTypeID(value)==CFBooleanGetTypeID()&&CFBooleanGetValue((CFBooleanRef)value);CFRelease(value);
+    }
+    if(grant&&checked==0&&enabled&&owned()){attempted=YES;action=AXUIElementPerformAction(button,kAXPressAction);}
+  }
+  emit(@{@"event":@"screen-setting",@"owned":@(owned()),@"trusted":@(trusted),@"candidates":@(candidates.count),
+    @"remainingBudget":@(budget),@"checkedBefore":@(checked),@"enabled":@(enabled),@"grantRequested":@(grant),
+    @"attempted":@(attempted),@"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action)});
+}
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();
   if(owned()&&!inspect(@"exit"))[application terminate];
@@ -264,6 +322,8 @@ int main(int argc,char **argv){
             if([command isEqualToString:@"quit"])close_owned();
             else if([command isEqualToString:@"system-windows"])permission_windows();
             else if([command isEqualToString:@"open-screen-settings"])open_screen_settings();
+            else if([command isEqualToString:@"screen-setting-row"])screen_setting(false);
+            else if([command isEqualToString:@"grant-screen"])screen_setting(true);
             else if([@[@"inspect",@"menu",@"host",@"paired",@"permissions"] containsObject:command])inspect(command);
             else{emit(@{@"event":@"error",@"code":@"COMMAND_INVALID"});close_owned();}
           });
