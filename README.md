@@ -78,7 +78,9 @@ Mac 系统声音的[Intel、ARM 开发组件链路验收](https://github.com/fff
 
 [首次音频完整包任务](https://github.com/ffffhx/cliprelay/actions/runs/39006158426)曾在原有隐私屏检查中失败：回执剩余约 13 秒时，遮罩进程仅约 4.4 秒后便退出，因此未执行新音频检查。已补充内部恢复原因记录；上述复验中回执剩余 13.9 秒、约 14 秒后退出，原有超时、授权期限和验收要求保持不变。此次未复现不能证明提前退出的原因已经消除。
 
-用于后续播放器验收的[进程音频采样工具](https://github.com/ffffhx/cliprelay/actions/runs/39008257649)已在 Intel、ARM 各通过 3 项原生检查：两个自有进程同时播放时，私有 Core Audio Tap 只跟随指定进程的静音、1000 Hz、1600 Hz、再静音变化，排除另一进程持续的 1600 Hz 干扰；关闭后销毁采样资源，默认设备、采样率和缓冲区保持不变，子进程退出。原生采样分别为 44100 Hz 和 48000 Hz，测试不保存 PCM；源码、产物及回执核验记录见 `.tools/uu-parity/mac-audio-observer-artifacts.json`。这是采样工具自身的验证，正式 Qt 播放器输出仍待接入验收。
+用于播放器验收的[进程音频采样工具](https://github.com/ffffhx/cliprelay/actions/runs/39008257649)已在 Intel、ARM 各通过 3 项原生检查：两个自有进程同时播放时，私有 Core Audio Tap 只跟随指定进程的静音、1000 Hz、1600 Hz、再静音变化，排除另一进程持续的 1600 Hz 干扰；关闭后销毁采样资源，默认设备、采样率和缓冲区保持不变，子进程退出。原生采样分别为 44100 Hz 和 48000 Hz，测试不保存 PCM；源码、产物及回执核验记录见 `.tools/uu-parity/mac-audio-observer-artifacts.json`。
+
+正式 Qt 输出已接入，但同机音频验收仍有隔离缺口。[首次运行](https://github.com/ffffhx/cliprelay/actions/runs/39009170556)中，Intel 在两个音调后的恢复静音阶段失败，ARM 在 1600 Hz 阶段失败。[后续受控实验](https://github.com/ffffhx/cliprelay/actions/runs/39010012510)确认 Intel 上私有 `CATapMuted` 不会把音源排除出主机的全局采集：静音前后收到的 1000 Hz 幅度均约 0.0402，音源自身停止后才恢复静音。该轮 Intel 的 4 项 Qt 输出与清理检查虽通过，仍不能据此宣称异机音频质量或反馈隔离已验收；需要将主机与播放器置于独立音频环境继续验证。ARM 本轮在独立接收器阶段未收到音频回调，后续实验和 Qt 检查未执行，原因待查。完整回执、产物摘要与源码已独立核对，见 `.tools/uu-parity/mac-audio-stream-39010012510.json`；原有音质和静音阈值未放宽。
 
 Mac 远控会话使用原生 Metal 渲染，能力探测和软件解码回退也避免进入已触发虚拟 GPU 崩溃的 MoltenVK 路径。[Intel Mac 完整包验收](https://github.com/ffffhx/cliprelay/actions/runs/38975309199)通过 6 项实际串流场景：包内主机采集与编码、加密传输、Qt 播放器呈现 1280×720 画面、暂停输入后的显示重建与新画面确认、控制端退出清理，以及撤销当前设备后正常结束并保留另一台设备的连接能力。此次撤销约 822 毫秒完成；同一包另通过 16 项真实 Electron 剪贴板场景。下载包的源码、组件程序与测试回执均已核对，记录见 `.tools/uu-parity/mac-host-stream-artifacts.json`。验收对应应用提交 `60b1096` 和播放器提交 `0bc76ac`，不代表物理键鼠输入效果、两台真实电脑、公网体验、系统权限交互或钥匙串已验收。
 

@@ -211,6 +211,9 @@ async function main(){
     let consentWindows;if(tone&&!tone.exit)try{consentWindows=await command('consent-windows','consent-windows');}catch{}
     report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_host_audio\.cjs:\d+:\d+/)?.[0],
       host:host.snapshot(),tone:source,decoder:decoder?.events.at(-1),engine:diagnostics(),audioStack:audioStack(),
+      decoderDiagnostics:(decoder?.stderr||'').split('\n').filter(line=>/audio|opus|error|fail|decrypt|packet/i.test(line)&&
+        !/rikey|uniqueid|private key|certificate|authorization|credential|password|secret|token/i.test(line))
+        .slice(-20).map(line=>line.slice(0,300)),
       audioConsent:audioConsentLog(),consentWindows};process.exitCode=1;
   }finally{
     const cleanup=[];

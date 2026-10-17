@@ -81,11 +81,13 @@ async function close(item){
 }
 const safeLines=text=>text.split('\n').filter(line=>/audio|opus|error|fail/i.test(line)&&
   !/rikey|uniqueid|private key|certificate|authorization|credential|password|secret|token/i.test(line)).slice(-20).map(line=>line.slice(0,300));
-const previousLogs=new Set(fs.readdirSync(os.tmpdir()).filter(name=>/^ClipRelayStream-[0-9]+\.log$/.test(name)));
+// Pinned Qt Path::initialize uses /tmp on macOS, not the per-user TMPDIR.
+const viewerLogDirectory=fs.realpathSync('/tmp');
+const previousLogs=new Set(fs.readdirSync(viewerLogDirectory).filter(name=>/^ClipRelayStream-[0-9]+\.log$/.test(name)));
 function viewerAudioLogs(){
-  return fs.readdirSync(os.tmpdir()).filter(name=>/^ClipRelayStream-[0-9]+\.log$/.test(name)&&!previousLogs.has(name)).slice(0,2)
+  return fs.readdirSync(viewerLogDirectory).filter(name=>/^ClipRelayStream-[0-9]+\.log$/.test(name)&&!previousLogs.has(name)).slice(0,2)
     .flatMap(name=>{
-      const file=path.join(os.tmpdir(),name),info=fs.lstatSync(file);
+      const file=path.join(viewerLogDirectory,name),info=fs.lstatSync(file);
       return info.isFile()&&!info.isSymbolicLink()&&info.uid===process.getuid()&&info.size<4*1024*1024?
         safeLines(fs.readFileSync(file,'utf8')):[];
     });
@@ -93,6 +95,7 @@ function viewerAudioLogs(){
 const report={protocol:1,testCommit:process.env.GITHUB_SHA,architecture:process.arch,passed:false,
   scope:'Development packaged engine and pinned shipped Qt viewer, loopback; private muted process tap observes actual Qt output. No physical speakers, product permission UI, video presentation or automatic error recovery claim.',
   actualQtOutputObserved:false,physicalPlaybackVerified:false,productionPermissionUIVerified:false,videoPresentationVerified:false,
+  sourceAndViewerShareAudioEnvironment:true,feedbackIsolationVerified:false,
   microphoneInjectionVerified:false,automaticRecoveryVerified:false,audioSamplesSaved:false,
   observer:{...observerFixture,path:undefined},toneSha256:toneFixture.files.tone.sha256,
   viewer:{run:viewerPin.run,commit:viewerPin.commit,outerSha256:viewerPin.outerSha256,archiveSha256:viewerPin.archiveSha256,
