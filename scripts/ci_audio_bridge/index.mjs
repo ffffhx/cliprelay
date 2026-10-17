@@ -10,10 +10,13 @@ import crypto from 'node:crypto';
 import {spawn,execFileSync,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
 import {DefaultArtifactClient} from '@actions/artifact';
 
 assert.equal(process.env.GITHUB_ACTIONS,'true');assert.equal(process.env.GITHUB_REPOSITORY,'ffffhx/cliprelay');
 const role=process.env.CLIPRELAY_BRIDGE_ROLE,pair=process.env.CLIPRELAY_BRIDGE_PAIR;
+const mode=process.env.CLIPRELAY_BRIDGE_MODE||'synthetic',nativeAudio=mode==='mac-audio';
+assert.ok(['synthetic','mac-audio'].includes(mode));if(nativeAudio)assert.equal(process.platform,'darwin');
 assert.ok(['host','viewer'].includes(role));assert.ok(['linux','x64','arm64'].includes(pair));
 const run=Number(process.env.GITHUB_RUN_ID),attempt=Number(process.env.GITHUB_RUN_ATTEMPT),commit=process.env.GITHUB_SHA;
 assert.ok(Number.isSafeInteger(run)&&run>0&&Number.isSafeInteger(attempt)&&attempt>0);assert.match(commit,/^[a-f0-9]{40}$/);
@@ -82,7 +85,7 @@ async function readPublic(kind,side){
   return record;
 }
 async function bridge(own,peer,route){
-  const item=launch(binary,['serve']);item.child.stdin.write(JSON.stringify({version:1,role,directory:own.directory,peerCertificate:peer.certificate,...(route?{url:route}:{})})+'\n');
+  const item=launch(binary,['serve']);item.child.stdin.write(JSON.stringify({version:1,role,mode,directory:own.directory,peerCertificate:peer.certificate,...(route?{url:route}:{})})+'\n');
   const ready=await until(()=>alive(item),v=>v?.event==='ready');
   assert.equal(ready.certificateSha256,own.certificateSha256);assert.equal(ready.peerCertificateSha256,peer.certificateSha256);
   return {item,ready};
@@ -113,22 +116,29 @@ async function rejectUntrusted(own,peer,route){
 
 const report={...common,passed:false,scope:'Disposable cross-job transport for separate audio environments. Synthetic bytes only; not audio playback, production relay or WAN resilience validation.',
   audioPlaybackVerified:false,productionRelayVerified:false,fixture:receipt,cases:[]};
-let connector,activeBridge,stage='identity';
+let connector,activeBridge,audio,stage='identity';
 async function main(){
   try{
     const own=identity();report.identitySha256=own.certificateSha256;
     report.identityArtifact=await publish('identity',{certificate:own.certificate,certificateSha256:own.certificateSha256});
     stage='peer-identity';const peerRecord=await readPublic('identity',role==='host'?'viewer':'host'),peer=peerRecord.state;
     assert.equal(peer.certificateSha256,hash(new crypto.X509Certificate(peer.certificate).raw));report.peerIdentity=peerRecord;
+    if(nativeAudio){
+      audio=createRequire(import.meta.url)('./mac_audio.cjs').create({role,root,runner,env:childEnv,machine,peerMachine:peer.machine});
+      report.audio=audio.report;report.scope='Disposable separate Mac environments with unchanged packaged host and shipping Qt viewer. Strict private process output measurements; no physical speakers, product permission UI, video presentation or production relay claim.';
+    }
     if(role==='host'){
       stage='host-bridge';const started=await bridge(own,peer);activeBridge=started.item;
       let accepted=0,udpReceived=0,done=false;
+      if(!nativeAudio){
       const tcp=net.createServer(socket=>{accepted++;track(socket);socket.pipe(socket);});await listen(tcp,48789);
       const udp=dgram.createSocket('udp4');servers.push(udp);udp.on('message',(data,remote)=>{udpReceived++;udp.send(data,remote.port,remote.address)});
       await new Promise((resolve,reject)=>{udp.once('error',reject);udp.bind(48798,'127.0.0.1',resolve)});
       udp.setSendBufferSize(128*1024);
+      }
       const control=http.createServer((req,res)=>{
         (async()=>{
+          if(nativeAudio&&await audio.handle(req,res))return;
           assert.equal(req.headers['content-length']||'0','0');
           if(req.url==='/stats'&&req.method==='GET')res.end(JSON.stringify({accepted,udpReceived,bridge:(await bridgeState(activeBridge)).counters,machine}));
           else if(req.url==='/done'&&req.method==='POST'){res.once('finish',()=>{done=true});res.end(JSON.stringify({done:true}));}
@@ -151,8 +161,9 @@ async function main(){
       report.routeArtifact=await publish('route',{url:publicURL.replace('https:','wss:')+'/bridge',certificateSha256:own.certificateSha256});
       stage='remote-exchange';await until(()=>{alive(activeBridge);alive(connector);return done},Boolean,180000);
       report.host={accepted,udpReceived,bridge:(await bridgeState(activeBridge)).counters};
-      assert.equal(accepted,1);assert.equal(udpReceived,6);assert.ok(report.host.bridge.Rejected>=1);
-      report.cases.push('untrusted-peer-rejected-before-echo-backend','separate-job-TCP-and-datagrams-received');
+      assert.ok(report.host.bridge.Rejected>=1);
+      if(nativeAudio){assert.ok(audio.complete()&&audio.report.passed);report.cases.push('separate-Mac-host-audio-and-stream-cleanup');}
+      else{assert.equal(accepted,1);assert.equal(udpReceived,6);report.cases.push('untrusted-peer-rejected-before-echo-backend','separate-job-TCP-and-datagrams-received');}
     }else{
       stage='route';const routeRecord=await readPublic('route','host'),route=routeRecord.state;
       assert.equal(route.certificateSha256,peer.certificateSha256);report.route=routeRecord;
@@ -160,6 +171,10 @@ async function main(){
       stage='viewer-bridge';activeBridge=(await bridge(own,peer,route.url)).item;
       const before=await request('stats');assert.equal(before.accepted,0);assert.equal(before.udpReceived,0);assert.ok(before.bridge.Rejected>=1);assert.equal(before.machine,peer.machine);
       report.cases.push('untrusted-peer-rejected-before-echo-backend');
+      if(nativeAudio){
+        stage='native-audio';await audio.run();assert.ok(audio.report.passed);report.audioPlaybackVerified=true;
+        report.cases.push('separate-Mac-native-Qt-audio-output');assert.deepEqual(await request('done','POST'),{done:true});
+      }else{
       stage='TCP-roundtrip';const payload=crypto.randomBytes(2*1024*1024),expected=hash(payload);
       const tcp=await new Promise((resolve,reject)=>{
         const socket=net.connect({host:'127.0.0.1',port:48789});track(socket);const digest=crypto.createHash('sha256');let bytes=0;
@@ -178,6 +193,7 @@ async function main(){
       }
       report.cases.push('cross-job-UDP-boundaries-through-production-forwarder');
       assert.equal((await request('stats')).udpReceived,6);assert.deepEqual(await request('done','POST'),{done:true});
+      }
     }
     stage='cleanup';
     await stop(activeBridge);assert.deepEqual(activeBridge.exit,{code:0,signal:null});assert.equal(activeBridge.events.at(-1)?.listenersClosed,true);
@@ -196,6 +212,7 @@ async function main(){
         .map(line=>line.replace(/https?:\/\/[^\s]+/g,'[URL]').slice(0,350));
     }
   }finally{
+    try{await audio?.close()}catch{report.cleanupFailed=true;report.passed=false;process.exitCode=1}
     for(const child of children)try{await stop(child,child===connector)}catch{report.cleanupFailed=true;report.passed=false;process.exitCode=1}
     for(const socket of sockets)socket.destroy();
     for(const server of servers)try{await new Promise(resolve=>server.close(resolve))}catch{report.cleanupFailed=true;report.passed=false;process.exitCode=1}

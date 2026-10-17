@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,16 +31,27 @@ import (
 	"cliprelay/network/transport"
 )
 
-// Only the synthetic echo and control endpoints for this transport experiment.
-// Native host ports will require an explicit separate test mode when integrated.
-var tcpPorts = []int{48789, 48830}
-var udpPorts = []int{48798}
+// Fixed fixture modes only. The native administrative port 48790 is never
+// forwarded; credentials and administrative requests stay on the host job.
+func ports(mode, platform string) ([]int, []int, error) {
+	switch mode {
+	case "", "synthetic":
+		return []int{48789, 48830}, []int{48798}, nil
+	case "mac-audio":
+		if platform == "darwin" {
+			return []int{48784, 48789, 48791, 48792, 48810, 48830}, []int{48798, 48799, 48800}, nil
+		}
+	}
+	return nil, nil, errors.New("FIXTURE_MODE_INVALID")
+}
+
 var runID = regexp.MustCompile(`^[1-9][0-9]{0,15}$`)
 var tunnelName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]\.trycloudflare\.com$`)
 
 type initialization struct {
 	Version         int    `json:"version"`
 	Role            string `json:"role"`
+	Mode            string `json:"mode,omitempty"`
 	Directory       string `json:"directory"`
 	PeerCertificate string `json:"peerCertificate"`
 	URL             string `json:"url,omitempty"`
@@ -120,7 +132,7 @@ func createIdentity(root string) error {
 	return nil
 }
 
-func targets() []ciaudiobridge.Target {
+func targets(tcpPorts, udpPorts []int) []ciaudiobridge.Target {
 	var result []ciaudiobridge.Target
 	for _, port := range tcpPorts {
 		result = append(result, ciaudiobridge.Target{Network: "tcp", Port: port})
@@ -131,7 +143,7 @@ func targets() []ciaudiobridge.Target {
 	return result
 }
 
-func forward(ctx context.Context, client ciaudiobridge.Client, ready chan<- error) error {
+func forward(ctx context.Context, client ciaudiobridge.Client, ready chan<- error, tcpPorts, udpPorts []int) error {
 	var listeners []net.Listener
 	var packets []net.PacketConn
 	defer func() {
@@ -224,6 +236,10 @@ func serve(root string) error {
 	if decode.Decode(&extra) != io.EOF {
 		return errors.New("INITIALIZATION_INVALID")
 	}
+	tcpPorts, udpPorts, err := ports(init.Mode, runtime.GOOS)
+	if err != nil {
+		return err
+	}
 	dir, err := directory(root, init.Directory)
 	if err != nil {
 		return err
@@ -264,7 +280,7 @@ func serve(root string) error {
 	done := make(chan error, 1)
 	var server *ciaudiobridge.Server
 	if init.Role == "host" {
-		server, err = ciaudiobridge.NewServer(config, targets())
+		server, err = ciaudiobridge.NewServer(config, targets(tcpPorts, udpPorts))
 		if err != nil {
 			return errors.New("SERVER_INVALID")
 		}
@@ -277,7 +293,7 @@ func serve(root string) error {
 	} else {
 		ready := make(chan error, 1)
 		client := ciaudiobridge.Client{Context: ctx, URL: init.URL, TLS: config}
-		go func() { done <- forward(ctx, client, ready) }()
+		go func() { done <- forward(ctx, client, ready, tcpPorts, udpPorts) }()
 		if err = <-ready; err != nil {
 			return err
 		}

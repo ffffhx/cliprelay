@@ -17,9 +17,9 @@ target = Path(os.environ['RUNNER_TEMP']).resolve(strict=True) / 'cliprelay-audio
 subprocess.run(['go', 'build', '-trimpath', '-o', str(target), './cmd/ci-audio-bridge'], cwd=ROOT/'network', check=True)
 sources = ['network/go.mod', 'network/go.sum', 'network/transport/bridge.go',
            'network/internal/ciaudiobridge/bridge.go', 'network/internal/ciaudiobridge/bridge_test.go',
-           'network/cmd/ci-audio-bridge/main.go', 'scripts/ci_audio_bridge/build.py',
+           'network/cmd/ci-audio-bridge/main.go', 'network/cmd/ci-audio-bridge/main_test.go', 'scripts/ci_audio_bridge/build.py',
            'scripts/ci_audio_bridge/action.yml', 'scripts/ci_audio_bridge/index.mjs',
-           'scripts/ci_audio_bridge/fetch.py', 'scripts/ci_audio_bridge/package.json',
+           'scripts/ci_audio_bridge/fetch.py', 'scripts/ci_audio_bridge/mac_audio.cjs', 'scripts/ci_audio_bridge/package.json',
            'scripts/ci_audio_bridge/package-lock.json', 'scripts/ci_audio_bridge/cloudflared.json']
 receipt = {'protocol': 1, 'commit': commit, 'platform': platform.system(), 'architecture': platform.machine(),
            'binarySha256': hashlib.sha256(target.read_bytes()).hexdigest(),

@@ -135,11 +135,24 @@ static NSDictionary *audio_dialog(AXUIElementRef node,unsigned depth,unsigned &b
   }
   return @{@"owned":@(owned),@"foreign":@(foreign),@"deny":@(deny),@"allow":allow,@"candidates":candidates};
 }
-static void allow_owned_audio(pid_t engine) {
+static void allow_owned_audio(pid_t engine,bool observer=false) {
   struct proc_bsdinfo info={};char executable[PROC_PIDPATHINFO_MAXSIZE]={};
   const char *workspace=getenv("GITHUB_WORKSPACE");
   NSMutableArray *expected=[NSMutableArray array];
-  if (workspace) {
+  if (observer) {
+    char root[PATH_MAX]={},file[PATH_MAX]={};
+    const char *temporary=getenv("RUNNER_TEMP"),*requested=getenv("CLIPRELAY_AUDIO_OBSERVER");
+    if (temporary && requested && realpath(temporary,root) && strcmp(root,"/") && realpath(requested,file) && !strcmp(requested,file)) {
+      NSString *prefix=[@(root) stringByAppendingString:@"/"],*target=@(file);
+      if ([target hasPrefix:prefix]) {
+        NSArray *parts=[[target substringFromIndex:prefix.length] pathComponents];
+        struct stat status={};
+        if (parts.count==2 && [parts[0] hasPrefix:@"cliprelay-audio-observer-"] &&
+            [parts[1] isEqualToString:@"cliprelay-audio-observe"] && lstat(file,&status)==0 &&
+            S_ISREG(status.st_mode) && status.st_uid==getuid()) [expected addObject:target];
+      }
+    }
+  } else if (workspace) {
     [expected addObject:[@(workspace) stringByAppendingPathComponent:@".tools/audio-stream-mac/host-engine/Sunshine.app/Contents/MacOS/Sunshine"]];
 #if defined(__arm64__)
     NSString *architecture=@"arm64";
@@ -150,7 +163,8 @@ static void allow_owned_audio(pid_t engine) {
     [expected addObject:[@(workspace) stringByAppendingPathComponent:packaged]];
   }
   const BOOL verified=engine>1 && proc_pidinfo(engine,PROC_PIDTBSDINFO,0,&info,sizeof info)==sizeof info &&
-    info.pbi_ppid==(unsigned)getppid() && info.pbi_uid==getuid() && proc_pidpath(engine,executable,sizeof executable)>0 &&
+    info.pbi_pid==(unsigned)engine && info.pbi_ppid==(unsigned)getppid() && info.pbi_uid==getuid() && info.pbi_ruid==getuid() &&
+    proc_pidpath(engine,executable,sizeof executable)>0 &&
     [expected containsObject:@(executable)];
   NSMutableArray *candidates=[NSMutableArray array];AXError action=kAXErrorFailure;
   const BOOL trusted=AXIsProcessTrusted();
@@ -170,7 +184,13 @@ static void allow_owned_audio(pid_t engine) {
     CFRelease(broker);
   }
   BOOL attempted=NO;
-  if (candidates.count==1 && budget && std::chrono::steady_clock::now()<end) {
+  struct proc_bsdinfo current={};char current_path[PROC_PIDPATHINFO_MAXSIZE]={};
+  const BOOL still_owned=verified && proc_pidinfo(engine,PROC_PIDTBSDINFO,0,&current,sizeof current)==sizeof current &&
+    current.pbi_pid==info.pbi_pid && current.pbi_ppid==info.pbi_ppid && current.pbi_uid==info.pbi_uid &&
+    current.pbi_ruid==info.pbi_ruid && current.pbi_start_tvsec==info.pbi_start_tvsec &&
+    current.pbi_start_tvusec==info.pbi_start_tvusec && proc_pidpath(engine,current_path,sizeof current_path)>0 &&
+    !strcmp(executable,current_path);
+  if (still_owned && candidates.count==1 && budget && std::chrono::steady_clock::now()<end) {
     AXUIElementRef button=(__bridge AXUIElementRef)candidates[0];CFTypeRef enabled=nullptr;
     if (AXUIElementCopyAttributeValue(button,kAXEnabledAttribute,&enabled)==kAXErrorSuccess && enabled) {
       if (CFGetTypeID(enabled)==CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)enabled)) {
@@ -179,7 +199,8 @@ static void allow_owned_audio(pid_t engine) {
       CFRelease(enabled);
     }
   }
-  NSDictionary *result=@{@"event":@"audio-consent",@"ownedEngineVerified":@(verified),@"trusted":@(trusted),
+  NSDictionary *result=@{@"event":@"audio-consent",@"ownedEngineVerified":@(!observer&&still_owned),
+    @"ownedObserverVerified":@(observer&&still_owned),@"trusted":@(trusted),
     @"candidates":@(candidates.count),@"attempted":@(attempted),@"pressed":@(attempted&&action==kAXErrorSuccess),
     @"actionStatus":@(action),@"scope":@"disposable-CI-hosted-compute-agent-system-audio"};
   NSData *json=[NSJSONSerialization dataWithJSONObject:result options:0 error:nullptr];if (!json) _exit(3);
@@ -215,6 +236,11 @@ int main(void) {
         char *end=nullptr;const long engine=strtol(command+12,&end,10);
         if (engine<=1 || engine>INT_MAX || !end || strcmp(end,"\n")) { valid=false;break; }
         allow_owned_audio((pid_t)engine);continue;
+      }
+      else if (!strncmp(command,"allow-observer ",15)) {
+        char *end=nullptr;const long observer=strtol(command+15,&end,10);
+        if (observer<=1 || observer>INT_MAX || !end || strcmp(end,"\n")) { valid=false;break; }
+        allow_owned_audio((pid_t)observer,true);continue;
       }
       else if (!strcmp(command,"consent-windows\n")) { consent_windows();continue; }
       else if (!strcmp(command,"quiet\n")) frequency.store(0);

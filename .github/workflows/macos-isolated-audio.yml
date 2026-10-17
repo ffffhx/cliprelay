@@ -1,0 +1,73 @@
+name: macOS Isolated Audio Development
+on:
+  push:
+    branches: ['codex/desktop-client-input-*']
+    paths: ['.github/workflows/macos-isolated-audio.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audio:
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [host, viewer]
+        include:
+          - role: host
+            runner: macos-15-intel
+            arch: x86_64
+            pair: x64
+          - role: viewer
+            runner: macos-15-intel
+            arch: x86_64
+            pair: x64
+    name: audio-${{ matrix.role }}-${{ matrix.pair }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 18
+    env:
+      CLIPRELAY_BRIDGE_ROLE: ${{ matrix.role }}
+      CLIPRELAY_BRIDGE_PAIR: ${{ matrix.pair }}
+      CLIPRELAY_BRIDGE_MODE: mac-audio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify bridge authentication and fixed native allowlist
+        working-directory: network
+        run: go test -race -json ./internal/ciaudiobridge ./cmd/ci-audio-bridge -count=1 -timeout 90s > ../isolated-bridge-tests.jsonl
+      - name: Build companion and disposable identity generator
+        run: |
+          python3 scripts/build_host_companion.py --output .tools/audio-companion
+          go build -o "$RUNNER_TEMP/cliprelay-pairing-fixture" windows/tests/mac-pairing-fixture/main.go
+          echo "CLIPRELAY_PAIRING_TEST_FIXTURE=$RUNNER_TEMP/cliprelay-pairing-fixture" >> "$GITHUB_ENV"
+      - name: Select immutable shipping components
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/fetch_sunshine_macos.py --run 38994396737 --arch '${{ matrix.arch }}' --directory .tools/audio-engine
+          python3 scripts/fetch_audio_viewer.py 39006823440
+          python3 scripts/stage_host_audio.py
+      - name: Build owned tone and private process observer
+        run: python3 scripts/build_macos_isolated_audio.py
+      - name: Prepare pinned action and native bridge
+        run: |
+          npm ci --prefix scripts/ci_audio_bridge --ignore-scripts --no-audit --no-fund
+          python3 scripts/ci_audio_bridge/build.py
+      - name: Verify actual audio between independent Mac environments
+        uses: ./scripts/ci_audio_bridge
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Isolated-Audio-Build-${{ matrix.role }}-${{ matrix.pair }}
+          path: |
+            isolated-bridge-tests.jsonl
+            .tools/audio-stream-components.json
+          if-no-files-found: error
