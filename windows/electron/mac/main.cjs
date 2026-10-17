@@ -137,7 +137,7 @@ function select(peer,token){
 }
 async function start(){
   app.dock?.hide();
-  hostPermissions=new HostPermissionController({directory:__dirname});
+  hostPermissions=new HostPermissionController({directory:__dirname,openSettings:url=>shell.openExternal(url)});
   config=loadConfig(app.getPath('userData'),{hostname:()=>{
     try{return execFileSync('/usr/sbin/scutil',['--get','ComputerName'],{encoding:'utf8'}).trim();}catch{return 'Mac';}
   }});

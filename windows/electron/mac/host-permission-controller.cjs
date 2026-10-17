@@ -2,6 +2,10 @@
 const fs=require('node:fs'),path=require('node:path');
 const {HostPermissions}=require('./host-permissions.cjs');
 const fault=code=>Object.assign(new Error(code),{code});
+const settingsPages=Object.freeze({
+  screenRecording:'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+  inputControl:'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
+});
 const messages={
   HOST_ENGINE_UNAVAILABLE:'此安装包未包含本机远程访问组件。',
   HOST_ENGINE_INVALID:'本机远程访问组件校验失败，请重新安装完整应用。',
@@ -13,12 +17,15 @@ const messages={
   HOST_PERMISSION_BAD_REPLY:'无法确认系统权限，请重试。',
   HOST_PERMISSIONS_CLOSED:'应用正在退出。',
   INVALID_HOST_PERMISSION:'请选择屏幕录制或键鼠控制权限。',
-  HOST_PERMISSION_NOT_CHECKED:'请先检查当前系统权限。'
+  HOST_PERMISSION_NOT_CHECKED:'请先检查当前系统权限。',
+  HOST_SETTINGS_UNAVAILABLE:'无法打开系统设置，请手动前往“隐私与安全性”允许 ClipRelay，然后重新检查。'
 };
 function message(error){return messages[error?.code] || '无法完成权限操作，请重试。';}
 class HostPermissionController{
-  constructor({directory,platform=process.platform,arch=process.arch,create=options=>new HostPermissions(options)}){
-    this.owner=null;this.error=null;this.closed=false;
+  constructor({directory,platform=process.platform,arch=process.arch,create=options=>new HostPermissions(options),
+    openSettings=async()=>{throw fault('HOST_SETTINGS_UNAVAILABLE');}}){
+    this.owner=null;this.error=null;this.closed=false;this.generation=0;this.openSettings=openSettings;
+    this.settingsOpening=false;this.settingsOpened=null;this.settingsError=null;
     try{
       if(platform!=='darwin' || !['arm64','x64'].includes(arch))throw fault('HOST_PLATFORM_UNSUPPORTED');
       const pinPath=path.join(directory,'host-engine-pin.json'),stat=fs.lstatSync(pinPath);
@@ -32,18 +39,20 @@ class HostPermissionController{
   }
   snapshot(){
     const state=this.owner?.snapshot() || {checking:false,screenRecording:null,inputControl:null,checkedAt:null,error:this.error};
-    return {...state,available:!!this.owner && !this.closed,busy:!!this.owner?.operation,
-      error:this.closed?'HOST_PERMISSIONS_CLOSED':state.error};
+    return {...state,available:!!this.owner && !this.closed,busy:!!this.owner?.operation || this.settingsOpening,
+      settingsOpened:this.settingsOpened,error:this.closed?'HOST_PERMISSIONS_CLOSED':state.error || this.settingsError};
   }
   async action(action,data){
     if(!['host-permissions-status','host-permissions-check','host-permissions-request'].includes(action))throw fault('INVALID_HOST_PERMISSION');
     if(action==='host-permissions-status')return this.snapshot();
     if(this.closed)throw fault('HOST_PERMISSIONS_CLOSED');
     if(!this.owner)throw fault(this.error);
+    if(this.settingsOpening)throw fault('HOST_PERMISSIONS_BUSY');
     if(action==='host-permissions-request'){
       if(!data || Object.keys(data).length!==1 || !['screenRecording','inputControl'].includes(data.permission))throw fault('INVALID_HOST_PERMISSION');
       if(this.owner.snapshot().checkedAt==null)throw fault('HOST_PERMISSION_NOT_CHECKED');
     }
+    const generation=this.generation;this.settingsOpened=null;this.settingsError=null;
     try{
       if(action==='host-permissions-check')await this.owner.query();
       else await this.owner.request(data.permission);
@@ -52,10 +61,24 @@ class HostPermissionController{
       // Busy is transient and must not overwrite the active operation's state.
       if(error.code==='HOST_PERMISSIONS_BUSY')throw error;
       await this.owner.cancel();
+      return this.snapshot();
+    }
+    // A denied permission can make macOS return without another prompt. The
+    // explicit authorization button must still lead to its fixed settings pane.
+    // Checking, cancelling or closing a window must never open system settings.
+    if(action==='host-permissions-request' && !this.closed && generation===this.generation &&
+        this.owner.snapshot()[data.permission]===false && !this.owner.snapshot().error){
+      this.settingsOpening=true;
+      try{
+        await this.openSettings(settingsPages[data.permission]);
+        if(!this.closed && generation===this.generation)this.settingsOpened=data.permission;
+      }catch{
+        if(!this.closed && generation===this.generation)this.settingsError='HOST_SETTINGS_UNAVAILABLE';
+      }finally{this.settingsOpening=false;}
     }
     return this.snapshot();
   }
-  releaseWindow(){return this.owner?.cancel() || Promise.resolve();}
-  close(){this.closed=true;return this.owner?.close() || Promise.resolve();}
+  releaseWindow(){this.generation++;this.settingsOpened=null;this.settingsError=null;return this.owner?.cancel() || Promise.resolve();}
+  close(){this.closed=true;this.generation++;this.settingsOpened=null;return this.owner?.close() || Promise.resolve();}
 }
 module.exports={HostPermissionController,message};

@@ -39,3 +39,10 @@ test('closed views ignore late command completion and remove focus handlers',asy
   let finish;const f=fixture({request:()=>new Promise(resolve=>finish=resolve)});f.ui.close();const before=f.notice.textContent;
   finish({...f.checked,screenRecording:true,inputControl:true});await f.ui.ready;assert.equal(f.notice.textContent,before);assert.equal(f.events.has('focus'),false);
 });
+test('opening settings keeps permission ungranted until a later successful system query',async()=>{
+  let allowed=false;const f=fixture({request:async(action,data)=>({available:true,checkedAt:1,busy:false,
+    screenRecording:allowed,inputControl:false,error:null,settingsOpened:action==='host-permissions-request'?data.permission:null})});
+  await f.ui.ready;await f.buttons[0].onclick();assert.equal(f.statuses[0].textContent,'未允许');
+  assert.match(f.notice.textContent,/已打开系统设置/);assert.equal(f.buttons[0].disabled,false);
+  allowed=true;await f.buttons[2].onclick();assert.equal(f.statuses[0].textContent,'已允许');assert.equal(f.buttons[0].disabled,true);f.ui.close();
+});

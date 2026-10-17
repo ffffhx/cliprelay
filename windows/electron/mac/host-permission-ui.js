@@ -12,7 +12,7 @@ export function mount(root,api,cancel,initial){
   const notice=element('p',''),actions=element('div',''),refresh=element('button','重新检查'),close=element('button','关闭');
   notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');actions.className='permission-actions';
   refresh.onclick=()=>{if(!refresh.disabled)return perform('host-permissions-check');};close.onclick=cancel;actions.append(refresh,close);root.append(notice,actions);
-  const errors={HOST_ENGINE_UNAVAILABLE:'此安装包未包含本机远程访问组件。',HOST_ENGINE_INVALID:'本机远程访问组件校验失败，请重新安装完整应用。',HOST_PLATFORM_UNSUPPORTED:'此设备不支持本机远程访问组件。',HOST_PERMISSION_TIMEOUT:'等待超时，请重新检查。',HOST_PERMISSION_CANCELLED:'操作已取消。',HOST_PERMISSIONS_CLOSED:'应用正在退出。'};
+  const errors={HOST_ENGINE_UNAVAILABLE:'此安装包未包含本机远程访问组件。',HOST_ENGINE_INVALID:'本机远程访问组件校验失败，请重新安装完整应用。',HOST_PLATFORM_UNSUPPORTED:'此设备不支持本机远程访问组件。',HOST_PERMISSION_TIMEOUT:'等待超时，请重新检查。',HOST_PERMISSION_CANCELLED:'操作已取消。',HOST_PERMISSIONS_CLOSED:'应用正在退出。',HOST_SETTINGS_UNAVAILABLE:'无法打开系统设置，请手动前往“隐私与安全性”允许 ClipRelay，然后重新检查。'};
   function render(){
     const busy=pending || state.busy || state.checking;
     for(const [key,row] of Object.entries(rows)){
@@ -21,7 +21,7 @@ export function mount(root,api,cancel,initial){
       row.button.disabled=!state.available || busy || state.checkedAt==null || value===true;
     }
     refresh.disabled=!state.available || busy;
-    notice.textContent=busy?'正在读取权限或等待系统确认…':state.error?(errors[state.error] || '无法确认系统权限，请重新检查。'):state.checkedAt!=null?'已读取当前系统状态。在系统设置中修改后，请重新检查。':'打开此窗口只检查权限。';
+    notice.textContent=busy?'正在读取权限或等待系统确认…':state.error?(errors[state.error] || '无法确认系统权限，请重新检查。'):state.settingsOpened?'已打开系统设置。请开启 ClipRelay 对应的权限，返回后重新检查。':state.checkedAt!=null?'已读取当前系统状态。在系统设置中修改后，请重新检查。':'打开此窗口只检查权限。';
   }
   async function perform(action,data){
     if(disposed || pending || !state.available)return;
