@@ -79,11 +79,13 @@ static void inspect(NSString *command){
   NSMutableArray *unique=[NSMutableArray array];for(id node in matches)if(![unique containsObject:node])[unique addObject:node];
   BOOL attempted=NO;
   if(![command isEqualToString:@"inspect"]&&unique.count==1&&budget&&owned()){
+    AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)unique[0],.5);
     attempted=YES;action=AXUIElementPerformAction((__bridge AXUIElementRef)unique[0],kAXPressAction);
   }
   emit(@{@"event":@"ui",@"command":command,@"owned":@(owned()),@"trusted":@(trusted),@"matches":@(unique.count),
     @"menuRootAvailable":@(menu_root),@"remainingBudget":@(budget),@"attempted":@(attempted),
-    @"pressed":@(attempted&&action==kAXErrorSuccess),@"actionStatus":@(action),@"nodes":rows});
+    @"pressed":@(attempted&&action==kAXErrorSuccess),
+    @"completionUnknown":@(attempted&&action==kAXErrorCannotComplete),@"actionStatus":@(action),@"nodes":rows});
 }
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();

@@ -57,6 +57,15 @@ def event(kind,timeout=10):
 def command(name):
     assert child.poll() is None
     child.stdin.write(name+'\n');child.stdin.flush();return event('ui',8)
+
+def menu_action(name):
+    value=command(name)
+    result['open'+name.capitalize()]=value
+    assert value['owned'] and value['trusted'] and value['matches']==1 and value['attempted'], 'MENU_TARGET_INVALID'
+    # AXPress may time out while AppKit tracks an open menu. Preserve that
+    # uncertainty; only the exact production renderer below proves the action.
+    assert value['pressed'] or (value.get('completionUnknown') and value['actionStatus']==-25204), 'MENU_ACTION_FAILED'
+    return value
 def browser_command(*args):
     call=subprocess.run([str(browser),'--namespace',namespace,'--session',name,'--json',*args],env=env,
                         capture_output=True,text=True,timeout=30)
@@ -91,10 +100,10 @@ try:
         menu=command('inspect');result['initialMenu']=menu
         if menu.get('menuRootAvailable') and any(row['role']=='AXMenuBarItem' and 'ClipRelay' in [row['title'],row['description']] for row in menu['nodes']):break
         assert time.monotonic()<menu_deadline,'STATUS_MENU_NOT_READY'
-        time.sleep(.1)
-    stage='open-menu';opened=command('menu');result['openMenu']=opened;assert opened['pressed'] is True
-    stage='open-host';opened=command('host');result['openHost']=opened;assert opened['pressed'] is True
-    target('host')
+        time.sleep(.25)
+    stage='open-menu';menu_action('menu')
+    stage='open-host';menu_action('host')
+    result['hostRendererUrl']=target('host')
     stage='connect-owned-renderer';browser_command('connect',str(port));browser_connected=True
     stage='host-window';text=snapshot('host');assert '启动远程访问' in text and '检查系统权限' in text
     result['cases'].append('native-menu-opens-production-host-renderer')
