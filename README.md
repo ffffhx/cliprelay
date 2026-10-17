@@ -68,7 +68,9 @@ Mac 配对隐私服务现已接通：每次开启创建独立遮罩进程，通�
 
 [遮罩期间解码画面检查](https://github.com/ffffhx/cliprelay/actions/runs/39001465995)先在独立 Intel 组件验收中通过，随后纳入上述完整包：基准时本地与远端均为红色；开启遮罩后才把自有窗口改成绿色，本地中心采样为黑色，远端通过加密串流解码为绿色；关闭后改成蓝色，两端均为蓝色。三阶段对应递增的采集代次，遮罩阶段的解码帧晚于新过滤编码的首帧，排除了沿用旧画面的情况。原始提交 `b649b68` 的记录见 `.tools/uu-parity/mac-privacy-pixels-first-artifacts.json`；加入三轮恢复和测试程序来源校验后的[组件复验](https://github.com/ffffhx/cliprelay/actions/runs/39002045706)也通过，记录见 `.tools/uu-parity/mac-privacy-pixels-artifacts.json`。检查使用独立 H.264 软件解码器及自有色块的九个采样点，本地只读取未保存的 16×16 中心区域；这不代表正式 Qt 播放器像素、整个屏幕、多显示器、实体设备或公网体验已验收。
 
-Mac 音频方面，[Intel、ARM 云端只读环境检查](https://github.com/ffffhx/cliprelay/actions/runs/39002782494)确认了可用的双声道输入、输出设备和公开采集接口，记录见 `.tools/uu-parity/mac-audio-environment-artifacts.json`。此检查没有请求权限、录制或播放音频，也没有修改设备设置；实际音频采集、加密传输、静音恢复和麦克风能力仍待实现或验收，不能将接口存在当作音频可用。
+Mac 系统声音的[Intel、ARM 开发组件链路验收](https://github.com/ffffhx/cliprelay/actions/runs/39005396550)已通过：真实打包引擎采集隔离云端的自有测试音，经强制加密的本机串流传输，再由独立 Opus 接收器解码。静音、1000 Hz、1600 Hz、再静音四个阶段分别要求连续两组新的半秒采样匹配，音频解码错误为零；接收器关闭后释放串流，主机关闭后默认输入、输出设备、采样率和缓冲区大小保持原状，所有自有进程已回收。源码、原生测试程序及产物哈希核验记录见 `.tools/uu-parity/mac-audio-stream-39005396550.json`。
+
+首次运行的无声现象已确认是云端运行器的系统声音授权弹窗尚未确认；测试通过正常系统弹窗完成这次隔离授权，随后沿用原有生产采集实现通过上述检查。此结果限于开发组件和独立解码器；完整 Electron 应用的权限归属、实际播放器输出、被控端静音恢复、麦克风回传与公网链路仍待验收。此前的[只读设备检查](https://github.com/ffffhx/cliprelay/actions/runs/39002782494)仅证明设备和接口可用，两类证据分别保留。
 
 Mac 远控会话使用原生 Metal 渲染，能力探测和软件解码回退也避免进入已触发虚拟 GPU 崩溃的 MoltenVK 路径。[Intel Mac 完整包验收](https://github.com/ffffhx/cliprelay/actions/runs/38975309199)通过 6 项实际串流场景：包内主机采集与编码、加密传输、Qt 播放器呈现 1280×720 画面、暂停输入后的显示重建与新画面确认、控制端退出清理，以及撤销当前设备后正常结束并保留另一台设备的连接能力。此次撤销约 822 毫秒完成；同一包另通过 16 项真实 Electron 剪贴板场景。下载包的源码、组件程序与测试回执均已核对，记录见 `.tools/uu-parity/mac-host-stream-artifacts.json`。验收对应应用提交 `60b1096` 和播放器提交 `0bc76ac`，不代表物理键鼠输入效果、两台真实电脑、公网体验、系统权限交互或钥匙串已验收。
 
