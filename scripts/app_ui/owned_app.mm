@@ -96,7 +96,8 @@ static void permission_windows(){
   // Read only the system consent/settings windows on this disposable runner.
   // No permission is granted here, and no native system control is pressed.
   NSSet *allowed=[NSSet setWithArray:@[@"com.apple.UserNotificationCenter",@"com.apple.notificationcenterui",
-    @"com.apple.SecurityAgent",@"com.apple.CoreServicesUIAgent",@"com.apple.systempreferences"]];
+    @"com.apple.SecurityAgent",@"com.apple.coreservices.uiagent",@"com.apple.systempreferences",
+    @"com.apple.accessibility.universalAccessAuthWarn"]];
   NSMutableArray *observations=[NSMutableArray array];unsigned budget=250,remaining_rows=60;
   NSMutableArray *system_apps=[NSMutableArray array],*visible=[NSMutableArray array];
   for(NSRunningApplication *candidate in NSWorkspace.sharedWorkspace.runningApplications){
