@@ -25,7 +25,7 @@ sources=['scripts/test_host_audio_process.py','network/cmd/cliprelay-host-networ
     p.relative_to(root).as_posix() for p in sorted((root/'network/hostaudio').glob('*')) if p.suffix in ['.go','.m','.h']]
 report={'protocol':1,'passed':False,'commit':os.environ['GITHUB_SHA'],'architecture':platform.machine(),
         'binarySha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
-        'sources':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in sources},'cases':[],
+        'sources':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in sources},'cases':[],'observations':[],
         'scope':'Private Core Audio tap property readback and owned worker lease/EOF/signal lifetime; no remote playback or physical speaker claim.'}
 children=[]
 def start(base):
@@ -55,12 +55,14 @@ try:
         child.stdin.close();assert child.wait(timeout=5)==0
         report['cases'].append('private-native-tap-start-renew-stop-and-output-inventory')
         for mode in ['eof','signal','expiry']:
-            child=start(base);call(child,'start',os.urandom(16).hex());started=time.monotonic()
+            child=start(base);active=call(child,'start',os.urandom(16).hex());started=time.monotonic()
             if mode=='eof':child.stdin.close()
             if mode=='signal':child.send_signal(signal.SIGTERM)
             assert child.wait(timeout=19 if mode=='expiry' else 5)==0
             elapsed=time.monotonic()-started
-            if mode=='expiry':assert 12<elapsed<18
+            if mode=='expiry':assert active['expiresMs']/1000-.1<=elapsed<=active['expiresMs']/1000+1
+            else:assert elapsed<2
+            report['observations'].append({'case':mode,'remainingMs':active['expiresMs'],'elapsedSeconds':elapsed,'exit':child.returncode})
             report['cases'].append('active-mute-worker-'+mode+'-normal-cleanup')
         report['passed']=True
 except Exception as error:

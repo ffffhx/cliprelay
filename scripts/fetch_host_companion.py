@@ -66,7 +66,7 @@ def unpack(archive_path, directory):
         members = entries(archive)
         required = {'host-companion/'+name for name in FILES | {'manifest.json', 'process-report.json'}}
         actual = {member.name for member in members if member.isfile()}
-        if (not required <= actual or not actual-required <= {'host-companion/'+TERMINAL_REPORT, 'host-companion/privacy-process-report.json'}
+        if (not required <= actual or not actual-required <= {'host-companion/'+TERMINAL_REPORT, 'host-companion/privacy-process-report.json', 'host-companion/audio-process-report.json'}
                 or any(member.name.rstrip('/') not in ('host-companion', 'host-companion/runtime')
                        for member in members if member.isdir())):
             raise ValueError('Unexpected companion archive layout')
@@ -94,6 +94,9 @@ def verify_sources(source_path, commit):
     privacy = b"'hostprivacy'" in output('git', 'show', commit+':scripts/build_host_companion.py')
     if privacy:
         paths += output('git', 'ls-tree', '-r', '--name-only', commit, 'network/hostprivacy').decode().splitlines()
+    audio = b"'hostaudio'" in output('git', 'show', commit+':scripts/build_host_companion.py')
+    if audio:
+        paths += output('git', 'ls-tree', '-r', '--name-only', commit, 'network/hostaudio').decode().splitlines()
     expected = {name for name in paths if name.endswith(('.go', '.m', '.h'))}
     expected |= {'LICENSE', 'network/go.mod', 'network/go.sum', 'scripts/build_host_companion.py',
                  'scripts/network_notices.py', 'scripts/test_host_companion.py'}
@@ -102,6 +105,8 @@ def verify_sources(source_path, commit):
         expected |= {'android-app/remote-engine/src/main/java/com/limelight/nvstream/wol/'+name+'.java' for name in ['WakeState', 'WakeSelection']}
     if privacy:
         expected |= {'scripts/test_macos_privacy_worker.py', 'scripts/privacy_fixture/audit.mm'}
+    if audio:
+        expected.add('scripts/test_host_audio_process.py')
     if terminal:
         expected.add('scripts/test_host_terminal_process.py')
     if output('git', 'ls-tree', '--name-only', commit, 'scripts/test_host_terminal.py').strip():
@@ -172,6 +177,37 @@ def verify_privacy_report(report, arch, executable_hash, commit):
             raise ValueError('Privacy parent withdrawal was not enforced with an open writer')
 
 
+AUDIO_CASES = ['private-native-tap-start-renew-stop-and-output-inventory',
+               'active-mute-worker-eof-normal-cleanup', 'active-mute-worker-signal-normal-cleanup',
+               'active-mute-worker-expiry-normal-cleanup']
+
+def verify_audio_report(report, arch, executable_hash, commit):
+    sources = subprocess.check_output(['git','ls-tree','-r','--name-only',commit,'network/hostaudio'],cwd=ROOT).decode().splitlines()
+    sources = [name for name in sources if name.endswith(('.go','.m','.h'))]
+    sources += ['network/cmd/cliprelay-host-network/main.go','scripts/test_host_audio_process.py']
+    hashes = {name:hashlib.sha256(subprocess.check_output(['git','show',commit+':'+name],cwd=ROOT)).hexdigest() for name in sources}
+    if (type(report.get('protocol')) is not int or report.get('protocol')!=1 or report.get('passed') is not True or report.get('commit')!=commit
+            or report.get('architecture')!=arch or report.get('binarySha256')!=executable_hash
+            or report.get('sources')!=hashes or report.get('cases')!=AUDIO_CASES or report.get('exits')!=[0]*4
+            or any(type(value) is not int for value in report.get('exits',[])) or 'failure' in report):
+        raise ValueError('Audio worker receipt does not match selected source, executable and cleanup cases')
+    observed = b"'observations'" in subprocess.check_output(['git','show',commit+':scripts/test_host_audio_process.py'],cwd=ROOT)
+    if observed:
+        values=report.get('observations',[])
+        if not isinstance(values,list) or any(not isinstance(v,dict) for v in values) or [v.get('case') for v in values]!=['eof','signal','expiry']:
+            raise ValueError('Audio worker lifetime observations are incomplete')
+        for value in values:
+            remaining,elapsed=value.get('remainingMs',0),value.get('elapsedSeconds',-1)
+            if (type(remaining) is not int or not 0<remaining<=15000 or type(value.get('exit')) is not int
+                    or value.get('exit')!=0 or type(elapsed) not in (int,float) or not 0<=elapsed<18):
+                raise ValueError('Audio worker lifetime observation is invalid')
+            if value['case']=='expiry':
+                if not remaining/1000-.1<=elapsed<=remaining/1000+1:
+                    raise ValueError('Audio worker expired before or after its reported deadline')
+            elif elapsed>=2:
+                raise ValueError('Audio worker did not promptly restore on owner withdrawal')
+
+
 def fetch(run, arch, directory):
     if not re.fullmatch(r'[0-9]+', run) or arch not in ('arm64', 'x86_64'):
         raise ValueError('Invalid companion build selection')
@@ -216,6 +252,15 @@ def fetch(run, arch, directory):
         if len(raw) > 16384:
             raise ValueError('Privacy receipt exceeds size limit')
         verify_privacy_report(json.loads(raw),arch,executable_hash,commit)
+    audio = b"'hostaudio'" in subprocess.check_output(['git','show',commit+':scripts/build_host_companion.py'],cwd=ROOT)
+    audio_receipt = artifact/'audio-process-report.json'
+    audio_worker = json.loads((artifact/'manifest.json').read_bytes()).get('audioMuteWorker') == 1
+    if audio != audio_receipt.exists() or audio != audio_worker:
+        raise ValueError('Audio worker evidence is missing or unexpected for the selected build')
+    if audio:
+        raw=audio_receipt.read_bytes()
+        if len(raw)>16384:raise ValueError('Audio worker receipt exceeds size limit')
+        verify_audio_report(json.loads(raw),arch,executable_hash,commit)
     if (report['cases'] != expected_cases or report['passed'] != len(expected_cases) or report['nativeWorkers'] is not False
             or (file_transfer and report.get('fileTransfer') != 1)
             or (clipboard_exchange and report.get('clipboardExchange') != 1)
@@ -229,6 +274,8 @@ def fetch(run, arch, directory):
         result['terminalProcessCasesVerified'] = len(TERMINAL_CASES)
     if privacy:
         result['privacyWorkerCasesVerified'] = len(PRIVACY_CASES)
+    if audio:
+        result['audioWorkerCasesVerified'] = len(AUDIO_CASES)
     (directory/'selection.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
     return result
 

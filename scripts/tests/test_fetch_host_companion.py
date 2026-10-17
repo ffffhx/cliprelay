@@ -60,6 +60,54 @@ class CompanionArchiveTest(unittest.TestCase):
         artifact = fetcher.unpack(self.archive, self.output)
         self.assertTrue((artifact/'privacy-process-report.json').is_file())
 
+    def test_named_optional_audio_receipt_is_accepted(self):
+        self.make('host-companion/audio-process-report.json')
+        artifact = fetcher.unpack(self.archive, self.output)
+        self.assertTrue((artifact/'audio-process-report.json').is_file())
+
+    def test_audio_receipt_requires_selected_native_sources_and_normal_cleanup(self):
+        sources = ['network/hostaudio/controller.go', 'network/hostaudio/native_darwin.m',
+                   'network/cmd/cliprelay-host-network/main.go', 'scripts/test_host_audio_process.py']
+        def content(name):
+            return name.encode() + (b" 'observations'" if name.endswith('.py') else b'')
+        def git(args, **kwargs):
+            self.assertEqual(kwargs['cwd'], fetcher.ROOT)
+            if args[1] == 'ls-tree': return ('\n'.join(sources[:2])+'\n').encode()
+            self.assertEqual(args[1], 'show')
+            self.assertTrue(args[2].startswith('a'*40+':'))
+            return content(args[2].split(':',1)[1])
+        report = dict(protocol=1, passed=True, commit='a'*40, architecture='arm64', binarySha256='b'*64,
+                      sources={name:hashlib.sha256(content(name)).hexdigest() for name in sources},
+                      cases=list(fetcher.AUDIO_CASES), exits=[0]*4,
+                      observations=[dict(case=name, remainingMs=14990, elapsedSeconds=elapsed, exit=0)
+                                    for name,elapsed in [('eof',.05),('signal',.05),('expiry',15.0)]])
+        with patch.object(fetcher.subprocess, 'check_output', side_effect=git):
+            fetcher.verify_audio_report(report, 'arm64', 'b'*64, 'a'*40)
+            for field,value in [('protocol',True),('passed',1),('commit','c'*40),('architecture','x86_64'),
+                                ('binarySha256','c'*64),('sources',{}),('cases',report['cases'][:-1]),
+                                ('exits',[0,0,0,3]),('exits',[False]*4),('failure',''),
+                                ('observations',[]),('observations',[None]),('observations',None)]:
+                changed=copy.deepcopy(report);changed[field]=value
+                with self.subTest(field=field,value=value), self.assertRaises(ValueError):
+                    fetcher.verify_audio_report(changed,'arm64','b'*64,'a'*40)
+            for index,field,value in [(0,'elapsedSeconds',2),(1,'exit',3),(2,'elapsedSeconds',4),
+                                     (2,'elapsedSeconds',16.1),(2,'elapsedSeconds',float('nan')),
+                                     (2,'remainingMs',True),(2,'remainingMs',15001),(2,'elapsedSeconds','15')]:
+                changed=copy.deepcopy(report);changed['observations'][index][field]=value
+                with self.subTest(index=index,field=field,value=value), self.assertRaises(ValueError):
+                    fetcher.verify_audio_report(changed,'arm64','b'*64,'a'*40)
+
+    def test_initial_audio_revision_can_omit_later_observations(self):
+        sources=['network/hostaudio/controller.go','network/cmd/cliprelay-host-network/main.go',
+                 'scripts/test_host_audio_process.py']
+        def git(args,**kwargs):
+            return (sources[0]+'\n').encode() if args[1]=='ls-tree' else args[2].split(':',1)[1].encode()
+        report=dict(protocol=1,passed=True,commit='a'*40,architecture='arm64',binarySha256='b'*64,
+                    sources={name:hashlib.sha256(name.encode()).hexdigest() for name in sources},
+                    cases=list(fetcher.AUDIO_CASES),exits=[0]*4)
+        with patch.object(fetcher.subprocess,'check_output',side_effect=git):
+            fetcher.verify_audio_report(report,'arm64','b'*64,'a'*40)
+
     def test_privacy_evidence_requires_production_binary_sources_and_bounded_parent_recovery(self):
         sources = ['network/hostprivacy/controller.go', 'network/cmd/cliprelay-host-network/main.go',
                    'network/cmd/cliprelay-host-network/input_unix.go', 'network/go.mod', 'network/go.sum',
