@@ -107,8 +107,8 @@ static void permission_windows(){
   if(window_info){
     for(NSDictionary *info in (__bridge NSArray *)window_info){
       if(visible.count>=32)break;
-      NSString *name=info[(id)kCGWindowOwnerName]?:@"";NSNumber *pid=info[(id)kCGWindowOwnerPID];
-      if(pid&&name.length<=120)[visible addObject:@{@"owner":name,@"pid":pid,@"layer":info[(id)kCGWindowLayer]?:@0}];
+      NSString *name=info[(__bridge NSString *)kCGWindowOwnerName]?:@"";NSNumber *pid=info[(__bridge NSString *)kCGWindowOwnerPID];
+      if(pid&&name.length<=120)[visible addObject:@{@"owner":name,@"pid":pid,@"layer":info[(__bridge NSString *)kCGWindowLayer]?:@0}];
     }
     CFRelease(window_info);
   }
