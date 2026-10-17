@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <provider android:name="com.limelight.files.TestDocumentsAccessProvider"
+            android:authorities="com.cliprelay.app.test.transfer-access"
+            android:exported="true" />
         <provider android:name="com.limelight.files.TestDocumentsProvider"
             android:authorities="com.cliprelay.app.test.transfer-documents"
             android:exported="true" android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS" />

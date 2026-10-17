@@ -36,7 +36,7 @@ final class CustomShortcutPanel {
         ScrollView scroll=new ScrollView(activity);LinearLayout body=new LinearLayout(activity);body.setOrientation(LinearLayout.VERTICAL);scroll.addView(body);
         if(values.isEmpty()){TextView empty=new TextView(activity);empty.setText(R.string.shortcuts_empty);empty.setPadding(24,24,24,24);body.addView(empty);}
         for(CustomShortcut value:values){
-            LinearLayout row=new LinearLayout(activity);body.addView(row);
+            LinearLayout row=new LinearLayout(activity);row.setBaselineAligned(false);row.setGravity(Gravity.CENTER_VERTICAL);body.addView(row);
             Button send=new Button(activity);send.setAllCaps(false);send.setText(value.name+"\n"+value.label());row.addView(send,new LinearLayout.LayoutParams(0,-2,1));
             send.setOnClickListener(v->{if(usable()){release.run();input.tap(value.chord());}});
             Button edit=new Button(activity);edit.setText(R.string.shortcuts_edit);row.addView(edit);

@@ -47,7 +47,7 @@ android {
         testInstrumentationRunner = if (providers.gradleProperty("cliprelayTestBuildType").orNull == "release") {
             "com.cliprelay.app.RemoteDesktopSmokeInstrumentation"
         } else {
-            "androidx.test.runner.AndroidJUnitRunner"
+            "com.cliprelay.app.ManagedDeviceTestRunner"
         }
         vectorDrawables.useSupportLibrary = true
     }

@@ -18,18 +18,25 @@ public class FileDestinationTest {
         Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
         fixture=new File(target.getCacheDir(),"file-destination-test-"+UUID.randomUUID());assertTrue(fixture.mkdirs());
         context=new ContextWrapper(target){@Override public File getNoBackupFilesDir(){return fixture;}};store=new TransferStorage(context);resolver=target.getContentResolver();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation().adoptShellPermissionIdentity("android.permission.MANAGE_DOCUMENTS");
-        resolver.call(Uri.parse("content://"+TestDocumentsProvider.AUTHORITY),"test-reset",null,null);
-        tree=DocumentsContract.buildTreeDocumentUri(TestDocumentsProvider.AUTHORITY,"root");parent=DocumentsContract.buildDocumentUriUsingTree(tree,"root");
+        // Use a real, scoped URI grant. MANAGE_DOCUMENTS is not a shell permission,
+        // and acquiring UiAutomation here would suppress the user's accessibility service.
+        tree=Uri.parse(resolver.call(TestDocumentsAccessProvider.URI,"open",null,null).getString("tree"));
+        parent=DocumentsContract.buildDocumentUriUsingTree(tree,"root");
+        resolver.call(tree,"test-reset",null,null);
         content=new byte[TransferRunner.CHUNK+79];new Random(43).nextBytes(content);
     }
     @After public void cleanup()throws Exception{
         try {
-        resolver.call(Uri.parse("content://"+TestDocumentsProvider.AUTHORITY),"test-reset",null,null);
+        if(tree!=null)resolver.call(tree,"test-reset",null,null);
+        } finally {
+        try {
+        if(fixture!=null&&fixture.exists()){
         String prefix=context.getCacheDir().getCanonicalPath()+File.separator;
         assertTrue(fixture.getCanonicalPath().startsWith(prefix)&&fixture.getName().startsWith("file-destination-test-"));
         try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(fixture.toPath())){paths.sorted(Comparator.reverseOrder()).forEach(path->{try{Files.delete(path);}catch(IOException e){throw new RuntimeException(e);}});}
-        } finally { InstrumentationRegistry.getInstrumentation().getUiAutomation().dropShellPermissionIdentity(); }
+        }
+        } finally { if(tree!=null)resolver.call(TestDocumentsAccessProvider.URI,"close",null,null); }
+        }
     }
     private TransferStorage.Job job()throws Exception{
         TransferRunner.Task task=new TransferRunner.Task(TransferStorage.id(),"download","downloads","","report.bin");task.size=content.length;task.offset=content.length;task.sha256=TransferRunner.hash(content);task.state="ready-to-save";
@@ -44,7 +51,7 @@ public class FileDestinationTest {
         assertEquals("complete",job.task.state);assertEquals("report (1).bin",job.finalName);assertArrayEquals(old,read(original));assertArrayEquals(content,read(Uri.parse(job.output)));assertFalse(store.part(job).exists());
     }
     @Test public void renameCrashRecoversWithoutDuplicateOutput()throws Exception{
-        TransferStorage.Job job=job();resolver.call(Uri.parse("content://"+TestDocumentsProvider.AUTHORITY),"test-fail-rename",null,null);
+        TransferStorage.Job job=job();resolver.call(tree,"test-fail-rename",null,null);
         assertThrows(IOException.class,()->TransferDestination.publish(resolver,store,job,()->{}));
         TransferStorage restarted=new TransferStorage(context);TransferStorage.Job restored=restarted.get(job.task.id);assertEquals("paused",restored.task.state);
         TransferDestination.publish(resolver,restarted,restored,()->{});assertEquals("report.bin",restored.finalName);assertEquals("complete",restored.task.state);assertArrayEquals(content,read(Uri.parse(restored.output)));

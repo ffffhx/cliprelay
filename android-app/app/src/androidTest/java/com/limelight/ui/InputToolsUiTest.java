@@ -3,6 +3,8 @@ package com.limelight.ui;
 import android.app.Activity;
 import android.content.*;
 import android.os.SystemClock;
+import android.graphics.Rect;
+import android.view.View;
 import android.widget.FrameLayout;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -55,9 +57,18 @@ public class InputToolsUiTest {
     @Test public void savedChordSendsOnceAndReleasesEveryKey() throws Exception {
         CustomShortcut value=new CustomShortcut("0123456789abcdef0123456789abcdef","Palette",3,'P');
         prefs("desktop_shortcuts").edit().putString("chords",CustomShortcut.encode(Collections.singletonList(value))).commit();
-        ui(()->panel.show());onView(withText("Palette\nCtrl + Shift + P")).inRoot(isDialog()).perform(click());
+        ui(()->panel.show());
+        onView(withText("Palette\nCtrl + Shift + P")).inRoot(isDialog()).check((view,error)->{
+                if(error!=null)throw error;
+                StringBuilder bounds=new StringBuilder();
+                for(View current=view;current!=null;current=current.getParent() instanceof View?(View)current.getParent():null){
+                    Rect visible=new Rect();current.getGlobalVisibleRect(visible);
+                    bounds.append(current.getClass().getSimpleName()).append(':').append(current.getWidth()).append('x').append(current.getHeight()).append(" visible=").append(visible).append("; ");
+                }
+                assertTrue(bounds.toString(),isDisplayingAtLeast(90).matches(view));
+        }).perform(click());
         assertEquals(Arrays.asList("16:true:1","17:true:3","80:true:3","80:false:3","17:false:1","16:false:0"),events);
-        ui(()->ready=false);onView(withText("Palette\nCtrl + Shift + P")).inRoot(isDialog()).perform(click());assertEquals(6,events.size());
+        ui(()->ready=false);onView(withText("Palette\nCtrl + Shift + P")).inRoot(isDialog()).perform(scrollTo(),click());assertEquals(6,events.size());
     }
     @Test public void editorPersistsAReusableShortcutWithoutSendingKeys() throws Exception {
         ui(()->panel.show());onView(withText(R.string.shortcuts_add)).inRoot(isDialog()).perform(click());
