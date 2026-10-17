@@ -82,11 +82,20 @@ def run(binary, state, payload, tls, start, read_status, finish, wait_absent, pa
         run_android(state, absent)
         passed('wake-Android-shipped-parser-native-inventory-over-mutual-TLS')
 
+        # JVM preparation can outlast the server's five-second idle timeout.
+        # Establish the connection immediately before revocation, then require
+        # that exact TLS socket for both denied operations; never reconnect to
+        # turn a new handshake rejection into a live-connection test pass.
+        connection.close()
+        code, fresh = rpc({'op': 'status'})
+        assert code == 200 and fresh['platform'] == 'macos'
+        established = connection.sock
+        assert established is not None
         (state/'clients.json').write_text('{"root":{"named_devices":[]}}')
         code, denied = rpc({'op': 'status'})
-        assert code == 403 and denied['code'] == 'WAKE_UNPAIRED'
+        assert code == 403 and denied['code'] == 'WAKE_UNPAIRED' and connection.sock is established
         code, denied = rpc({'op': 'send', 'id': 'e'*32, 'mac': '02:11:22:33:44:55', 'network': absent})
-        assert code == 403 and denied['code'] == 'WAKE_UNPAIRED'
+        assert code == 403 and denied['code'] == 'WAKE_UNPAIRED' and connection.sock is established
         passed('wake-established-TLS-revocation-blocks-inventory-and-sending')
         connection.close()
         (state/'clients.json').write_bytes(original)
