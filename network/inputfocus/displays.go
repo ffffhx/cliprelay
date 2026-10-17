@@ -242,7 +242,7 @@ func validDisplayState(state displayState) bool {
 				if audio.Generation == 0 || audio.Ready {
 					return false
 				}
-			case "process":
+			case "process", "system-tap":
 				if audio.Generation == 0 {
 					return false
 				}

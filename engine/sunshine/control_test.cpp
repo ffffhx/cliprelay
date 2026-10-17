@@ -327,6 +327,22 @@ int main() {
     auto streams = d.snapshot(100).streams;
     for (const auto &s : streams) assert(s.audio_ready == (s.owner == owner));
   }
+  {
+    display_control d; start(d);
+    auto tap = d.begin_audio(&client_a, false, true);
+    assert(d.snapshot(100).streams[0].audio_capture == "system-tap");
+    assert(!d.snapshot(100).streams[0].audio_ready);
+    d.encoded_audio(&client_a, tap, true, 100);
+    assert(d.snapshot(2099).streams[0].audio_ready);
+    assert(!d.snapshot(2100).streams[0].audio_ready);
+    d.encoded_audio(&client_a, tap, false, 2200);
+    assert(!d.snapshot(2200).streams[0].audio_ready);
+    auto endpoint = d.begin_audio(&client_a, false);
+    d.encoded_audio(&client_a, tap, true, 2300);
+    d.encoded_audio(&client_a, endpoint, true, 2300);
+    assert(d.snapshot(2300).streams[0].audio_capture == "endpoint");
+    assert(!d.snapshot(2300).streams[0].audio_ready);
+  }
   guarded_display_tests();
-  std::cout << "8 display, 4 live bitrate, 3 audio readiness and 6 guarded input/display scenarios passed\n";
+  std::cout << "8 display, 4 live bitrate, 4 audio readiness and 6 guarded input/display scenarios passed\n";
 }

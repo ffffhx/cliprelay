@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"cliprelay/network/hostaudio"
 	"cliprelay/network/hostclipboard"
 	"cliprelay/network/hostcompanion"
 	"cliprelay/network/hostprivacy"
@@ -39,12 +40,13 @@ func main() {
 	managedTerminal := flags.Bool("managed-terminal", false, "owned terminal session worker")
 	managedWake := flags.Bool("managed-wake", false, "owned read-only LAN inventory worker")
 	managedPrivacy := flags.Bool("managed-privacy", false, "owned native privacy mask worker")
+	managedAudio := flags.Bool("managed-audio", false, "owned native speaker mute worker")
 	terminalShell := flags.String("terminal-session", "", "owned native terminal guardian")
 	terminalColumns := flags.Int("terminal-columns", 0, "owned terminal columns")
 	terminalRows := flags.Int("terminal-rows", 0, "owned terminal rows")
 	parseErr := flags.Parse(os.Args[1:])
 	workers := 0
-	for _, enabled := range []bool{*managedFiles, *managedClipboard, *managedTerminal, *managedWake, *managedPrivacy, *terminalShell != ""} {
+	for _, enabled := range []bool{*managedFiles, *managedClipboard, *managedTerminal, *managedWake, *managedPrivacy, *managedAudio, *terminalShell != ""} {
 		if enabled {
 			workers++
 		}
@@ -119,6 +121,8 @@ func main() {
 	var err error
 	if *managedPrivacy {
 		err = hostprivacy.RunNative(ctx, input, output)
+	} else if *managedAudio {
+		err = hostaudio.RunNative(ctx, input, output)
 	} else if *managedFiles {
 		err = runManagedFiles(ctx, input, output, *directory)
 	} else if *managedClipboard {

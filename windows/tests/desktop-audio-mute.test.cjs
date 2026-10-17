@@ -40,6 +40,14 @@ test('real pinned mutual TLS mute binds start/renew/stop to the main-process aud
   assert.equal(writes.filter(c=>c.op==='start').length,1);
 });
 
+test('Mac system tap mute stays bound to one fresh audio generation',async t=>{
+  const f=await fixture(t);f.display.streams[0].audio.capture='system-tap';
+  await until(()=>f.controller.snapshot().canEnable);f.set(true);await until(()=>f.controller.snapshot().active);
+  const lease=f.s.active;f.display.streams[0].audio.generation++;
+  await until(()=>f.calls.some(v=>v.op==='stop'&&v.lease===lease));
+  assert.equal(f.calls.filter(v=>v.op==='start').length,1);
+});
+
 test('missing, endpoint, not-ready and shared audio cannot be muted even if a host claims capability',async t=>{
   const f=await fixture(t);await until(()=>f.controller.snapshot().canEnable);
   for(const audio of [undefined,{capture:'endpoint',generation:7,ready:false},{capture:'process',generation:7,ready:false},{capture:'',generation:0,ready:false}]){

@@ -17,7 +17,7 @@ function display(value){
   const streams=value.streams.map(stream=>{
     const audio=stream.audio;
     if(audio===undefined)return null;
-    if(!audio||typeof audio!=='object'||Array.isArray(audio)||!['','endpoint','process'].includes(audio.capture)||
+    if(!audio||typeof audio!=='object'||Array.isArray(audio)||!['','endpoint','process','system-tap'].includes(audio.capture)||
       typeof audio.ready!=='boolean'||!video.integer(audio.generation)||
       (audio.capture===''&&(audio.generation!==0||audio.ready))||(audio.capture!==''&&audio.generation===0)||
       (audio.capture==='endpoint'&&audio.ready))throw invalid();
@@ -26,7 +26,7 @@ function display(value){
   if(result.stream)result.stream.audio=streams[0];
   return result;
 }
-function safeAudio(d){const audio=d?.stream?.audio;return audio?.capture==='process'&&audio.ready&&audio.generation>0;}
+function safeAudio(d){const audio=d?.stream?.audio;return ['process','system-tap'].includes(audio?.capture)&&audio.ready&&audio.generation>0;}
 function body(op,binding){
   try{
     const result=privacy.body(op,binding);

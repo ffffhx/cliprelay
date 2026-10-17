@@ -102,6 +102,18 @@ func TestAudioMuteAuthorizationAndInput(t *testing.T) {
 		t.Fatal("owner state leaked", w.Body.String())
 	}
 }
+func TestAudioMuteSystemTapStillBindsFreshGeneration(t *testing.T) {
+	f, h := newAudioFixture(t)
+	f.state.Streams[0].Audio.Capture = "system-tap"
+	if audioCall(h, "first", "start") != 200 || f.starts != 1 {
+		t.Fatal("fresh system tap rejected")
+	}
+	f.state.Streams[0].Audio.Generation++
+	if audioCall(h, "first", "renew") != 409 || f.active != "" {
+		t.Fatal("replacement tap retained mute")
+	}
+}
+
 func TestAudioMuteRequiresFreshExclusiveProcessAudio(t *testing.T) {
 	for _, kind := range []string{"old-engine", "endpoint", "not-ready", "audio-generation", "instance", "shared", "switching", "video-generation", "unpresented"} {
 		t.Run(kind, func(t *testing.T) {

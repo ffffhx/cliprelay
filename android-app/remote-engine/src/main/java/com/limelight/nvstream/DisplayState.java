@@ -60,7 +60,7 @@ public final class DisplayState {
         if (audio != null && (!(audio.get("capture") instanceof String) || !(audio.get("ready") instanceof Boolean)))
             throw new JSONException("Invalid audio state");
         audioReady = audio != null && audio.getBoolean("ready");
-        if (audioGeneration < 0 || (!audioCapture.equals("") && !audioCapture.equals("process") && !audioCapture.equals("endpoint")) ||
+        if (audioGeneration < 0 || (!audioCapture.equals("") && !audioCapture.equals("process") && !audioCapture.equals("system-tap") && !audioCapture.equals("endpoint")) ||
                 (audioCapture.isEmpty() && (audioGeneration != 0 || audioReady)) ||
                 (!audioCapture.isEmpty() && audioGeneration == 0) || (audioCapture.equals("endpoint") && audioReady))
             throw new JSONException("Invalid audio state");
@@ -77,7 +77,7 @@ public final class DisplayState {
 
     public boolean safeHostMute() {
         return supported && !shared && "active".equals(phase) && stream > 0 && firstFrame > 0 && generation > 0 &&
-                streamGeneration == generation && "process".equals(audioCapture) && audioGeneration > 0 && audioReady;
+                streamGeneration == generation && ("process".equals(audioCapture) || "system-tap".equals(audioCapture)) && audioGeneration > 0 && audioReady;
     }
 
     public boolean sameAudioBinding(String expectedInstance, long expectedStream, long expectedAudioGeneration) {

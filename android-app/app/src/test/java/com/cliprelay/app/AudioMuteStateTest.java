@@ -23,6 +23,12 @@ public class AudioMuteStateTest {
     }
     private JSONObject audio(JSONObject state) throws Exception { return state.getJSONArray("streams").getJSONObject(0).getJSONObject("audio"); }
 
+    @Test public void freshMacSystemTapSupportsMuteButStaleTapDoesNot() throws Exception {
+        JSONObject value=snapshot();audio(value).put("capture","system-tap");
+        assertTrue(new DisplayState(value).safeHostMute());
+        audio(value).put("ready",false);assertFalse(new DisplayState(value).safeHostMute());
+    }
+
     @Test public void confirmsOnlyCurrentUnexpiredLease() throws Exception {
         AudioMuteState state=new AudioMuteState(muted());
         assertTrue(state.confirms(LEASE));assertFalse(state.confirms("old"));assertEquals(2,state.outputs);

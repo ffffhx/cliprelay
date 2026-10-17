@@ -54,6 +54,7 @@ function verify(directory,pin){
   if(Object.hasOwn(manifest,'wakeControl')){fields.push('wakeControl');if(manifest.wakeControl!==1)reject();}
   // Private worker availability is separate from a paired privacy capability.
   if(Object.hasOwn(manifest,'privacyWorker')){fields.push('privacyWorker');if(manifest.privacyWorker!==1)reject();}
+  if(Object.hasOwn(manifest,'audioMuteWorker')){fields.push('audioMuteWorker');if(manifest.audioMuteWorker!==1)reject();}
   if(Object.hasOwn(manifest,'privacyControl')){fields.push('privacyControl');if(manifest.privacyControl!==1||manifest.privacyWorker!==1)reject();}
   if(Object.hasOwn(manifest,'terminalControl')){fields.push('terminalControl');if(manifest.terminalControl!==1)reject();}
   if(!keys(manifest,fields) || manifest.role!=='host-companion' ||
@@ -61,7 +62,7 @@ function verify(directory,pin){
   const expected=new Set([...FILES,'manifest.json']);
   // CI adds this unpinned receipt after building the manifest. It is verified
   // against the selected run by the fetcher and never copied into the app.
-  const optional=new Set(['process-report.json','terminal-process-report.json','privacy-process-report.json']);
+  const optional=new Set(['process-report.json','terminal-process-report.json','privacy-process-report.json','audio-process-report.json']);
   function visit(current,relative=''){
     for(const entry of fs.readdirSync(current,{withFileTypes:true})){
       const name=relative+entry.name,file=path.join(current,entry.name);

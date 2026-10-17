@@ -48,7 +48,7 @@ def prepare(source: Path, check: bool = False, macos_host: bool = False) -> None
             raise RuntimeError("libvirtualhid checkout does not match the pinned gitlink")
         if subprocess.check_output(["git", "-C", str(hid), "diff", "HEAD"], text=True):
             raise RuntimeError("Refusing to patch an already modified libvirtualhid source tree")
-        patches += [(source, "macos-control.patch"), (source, "macos-capture.patch"), (source, "macos-privacy.patch"), (hid, "libvirtualhid-macos.patch")]
+        patches += [(source, "macos-control.patch"), (source, "macos-capture.patch"), (source, "macos-privacy.patch"), (source, "macos-audio.patch"), (hid, "libvirtualhid-macos.patch")]
     # A Windows archive/checkout may carry CRLF even when the upstream tree is LF.
     # Normalize the patch syntax without changing the caller's source files.
     with tempfile.TemporaryDirectory(prefix="cliprelay-sunshine-") as temporary:

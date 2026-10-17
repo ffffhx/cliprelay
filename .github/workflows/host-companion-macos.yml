@@ -2,7 +2,7 @@ name: macOS Host Companion Build
 on:
   push:
     branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
-    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/hostclipboard/**', 'network/hostterminal/**', 'network/hostwake/**', 'network/hostprivacy/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_clipboard.py', 'scripts/test_host_terminal*', 'scripts/test_host_wake*', 'scripts/test_macos_privacy_worker.py', 'scripts/privacy_fixture/**', 'scripts/WakeMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/nvstream/wol/**', 'scripts/TerminalMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/terminal/**', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
+    paths: ['network/hostcompanion/**', 'network/hostfiles/**', 'network/hostclipboard/**', 'network/hostterminal/**', 'network/hostwake/**', 'network/hostprivacy/**', 'network/hostaudio/**', 'network/cmd/cliprelay-host-network/**', 'network/inputfocus/**', 'scripts/build_host_companion.py', 'scripts/test_host_companion.py', 'scripts/test_host_clipboard.py', 'scripts/test_host_terminal*', 'scripts/test_host_wake*', 'scripts/test_macos_privacy_worker.py', 'scripts/test_host_audio_process.py', 'scripts/privacy_fixture/**', 'scripts/WakeMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/nvstream/wol/**', 'scripts/TerminalMacInterop.java', 'android-app/remote-engine/src/main/java/com/limelight/terminal/**', 'scripts/test_host_files*', '.github/workflows/host-companion-macos.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -60,6 +60,13 @@ jobs:
       - name: Native read-only wake inventory and paired LAN helper regression
         working-directory: network
         run: go test -race -v -count=1 -timeout=120s ./hostwake ./inputfocus -run "TestWake"
+      - name: Native private audio mute lease and paired stream guards
+        working-directory: network
+        env:
+          CLIPRELAY_AUDIO_MUTE_NATIVE_TEST: '1'
+        run: |
+          go test -race -json -count=1 -timeout=90s ./hostaudio > ../host-audio-tests.jsonl
+          go test -race -json -count=1 -timeout=90s ./inputfocus -run TestAudioMute -skip TestAudioMuteRealWorkerStatusAndEOF > ../host-audio-protocol-tests.jsonl
       - name: Host listener, paired privacy and worker lifetime regression
         working-directory: network
         run: go test -race -v -count=1 -timeout=120s ./inputfocus -run 'TestHostListeners|TestProbeOwner|TestEngineAccess|TestLANPairing|TestManagedPrivacy|TestPrivacy'
@@ -75,6 +82,17 @@ jobs:
         run: python3 scripts/test_host_terminal_process.py .tools/host-companion/runtime/cliprelay-host-network --report .tools/host-companion/terminal-process-report.json
       - name: Packaged private mask worker admission and native recovery
         run: python3 scripts/test_macos_privacy_worker.py --binary .tools/host-companion/runtime/cliprelay-host-network --output .tools/host-companion/privacy-process-report.json
+      - name: Packaged audio mute worker lease, EOF and signal recovery
+        run: python3 scripts/test_host_audio_process.py --binary .tools/host-companion/runtime/cliprelay-host-network --output .tools/host-companion/audio-process-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Host-Audio-Checks-${{ matrix.arch }}
+          path: |
+            host-audio-tests.jsonl
+            host-audio-protocol-tests.jsonl
+            .tools/host-companion/audio-process-report.json
+          if-no-files-found: warn
       - name: Preserve executable mode
         run: tar -czf .tools/host-companion-macos.tar.gz -C .tools host-companion
       - uses: actions/upload-artifact@v4

@@ -164,7 +164,7 @@ def package(source, build, artifact, arch, test_results, dependencies, build_log
     tracked = ['engine/sunshine/' + name for name in [
         'upstream.json', 'control.patch', 'cliprelay_control.h', 'cliprelay_audio.h',
         'cliprelay_input.h', 'control_test.cpp', 'input_test.cpp', 'input_integration_test.cpp', 'README.md',
-        'macos-control.patch', 'macos-capture.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp',
+        'macos-control.patch', 'macos-capture.patch', 'macos-audio.patch', 'libvirtualhid-macos.patch', 'cliprelay_macos.h', 'macos_mouse_test.cpp',
         'cliprelay_capture.h', 'macos_capture_test.mm', 'cliprelay_permissions.h', 'permissions_test.cpp',
         'cliprelay_state.h', 'state_test.cpp', 'cliprelay_owner.h', 'owner_test.cpp', 'macos_owner_test.cpp']]
     tracked += ['engine/sunshine/macos-dependencies.json', 'scripts/prepare_sunshine.py',

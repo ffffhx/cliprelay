@@ -22,8 +22,8 @@ type audioMuteState struct {
 	Outputs    int  `json:"outputs"`
 }
 
-// Endpoint mute is permitted only while the sole paired stream has fresh,
-// encoded process audio. Its generation must survive every renewal unchanged.
+// Mute is permitted only while the sole paired stream has fresh, encoded
+// process-loopback or Mac system-tap audio. Endpoint capture is never sufficient.
 type audioMuteControl struct {
 	mu          sync.Mutex
 	clients     string
@@ -69,8 +69,9 @@ func (p *audioMuteControl) bound(ctx context.Context, request audioMuteRequest, 
 	}
 	stream := state.Streams[0]
 	return stream.Owner == owner && stream.ID == request.Stream && stream.Generation == state.Generation && stream.FirstFrame > 0 &&
-		stream.Audio != nil && stream.Audio.Capture == "process" && stream.Audio.Ready && stream.Audio.Generation == request.AudioGeneration && request.AudioGeneration > 0
+		stream.Audio != nil && safeMuteCapture(stream.Audio.Capture) && stream.Audio.Ready && stream.Audio.Generation == request.AudioGeneration && request.AudioGeneration > 0
 }
+func safeMuteCapture(kind string) bool { return kind == "process" || kind == "system-tap" }
 func (p *audioMuteControl) retire(owner, lease string) bool {
 	if p.retired == nil {
 		p.retired = make(map[string]time.Time)
@@ -228,7 +229,7 @@ func (p *audioMuteControl) handler(next http.Handler) http.Handler {
 			ready := false
 			if stateErr == nil && validDisplayState(state) && state.Phase == "active" && len(state.Streams) == 1 {
 				s := state.Streams[0]
-				ready = s.Owner == owner && s.Generation == state.Generation && s.FirstFrame > 0 && s.Audio != nil && s.Audio.Capture == "process" && s.Audio.Ready
+				ready = s.Owner == owner && s.Generation == state.Generation && s.FirstFrame > 0 && s.Audio != nil && safeMuteCapture(s.Audio.Capture) && s.Audio.Ready
 			}
 			value.Supported = value.Supported && ready && !p.restoring
 			value.Recovering = value.Recovering || p.restoring

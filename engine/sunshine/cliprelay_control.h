@@ -181,12 +181,12 @@ namespace cliprelay {
       }
     }
 
-    std::uint64_t begin_audio(void *key, bool independent) {
+    std::uint64_t begin_audio(void *key, bool independent, bool system_tap = false) {
       std::lock_guard lock(mutex_);
       auto stream = streams_.find(key);
       if (stream == streams_.end()) return 0;
       auto &s = stream->second;
-      s.audio_capture = independent ? "process" : "endpoint";
+      s.audio_capture = independent ? "process" : system_tap ? "system-tap" : "endpoint";
       s.audio_generation = ++next_audio_;
       s.audio_encoded_ms = 0;
       return s.audio_generation;
@@ -217,7 +217,7 @@ namespace cliprelay {
       for (auto const &[key, stream] : streams_) {
         copy.streams.push_back(stream);
         auto &audio = copy.streams.back();
-        audio.audio_ready = audio.audio_capture == "process" && audio.audio_generation != 0 && audio.audio_encoded_ms > 0 &&
+        audio.audio_ready = (audio.audio_capture == "process" || audio.audio_capture == "system-tap") && audio.audio_generation != 0 && audio.audio_encoded_ms > 0 &&
           now >= audio.audio_encoded_ms && now - audio.audio_encoded_ms < 2000;
         ready |= capture_running_ && stream.generation == state_.generation && stream.first_frame > 0;
       }
