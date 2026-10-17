@@ -1,6 +1,7 @@
 'use strict';
 // Actual shipped Qt/SDL output, observed by a private tap on only the owned
-// viewer. The tap mutes this CI viewer to avoid same-machine audio feedback.
+// viewer. CATapMuted mutes its output device; exclusion from another global
+// capture tap is measured separately and must not be assumed.
 // This does not prove physical speakers, GUI permissions or video presentation.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawn}=require('node:child_process');
@@ -80,6 +81,15 @@ async function close(item){
 }
 const safeLines=text=>text.split('\n').filter(line=>/audio|opus|error|fail/i.test(line)&&
   !/rikey|uniqueid|private key|certificate|authorization|credential|password|secret|token/i.test(line)).slice(-20).map(line=>line.slice(0,300));
+const previousLogs=new Set(fs.readdirSync(os.tmpdir()).filter(name=>/^ClipRelayStream-[0-9]+\.log$/.test(name)));
+function viewerAudioLogs(){
+  return fs.readdirSync(os.tmpdir()).filter(name=>/^ClipRelayStream-[0-9]+\.log$/.test(name)&&!previousLogs.has(name)).slice(0,2)
+    .flatMap(name=>{
+      const file=path.join(os.tmpdir(),name),info=fs.lstatSync(file);
+      return info.isFile()&&!info.isSymbolicLink()&&info.uid===process.getuid()&&info.size<4*1024*1024?
+        safeLines(fs.readFileSync(file,'utf8')):[];
+    });
+}
 const report={protocol:1,testCommit:process.env.GITHUB_SHA,architecture:process.arch,passed:false,
   scope:'Development packaged engine and pinned shipped Qt viewer, loopback; private muted process tap observes actual Qt output. No physical speakers, product permission UI, video presentation or automatic error recovery claim.',
   actualQtOutputObserved:false,physicalPlaybackVerified:false,productionPermissionUIVerified:false,videoPresentationVerified:false,
@@ -111,8 +121,8 @@ async function main(){
     assert.equal(stream.streams[0].owner,new crypto.X509Certificate(identity.cert).fingerprint256.replaceAll(':','').toLowerCase());
     stage='observe-viewer';tap=launch(observerFile,['--viewer',String(viewer.child.pid)]);
     await until(()=>alive(tap),value=>value?.event==='ready',15000);
-    for(const [name,hz] of [['quiet',0],['low',1000],['high',1600],['quiet',0]]){
-      stage='output-'+name;
+    for(const [phaseIndex,[name,hz]] of [['quiet',0],['low',1000],['high',1600],['quiet',0]].entries()){
+      stage='output-'+phaseIndex+'-'+name;
       const before=await command(tap),video=progress(),source=await command(tone,name);assert.equal(source.frequency,hz);
       let last=before.windows,matched=[];const deadline=Date.now()+15000;
       while(matched.length<2){
@@ -149,6 +159,7 @@ async function main(){
     report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_audio_playback\.cjs:\d+:\d+/)?.[0],
       observer:tap?.events.at(-1),source:tone?.events.at(-1),viewerExit:viewer?.exit,
       video:viewer?.events.filter(value=>value.event==='progress').at(-1),viewerAudio:safeLines(viewer?.stderr||'')};
+    try{report.failure.viewerAudioFile=viewerAudioLogs();}catch{}
     try{report.failure.engine=safeLines(hostState.read('engine.log',4*1024*1024).toString('utf8'));}catch{}
     process.exitCode=1;
   }finally{

@@ -58,10 +58,12 @@ jobs:
           python3 scripts/stage_host_audio.py
       - name: Build owned tone and pinned encrypted receiver
         run: python3 scripts/build_macos_audio_fixture.py
-      - name: Verify actual audio capture, encrypted Opus and changing tones
-        run: node scripts/test_macos_host_audio.cjs .tools/audio-stream-mac audio-stream-development.json
       - name: Build private process output observer
         run: python3 scripts/build_macos_audio_observer.py
+      - name: Verify actual audio capture, encrypted Opus and changing tones
+        env:
+          CLIPRELAY_AUDIO_MUTED_PROBE: '1'
+        run: node scripts/test_macos_host_audio.cjs .tools/audio-stream-mac audio-stream-development.json
       - name: Verify output observer isolates one owned process
         run: node scripts/test_macos_audio_observer.cjs audio-observer-development.json
       - name: Verify shipping Qt viewer actual audio output

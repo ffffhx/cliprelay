@@ -192,6 +192,11 @@ async function main(){
     }
     await phase('quiet-baseline',0);await phase('low',1000);await phase('high',1600);await phase('quiet',0);
     report.cases.push('fresh-decoded-silence-1000Hz-1600Hz-silence');
+    if(process.env.CLIPRELAY_AUDIO_MUTED_PROBE==='1'){
+      assert.equal(complete,false);stage='muted-source-experiment';
+      report.mutedSourceProbe=await require('./audio_fixture/muted_probe.cjs').probe({tone,command,readDecoder:()=>alive(decoder),until});
+      assert.equal(report.mutedSourceProbe.completed,true,'MUTED_SOURCE_EXPERIMENT_INCOMPLETE');
+    }
     stage='receiver-eof';await close(decoder);assert.deepEqual(decoder.exit,{code:0,signal:null});
     await until(admin,value=>value.streams.length===0);report.cases.push('receiver-EOF-releases-native-stream');
     stage='host-close';await host.close();
