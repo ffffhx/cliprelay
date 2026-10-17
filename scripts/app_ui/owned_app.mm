@@ -98,6 +98,20 @@ static void permission_windows(){
   NSSet *allowed=[NSSet setWithArray:@[@"com.apple.UserNotificationCenter",@"com.apple.notificationcenterui",
     @"com.apple.SecurityAgent",@"com.apple.CoreServicesUIAgent",@"com.apple.systempreferences"]];
   NSMutableArray *observations=[NSMutableArray array];unsigned budget=250,remaining_rows=60;
+  NSMutableArray *system_apps=[NSMutableArray array],*visible=[NSMutableArray array];
+  for(NSRunningApplication *candidate in NSWorkspace.sharedWorkspace.runningApplications){
+    NSString *path=candidate.executableURL.path?:@"";
+    if(system_apps.count<40&&[path hasPrefix:@"/System/"])[system_apps addObject:@{@"bundle":candidate.bundleIdentifier?:@"",@"pid":@(candidate.processIdentifier),@"path":path}];
+  }
+  CFArrayRef window_info=CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly|kCGWindowListExcludeDesktopElements,kCGNullWindowID);
+  if(window_info){
+    for(NSDictionary *info in (__bridge NSArray *)window_info){
+      if(visible.count>=32)break;
+      NSString *name=info[(id)kCGWindowOwnerName]?:@"";NSNumber *pid=info[(id)kCGWindowOwnerPID];
+      if(pid&&name.length<=120)[visible addObject:@{@"owner":name,@"pid":pid,@"layer":info[(id)kCGWindowLayer]?:@0}];
+    }
+    CFRelease(window_info);
+  }
   const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);const BOOL trusted=AXIsProcessTrusted();
   if(trusted)for(NSRunningApplication *broker in NSWorkspace.sharedWorkspace.runningApplications){
     if(![allowed containsObject:broker.bundleIdentifier]||!remaining_rows||!budget||std::chrono::steady_clock::now()>=end)continue;
@@ -116,7 +130,8 @@ static void permission_windows(){
     [observations addObject:@{@"bundle":broker.bundleIdentifier,@"pid":@(broker.processIdentifier),@"path":path,
       @"nodes":[rows subarrayWithRange:NSMakeRange(0,count)]}];
   }
-  emit(@{@"event":@"consent-windows",@"owned":@(owned()),@"trusted":@(trusted),@"brokers":observations,@"remainingBudget":@(budget)});
+  emit(@{@"event":@"consent-windows",@"owned":@(owned()),@"trusted":@(trusted),@"brokers":observations,@"remainingBudget":@(budget),
+    @"systemApplications":system_apps,@"visibleWindowOwners":visible});
 }
 static void close_owned(){
   if(closing)return;closing=true;close_at=std::chrono::steady_clock::now();
