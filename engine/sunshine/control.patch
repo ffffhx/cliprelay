@@ -1580,7 +1580,7 @@ index 49c7039..9d6bcc9 100644
    /**
     * @brief Apply a PIN to an explicitly selected pairing request.
 diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
-index 8e33cad..d01d93a 100644
+index 8e33cad..b59d628 100644
 --- a/src/nvhttp.cpp
 +++ b/src/nvhttp.cpp
 @@ -185,6 +185,14 @@ namespace nvhttp {
@@ -1598,6 +1598,19 @@ index 8e33cad..d01d93a 100644
    /**
     * @brief Get the mutex protecting pairing-session state.
     *
+@@ -540,10 +548,10 @@ namespace nvhttp {
+     auto &response = sess.async_insert_pin.response;
+     if (response.has_left() && response.left()) {
+       response.left()->close_connection_after_response = true;
+-      response.left()->write(data.str());
++      response.left()->write(data.str(), {{"Connection", "close"}});
+     } else if (response.has_right() && response.right()) {
+       response.right()->close_connection_after_response = true;
+-      response.right()->write(data.str());
++      response.right()->write(data.str(), {{"Connection", "close"}});
+     } else {
+       return false;
+     }
 @@ -575,6 +583,7 @@ namespace nvhttp {
     * @param now Monotonic time used to evaluate session deadlines.
     */
@@ -1743,7 +1756,19 @@ index 8e33cad..d01d93a 100644
        case ADDED:
          break;
      }
-@@ -1735,10 +1830,16 @@ namespace nvhttp {
+@@ -1046,8 +1141,10 @@ namespace nvhttp {
+       std::ostringstream data;
+ 
+       pt::write_xml(data, tree);
+-      response->write(data.str());
+       response->close_connection_after_response = true;
++      // Pairing phases use a fresh connection. Announce closure before writing
++      // headers so pooled clients cannot send the next phase to a closing socket.
++      response->write(data.str(), {{"Connection", "close"}});
+     });
+ 
+     auto args = request->parse_query_string();
+@@ -1735,10 +1832,16 @@ namespace nvhttp {
      };
      std::jthread ssl {accept_and_run, &https_server};
      std::jthread tcp {accept_and_run, &http_server};
@@ -1760,7 +1785,7 @@ index 8e33cad..d01d93a 100644
      https_server.stop();
      http_server.stop();
  
-@@ -1811,6 +1912,22 @@ namespace nvhttp {
+@@ -1811,6 +1914,22 @@ namespace nvhttp {
  
  #ifdef SUNSHINE_TESTS
    namespace test_support {
@@ -1923,10 +1948,58 @@ index 29e5529..87494cd 100644
    const std::string pairing_id = insert_pending_pairing();
    SimpleWeb::CaseInsensitiveMultimap headers;
 diff --git a/tests/unit/test_http_pairing.cpp b/tests/unit/test_http_pairing.cpp
-index 353180d..e84ce24 100644
+index 353180d..c1696ac 100644
 --- a/tests/unit/test_http_pairing.cpp
 +++ b/tests/unit/test_http_pairing.cpp
-@@ -783,3 +783,201 @@ TEST_F(PairingSessionRegistryTest, ConcurrentInsertionAndCancellationLeaveConsis
+@@ -486,6 +486,13 @@ namespace {
+       return client_->request("GET", std::string {target})->content.string();
+     }
+ 
++    /** Read real response headers as well as the complete XML body. */
++    std::pair<std::string, std::string> closing_request(const std::string_view target) {
++      const auto response = client_->request("GET", std::string {target}, "", {{"Connection", "keep-alive"}});
++      const auto connection = response->header.find("Connection");
++      return {connection == response->header.end() ? "" : connection->second, response->content.string()};
++    }
++
+     /**
+      * @brief Wait for a request to enter the pending pairing registry.
+      *
+@@ -521,6 +528,33 @@ TEST_F(PairingHttpHandlerTest, ImmediateRequestsReturnExpectedStatus) {
+   EXPECT_NE(request("/pair?uniqueid=out-of-order&clientchallenge=00"sv).find("Out of order"), std::string::npos);
+ }
+ 
++TEST_F(PairingHttpHandlerTest, ClipRelayPairingResponsesAnnounceClosureForPooledClients) {
++  for (int attempt = 0; attempt < 4; ++attempt) {
++    const auto [connection, body] = closing_request("/pair?uniqueid=challenge&phrase=pairchallenge");
++    EXPECT_EQ(connection, "close");
++    EXPECT_NE(body.find("<paired>1</paired>"), std::string::npos);
++  }
++  const auto [connection, body] = closing_request("/pair?uniqueid=missing");
++  EXPECT_EQ(connection, "close");
++  EXPECT_NE(body.find("Invalid uniqueid"), std::string::npos);
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayDeferredPairingResponseAnnouncesClosure) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'd');
++  const auto fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  ASSERT_TRUE(register_managed_pairing(id, fingerprint));
++  auto response = std::async(std::launch::async, [this, id]() {
++    return closing_request(server_certificate_target(id) + "&cliprelay_pairing=" + id);
++  });
++  ASSERT_FALSE(wait_for_pending_pairing().empty());
++  EXPECT_TRUE(cancel_managed_pairing(id, fingerprint));
++  ASSERT_EQ(response.wait_for(std::chrono::seconds {2}), std::future_status::ready);
++  const auto [connection, body] = response.get();
++  EXPECT_EQ(connection, "close");
++  EXPECT_NE(body.find("<paired>0</paired>"), std::string::npos);
++}
++
+ TEST_F(PairingHttpHandlerTest, WebApprovalRequestRemainsPendingUntilCancelled) {
+   std::packaged_task<std::string()> request_task {[this]() {
+     return request(server_certificate_target("pending"));
+@@ -783,3 +817,201 @@ TEST_F(PairingSessionRegistryTest, ConcurrentInsertionAndCancellationLeaveConsis
    EXPECT_EQ(successful_cancellations, session_count);
    EXPECT_TRUE(get_pending_pairings().empty());
  }

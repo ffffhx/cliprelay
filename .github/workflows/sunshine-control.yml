@@ -88,7 +88,7 @@ jobs:
           cmake --build sunshine-build --parallel 2
           ./sunshine-build/tests/test_sunshine.exe --gtest_filter='ClipRelayInputTest.*'
           ./sunshine-build/tests/test_sunshine.exe --gtest_filter='ClipRelayDisplayEncoderTest.*'
-          ./sunshine-build/tests/test_sunshine.exe --gtest_filter='PairingSessionRegistryTest.*:ClipRelayManagedPairingTest.*:PairingHttpHandlerTest.ClipRelayManaged*:ConfigHttpTest.ClipRelayManaged*'
+          ./sunshine-build/tests/test_sunshine.exe --gtest_filter='PairingSessionRegistryTest.*:ClipRelayManagedPairingTest.*:PairingHttpHandlerTest.ClipRelay*:ConfigHttpTest.ClipRelayManaged*'
           cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component application
           cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component assets
           # Common assets and the compiled Web UI have no CMake component.

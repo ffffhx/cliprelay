@@ -56,6 +56,14 @@ the pinned FetchContent Boost works without unrelated system Boost headers.
 The upstream service launcher also receives the transitive Boost includes needed
 by its shared log-rotation header.
 
+Pairing responses explicitly send `Connection: close` before serialization.
+The native handlers already close these sockets after every phase; without the
+header, a client connection pool can send the next challenge to a closing socket.
+The handler tests cover complete successful/error responses and a deferred
+managed cancellation with a client requesting keep-alive. Acceptance also runs
+fresh full handshakes against the exact Windows engine using both connection
+modes; a successful isolated response test alone does not prove Android pairing.
+
 ## Protocol 1
 
 `GET /api/cliprelay/displays` returns the current capture state. Add `?refresh=1`
