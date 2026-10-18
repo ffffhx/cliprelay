@@ -28,6 +28,7 @@ async function fixture(t,options={}){
   const input={protocol:1,supported:true,instance,streams:[]};
   const server=https.createServer({key:identities.host.key,cert:identities.host.cert,requestCert:true,rejectUnauthorized:false},(req,res)=>{
     requests++;assert.ok(req.socket.getPeerCertificate().raw);if(hang)return;
+    if(options.failureStatus){res.writeHead(options.failureStatus);res.end('{}');return;}
     if(options.unsupported){res.writeHead(404);res.end();return;}
     res.end(JSON.stringify(req.url==='/v1/input-state'?input:{protocol:1,supported:true,instance,phase:'active',generation:2,capture:{id:'left'},
       streams:input.streams.map(s=>({id:s.id,generation:2,firstFrame:10,width:1280,height:720}))}));
@@ -36,7 +37,7 @@ async function fixture(t,options={}){
   const host={id:crypto.createHash('sha256').update(new crypto.X509Certificate(cert).raw).digest('hex'),clientId:'a'.repeat(32),name:'Input fixture',enabled:true,address:'127.0.0.1',port:port-2,certificate:cert,routeId:'first'};
   const store={data:{legacySelected:false},host,selected(){return {...this.host};},async identity(){return identities.client;}};
   const viewer=new StreamViewer({directory:'.',store,resolveExecutable:()=>process.execPath,resolveTelemetry:()=>options.telemetry!==false,
-    resolveInput:()=>options.capability!==false,inputPollMs:5,inputTimeoutMs:options.timeoutMs||3000,retryDelays:[5],
+    resolveInput:()=>options.capability!==false,inputPollMs:5,inputTimeoutMs:options.timeoutMs||3000,retryDelays:[5],maxRetries:options.maxRetries??8,recoveryMs:options.recoveryMs??90000,
     spawnProcess:(file,args,config)=>{
       const child=spawn(file,['-e','const settings='+JSON.stringify({ignoreLocal:!!options.ignoreLocal})+';'+childCode],{
         ...config,env:{...config.env,...(process.versions.electron?{ELECTRON_RUN_AS_NODE:'1'}:{})},stdio:['pipe','pipe','ignore','ipc']});
@@ -67,6 +68,26 @@ test('paused recovery refuses an unsupported host instead of opening unrestricte
   const options={},f=await fixture(t,options);await f.viewer.open();await until(()=>f.viewer.snapshot().input.phase==='active');const old=f.viewer.record;
   f.viewer.setInputPaused(old,true);await old.input.pause();options.unsupported=true;f.store.host.routeId='replacement';f.viewer.reconcile();
   await until(()=>f.viewer.phase==='error');assert.equal(f.viewer.error,'INPUT_UNSUPPORTED');assert.equal(f.children.length,1);
+});
+test('temporary capability failure during recovery keeps retrying and retains the user pause',async t=>{
+  const options={},f=await fixture(t,options);await f.viewer.open();await until(()=>f.viewer.snapshot().input.phase==='active');
+  const old=f.viewer.record;f.viewer.setInputPaused(old,true);await old.input.pause();const count=f.commands.length,requests=f.requests;
+  options.failureStatus=503;f.store.host.routeId='temporarily-offline';f.viewer.reconcile();
+  await until(()=>f.requests>=requests+2);assert.equal(f.viewer.phase,'recovering');assert.equal(f.children.length,1);assert.equal(old.input.closed,true);
+  assert.equal(f.viewer.snapshot().input.manualPaused,true);options.failureStatus=0;
+  await until(()=>f.children.length===2&&f.viewer.snapshot().input.phase==='paused'&&!f.viewer.record.input.busy);
+  assert.deepEqual(f.commands.slice(count),[[1,1],[1,3]]);assert.equal(f.viewer.snapshot().input.manualPaused,true);
+});
+test('persistent capability transport failures exhaust the existing recovery budget without spawning',async t=>{
+  const options={maxRetries:2},f=await fixture(t,options);await f.viewer.open();await until(()=>f.viewer.snapshot().input.phase==='active');
+  options.failureStatus=503;f.store.host.routeId='offline';f.viewer.reconcile();
+  await until(()=>f.viewer.phase==='error');assert.equal(f.viewer.error,'VIEWER_RECOVERY_EXHAUSTED');assert.equal(f.children.length,1);assert.equal(f.viewer.intent,null);
+});
+test('capability authorization failure during recovery stops without retrying',async t=>{
+  const options={},f=await fixture(t,options);await f.viewer.open();await until(()=>f.viewer.snapshot().input.phase==='active');
+  options.failureStatus=403;f.store.host.routeId='revoked';f.viewer.reconcile();
+  await until(()=>f.viewer.phase==='error');const requests=f.requests;await delay(40);
+  assert.equal(f.viewer.error,'UNPAIRED');assert.equal(f.requests,requests);assert.equal(f.children.length,1);assert.equal(f.viewer.intent,null);
 });
 test('epoch capability requires telemetry and unsupported hosts retain the legacy envelope',async t=>{
   for(const options of [{capability:false},{telemetry:false},{unsupported:true}])await t.test(JSON.stringify(options),async t=>{

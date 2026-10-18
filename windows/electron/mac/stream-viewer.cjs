@@ -6,6 +6,7 @@ const {validateIdentity}=require('./paired-store.cjs');
 const {sameRoute}=require('./routed-store.cjs');
 const inputProtocol=require('./input-protocol.cjs');
 const {InputSession}=require('./input-session.cjs');
+const recoveryTransportErrors=new Set(['HTTP_429','HTTP_503','TIMEOUT','ECONNRESET','ECONNREFUSED','ETIMEDOUT','EHOSTUNREACH','ENETUNREACH']);
 
 function envelope(host,identity,options={},telemetry=false,inputEpochs=false){
   validateIdentity(identity);
@@ -173,7 +174,12 @@ class StreamViewer{
       if(generation!==this.generation || this.child!==child || !sameRoute(this.authorized(),host))throw fault('CANCELLED');
       return this.snapshot();
     }catch(error){
-      if(generation===this.generation)this.finish(error.code==='CANCELLED'?'':error.code || 'VIEWER_UNAVAILABLE');
+      if(generation===this.generation){
+        // A host may still be restarting when recovery probes its input API.
+        // Keep the existing bounded intent, including the user's input pause.
+        if(this.intent===intent && intent.since!==null && recoveryTransportErrors.has(error.code))this.recover();
+        else this.finish(error.code==='CANCELLED'?'':error.code || 'VIEWER_UNAVAILABLE');
+      }
       throw error.code?error:fault('VIEWER_UNAVAILABLE');
     }finally{bytes?.fill(0);if(this.launching===generation)this.launching=null;if(this.launchAbort===launchAbort)this.launchAbort=null;}
   }
