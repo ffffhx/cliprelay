@@ -8,12 +8,15 @@ function finish(reason, notify = true) {
   if (ended) return;
   ended = true;
   clearInterval(statsTimer); clearTimeout(connectTimer); clearTimeout(disconnectTimer);
+  // Hiding a fullscreen video leaves Chromium's fullscreen input target active.
+  // Exit it before showing the ended screen so its close button works normally.
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   if (stream) stream.getTracks().forEach(track => track.stop());
   if (pc) pc.close();
   $('video').srcObject = null;
   document.body.className = 'ended'; $('empty').hidden = false;
   $('headline').textContent = '共享已结束'; $('detail').textContent = reason;
-  $('start').hidden = true; $('stop').textContent = '关闭窗口';
+  $('start').hidden = true; $('fullscreen').hidden = true; $('stop').textContent = '关闭窗口';
   $('stats').textContent = ''; status('已结束');
   if (notify) bridge({type:'stop', reason});
   bridge({type:'finished'});

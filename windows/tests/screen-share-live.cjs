@@ -79,27 +79,45 @@ app.whenReady().then(async()=>{
         const fullscreen=await s.window.webContents.executeJavaScript('!!document.fullscreenElement');
         record({fullscreen});
         if(!fullscreen)throw new Error('Fullscreen did not activate');
-        await s.window.webContents.executeJavaScript('document.exitFullscreen()');
+        if(mode!=='fullscreen-stop')await s.window.webContents.executeJavaScript('document.exitFullscreen()');
       }
       if(role==='receiver' && mode==='disconnect' && liveAt && Date.now()-liveAt>13000) {
         record({abruptExit:true,at:Date.now(),frames:s.stats?.frames});
         process.kill(process.pid,'SIGKILL');return; // No window-close events or stop signaling.
       }
-      const shouldStop=(role==='sender' && mode==='normal' && liveAt && Date.now()-liveAt>25000) ||
+      const shouldStop=(role==='sender' && ['normal','fullscreen-stop'].includes(mode) && liveAt && Date.now()-liveAt>25000) ||
         (role==='receiver' && mode==='receiver-stop' && liveAt && Date.now()-liveAt>13000);
       if(shouldStop && !stopRequested) {
         if(role==='sender')host.handleCommand({action:'stop-all'});
         else await s.window.webContents.executeJavaScript('document.getElementById("stop").click()',true);
         record({stopped:true});stopRequested=true;
       }
-      if(role==='receiver' && state.ended) {record({ended:state.detail,cleanup:await s.window.webContents.executeJavaScript('({videoCleared:document.getElementById("video").srcObject===null,peerClosed:!pc||pc.connectionState==="closed",tracksStopped:!stream||stream.getTracks().every(t=>t.readyState==="ended")})')});break;}
+      if(role==='receiver' && state.ended) {
+        if(mode==='fullscreen-stop') {
+          // Exiting fullscreen is asynchronous; the user must be able to close
+          // the ended receiver without a separate Escape key workaround.
+          for(let i=0;i<20;i++) {
+            if(!await s.window.webContents.executeJavaScript('!!document.fullscreenElement'))break;
+            await sleep(100);
+          }
+        }
+        const cleanup=await s.window.webContents.executeJavaScript('({videoCleared:document.getElementById("video").srcObject===null,peerClosed:!pc||pc.connectionState==="closed",tracksStopped:!stream||stream.getTracks().every(t=>t.readyState==="ended"),fullscreenExited:!document.fullscreenElement})');
+        if(mode==='fullscreen-stop') {
+          const point=await s.window.webContents.executeJavaScript('(()=>{const r=document.getElementById("stop").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
+          s.window.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
+          s.window.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
+          for(let i=0;i<20 && !s.window.isDestroyed();i++)await sleep(100);
+          cleanup.closeButtonWorked=s.window.isDestroyed();
+        }
+        record({ended:state.detail,cleanup});break;
+      }
     }
     await sleep(500);
   }
   const frames=results.filter(x=>x.stats?.frames>0);
   const median=frames.map(x=>x.stats.fps||0).sort((a,b)=>a-b)[Math.floor(frames.length/2)] || 0;
   const stopped=results.find(x=>x.ended);
-  const clean=role==='sender' ? stopped?.cleanup?.rendererDestroyed && stopped?.cleanup?.captureDisabled && stopped?.cleanup?.sessionsRemoved : stopped?.cleanup?.videoCleared && stopped?.cleanup?.peerClosed && stopped?.cleanup?.tracksStopped;
+  const clean=role==='sender' ? stopped?.cleanup?.rendererDestroyed && stopped?.cleanup?.captureDisabled && stopped?.cleanup?.sessionsRemoved : stopped?.cleanup?.videoCleared && stopped?.cleanup?.peerClosed && stopped?.cleanup?.tracksStopped && (mode!=='fullscreen-stop' || stopped?.cleanup?.fullscreenExited && stopped?.cleanup?.closeButtonWorked);
   const lostPeerDetected=mode!=='disconnect' || (!results.some(x=>x.type==='stop') && /连接.*中断|连接已断开/.test(stopped?.ended || ''));
   const phases=results.filter(x=>x.phase).map(x=>x.phase);
   const phaseFeedback=role!=='sender' || (phases.includes('waiting') && (mode==='decline' || phases.includes('connected')));
