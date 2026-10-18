@@ -27,4 +27,4 @@ async function main(){
     console.log(JSON.stringify({passed:true,cancelConfirmed:true,oneShot:true}));
   }finally{await controller.close();}
 }
-main().catch(error=>{console.error('desktop session lock fixture failed:',error.code||error.message);process.exitCode=1;});
+main().catch(error=>{console.error('desktop session lock fixture failed:',error.stack||error.code||error.message);process.exitCode=1;});
