@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wake_title">Remote wake</string>
+    <string name="wake_settings">Remote wake settings</string>
+    <string name="wake_reading">Reading network adapter settings…</string>
+    <string name="wake_need_online">Connect to this paired computer first, then open Remote wake settings.</string>
+    <string name="wake_unavailable">Wake settings are unavailable. Check that the computer is online and has an updated ClipRelay host.</string>
+    <string name="wake_no_adapter">No physical network adapter was detected.</string>
+    <string name="wake_adapter">Choose the adapter connected to the target LAN</string>
+    <string name="wake_configured">Wake settings enabled; untested</string>
+    <string name="wake_disabled">Wake settings disabled</string>
+    <string name="wake_unsupported">Adapter reports no magic-packet support</string>
+    <string name="wake_unknown">Capability needs confirmation</string>
+    <string name="wake_disconnected">Disconnected</string>
+    <string name="wake_need_lan">Connect this adapter to the target LAN before saving its wake settings.</string>
+    <string name="wake_hardware_help">Check the adapter’s Wake on Magic Packet and permission to wake the computer in Windows Device Manager. BIOS/UEFI, the driver and sleep or shutdown mode also affect wake support. After adjusting the settings, refresh this page. ClipRelay does not change these settings automatically.</string>
+    <string name="wake_network">Choose the target LAN</string>
+    <string name="wake_helper">Choose an online computer on the same LAN</string>
+    <string name="wake_no_helper">Pair another computer on the target LAN and keep it online with ClipRelay running. It can send the wake packet while this computer is asleep. Then return here to select it.</string>
+    <string name="wake_helper_failed">The helper could not confirm that it is on this LAN. Check its network and update its ClipRelay host.</string>
+    <string name="wake_saved">Helper saved. Hardware wake has not been verified. Test it after the target sleeps; keep the helper online. Refresh these settings after a network change or within 30 days.</string>
+    <string name="wake_clear">Clear saved helper</string>
+    <string name="wake_changed">The pairing or saved adapter information changed. Reconnect to the computer and configure remote wake again.</string>
+    <string name="wake_confirm">Send a wake packet for %1$s using %2$s on %3$s? Hardware and power settings determine whether the computer can wake.</string>
+    <string name="wake_no_saved_helper">No usable online helper is saved. While the target is online, open Remote wake settings to select an adapter and a paired computer on its LAN. Existing settings expire after 30 days.</string>
+    <string name="wake_send">Send wake packet</string>
+    <string name="wake_local">Send from this phone</string>
+    <string name="wake_local_help">This sends ordinary Wake-on-LAN packets from the phone using saved addresses. It usually requires the phone to be on the target LAN. Sending a packet does not confirm that the computer woke up.</string>
+    <string name="wake_sending">Sending wake packet…</string>
+    <string name="wake_waiting">Wake packet sent. Waiting up to 60 seconds for the paired computer to come online…</string>
+    <string name="wake_timeout">The computer has not confirmed it is online. Check power, system network-wake settings, the adapter and the helper’s network. The packet was sent; wake is still unconfirmed.</string>
+    <string name="wake_send_uncertain">Could not confirm packet delivery. A lost reply can occur after sending; check whether the computer appears online before trying again.</string>
+    <string name="wake_online">The paired computer is online.</string>
+</resources>

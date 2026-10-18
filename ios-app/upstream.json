@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/moonlight-stream/moonlight-ios",
+  "commit": "02dc9780496eeeac6d01c8bbdccb8b6fe71ef28a",
+  "commonRepository": "https://github.com/moonlight-stream/moonlight-common-c",
+  "commonCommit": "f900dd4767759c7b9d0e93bcea666b55c69ea62f",
+  "submodules": {
+    "X1Kit": "6e842ae9d5a21916d7c9693c7385d1ac672bc4fa",
+    "moonlight-common/moonlight-common-c": "f900dd4767759c7b9d0e93bcea666b55c69ea62f"
+  },
+  "license": "GPL-3.0-or-later",
+  "bundleIdentifier": "com.cliprelay.controller",
+  "protocol": 1
+}

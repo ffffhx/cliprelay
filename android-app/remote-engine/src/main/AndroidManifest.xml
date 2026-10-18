@@ -7,7 +7,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.CAPTURE_KEYBOARD" />
+    <queries>
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+    </queries>
     <application>
         <activity android:name="com.limelight.PcView" android:exported="false"
             android:label="远程电脑" android:theme="@style/RemoteTheme"
@@ -38,6 +43,12 @@
         <activity android:name="com.limelight.ImageTransferActivity" android:exported="false"
             android:theme="@style/RemoteTheme" android:enableOnBackInvokedCallback="false"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity android:name="com.limelight.files.FileTransferActivity" android:exported="false"
+            android:theme="@style/RemoteTheme" android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity android:name="com.limelight.terminal.TerminalActivity" android:exported="false"
+            android:theme="@style/RemoteTheme" android:windowSoftInputMode="stateHidden|adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|uiMode" />
+        <service android:name="com.limelight.files.TransferService" android:exported="false" android:foregroundServiceType="dataSync" />
         <activity android:name="com.limelight.HelpActivity" android:exported="false"
             android:theme="@style/RemoteTheme" />
         <service android:name="com.limelight.discovery.DiscoveryService" android:exported="false" />

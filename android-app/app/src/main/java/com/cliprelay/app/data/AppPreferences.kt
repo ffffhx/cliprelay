@@ -16,6 +16,7 @@ data class AppSettings(
     val discoveryEnabled: Boolean,
     val fullscreenDarkMode: Boolean = true,
     val debugStayAwake: Boolean = false,
+    val legacyCompatibility: Boolean = false,
 )
 
 object AppPreferences {
@@ -36,6 +37,7 @@ object AppPreferences {
     private const val KEY_DEVICE_NAME = "device_name"
     private const val KEY_DEVICE_NAME_VERSION = "device_name_version"
     private const val KEY_DISCOVERY_ENABLED = "discovery_enabled"
+    private const val KEY_LEGACY_COMPATIBILITY = "legacy_http_compatibility"
     private const val DEVICE_NAME_VERSION_BRAND_AND_MODEL = 2
 
     fun load(context: Context): AppSettings {
@@ -52,6 +54,7 @@ object AppPreferences {
             discoveryEnabled = preferences.getBoolean(KEY_DISCOVERY_ENABLED, true),
             fullscreenDarkMode = preferences.getBoolean(KEY_FULLSCREEN_DARK_MODE, true),
             debugStayAwake = preferences.getBoolean(KEY_DEBUG_STAY_AWAKE, false),
+            legacyCompatibility = preferences.getBoolean(KEY_LEGACY_COMPATIBILITY, false),
         )
     }
 
@@ -70,6 +73,7 @@ object AppPreferences {
             putBoolean(KEY_DISCOVERY_ENABLED, settings.discoveryEnabled)
             putBoolean(KEY_FULLSCREEN_DARK_MODE, settings.fullscreenDarkMode)
             putBoolean(KEY_DEBUG_STAY_AWAKE, settings.debugStayAwake)
+            putBoolean(KEY_LEGACY_COMPATIBILITY, settings.legacyCompatibility)
         }
     }
 

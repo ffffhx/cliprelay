@@ -1,14 +1,18 @@
 // Package inputfocus exposes focus/app metadata and explicit image clipboard writes
-// to paired clients. It never reads control values, labels, text or clipboard data.
+// to paired clients. File operations use an isolated desktop-user worker.
+// Focus probes never read control values, labels, text or clipboard data.
 package inputfocus
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -48,41 +52,107 @@ func paired(path string, certificate []byte) bool {
 	var db struct {
 		Root struct {
 			Devices []struct {
-				Cert    string `json:"cert"`
-				Enabled any    `json:"enabled"`
+				Cert    string          `json:"cert"`
+				Enabled json.RawMessage `json:"enabled"`
 			} `json:"named_devices"`
 		} `json:"root"`
 	}
 	if json.Unmarshal(b, &db) != nil {
 		return false
 	}
+	matched := false
 	for _, device := range db.Root.Devices {
-		if device.Enabled == false || device.Enabled == "false" || device.Enabled == "0" {
+		block, _ := pem.Decode([]byte(device.Cert))
+		if block == nil || block.Type != "CERTIFICATE" || !bytes.Equal(block.Bytes, certificate) {
 			continue
 		}
-		block, _ := pem.Decode([]byte(device.Cert))
-		if block != nil && block.Type == "CERTIFICATE" && bytes.Equal(block.Bytes, certificate) {
-			return true
+		if matched || !pairingEnabled(device.Enabled) {
+			return false
 		}
+		matched = true
+	}
+	return matched
+}
+
+// Missing enabled is the legacy format. Explicit malformed/null values are
+// revoked; callers must also reject duplicate certificate identities.
+func pairingEnabled(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	switch value := value.(type) {
+	case bool:
+		return value
+	case string:
+		return value == "true" || value == "1"
+	case float64:
+		return value == 1
 	}
 	return false
 }
 
 type probe struct {
-	mu         sync.Mutex
-	executable string
-	argument   string
-	cmd        *exec.Cmd
-	in         io.WriteCloser
-	out        *bufio.Reader
+	mu          sync.Mutex
+	ctx         context.Context
+	closed      bool
+	executable  string
+	argument    string
+	arguments   []string
+	observeExit bool
+	noRestart   bool
+	started     bool
+	exitDone    chan struct{}
+	outputPipe  io.ReadCloser
+	stderr      io.Writer
+	cmd         *exec.Cmd
+	in          io.WriteCloser
+	out         *bufio.Reader
+	maxOutput   int
+	timeout     time.Duration
+}
+
+// Close independent workers concurrently, while retaining each owner until Wait
+// confirms exit. Restoration managers must finish before this final teardown.
+// A late handler cannot restart a worker after its owner has closed.
+func stopProbes(workers ...*probe) {
+	var joined sync.WaitGroup
+	for _, worker := range workers {
+		if worker == nil {
+			continue
+		}
+		joined.Add(1)
+		go func(p *probe) { defer joined.Done(); p.close() }(worker)
+	}
+	joined.Wait()
+}
+
+func (p *probe) close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	p.stopLocked()
 }
 
 func (p *probe) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopLocked()
+}
+
+func (p *probe) stopLocked() {
 	if p.cmd != nil {
 		p.in.Close()
 		// Let the voice helper cancel recording and restore the microphone on stdin EOF.
-		done := make(chan struct{})
-		go func() { p.cmd.Wait(); close(done) }()
+		done := p.exitDone
+		if done == nil {
+			done = make(chan struct{})
+			cmd := p.cmd
+			go func() { cmd.Wait(); close(done) }()
+		}
 		select {
 		case <-done:
 		case <-time.After(3500 * time.Millisecond):
@@ -90,24 +160,79 @@ func (p *probe) stop() {
 			<-done
 		}
 		p.cmd = nil
+		p.exitDone = nil
+		if p.outputPipe != nil {
+			p.outputPipe.Close()
+			p.outputPipe = nil
+		}
 	}
 }
 
 func (p *probe) read(command string) (json.RawMessage, error) {
+	ctx := p.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return p.readWithContext(ctx, command)
+}
+
+// Cleanup is reserved for the managers' fixed stop/cancel/authorization-clear
+// operations. It retains the normal command deadline but survives cancellation
+// of ordinary service requests so native state can still be restored.
+func (p *probe) readCleanup(command string) (json.RawMessage, error) {
+	return p.readWithContext(context.Background(), command)
+}
+
+func (p *probe) readWithContext(ctx context.Context, command string) (json.RawMessage, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if p.closed {
+		return nil, errors.New("focus worker closed")
+	}
+	if p.executable == "" {
+		return nil, errors.New("native worker unsupported")
+	}
+	// Reap idle file workers promptly, and replace an already dead worker before
+	// writing a new command. A failure after a write is never replayed.
+	if p.exitDone != nil {
+		select {
+		case <-p.exitDone:
+			p.stopLocked()
+		default:
+		}
+	}
 	if p.cmd == nil {
+		if p.noRestart && p.started {
+			return nil, errors.New("owned worker exited")
+		}
 		argument := p.argument
 		if argument == "" {
 			argument = "--focus-probe"
 		}
-		cmd := exec.Command(p.executable, argument)
+		arguments := p.arguments
+		if len(arguments) == 0 {
+			arguments = []string{argument}
+		}
+		cmd := exec.Command(p.executable, arguments...)
+		cmd.Stderr = p.stderr
 		quietProcess(cmd)
 		in, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, err
 		}
-		out, err := cmd.StdoutPipe()
+		var out io.ReadCloser
+		var writer *os.File
+		if p.observeExit {
+			// Own the reader ourselves: concurrent Cmd.Wait must not close an
+			// unread final response, as it would with Cmd.StdoutPipe.
+			out, writer, err = os.Pipe()
+			cmd.Stdout = writer
+		} else {
+			out, err = cmd.StdoutPipe()
+		}
 		if err != nil {
 			in.Close()
 			return nil, err
@@ -115,12 +240,31 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 		if err = cmd.Start(); err != nil {
 			in.Close()
 			out.Close()
+			if writer != nil {
+				writer.Close()
+			}
 			return nil, err
 		}
-		p.cmd, p.in, p.out = cmd, in, bufio.NewReaderSize(out, 4096)
+		p.started = true
+		if writer != nil {
+			writer.Close()
+			p.outputPipe = out
+			done := make(chan struct{})
+			p.exitDone = done
+			go func() { cmd.Wait(); close(done) }()
+		}
+		bufferSize := 4096
+		if p.maxOutput > 0 {
+			bufferSize = p.maxOutput + 1
+		}
+		p.cmd, p.in, p.out = cmd, in, bufio.NewReaderSize(out, bufferSize)
+	}
+	if err := ctx.Err(); err != nil {
+		p.stopLocked()
+		return nil, err
 	}
 	// A hung accessibility provider cannot stall streaming or retain workers.
-	// The service Job owns this entire process tree.
+	// Windows additionally owns the process tree through its service Job.
 	result := make(chan []byte, 1)
 	timeout := 1200 * time.Millisecond
 	if strings.HasPrefix(command, "voice-") {
@@ -128,6 +272,13 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	}
 	if strings.HasPrefix(command, "image:") {
 		timeout = 8 * time.Second
+	}
+	if p.timeout > 0 {
+		timeout = p.timeout
+	}
+	limit := 1024
+	if p.maxOutput > 0 {
+		limit = p.maxOutput
 	}
 	go func() {
 		if _, err := io.WriteString(p.in, command+"\n"); err != nil {
@@ -143,13 +294,21 @@ func (p *probe) read(command string) (json.RawMessage, error) {
 	}()
 	select {
 	case b := <-result:
-		if len(b) == 0 || len(b) > 1024 || !json.Valid(b) {
-			p.stop()
+		if err := ctx.Err(); err != nil {
+			p.stopLocked()
+			return nil, err
+		}
+		if len(b) == 0 || len(b) > limit || !json.Valid(b) {
+			p.stopLocked()
 			return nil, errors.New("focus unavailable")
 		}
 		return json.RawMessage(b), nil
+	case <-ctx.Done():
+		p.stopLocked()
+		<-result
+		return nil, ctx.Err()
 	case <-time.After(timeout):
-		p.stop()
+		p.stopLocked()
 		<-result
 		return nil, errors.New("focus timeout")
 	}
@@ -162,6 +321,14 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 		voiceProvider = voiceRead[0]
 	}
 	voice := &voiceHandler{read: voiceProvider, now: time.Now}
+	var files *fileHandler
+	var imageClipboard func(string) (json.RawMessage, error)
+	if len(voiceRead) > 2 {
+		imageClipboard = voiceRead[2]
+	}
+	if len(voiceRead) > 1 {
+		files = &fileHandler{read: voiceRead[1], busy: make(chan struct{}, 1)}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 || !paired(clients, r.TLS.PeerCertificates[0].Raw) {
 			http.Error(w, "unpaired", http.StatusForbidden)
@@ -169,6 +336,10 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/voice/") {
 			voice.serve(w, r, clients)
+			return
+		}
+		if r.URL.Path == "/v1/files" && files != nil {
+			files.serve(w, r, clients)
 			return
 		}
 		command := "focus"
@@ -202,7 +373,7 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 			return
 		}
 		if upload {
-			receiveImage(w, r, clients, read)
+			receiveImage(w, r, clients, read, imageClipboard)
 			return
 		}
 		data, err := read(command)
@@ -240,7 +411,7 @@ func handler(clients string, read func(string) (json.RawMessage, error), voiceRe
 
 const maxImageBytes = 8 * 1024 * 1024
 
-func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read func(string) (json.RawMessage, error)) {
+func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read func(string) (json.RawMessage, error), clipboardRead ...func(string) (json.RawMessage, error)) {
 	// Same paired TLS identity as the stream; only a bounded PNG clipboard write.
 	if r.Header.Get("Content-Type") != "image/png" {
 		http.Error(w, "PNG required", 415)
@@ -269,7 +440,26 @@ func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read f
 		http.Error(w, "unpaired", 403)
 		return
 	}
-	result, err := read("image:" + base64.StdEncoding.EncodeToString(data))
+	command := "image:" + base64.StdEncoding.EncodeToString(data)
+	if len(clipboardRead) > 0 && clipboardRead[0] != nil {
+		id := make([]byte, 16)
+		if _, err := rand.Read(id); err != nil {
+			http.Error(w, "clipboard unavailable", 503)
+			return
+		}
+		owner := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
+		frame, _ := json.Marshal(struct {
+			clipboardRequest
+			Owner string `json:"owner"`
+		}{clipboardRequest{Op: "write", ID: hex.EncodeToString(id), Kind: "png", Data: base64.StdEncoding.EncodeToString(data)}, hex.EncodeToString(owner[:])})
+		command = "clipboard:" + string(frame)
+		read = clipboardRead[0]
+	}
+	result, err := read(command)
+	if !paired(clients, r.TLS.PeerCertificates[0].Raw) {
+		http.Error(w, "unpaired", 403)
+		return
+	}
 	var status struct {
 		OK bool `json:"ok"`
 	}
@@ -282,37 +472,168 @@ func receiveImage(w http.ResponseWriter, r *http.Request, clients string, read f
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "width": config.Width, "height": config.Height})
 }
 
+func controlTLSConfig(cert tls.Certificate, clients string) *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
+		ClientAuth: tls.RequireAnyClientCert,
+		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
+			if len(raw) != 1 || !paired(clients, raw[0]) {
+				return errors.New("unpaired")
+			}
+			return nil
+		}}
+}
+
 func Serve(ctx context.Context, dir, executable string) error {
+	return ServeWithEngineAccess(ctx, dir, executable, fileEngineAccess(dir))
+}
+
+// ServeWithLocalPairing retains the installed Windows host's native workers,
+// while admitting decisions only through the SYSTEM-only local relay pipe.
+// Older callers keep Serve and its legacy file protocol until explicitly moved.
+func ServeWithLocalPairing(ctx context.Context, dir, executable string) error {
+	return serveWithLocalPairing(ctx, dir, executable, fileEngineAccess(dir), bindHostListeners)
+}
+
+func serveWithLocalPairing(ctx context.Context, dir, executable string, access EngineAccess,
+	bind func(context.Context, string) (*hostListeners, error), onListening ...func() error) error {
+	if executable == "" {
+		return errors.New("native worker executable required")
+	}
+	return serveHostWithEngineAccess(ctx, dir, executable, access, true, bind, onListening...)
+}
+
+// ServeWithEngineAccess uses credentials supplied by the owning local process.
+// Unlike Serve it does not require a plaintext service.json. Callers still own
+// context cancellation, native provider capabilities and complete host readiness.
+func ServeWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess) error {
+	return serveWithEngineAccess(ctx, dir, executable, access, bindHostListeners)
+}
+
+// ServeManagedHost serves the engine's control APIs and LAN enrollment for an
+// independently admitted application-owned companion. Mac file I/O uses its own
+// owned worker; other auxiliary providers remain unavailable. No Windows probe
+// flags are launched. The caller owns the private transient runtime directory.
+// onListening means required endpoints are bound, not that video is streaming.
+func ServeManagedHost(ctx context.Context, dir, runtimeDir string, access EngineAccess, onListening func() error) error {
+	if !filepath.IsAbs(runtimeDir) || !filepath.IsAbs(dir) {
+		return errors.New("private runtime directory required")
+	}
+	relative, err := filepath.Rel(dir, runtimeDir)
+	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("runtime directory must be separate from persistent state")
+	}
+	return serveHostWithEngineAccess(ctx, dir, "", access, true, func(ctx context.Context, _ string) (*hostListeners, error) {
+		return bindHostListeners(ctx, runtimeDir)
+	}, onListening)
+}
+
+func serveWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess,
+	bind func(context.Context, string) (*hostListeners, error), onListening ...func() error) error {
+	return serveHostWithEngineAccess(ctx, dir, executable, access, false, bind, onListening...)
+}
+
+func serveHostWithEngineAccess(ctx context.Context, dir, executable string, access EngineAccess, managed bool,
+	bind func(context.Context, string) (*hostListeners, error), onListening ...func() error) error {
+	if access == nil {
+		return errEngineAccessUnavailable
+	}
+	password, certificate, err := access()
+	if err != nil || password == "" || len(certificate) == 0 {
+		return errEngineAccessUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cert, err := tls.LoadX509KeyPair(filepath.Join(dir, "cacert.pem"), filepath.Join(dir, "cakey.pem"))
 	if err != nil {
 		return err
 	}
+	if len(cert.Certificate) != 1 || !bytes.Equal(certificate, cert.Certificate[0]) {
+		return errEngineAccessUnavailable
+	}
 	clients := filepath.Join(dir, "clients.json")
-	p := &probe{executable: executable}
-	defer p.stop()
-	voice := &probe{executable: executable, argument: "--voice-probe"}
-	defer voice.stop()
+	relay := newRelayMailbox(clients)
+	listeners, err := bind(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer listeners.close()
+	p := &probe{ctx: ctx, executable: executable}
+	voice := &probe{ctx: ctx, executable: executable, argument: "--voice-probe"}
+	files := &probe{ctx: ctx, executable: executable, argument: "--file-probe", maxOutput: fileMessageLimit, timeout: 15 * time.Second}
+	if managed {
+		if err := configureManagedFiles(files, dir); err != nil {
+			return err
+		}
+	}
+	clipboard := &probe{ctx: ctx, executable: executable, argument: "--clipboard-probe", maxOutput: clipboardMessageLimit, timeout: 10 * time.Second}
+	var imageClipboard func(string) (json.RawMessage, error)
+	if managed {
+		imageClipboard, err = configureManagedClipboard(clipboard, dir)
+		if err != nil {
+			return err
+		}
+	}
+	privacy := &probe{ctx: ctx, executable: executable, argument: "--privacy-probe", maxOutput: 4096, timeout: 3 * time.Second}
+	audio := &probe{ctx: ctx, executable: executable, argument: "--audio-mute-probe", maxOutput: 4096, timeout: 3 * time.Second}
+	if managed {
+		if err := configureManagedAudio(audio, dir); err != nil {
+			return err
+		}
+	}
+	wake := &probe{ctx: ctx, executable: executable, argument: "--wake-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	if managed {
+		if err := configureManagedWake(wake, dir); err != nil {
+			return err
+		}
+	}
+	terminal := &probe{ctx: ctx, executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	if managed {
+		if err := configureManagedTerminal(terminal, dir); err != nil {
+			return err
+		}
+	}
+	// Registered before manager joins: those cleanup operations run first, then
+	// every remaining worker gets its EOF/grace period at the same time.
+	defer func() { cancel(); stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal) }()
+	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, cleanupRead: privacy.readCleanup, now: time.Now}
+	if managed {
+		closePrivacy, err := configureManagedPrivacy(ctx, privacyManager, dir, access)
+		if err != nil {
+			return err
+		}
+		defer closePrivacy()
+	}
+	privacyDone := make(chan struct{})
+	go func() { defer close(privacyDone); privacyManager.maintain(ctx) }()
+	defer func() { cancel(); <-privacyDone }()
+	lockManager := &sessionLockControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, cleanupRead: privacy.readCleanup, now: time.Now}
+	lockDone := make(chan struct{})
+	go func() { defer close(lockDone); lockManager.maintain(ctx) }()
+	defer func() { cancel(); <-lockDone }()
+	audioManager := &audioMuteControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: audio.read, cleanupRead: audio.readCleanup, now: time.Now}
+	audioDone := make(chan struct{})
+	go func() { defer close(audioDone); audioManager.maintain(ctx) }()
+	defer func() { cancel(); <-audioDone }()
+	wakeManager := &wakeControl{clients: clients, read: wake.read, now: time.Now}
+	terminalManager := &terminalControl{clients: clients, read: terminal.read, cleanupRead: terminal.readCleanup}
+	terminalDone := make(chan struct{})
+	go func() { defer close(terminalDone); terminalManager.maintain(ctx) }()
+	defer func() { cancel(); <-terminalDone }()
 	// Start the user worker on host startup so an interrupted microphone switch
 	// is recovered before the next phone dictation. This does not start recording.
 	_, _ = voice.read("voice-status")
 	server := &http.Server{
-		Addr: ":48791", Handler: handler(clients, p.read, voice.read),
+		Addr: ":48791", Handler: audioManager.handler(lockManager.handler(privacyManager.handler(relay.handler(withClipboard(withBitrate(withDisplays(handler(clients, p.read, voice.read, files.read, imageClipboard), clients, engineDisplayProviderWithAccess(access), p.read), clients, engineBitrateProviderWithAccess(access)), clients, clipboard.read))))),
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second,
 		WriteTimeout: 3 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
-		ErrorLog: log.New(io.Discard, "", 0),
-		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
-			ClientAuth: tls.RequireAnyClientCert,
-			VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
-				if len(raw) != 1 || !paired(clients, raw[0]) {
-					return errors.New("unpaired")
-				}
-				return nil
-			}},
+		ErrorLog:  log.New(io.Discard, "", 0),
+		TLSConfig: controlTLSConfig(cert, clients),
 	}
-	go func() { _ = serveLANPairing(ctx, dir, cert) }()
-	go func() { _ = serveLANDiscovery(ctx) }()
-	go func() { <-ctx.Done(); server.Close() }()
-	return server.ListenAndServeTLS("", "")
+	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProviderWithAccess(access))
+	pairer := newLANPairerWithAccess(ctx, dir, cert, access)
+	pairer.managed = managed
+	return runHostListeners(ctx, cancel, listeners, server, pairer, cert, relay, onListening...)
 }

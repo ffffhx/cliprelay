@@ -1,0 +1,66 @@
+name: Audio Environment Bridge Development
+on:
+  push:
+    branches: ['codex/desktop-client-input-*']
+    paths: ['.github/workflows/audio-environment-bridge.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15-intel, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Native authentication, packet boundaries and cleanup under race detector
+        working-directory: network
+        run: go test -race -json ./internal/ciaudiobridge -count=1 -timeout 90s > ../bridge-core-tests.jsonl
+      - name: Build owned CLI with source receipt
+        run: |
+          python3 scripts/ci_audio_bridge/build.py
+          cp "$RUNNER_TEMP/cliprelay-audio-bridge.json" bridge-core-build.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Audio-Bridge-Core-${{ matrix.runner }}
+          path: |
+            bridge-core-tests.jsonl
+            bridge-core-build.json
+          if-no-files-found: error
+  route:
+    needs: core
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [host, viewer]
+    name: route-${{ matrix.role }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      CLIPRELAY_BRIDGE_ROLE: ${{ matrix.role }}
+      CLIPRELAY_BRIDGE_PAIR: linux
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install pinned action dependencies without lifecycle scripts
+        run: npm ci --prefix scripts/ci_audio_bridge --ignore-scripts --no-audit --no-fund
+      - name: Build owned bridge with source receipt
+        run: python3 scripts/ci_audio_bridge/build.py
+      - name: Verify mutually authenticated cross-job transport and cleanup
+        uses: ./scripts/ci_audio_bridge

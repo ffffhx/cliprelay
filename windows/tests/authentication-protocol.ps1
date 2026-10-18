@@ -1,7 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version 2.0
+$script:LegacyReceiverEnabled = $true
 $ErrorActionPreference = "Stop"
 
 $clientPath = Join-Path (Split-Path -Parent $PSScriptRoot) "cliprelay.ps1"
@@ -16,7 +17,7 @@ if ($parseErrors.Count -gt 0) {
     throw "cliprelay.ps1 has parse errors: $($parseErrors[0].Message)"
 }
 
-foreach ($functionName in @("Read-HttpRequest", "Send-HttpResponse", "Handle-Client")) {
+foreach ($functionName in @("Test-IsLegacyLanAddress", "Read-HttpRequest", "Send-HttpResponse", "Handle-Client")) {
     $functionAst = $ast.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -88,6 +89,14 @@ function Invoke-TestPush {
 $script:Notifications = $false
 $script:AccessToken = "relay-secret"
 $script:receivedText = $null
+
+$script:LegacyReceiverEnabled = $false
+$blocked = Invoke-TestPush -Text 'must not arrive' -Token 'relay-secret'
+if (-not $blocked.StartsWith('HTTP/1.1 403') -or $null -ne $script:receivedText) { throw 'Disabled legacy receiver accepted a write' }
+$script:LegacyReceiverEnabled = 'true'
+$blocked = Invoke-TestPush -Text 'must not arrive' -Token 'relay-secret'
+if (-not $blocked.StartsWith('HTTP/1.1 403') -or $null -ne $script:receivedText) { throw 'String setting enabled the legacy receiver' }
+$script:LegacyReceiverEnabled = $true
 
 $unauthorizedResponse = Invoke-TestPush -Text "must not arrive"
 if (-not $unauthorizedResponse.StartsWith("HTTP/1.1 401")) {

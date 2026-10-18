@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stream_recovery_title">恢复连接</string>
+    <string name="stream_recovery_connecting">正在重新连接电脑…</string>
+    <string name="stream_recovery_waiting">连接暂时中断，正在恢复…</string>
+    <string name="stream_recovery_resumed">连接已恢复</string>
+    <string name="stream_recovery_failed">连接仍不稳定，请检查网络后重试。</string>
+    <string name="stream_recovery_retry">重试</string>
+</resources>

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version 2.0
@@ -198,6 +198,24 @@ try {
             }
         }
     }
+    $pairedOwner='a' * 64
+    $null=Save-PeerConfiguration -Peers @([pscustomobject]@{id='paired-phone';name='Paired phone';transport='paired';pairedOwner=$pairedOwner;enabled=$true}) -Notifications $true -ListenPort 47888 -StartupEnabled $true
+    $savedPaired=Read-ClipRelayConfiguration -Path $temporaryConfig
+    if ($savedPaired.peers[0].pairedOwner -cne $pairedOwner -or $null -ne $script:pushUri) { throw 'Saving a paired target created an HTTP URI or lost identity' }
+    & {
+        $Peer=''; $Port=0
+        Invoke-Expression $startupSource
+        if ($enabledConfiguredPeers.Count -ne 1 -or $script:Peers[0].pairedOwner -cne $pairedOwner -or $null -ne $script:pushUri) { throw 'Restart changed the paired target route' }
+    }
+    if ($savedPaired.legacyReceiverEnabled -ne $false) { throw 'Missing legacy receiver flag did not default to disabled' }
+    $null = & $savePeerConfigurationCommand -Peers @($script:Peers) -StartupEnabled $script:startupEnabled -LegacyReceiverEnabled $true
+    $enabledLegacy = Get-Content -Raw -Encoding UTF8 $temporaryConfig | ConvertFrom-Json
+    if ($enabledLegacy.legacyReceiverEnabled -ne $true -or !$script:LegacyReceiverEnabled) { throw 'Explicit legacy receiver setting not saved' }
+    $null = & $savePeerConfigurationCommand -Peers @($script:Peers) -StartupEnabled $script:startupEnabled
+    if (!(Get-Content -Raw -Encoding UTF8 $temporaryConfig | ConvertFrom-Json).legacyReceiverEnabled) { throw 'Unrelated settings save reset explicit compatibility' }
+    $null = & $savePeerConfigurationCommand -Peers @($script:Peers) -StartupEnabled $script:startupEnabled -LegacyReceiverEnabled $false
+    if ((Get-Content -Raw -Encoding UTF8 $temporaryConfig | ConvertFrom-Json).legacyReceiverEnabled) { throw 'Disabling compatibility was not saved' }
+    Write-Output 'PASS: paired destination saves and reloads without creating a legacy HTTP URI.'
     Write-Output "PASS: settings save migrates legacy config and persists independent multi-peer ports and tokens."
     Write-Output "PASS: disabled and empty rosters persist and reload without restarting the receiver or reviving legacy targets."
 }

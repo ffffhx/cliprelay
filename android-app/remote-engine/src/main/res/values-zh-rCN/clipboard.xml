@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="clipboard_title">剪贴板同步</string>
+    <string name="clipboard_send">发送本机剪贴板</string>
+    <string name="clipboard_receive">取回电脑剪贴板</string>
+    <string name="clipboard_working">正在传输文字或图片…</string>
+    <string name="clipboard_sent">已发送到电脑，可以粘贴了。</string>
+    <string name="clipboard_received">已复制到本机剪贴板。</string>
+    <string name="clipboard_empty">剪贴板中没有支持的文字或图片。</string>
+    <string name="clipboard_failed">剪贴板传输失败，请检查连接和内容大小。</string>
+    <string name="clipboard_locked">请解锁电脑桌面后重试。</string>
+    <string name="clipboard_update_host">请更新电脑端 ClipRelay 后重试。</string>
+</resources>

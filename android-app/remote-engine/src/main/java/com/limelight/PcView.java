@@ -65,10 +65,26 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private PcGridAdapter pcGridAdapter;
     private ShortcutHelper shortcutHelper;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
+    private com.limelight.ui.RemoteWake remoteWake;
+
+    private com.limelight.ui.RemoteWake wakeControls() {
+        if (remoteWake == null) remoteWake = new com.limelight.ui.RemoteWake(this, new com.limelight.ui.RemoteWake.Peers() {
+            @Override public java.util.List<ComputerDetails> current() {
+                java.util.List<ComputerDetails> result = new java.util.ArrayList<>();
+                if (pcGridAdapter != null) for (int i = 0; i < pcGridAdapter.getCount(); i++)
+                    result.add(new ComputerDetails(((ComputerObject) pcGridAdapter.getItem(i)).details));
+                return result;
+            }
+            @Override public String uniqueId() { return managerBinder == null ? null : managerBinder.getUniqueId(); }
+            @Override public void localWake(ComputerDetails computer) { doWakeOnLan(computer); }
+        });
+        return remoteWake;
+    }
     private boolean freezeUpdates, runningPolling, inForeground, completeOnCreateCalled;
     private boolean openingStream;
     private final android.os.Handler networkHandler = new android.os.Handler(android.os.Looper.getMainLooper());
-    private boolean embeddedAdded, embeddedAdding;
+    private final java.util.Set<String> embeddedAdded = new java.util.HashSet<>();
+    private final java.util.Set<String> embeddedAdding = new java.util.HashSet<>();
     private final java.util.concurrent.atomic.AtomicBoolean pairingActive = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile NvHTTP pairingHttp;
     private volatile boolean pairingCancelled;
@@ -77,19 +93,23 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         @Override public void run() {
             if (!inForeground || isFinishing() || isDestroyed()) return;
             EmbeddedNetwork.Provider provider = EmbeddedNetwork.provider;
-            if (provider == null || !provider.ready()) embeddedAdded = false;
-            else if (managerBinder != null && !embeddedAdded && !embeddedAdding) {
-                embeddedAdding = true;
+            String[] ready = provider == null ? new String[0] : provider.readyAddresses();
+            embeddedAdded.retainAll(java.util.Arrays.asList(ready));
+            for (final String address : ready) {
+                if (managerBinder == null || embeddedAdded.contains(address) || !embeddedAdding.add(address)) continue;
                 final ComputerManagerService.ComputerManagerBinder binder = managerBinder;
                 new Thread(() -> {
                     boolean added = false;
                     try {
                         ComputerDetails details = new ComputerDetails();
-                        details.embeddedAddress = new ComputerDetails.AddressTuple(EmbeddedNetwork.ADDRESS, 48789);
+                        details.embeddedAddress = new ComputerDetails.AddressTuple(address, 48789);
                         added = binder.addComputerBlocking(details);
                     } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
                     final boolean success = added;
-                    networkHandler.post(() -> { embeddedAdding = false; embeddedAdded = success; });
+                    networkHandler.post(() -> {
+                        embeddedAdding.remove(address);
+                        if (success) embeddedAdded.add(address);
+                    });
                 }, "ClipRelay paired computer discovery").start();
             }
             networkHandler.postDelayed(this, 3000);
@@ -334,6 +354,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
     @Override
     public void onDestroy() {
+        if (remoteWake != null) { remoteWake.close(); remoteWake = null; }
         cancelLanPairing();
         if (lanPairDialog != null) lanPairDialog.dismiss();
         super.onDestroy();
@@ -363,6 +384,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     @Override
     protected void onPause() {
         super.onPause();
+        if (remoteWake != null) { remoteWake.close(); remoteWake = null; }
 
         inForeground = false;
         networkHandler.removeCallbacks(checkEmbeddedNetwork);
@@ -428,6 +450,9 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             }
 
             menu.add(Menu.NONE, FULL_APP_LIST_ID, 4, getResources().getString(R.string.pcview_menu_app_list));
+            menu.add(Menu.NONE, 110, 5, getString(R.string.files_title));
+            menu.add(Menu.NONE, 111, 6, getString(R.string.wake_settings));
+            menu.add(Menu.NONE, 112, 7, getString(R.string.terminal_title));
         }
 
         menu.add(Menu.NONE, TEST_NETWORK_ID, 5, getResources().getString(R.string.pcview_menu_test_network));
@@ -459,7 +484,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                NvHTTP httpConn;
+                NvHTTP httpConn = null;
                 String message;
                 boolean success = false;
                 com.limelight.nvstream.http.LanPairing lanPairing = null;
@@ -471,6 +496,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                             computer.httpsPort, managerBinder.getUniqueId(), computer.serverCert,
                             PlatformBinding.getCryptoProvider(PcView.this));
                     pairingHttp = httpConn;
+                    httpConn.beginPairing();
                     if (pairingCancelled) throw new IOException("配对已取消");
                     if (httpConn.getPairState() == PairState.PAIRED) {
                         // Don't display any toast, but open the app list
@@ -482,7 +508,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
                         String phoneName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
                         lanPairing = com.limelight.nvstream.http.LanPairing.begin(ServerHelper.getCurrentAddressFromComputer(computer),
-                                PlatformBinding.getCryptoProvider(PcView.this), computer.serverCert, phoneName, pinStr);
+                                PlatformBinding.getCryptoProvider(PcView.this), computer.serverCert, phoneName, pinStr, httpConn::ownLanPairing);
                         if (pairingCancelled) throw new IOException("配对已取消");
                         if (lanPairing != null) {
                             httpConn.setLanPairingSession(lanPairing);
@@ -491,7 +517,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                                 if (isFinishing() || isDestroyed() || pairingCancelled) return;
                                 lanPairDialog = new android.app.AlertDialog.Builder(PcView.this)
                                         .setTitle("请在电脑上允许这台手机")
-                                        .setMessage("确认两边显示的标识相同：\n\n" + code + "\n\n在电脑 ClipRelay 的“手机远控”中点击允许。配对后会记住电脑，以后不用输入 IP 或 PIN。")
+                                        .setMessage("确认两边显示的标识相同：\n\n" + code + "\n\n在电脑 ClipRelay 的待确认请求中允许连接。Mac 可从菜单“允许其他设备连接这台 Mac…”打开请求。配对后会记住电脑，以后不用输入 IP 或 PIN。")
                                         .setNegativeButton("取消配对", (d, which) -> cancelLanPairing())
                                         .setOnCancelListener(d -> cancelLanPairing()).create();
                                 lanPairDialog.setCanceledOnTouchOutside(false);
@@ -507,6 +533,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
                         PairState pairState = pm.pair(httpConn.getServerInfo(true), pinStr,
                                 lanPairing == null ? null : lanPairing.hostCertificate());
+                        if (lanPairing != null) lanPairing.checkCancelled();
+                        if (pairingCancelled) throw new IOException("配对已取消");
                         if (pairState == PairState.PIN_WRONG) {
                             message = getResources().getString(R.string.pair_incorrect_pin);
                         }
@@ -544,8 +572,10 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     message = getResources().getString(R.string.error_404);
                 } catch (XmlPullParserException | IOException e) {
                     e.printStackTrace();
-                    message = e.getMessage();
+                    IOException feedbackFailure=httpConn==null?null:httpConn.pairingFailure();
+                    message = feedbackFailure==null?e.getMessage():feedbackFailure.getMessage();
                 } finally {
+                    if (httpConn != null) httpConn.closeLanPairing();
                     pairingHttp = null;
                     if (lanPairing != null) lanPairing.close();
                     pairingActive.set(false);
@@ -610,7 +640,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
+                        if (inForeground && !isFinishing() && !isDestroyed())
+                            Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
                     }
                 });
             }
@@ -708,6 +739,23 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         AdapterContextMenuInfo info = (AdapterContextMenuInfo) item.getMenuInfo();
         final ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(info.position);
         switch (item.getItemId()) {
+            case 111:
+                wakeControls().configure(computer.details);
+                return true;
+            case 112:
+                if (managerBinder != null && computer.details.activeAddress != null) {
+                    Intent terminal = ServerHelper.createStartIntent(this, new NvApp("Desktop", 0, false), computer.details, managerBinder);
+                    terminal.setClass(this, com.limelight.terminal.TerminalActivity.class);
+                    startActivity(terminal);
+                }
+                return true;
+            case 110:
+                if (managerBinder != null && computer.details.activeAddress != null) {
+                    Intent files = ServerHelper.createStartIntent(this, new NvApp("Desktop", 0, false), computer.details, managerBinder);
+                    files.setClass(this, com.limelight.files.FileTransferActivity.class);
+                    startActivity(files);
+                }
+                return true;
             case PAIR_ID:
                 doPair(computer.details);
                 return true;
@@ -717,7 +765,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 return true;
 
             case WOL_ID:
-                doWakeOnLan(computer.details);
+                wakeControls().show(computer.details);
                 return true;
 
             case DELETE_ID:
@@ -785,6 +833,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     
     private void removeComputer(ComputerDetails details) {
         managerBinder.removeComputer(details);
+        com.limelight.ui.RemoteWake.forget(this, details.uuid);
 
         new DiskAssetLoader(this).deleteAssetsForComputer(details.uuid);
 

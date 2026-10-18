@@ -1,0 +1,1977 @@
+diff --git a/cmake/compile_definitions/common.cmake b/cmake/compile_definitions/common.cmake
+index 94fbb14..a5fcb30 100644
+--- a/cmake/compile_definitions/common.cmake
++++ b/cmake/compile_definitions/common.cmake
+@@ -106,6 +106,9 @@ if(WIN32)
+     # add_nvenc_sdk_implementation: args = `target_name`, `sdk_version`, `sdk_include_dir`
+     function(add_nvenc_sdk_implementation target_name sdk_version sdk_include_dir)
+         add_library(${target_name} OBJECT ${NVENC_IMPLEMENTATION_SOURCES})
++        # FetchContent Boost uses per-library include directories. NVENC's
++        # transitive headers use Log, Format, Asio and Process as well.
++        target_link_libraries(${target_name} PRIVATE ${Boost_LIBRARIES})
+         target_include_directories(${target_name} BEFORE PRIVATE "${sdk_include_dir}")
+         target_compile_definitions(${target_name} PRIVATE
+                 NVENC_FACTORY_SUFFIX=${sdk_version}
+diff --git a/cmake/targets/windows.cmake b/cmake/targets/windows.cmake
+index d5807aa..fdc0ebd 100644
+--- a/cmake/targets/windows.cmake
++++ b/cmake/targets/windows.cmake
+@@ -6,4 +6,5 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
+         $<TARGET_OBJECTS:sunshine_rc_object>
+         Windowsapp.lib
+         Wtsapi32.lib
++        mmdevapi.lib
+         version.lib)
+diff --git a/src/audio.cpp b/src/audio.cpp
+index 28a3d81..f1a2a96 100644
+--- a/src/audio.cpp
++++ b/src/audio.cpp
+@@ -10,6 +10,7 @@
+ 
+ // local includes
+ #include "audio.h"
++#include "cliprelay_control.h"
+ #include "config.h"
+ #include "globals.h"
+ #include "logging.h"
+@@ -26,7 +27,13 @@ namespace audio {
+   /**
+    * @brief Shared queue carrying captured PCM sample buffers to the encoder thread.
+    */
+-  using sample_queue_t = std::shared_ptr<safe::queue_t<std::vector<float>>>;
++  struct captured_samples {
++    std::vector<float> pcm;
++    std::uint64_t generation = 0;
++    bool healthy = false;
++    std::int64_t captured_ms = 0;
++  };
++  using sample_queue_t = std::shared_ptr<safe::queue_t<captured_samples>>;
+ 
+   static int start_audio_control(audio_ctx_t &ctx);
+   static void stop_audio_control(audio_ctx_t &);
+@@ -138,7 +145,7 @@ namespace audio {
+     while (auto sample = samples->pop()) {
+       buffer_t packet {1400};
+ 
+-      int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), (opus_int32) packet.size());
++      int bytes = opus_multistream_encode_float(opus.get(), sample->pcm.data(), frame_size, std::begin(packet), (opus_int32) packet.size());
+       if (bytes < 0) {
+         BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);
+         packets->stop();
+@@ -148,6 +155,9 @@ namespace audio {
+ 
+       packet.fake_resize(bytes);
+       packets->raise(channel_data, std::move(packet));
++      auto now = cliprelay::display_control::monotonic_ms();
++      cliprelay::displays.encoded_audio(channel_data, sample->generation,
++        sample->healthy && now >= sample->captured_ms && now - sample->captured_ms < 1000, now);
+     }
+   }
+ 
+@@ -183,46 +193,51 @@ namespace audio {
+       return;
+     }
+ 
+-    // Order of priority:
+-    // 1. Virtual sink
+-    // 2. Audio sink
+-    // 3. Host
+-    std::string *sink = &ref->sink.host;
+-    if (!config::audio.sink.empty()) {
+-      sink = &config::audio.sink;
+-    }
++    auto frame_size = config.packetDuration * stream.sampleRate / 1000;
++    bool host_audio = config.flags[config_t::HOST_AUDIO];
++    bool continuous_audio = config.flags[config_t::CONTINUOUS_AUDIO];
++    auto mic = config::audio.process_audio ? control->independent_microphone(stream.channelCount, stream.sampleRate, continuous_audio) : nullptr;
++    const bool independent = static_cast<bool>(mic);
++
++    if (!independent) {
++      // Order of priority:
++      // 1. Virtual sink
++      // 2. Audio sink
++      // 3. Host
++      std::string *sink = &ref->sink.host;
++      if (!config::audio.sink.empty()) {
++        sink = &config::audio.sink;
++      }
+ 
+-    // Prefer the virtual sink if host playback is disabled or there's no other sink
+-    if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
+-      auto &null = *ref->sink.null;
+-      switch (stream.channelCount) {
+-        case 2:
+-          sink = &null.stereo;
+-          break;
+-        case 6:
+-          sink = &null.surround51;
+-          break;
+-        case 8:
+-          sink = &null.surround71;
+-          break;
++      // Prefer the virtual sink if host playback is disabled or there's no other sink
++      if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
++        auto &null = *ref->sink.null;
++        switch (stream.channelCount) {
++          case 2:
++            sink = &null.stereo;
++            break;
++          case 6:
++            sink = &null.surround51;
++            break;
++          case 8:
++            sink = &null.surround71;
++            break;
++        }
+       }
+-    }
+ 
+-    // Only the first to start a session may change the default sink
+-    if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
+-      // If the selected sink is different than the current one, change sinks.
+-      ref->restore_sink = ref->sink.host != *sink;
+-      if (ref->restore_sink) {
+-        if (control->set_sink(*sink)) {
+-          return;
++      // Only the first to start a session may change the default sink
++      if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
++        // If the selected sink is different than the current one, change sinks.
++        ref->restore_sink = ref->sink.host != *sink;
++        if (ref->restore_sink) {
++          if (control->set_sink(*sink)) {
++            return;
++          }
+         }
+       }
+-    }
+ 
+-    auto frame_size = config.packetDuration * stream.sampleRate / 1000;
+-    bool host_audio = config.flags[config_t::HOST_AUDIO];
+-    bool continuous_audio = config.flags[config_t::CONTINUOUS_AUDIO];
+-    auto mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
++      mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
++    }
+     if (!mic) {
+       return;
+     }
+@@ -235,8 +250,10 @@ namespace audio {
+ 
+     auto samples = std::make_shared<sample_queue_t::element_type>(30);
+     std::jthread thread {encodeThread, samples, config, channel_data};
++    std::uint64_t audio_generation = cliprelay::displays.begin_audio(channel_data, independent);
+ 
+     auto fg = util::fail_guard([&]() {
++      cliprelay::displays.end_audio(channel_data, audio_generation);
+       samples->stop();
+       thread.join();
+ 
+@@ -257,9 +274,14 @@ namespace audio {
+           continue;
+         case platf::capture_e::reinit:
+           BOOST_LOG(info) << "Reinitializing audio capture"sv;
++          cliprelay::displays.end_audio(channel_data, audio_generation);
++          audio_generation = 0;
+           mic.reset();
+           do {
+-            mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
++            // Never fall back to endpoint audio inside a mute-capable stream:
++            // the host could still be muted until its lease observes this reset.
++            mic = independent ? control->independent_microphone(stream.channelCount, stream.sampleRate, continuous_audio)
++              : control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
+             if (!mic) {
+               BOOST_LOG(warning) << "Couldn't re-initialize audio input"sv;
+             }
+@@ -269,7 +291,10 @@ namespace audio {
+           return;
+       }
+ 
+-      samples->raise(std::move(sample_buffer));
++      // Audio and video start concurrently. Registration may not have happened
++      // at audio initialization, so retry only until this capture owns an epoch.
++      if (!audio_generation) audio_generation = cliprelay::displays.begin_audio(channel_data, independent);
++      samples->raise(captured_samples {std::move(sample_buffer), audio_generation, mic->host_mute_safe(), cliprelay::display_control::monotonic_ms()});
+     }
+   }
+ 
+diff --git a/src/config.cpp b/src/config.cpp
+index e0e8647..4bea96b 100644
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -806,6 +806,8 @@ namespace config {
+     {},  // virtual_sink
+     true,  // stream audio
+     true,  // install_steam_drivers
++    false,  // cliprelay_process_audio (enable only with the matching host controls)
++    0,  // cliprelay_audio_exclude_pid
+   };
+ 
+   /**
+@@ -1738,6 +1740,8 @@ namespace config {
+ 
+     string_f(vars, "audio_sink", audio.sink);
+     string_f(vars, "virtual_sink", audio.virtual_sink);
++    bool_f(vars, "cliprelay_process_audio", audio.process_audio);
++    int_f(vars, "cliprelay_audio_exclude_pid", audio.process_audio_exclude_pid);
+     bool_f(vars, "stream_audio", audio.stream);
+     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
+ 
+diff --git a/src/config.h b/src/config.h
+index 7861538..2f416ec 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -229,6 +229,8 @@ namespace config {
+     std::string virtual_sink;  ///< Virtual audio sink for audio routing
+     bool stream;  ///< Enable audio streaming to clients
+     bool install_steam_drivers;  ///< Install Steam audio drivers for enhanced compatibility
++    bool process_audio;  ///< ClipRelay opt-in mute-independent process capture on Windows
++    int process_audio_exclude_pid;  ///< Trusted host ancestor; 0 excludes this engine
+   };
+ 
+   /**
+diff --git a/src/input.cpp b/src/input.cpp
+index a12514d..df82f98 100644
+--- a/src/input.cpp
++++ b/src/input.cpp
+@@ -29,6 +29,7 @@ extern "C" {
+ 
+ // local includes
+ #include "config.h"
++#include "cliprelay_input.h"
+ #include "globals.h"
+ #include "input.h"
+ #include "logging.h"
+@@ -164,7 +165,8 @@ namespace input {
+ 
+   static task_pool_util::TaskPool::task_id_t key_press_repeat_id {};
+   static std::unordered_map<key_press_id_t, bool> key_press {};
+-  static std::array<std::uint8_t, 5> mouse_press {};
++  // Moonlight buttons are one-based; include the second side button (5).
++  static std::array<std::uint8_t, BUTTON_X2 + 1> mouse_press {};
+ 
+   static platf::input_t platf_input;
+ #ifdef SUNSHINE_TESTS
+@@ -296,7 +298,12 @@ namespace input {
+     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;  ///< Touch port event.
+     platf::feedback_queue_t feedback_queue;  ///< Queue used to deliver controller feedback to the platform backend.
+ 
+-    std::list<std::vector<uint8_t>> input_queue;  ///< Validated input packets waiting for processing.
++    struct queued_input {
++      std::vector<std::uint8_t> bytes;
++      std::shared_ptr<cliprelay::input_epoch> gate;
++      std::uint32_t epoch;
++    };
++    std::list<queued_input> input_queue;  ///< Validated input packets waiting for processing.
+     std::mutex input_queue_lock;  ///< Input queue lock.
+ 
+     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
+@@ -708,8 +715,23 @@ namespace input {
+   }
+ 
+   /**
+-   * @brief Forward a client input packet directly to the platform backend.
+-   *
++   * @brief Complete a pending left-button release before canceling its timer.
++   * @param input Stream whose delayed release is being flushed.
++   */
++  void flush_delayed_left_release(const std::shared_ptr<input_t> &input) {
++    if (input->mouse_left_button_timeout > DISABLE_LEFT_BUTTON_DELAY) {
++      task_pool.cancel(input->mouse_left_button_timeout);
++      input->mouse_left_button_timeout = nullptr;
++      // The UP packet already cleared mouse_press before scheduling its release.
++      // A subsequent DOWN keeps the button held; reset_mouse_buttons handles it.
++      if (!mouse_press[BUTTON_LEFT]) {
++        platf::button_mouse(platf_input, BUTTON_LEFT, true);
++      }
++    }
++  }
++
++  /**
++   * @brief Forward relative mouse movement after flushing an earlier release.
+    * @param input Platform input backend that receives the event.
+    * @param packet Protocol packet being processed.
+    */
+@@ -718,6 +740,8 @@ namespace input {
+       return;
+     }
+ 
++    // Do not lose the pending release task when changing coordinate modes.
++    flush_delayed_left_release(input);
+     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
+     platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
+   }
+@@ -905,9 +929,9 @@ namespace input {
+      */
+     if (button == BUTTON_LEFT && release && !input->mouse_left_button_timeout) {
+       auto f = [=]() {
+-        auto left_released = mouse_press[BUTTON_LEFT];
+-        if (left_released) {
+-          // Already released left button
++        input->mouse_left_button_timeout = nullptr;
++        if (mouse_press[BUTTON_LEFT]) {
++          // A newer DOWN superseded this delayed UP.
+           return;
+         }
+         platf::button_mouse(platf_input, BUTTON_LEFT, release);
+@@ -2026,6 +2050,8 @@ namespace input {
+   void passthrough_next_message(std::shared_ptr<input_t> input) {
+     // 'entry' backs the 'payload' pointer, so they must remain in scope together
+     std::vector<uint8_t> entry;
++    std::shared_ptr<cliprelay::input_epoch> gate;
++    std::uint32_t epoch = 0;
+     PNV_INPUT_HEADER payload;
+ 
+     // Lock the input queue while batching, but release it before sending
+@@ -2034,20 +2060,29 @@ namespace input {
+     {
+       std::lock_guard<std::mutex> lg(input->input_queue_lock);
+ 
++      // A pause closes admission immediately, including previously queued data.
++      while (!input->input_queue.empty()) {
++        const auto &front = input->input_queue.front();
++        if (!front.gate || front.gate->permits(front.epoch)) break;
++        input->input_queue.pop_front();
++      }
+       // If all entries have already been processed, nothing to do
+       if (input->input_queue.empty()) {
+         return;
+       }
+ 
+       // Pop off the first entry, which we will send
+-      entry = input->input_queue.front();
++      gate = input->input_queue.front().gate;
++      epoch = input->input_queue.front().epoch;
++      entry = std::move(input->input_queue.front().bytes);
+       payload = (PNV_INPUT_HEADER) entry.data();
+       input->input_queue.pop_front();
+ 
+       // Try to batch with remaining items on the queue
+       auto i = input->input_queue.begin();
+       while (i != input->input_queue.end()) {
+-        auto batchable_entry = *i;
++        if (i->gate != gate || i->epoch != epoch) break;
++        auto batchable_entry = i->bytes;
+         auto batchable_payload = (PNV_INPUT_HEADER) batchable_entry.data();
+ 
+         auto batch_result = batch(payload, batchable_payload);
+@@ -2064,6 +2099,8 @@ namespace input {
+       }
+     }
+ 
++    // The command may have arrived while this packet was being batched.
++    if (gate && !gate->permits(epoch)) return;
+     // Print the final input packet
+     input::print((void *) payload);
+ 
+@@ -2121,7 +2158,9 @@ namespace input {
+    * @param input The input context pointer.
+    * @param input_data The input message.
+    */
+-  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data) {
++  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data,
++    std::shared_ptr<cliprelay::input_epoch> gate, std::uint32_t epoch) {
++    if (gate && !gate->permits(epoch)) return;
+     NV_INPUT_HEADER header {};
+     if (!validate_input_packet(input_data, &header)) {
+       if (input_data.size() >= sizeof(header)) {
+@@ -2138,7 +2177,7 @@ namespace input {
+ 
+     {
+       std::lock_guard<std::mutex> lg(input->input_queue_lock);
+-      input->input_queue.push_back(std::move(input_data));
++      input->input_queue.push_back({std::move(input_data), std::move(gate), epoch});
+     }
+     task_pool.push(passthrough_next_message, input);
+   }
+@@ -2200,6 +2239,7 @@ namespace input {
+    * @param input Retained stream input state to reset.
+    */
+   void reset_input_state(const std::shared_ptr<input_t> &input) {
++    flush_delayed_left_release(input);
+     reset_mouse_buttons();
+     reset_keyboard_keys();
+     reset_gamepads(input);
+@@ -2208,6 +2248,43 @@ namespace input {
+   /**
+    * @brief Reset the object to its initial empty state.
+    */
++  void passthrough_epoch(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&bytes,
++    const std::shared_ptr<cliprelay::input_epoch> &gate) {
++    if (!gate) return;
++    const auto packet = cliprelay::parse_input(bytes);
++    if (packet.op == cliprelay::input_op::legacy) {
++      passthrough(input, std::move(bytes), gate, 0);
++    } else if (packet.op == cliprelay::input_op::data) {
++      bytes.erase(bytes.begin(), bytes.begin() + 16);
++      passthrough(input, std::move(bytes), gate, packet.epoch);
++    } else if ((packet.op == cliprelay::input_op::pause || packet.op == cliprelay::input_op::resume) &&
++        gate->begin(packet.epoch, packet.op == cliprelay::input_op::pause)) {
++      // task_pool has one worker in the pinned host. All platform input, delayed
++      // repeats and this release run serially. Acknowledgment follows release.
++      task_pool.push([input, gate, epoch = packet.epoch] {
++        if (!gate->pending(epoch)) return;
++        if (!cliprelay::inputs.exclusive(gate)) {
++          gate->acknowledge(epoch, false);
++          return;
++        }
++        task_pool.cancel(key_press_repeat_id);
++        key_press_repeat_id = nullptr;
++        reset_input_state(input);
++        input->mouse_left_button_timeout = nullptr;
++        platf::touch_input_t touch {};
++        touch.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
++        platf::touch_update(input->client_context.get(), input->touch_port, touch);
++        platf::pen_input_t pen {};
++        pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
++        platf::pen_update(input->client_context.get(), input->touch_port, pen);
++        input->shift_keys = {}; input->control_keys = {}; input->alt_keys = {};
++        input->shortcutFlags = 0;
++        input->accumulated_vscroll_delta = input->accumulated_hscroll_delta = 0;
++        gate->acknowledge(epoch, true);
++      });
++    }
++  }
++
+   void reset(std::shared_ptr<input_t> &input) {
+     task_pool.cancel(key_press_repeat_id);
+     task_pool.cancel(input->mouse_left_button_timeout);
+@@ -2331,8 +2408,9 @@ namespace input {
+       });
+     }
+ 
++    // Honor disabled mouse input in isolated/headless fixtures too.
+     // Workaround to ensure new frames will be captured when a client connects
+-    task_pool.pushDelayed([]() {
++    if (config::input.mouse) task_pool.pushDelayed([]() {
+       platf::move_mouse(platf_input, 1, 1);
+       platf::move_mouse(platf_input, -1, -1);
+     },
+@@ -2343,6 +2421,10 @@ namespace input {
+ 
+ #ifdef SUNSHINE_TESTS
+   namespace testing {
++    platf::client_input_t *client_input(const std::shared_ptr<input_t> &input) {
++      return input ? input->client_context.get() : nullptr;
++    }
++
+     void set_platform_input(platf::input_t input) {
+       terminate_gamepads();
+       platf_input = std::move(input);
+diff --git a/src/input.h b/src/input.h
+index d383e42..80ffbf2 100644
+--- a/src/input.h
++++ b/src/input.h
+@@ -17,6 +17,8 @@
+ #include "platform/common.h"
+ #include "thread_safe.h"
+ 
++namespace cliprelay { class input_epoch; }
++
+ namespace input {
+   struct input_t;
+ 
+@@ -51,7 +53,10 @@ namespace input {
+   /**
+    * @brief Queue a raw input message for platform passthrough.
+    */
+-  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data);
++  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data,
++    std::shared_ptr<cliprelay::input_epoch> gate = {}, std::uint32_t epoch = 0);
++  void passthrough_epoch(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data,
++    const std::shared_ptr<cliprelay::input_epoch> &gate);
+ 
+   /**
+    * @brief Initialize global input resources and platform backends.
+@@ -86,6 +91,9 @@ namespace input {
+ 
+ #ifdef SUNSHINE_TESTS
+   namespace testing {
++    /** @brief Return the per-client backend for fake-device assertions. */
++    platf::client_input_t *client_input(const std::shared_ptr<input_t> &input);
++
+     /**
+      * @brief Replace the global platform input backend for a unit test.
+      *
+diff --git a/src/platform/common.h b/src/platform/common.h
+index 325f913..f9e144e 100644
+--- a/src/platform/common.h
++++ b/src/platform/common.h
+@@ -780,6 +780,11 @@ namespace platf {
+ 
+     virtual ~display_t() = default;
+ 
++    // ClipRelay: identity and native desktop origin of the actual capture output.
++    std::string cliprelay_display_id;
++    int cliprelay_desktop_x {0}, cliprelay_desktop_y {0};
++    std::uint64_t cliprelay_generation {0};
++
+     // Offsets for when streaming a specific monitor. By default, they are 0.
+     int offset_x {0};  ///< Horizontal capture offset in physical pixels.
+     int offset_y {0};  ///< Vertical capture offset in physical pixels.
+@@ -809,6 +814,7 @@ namespace platf {
+      * @return Capture status reported to the streaming pipeline.
+      */
+     virtual capture_e sample(std::vector<float> &frame_buffer) = 0;
++    virtual bool host_mute_safe() const { return false; }
+ 
+     virtual ~mic_t() = default;
+   };
+@@ -838,6 +844,7 @@ namespace platf {
+      * @return Microphone capture object for the requested audio layout.
+      */
+     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, [[maybe_unused]] bool host_audio_enabled) = 0;
++    virtual std::unique_ptr<mic_t> independent_microphone(int, std::uint32_t, bool) { return nullptr; }
+ 
+     /**
+      * @brief Check if the audio sink is available in the system.
+diff --git a/src/platform/windows/audio.cpp b/src/platform/windows/audio.cpp
+index 9ace2a6..b5eff15 100644
+--- a/src/platform/windows/audio.cpp
++++ b/src/platform/windows/audio.cpp
+@@ -18,6 +18,7 @@
+ 
+ // local includes
+ #include "src/config.h"
++#include "src/cliprelay_audio.h"
+ #include "src/logging.h"
+ #include "src/platform/common.h"
+ #include "utf_utils.h"
+@@ -560,6 +561,20 @@ namespace platf::audio {
+   /**
+    * @brief WASAPI microphone capture stream and endpoint notification state.
+    */
++  class mic_process_t: public mic_t {
++  public:
++    cliprelay::audio_exclusion_root root;
++    cliprelay::process_audio capture;
++    capture_e sample(std::vector<float> &output) override {
++      if (!root.alive()) return capture_e::reinit;
++      auto status = capture.read(output);
++      if (status == S_OK) return capture_e::ok;
++      if (status == S_FALSE) return capture_e::timeout;
++      return capture_e::reinit;
++    }
++    bool host_mute_safe() const override { return root.alive() && capture.healthy(); }
++  };
++
+   class mic_wasapi_t: public mic_t {
+   public:
+     /**
+@@ -1021,6 +1036,21 @@ namespace platf::audio {
+       return mic;
+     }
+ 
++    std::unique_ptr<mic_t> independent_microphone(int channels, std::uint32_t sample_rate, bool continuous) override {
++      auto mic = std::make_unique<mic_process_t>();
++      // Exclude the host service tree, including its voice-injection workers.
++      // An invalid configured ancestor must not silently become engine-only
++      // capture, which would feed injected speech back to the remote client.
++      if (config::audio.process_audio_exclude_pid < 0) return nullptr;
++      auto status = mic->root.open(static_cast<DWORD>(config::audio.process_audio_exclude_pid));
++      if (SUCCEEDED(status)) status = mic->capture.init(mic->root.pid(), false, sample_rate, channels, continuous);
++      if (FAILED(status)) {
++        BOOST_LOG(warning) << "Process audio unavailable [0x" << util::hex(status).to_string_view() << ']';
++        return nullptr;
++      }
++      return mic;
++    }
++
+     /**
+      * If the requested sink is a virtual sink, meaning no speakers attached to
+      * the host, then we can seamlessly set the format to stereo and surround sound.
+@@ -1542,7 +1572,7 @@ namespace platf {
+ 
+     // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
+     // the sink information returned includes the new Steam Streaming Speakers device.
+-    if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
++    if (!config::audio.process_audio && config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
+       // This is best effort. Don't fail if it doesn't work.
+       control->install_steam_audio_drivers();
+     }
+@@ -1561,7 +1591,7 @@ namespace platf {
+     // If Steam Streaming Speakers are currently the default audio device,
+     // change the default to something else (if another device is available).
+     audio::audio_control_t audio_ctrl;
+-    if (audio_ctrl.init() == 0) {
++    if (!config::audio.process_audio && audio_ctrl.init() == 0) {
+       audio_ctrl.reset_default_device();
+     }
+ 
+diff --git a/src/platform/windows/display_base.cpp b/src/platform/windows/display_base.cpp
+index 151b8a6..68d5802 100644
+--- a/src/platform/windows/display_base.cpp
++++ b/src/platform/windows/display_base.cpp
+@@ -514,6 +514,9 @@ namespace platf::dxgi {
+           if (desc.AttachedToDesktop && test_dxgi_duplication(adapter_tmp, output_tmp, false)) {
+             output = std::move(output_tmp);
+ 
++            cliprelay_display_id = utf_utils::to_utf8(desc.DeviceName);
++            cliprelay_desktop_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
++            cliprelay_desktop_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+             offset_x = desc.DesktopCoordinates.left;
+             offset_y = desc.DesktopCoordinates.top;
+             width = desc.DesktopCoordinates.right - offset_x;
+diff --git a/src/video.cpp b/src/video.cpp
+index 843a19a..f6b081e 100644
+--- a/src/video.cpp
++++ b/src/video.cpp
+@@ -27,6 +27,7 @@ extern "C" {
+ // local includes
+ #include "cbs.h"
+ #include "config.h"
++#include "cliprelay_control.h"
+ #include "display_device.h"
+ #include "globals.h"
+ #include "input.h"
+@@ -538,6 +539,71 @@ namespace video {
+ 
+     // inject sps/vps data into idr pictures
+     int inject;  ///< Number of upcoming IDR frames that should receive rewritten parameter sets.
++
++    // The pinned FFmpeg QSV encoder observes these fields before each input,
++    // flushes earlier packets, and reports MFXVideoENCODE_Reset failures. Other
++    // backends must have an explicit implementation before advertising support.
++    bool live_bitrate_supported() const {
++      return avcodec_ctx && avcodec_ctx->codec &&
++        std::string_view(avcodec_ctx->codec->name).ends_with("_qsv");
++    }
++
++    struct rate_parameters {
++      int64_t bit_rate, maximum, minimum;
++      int buffer, occupancy;
++    };
++    rate_parameters previous_rate {};
++    std::optional<cliprelay::bitrate_state> rate_update;
++    std::chrono::steady_clock::time_point rate_deadline;
++
++    bool rollback_bitrate(void *key, const std::string &reason) {
++      if (!rate_update) return false;
++      auto state = cliprelay::bitrates.state(key);
++      if (!state || state->request_id != rate_update->request_id || state->result != "pending") {
++        rate_update.reset();
++        return false;
++      }
++      avcodec_ctx->bit_rate = previous_rate.bit_rate;
++      avcodec_ctx->rc_max_rate = previous_rate.maximum;
++      avcodec_ctx->rc_min_rate = previous_rate.minimum;
++      avcodec_ctx->rc_buffer_size = previous_rate.buffer;
++      avcodec_ctx->rc_initial_buffer_occupancy = previous_rate.occupancy;
++      cliprelay::bitrates.fail(key, rate_update->request_id, reason);
++      rate_update.reset();
++      request_idr_frame();
++      return true;
++    }
++
++    void update_bitrate(void *key, int64_t frame) {
++      if (!live_bitrate_supported()) return;
++      if (rate_update) {
++        const auto state = cliprelay::bitrates.state(key);
++        if (!state || state->result != "pending" || state->request_id != rate_update->request_id)
++          rate_update.reset();
++        else if (std::chrono::steady_clock::now() >= rate_deadline)
++          rollback_bitrate(key, "encoder_timeout");
++      }
++      if (rate_update) return;
++      auto update = cliprelay::bitrates.take(key, frame);
++      if (!update) return;
++      auto &ctx = avcodec_ctx;
++      previous_rate = {ctx->bit_rate, ctx->rc_max_rate, ctx->rc_min_rate,
++        ctx->rc_buffer_size, ctx->rc_initial_buffer_occupancy};
++      const int64_t bitrate = static_cast<int64_t>(update->target) * 1000;
++      // Preserve the negotiated CBR/VBR relationship and the encoder's VBV
++      // duration. No codec, resolution, frame rate or capture state changes.
++      const auto delta = ctx->rc_max_rate - ctx->bit_rate;
++      if (ctx->rc_max_rate > 0) {
++        ctx->rc_buffer_size = static_cast<int>(ctx->rc_buffer_size * bitrate / ctx->rc_max_rate);
++        ctx->rc_initial_buffer_occupancy = static_cast<int>(ctx->rc_initial_buffer_occupancy * bitrate / ctx->rc_max_rate);
++      }
++      ctx->bit_rate = bitrate - delta;
++      ctx->rc_max_rate = bitrate;
++      if (ctx->rc_min_rate > 0) ctx->rc_min_rate = bitrate;
++      rate_update = update;
++      rate_deadline = std::chrono::steady_clock::now() + 3s;
++      request_idr_frame();
++    }
+   };
+ 
+   /**
+@@ -1481,6 +1547,17 @@ namespace video {
+    * @param display_name Display name.
+    * @param config Configuration values to apply.
+    */
++  void cliprelay_begin_capture(platf::display_t &display) {
++    display.cliprelay_generation = cliprelay::displays.begin_capture({
++      display.cliprelay_display_id,
++      display.offset_x + display.cliprelay_desktop_x,
++      display.offset_y + display.cliprelay_desktop_y,
++      display.width, display.height,
++      display.cliprelay_desktop_x, display.cliprelay_desktop_y,
++      display.env_width, display.env_height
++    });
++  }
++
+   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
+     // We try this twice, in case we still get an error on reinitialization
+     for (int x = 0; x < 2; ++x) {
+@@ -1515,6 +1592,7 @@ namespace video {
+     // Refresh the display names
+     auto old_display_names = std::move(display_names);
+     display_names = platf::display_names(dev_type);
++    cliprelay::displays.catalog(display_names);
+ 
+     // If we now have no displays, let's put the old display array back and fail
+     if (display_names.empty() && !old_display_names.empty()) {
+@@ -1566,6 +1644,7 @@ namespace video {
+     std::vector<capture_ctx_t> capture_ctxs;
+ 
+     auto fg = util::fail_guard([&]() {
++      cliprelay::displays.invalidate();
+       capture_ctx_queue->stop();
+ 
+       // Stop all sessions listening to this thread
+@@ -1595,6 +1674,7 @@ namespace video {
+     if (!disp) {
+       return;
+     }
++    cliprelay_begin_capture(*disp);
+     display_wp = disp;
+ 
+     constexpr auto capture_buffer_size = 12;
+@@ -1724,7 +1804,7 @@ namespace video {
+           capture_ctxs.emplace_back(std::move(*capture_ctx_queue->pop()));
+         }
+ 
+-        if (switch_display_event->peek()) {
++        if (switch_display_event->peek() || cliprelay::displays.pending()) {
+           artificial_reinit = true;
+           return false;
+         }
+@@ -1743,6 +1823,7 @@ namespace video {
+       switch (status) {
+         case platf::capture_e::reinit:
+           {
++            cliprelay::displays.invalidate();
+             reinit_event.raise(true);
+ 
+             // Some classes of images contain references to the display --> display won't delete unless img is deleted
+@@ -1786,8 +1867,17 @@ namespace video {
+                 display_p = std::clamp(*switch_display_event->pop(), 0, static_cast<int>(display_names.size()) - 1);
+               }
+ 
++              const int previous_display = display_p;
++              display_p = cliprelay::displays.take_selection(display_names, display_p);
+               // reset_display() will sleep between retries
+               reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
++              if (!disp) {
++                cliprelay::displays.selection_failed();
++                if (display_p != previous_display) {
++                  display_p = previous_display;
++                  reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
++                }
++              }
+               if (disp) {
+                 break;
+               }
+@@ -1796,6 +1886,7 @@ namespace video {
+               return;
+             }
+ 
++            cliprelay_begin_capture(*disp);
+             display_wp = disp;
+ 
+             reinit_event.reset();
+@@ -1824,6 +1915,7 @@ namespace video {
+    * @return 0 when packets are queued; nonzero when encoding or packetization fails.
+    */
+   int encode_avcodec(int64_t frame_nr, avcodec_encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
++    session.update_bitrate(channel_data, frame_nr);
+     auto &frame = session.device->frame;
+     frame->pts = frame_nr;
+ 
+@@ -1889,8 +1981,14 @@ namespace video {
+         packet->frame_timestamp = frame_timestamp;
+       }
+ 
+-      packet->replacements = &session.replacements;
++      if (av_packet->flags & AV_PKT_FLAG_KEY) {
++        for (const auto &replacement : session.replacements) {
++          packet->replacements.emplace_back(replacement.old, replacement._new);
++        }
++      }
+       packet->channel_data = channel_data;
++      cliprelay::displays.encoded(channel_data, av_packet->pts);
++      cliprelay::bitrates.encoded(channel_data, av_packet->pts);
+       packets->raise(std::move(packet));
+     }
+ 
+@@ -1922,6 +2020,7 @@ namespace video {
+     packet->channel_data = channel_data;
+     packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
+     packet->frame_timestamp = frame_timestamp;
++    cliprelay::displays.encoded(channel_data, encoded_frame.frame_index);
+     packets->raise(std::move(packet));
+ 
+     return 0;
+@@ -1939,7 +2038,12 @@ namespace video {
+    */
+   int encode(int64_t frame_nr, encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
+     if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
+-      return encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp);
++      auto result = encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp);
++      if (result && avcodec_session->rollback_bitrate(channel_data, "encoder_rejected")) {
++        BOOST_LOG(warning) << "Live bitrate update rejected; restoring the previous rate";
++        result = encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp);
++      }
++      return result;
+     } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
+       return encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp);
+     }
+@@ -2408,11 +2512,16 @@ namespace video {
+     const encoder_t &encoder,
+     void *channel_data
+   ) {
++    if (auto rate = cliprelay::bitrates.begin_encoder(channel_data); rate > 0) config.bitrate = rate;
+     auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
+     if (!session) {
+       return;
+     }
+ 
++    cliprelay::displays.bind(channel_data, disp->cliprelay_generation);
++    auto av_session = dynamic_cast<avcodec_encode_session_t *>(session.get());
++    cliprelay::bitrates.support(channel_data, av_session && av_session->live_bitrate_supported());
++
+     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
+     // we will complete the encoder teardown in a separate thread if supported.
+     // This will move expensive processing off the encoder thread to allow us
+@@ -2479,6 +2588,7 @@ namespace video {
+             BOOST_LOG(error) << "Could not convert image"sv;
+             return;
+           }
++          cliprelay::displays.real_frame(channel_data, disp->cliprelay_generation, frame_nr);
+         } else if (!images->running()) {
+           break;
+         }
+@@ -2638,6 +2748,8 @@ namespace video {
+ 
+     encode_session.ctx = &ctx;
+ 
++    if (auto rate = cliprelay::bitrates.begin_encoder(ctx.channel_data); rate > 0) ctx.config.bitrate = rate;
++
+     auto encode_device = make_encode_device(*disp, encoder, ctx.config);
+     if (!encode_device) {
+       return std::nullopt;
+@@ -2657,6 +2769,7 @@ namespace video {
+     }
+     ctx.hdr_events->raise(std::move(hdr_info));
+ 
++    cliprelay::displays.bind(ctx.channel_data, disp->cliprelay_generation);
+     auto session = make_encode_session(disp, encoder, ctx.config, img.width, img.height, std::move(encode_device));
+     if (!session) {
+       return std::nullopt;
+@@ -2669,6 +2782,8 @@ namespace video {
+     }
+ 
+     encode_session.session = std::move(session);
++    auto av_session = dynamic_cast<avcodec_encode_session_t *>(encode_session.session.get());
++    cliprelay::bitrates.support(ctx.channel_data, av_session && av_session->live_bitrate_supported());
+ 
+     return encode_session;
+   }
+@@ -2712,8 +2827,17 @@ namespace video {
+         display_p = std::clamp(*switch_display_event->pop(), 0, static_cast<int>(display_names.size()) - 1);
+       }
+ 
++      const int previous_display = display_p;
++      display_p = cliprelay::displays.take_selection(display_names, display_p);
+       // reset_display() will sleep between retries
+       reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], synced_session_ctxs.front()->config);
++      if (!disp) {
++        cliprelay::displays.selection_failed();
++        if (display_p != previous_display) {
++          display_p = previous_display;
++          reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], synced_session_ctxs.front()->config);
++        }
++      }
+       if (disp) {
+         break;
+       }
+@@ -2728,6 +2852,8 @@ namespace video {
+       return encode_e::error;
+     }
+ 
++    cliprelay_begin_capture(*disp);
++    auto cliprelay_capture_guard = util::fail_guard([] { cliprelay::displays.invalidate(); });
+     std::vector<sync_session_t> synced_sessions;
+     for (auto &ctx : synced_session_ctxs) {
+       auto synced_session = make_synced_session(disp.get(), encoder, *img, *ctx);
+@@ -2793,6 +2919,9 @@ namespace video {
+             frame_timestamp = img->frame_timestamp;
+           }
+ 
++          if (frame_captured) {
++            cliprelay::displays.real_frame(ctx->channel_data, disp->cliprelay_generation, ctx->frame_nr);
++          }
+           if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp)) {
+             BOOST_LOG(error) << "Could not encode video packet"sv;
+             ctx->shutdown_event->raise(true);
+@@ -2805,7 +2934,7 @@ namespace video {
+           ++pos;
+         })
+ 
+-        if (switch_display_event->peek()) {
++        if (switch_display_event->peek() || cliprelay::displays.pending()) {
+           ec = platf::capture_e::reinit;
+           return false;
+         }
+diff --git a/src/video.h b/src/video.h
+index 63f3cf5..2b283e2 100644
+--- a/src/video.h
++++ b/src/video.h
+@@ -39,6 +39,7 @@ namespace video {
+     int dynamicRange;  ///< Encoding color depth: 0 = 8-bit, 1 = 10-bit.
+     int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4.
+     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
++    int bitrateBudgetKbps = 0;  ///< Original budget including audio/FEC, before RTSP normalization.
+   };
+ 
+   namespace amf {
+@@ -527,7 +528,10 @@ namespace video {
+       }
+     };
+ 
+-    std::vector<replace_t> *replacements = nullptr;  ///< Optional encoded-byte substitutions applied before packetization.
++    // The sender may still be processing this packet after display/encoder
++    // teardown. Own the parameter-set bytes instead of borrowing the encoder's
++    // vector and string_views across the asynchronous queue.
++    std::vector<std::pair<std::string, std::string>> replacements;
+     void *channel_data = nullptr;  ///< Platform or protocol state carried with this packet.
+     bool after_ref_frame_invalidation = false;  ///< Whether the frame follows reference-frame invalidation.
+     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;  ///< Capture timestamp associated with the frame.
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index 5a2c9e1..829a593 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -43,6 +43,7 @@ target_compile_options(audio-info PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+ 
+ add_executable(sunshinesvc sunshinesvc.cpp)
+ target_link_libraries(sunshinesvc
++        ${Boost_LIBRARIES}
+         ${CMAKE_THREAD_LIBS_INIT}
+         wtsapi32
+         ${PLATFORM_LIBRARIES})
+diff --git a/src/rtsp.cpp b/src/rtsp.cpp
+index c7135dd..e66c7f9 100644
+--- a/src/rtsp.cpp
++++ b/src/rtsp.cpp
+@@ -654,7 +654,8 @@ namespace rtsp_stream {
+ 
+       for (auto i = _session_slots->begin(); i != _session_slots->end();) {
+         auto &slot = *(*i);
+-        if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
++        const auto state = stream::session::state(slot);
++        if (all || state == stream::session::state_e::STOPPING || state == stream::session::state_e::STOPPING_GRACEFUL) {
+           stream::session::stop(slot);
+           stream::session::join(slot);
+ 
+@@ -675,7 +676,7 @@ namespace rtsp_stream {
+       for (auto i = _session_slots->begin(); i != _session_slots->end();) {
+         auto &slot = *(*i);
+         if (stream::session::client_cert(slot) == cert) {
+-          stream::session::stop(slot);
++          stream::session::stop(slot, true);
+           stream::session::join(slot);
+           i = _session_slots->erase(i);
+         } else {
+@@ -1255,6 +1256,7 @@ namespace rtsp_stream {
+     // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
+     // down to nearly nothing.
+     if (configuredBitrateKbps) {
++      config.monitor.bitrateBudgetKbps = static_cast<int>(configuredBitrateKbps);
+       BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
+ 
+       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
+diff --git a/src/stream.cpp b/src/stream.cpp
+index 1291c9c..ea5a30c 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -24,6 +24,8 @@ extern "C" {
+ 
+ // local includes
+ #include "config.h"
++#include "cliprelay_control.h"
++#include "cliprelay_input.h"
+ #include "display_device.h"
+ #include "globals.h"
+ #include "input.h"
+@@ -491,6 +493,7 @@ namespace stream {
+ 
+     safe::mail_t mail;  ///< Mailbox used to distribute packets and lifecycle events.
+ 
++    std::shared_ptr<cliprelay::input_epoch> input_epoch = std::make_shared<cliprelay::input_epoch>();
+     std::shared_ptr<input::input_t> input;  ///< Platform input device state for this stream.
+ 
+     std::jthread audioThread;  ///< Audio thread.
+@@ -545,6 +548,8 @@ namespace stream {
+ 
+       net::peer_t peer;  ///< Connected ENet peer for the control channel.
+       std::uint32_t seq;  ///< Sequence number for the next encrypted control message.
++      bool termination_sent {false};  ///< Accessed only by the control thread.
++      std::chrono::steady_clock::time_point termination_deadline {};
+ 
+       platf::feedback_queue_t feedback_queue;  ///< Queue of controller feedback awaiting control-channel delivery.
+       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;  ///< Queue of HDR metadata awaiting control-channel delivery.
+@@ -633,6 +638,19 @@ namespace stream {
+ 
+   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
+ 
++  /**
++   * @brief Queue an authenticated normal-termination message on the control thread.
++   */
++  int send_graceful_termination(control_server_t *server, session_t *session) {
++    control_terminate_t plaintext;
++    plaintext.header.type = packetTypes[IDX_TERMINATION];
++    plaintext.header.payloadLength = sizeof(plaintext.ec);
++    plaintext.ec = util::endian::big<std::uint32_t>(0x80030023);
++    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size> encrypted;
++    auto payload = encode_control(session, util::view(plaintext), encrypted);
++    return payload.empty() ? -1 : server->send(payload, session->control.peer);
++  }
++
+   /**
+    * @brief Parse a control message from an ENet packet.
+    *
+@@ -729,6 +747,13 @@ namespace stream {
+    * @param reinjected `true` if this message is being reprocessed after decryption.
+    */
+   void control_server_t::call(std::uint16_t type, session_t *session, const std::string_view &payload, bool reinjected) {
++    // ENet may continue exchanging ACKs while an owner-revoked session drains.
++    // No application control/input is dispatched after the stop decision.
++    const auto state = session->state.load(std::memory_order_acquire);
++    if (state == session::state_e::STOPPING || state == session::state_e::STOPPING_GRACEFUL) {
++      return;
++    }
++
+     // If we are using the encrypted control stream protocol, drop any messages that come off the wire unencrypted
+     if (session->config.controlProtocolType == 13 && !reinjected && type != packetTypes[IDX_ENCRYPTED]) {
+       BOOST_LOG(error) << "Dropping unencrypted message on encrypted control stream: "sv << util::hex(type).to_string_view();
+@@ -1232,7 +1257,7 @@ namespace stream {
+         std::copy(payload.end() - 16, payload.end(), std::begin(iv));
+       }
+ 
+-      input::passthrough(session->input, std::move(plaintext));
++      input::passthrough_epoch(session->input, std::move(plaintext), session->input_epoch);
+     });
+ 
+     server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
+@@ -1295,7 +1320,7 @@ namespace stream {
+       // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
+       if (type == packetTypes[IDX_INPUT_DATA]) {
+         plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
+-        input::passthrough(session->input, std::move(plaintext));
++        input::passthrough_epoch(session->input, std::move(plaintext), session->input_epoch);
+       } else {
+         server->call(type, session, next_payload, true);
+       }
+@@ -1332,7 +1357,25 @@ namespace stream {
+             session::stop(*session);
+           }
+ 
+-          if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
++          const auto state = session->state.load(std::memory_order_acquire);
++          if (state == session::state_e::STOPPING || state == session::state_e::STOPPING_GRACEFUL) {
++            if (state == session::state_e::STOPPING_GRACEFUL && session->control.peer) {
++              if (!session->control.termination_sent) {
++                session->control.termination_sent = true;
++                session->control.termination_deadline = now + 500ms;
++                if (send_graceful_termination(server, session)) {
++                  session->control.termination_deadline = now;
++                }
++                server->flush();
++              }
++              if (now < session->control.termination_deadline) {
++                // Retain the peer/session mapping while ENet receives ACKs.
++                // Other clients continue processing; a missing ACK cannot keep
++                // revoked media/input alive or hold the service indefinitely.
++                ++pos;
++                continue;
++              }
++            }
+             pos = server->_sessions->erase(pos);
+ 
+             if (session->control.peer) {
+@@ -1562,11 +1605,8 @@ namespace stream {
+       // We need to know the final frame size to calculate the last packet size, and we
+       // must avoid matching replacements against the frame header or any other non-video
+       // part of the payload.
+-      if (packet->is_idr() && packet->replacements) {
+-        for (auto &replacement : *packet->replacements) {
+-          auto frame_old = replacement.old;
+-          auto frame_new = replacement._new;
+-
++      if (packet->is_idr()) {
++        for (const auto &[frame_old, frame_new] : packet->replacements) {
+           payload_with_replacements = replace(payload, frame_old, frame_new);
+           payload = {(char *) payload_with_replacements.data(), payload_with_replacements.size()};
+         }
+@@ -2147,6 +2187,29 @@ namespace stream {
+     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+ 
+     BOOST_LOG(debug) << "Start capturing Video"sv;
++    // Match the authenticated control service's SHA-256(DER certificate) owner.
++    auto cert = crypto::x509(session->client_cert);
++    unsigned char fingerprint[EVP_MAX_MD_SIZE] {};
++    unsigned int fingerprint_length = 0;
++    if (cert && X509_digest(cert.get(), EVP_sha256(), fingerprint, &fingerprint_length) == 1 && fingerprint_length == 32) {
++      constexpr char hex[] = "0123456789abcdef";
++      std::string owner;
++      for (unsigned int i = 0; i < fingerprint_length; ++i) {
++        owner += hex[fingerprint[i] >> 4];
++        owner += hex[fingerprint[i] & 15];
++      }
++      auto stream_id = cliprelay::displays.add_stream(session, owner, session->config.monitor.width, session->config.monitor.height);
++      cliprelay::inputs.add(session, stream_id, owner, session->input_epoch);
++      cliprelay::bitrates.add(session, stream_id, owner, session->config.monitor.bitrateBudgetKbps,
++        session->config.monitor.bitrate, config::stream.fec_percentage,
++        (session->config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * session->config.audio.channels,
++        config::video.max_bitrate);
++    }
++    auto cliprelay_guard = util::fail_guard([&] {
++      cliprelay::inputs.remove(session);
++      cliprelay::bitrates.remove(session);
++      cliprelay::displays.remove_stream(session);
++    });
+     video::capture(session->mail, session->config.monitor, session);
+   }
+ 
+@@ -2197,14 +2260,15 @@ namespace stream {
+     /**
+      * @brief Stop the active streaming session and prevent new packets from being queued.
+      */
+-    void stop(session_t &session) {
++    void stop(session_t &session, bool graceful) {
+       while_starting_do_nothing(session.state);
+       auto expected = state_e::RUNNING;
+-      auto already_stopping = !session.state.compare_exchange_strong(expected, state_e::STOPPING);
++      auto already_stopping = !session.state.compare_exchange_strong(expected, graceful ? state_e::STOPPING_GRACEFUL : state_e::STOPPING);
+       if (already_stopping) {
+         return;
+       }
+ 
++      session.input_epoch->close();
+       session.shutdown_event->raise(true);
+     }
+ 
+@@ -2234,6 +2298,7 @@ namespace stream {
+       session.controlEnd.view();
+       // Reset input on session stop to avoid stuck repeated keys
+       BOOST_LOG(debug) << "Resetting Input..."sv;
++      session.input_epoch->close();
+       input::reset(session.input);
+ 
+       // If this is the last session, invoke the platform callbacks
+diff --git a/src/stream.h b/src/stream.h
+index c0b0f96..032871c 100644
+--- a/src/stream.h
++++ b/src/stream.h
+@@ -50,6 +50,7 @@ namespace stream {
+       STOPPING,  ///< The session is stopping
+       STARTING,  ///< The session is starting
+       RUNNING,  ///< The session is running
++      STOPPING_GRACEFUL,  ///< An explicit owner revocation is stopping the session
+     };
+ 
+     /**
+@@ -73,7 +74,7 @@ namespace stream {
+      *
+      * @param session Active streaming or pairing session for the request.
+      */
+-    void stop(session_t &session);
++    void stop(session_t &session, bool graceful = false);
+     /**
+      * @brief Wait for worker threads owned by the session to exit.
+      *
+diff --git a/src/confighttp.cpp b/src/confighttp.cpp
+index 1b47397..eb98ab5 100644
+--- a/src/confighttp.cpp
++++ b/src/confighttp.cpp
+@@ -37,6 +37,8 @@
+ 
+ // local includes
+ #include "config.h"
++#include "cliprelay_control.h"
++#include "cliprelay_input.h"
+ #include "confighttp.h"
+ #include "crypto.h"
+ #include "display_device.h"
+@@ -1757,6 +1759,8 @@ namespace confighttp {
+         {"id", pairing.id},
+         {"name", pairing.name},
+         {"address", pairing.address},
++        {"managed_id", pairing.managed_id},
++        {"client_fingerprint", pairing.client_fingerprint},
+       });
+     }
+     send_response(response, output_tree);
+@@ -1773,6 +1777,28 @@ namespace confighttp {
+    *
+    * @api_examples{/api/pin| DELETE| {"pairing_id":"0123456789abcdef0123456789abcdef"}}
+    */
++  void cliprelayManagedPairing(const resp_https_t &response, const req_https_t &request) {
++    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
++    if (!validate_csrf_token(response, request, get_client_id(request))) return;
++    try {
++      std::string body;
++      char byte;
++      while (body.size() <= 512 && request->content.get(byte)) body += byte;
++      if (body.size() > 512) { bad_request(response, request, "Managed pairing request too large"); return; }
++      const auto input = nlohmann::json::parse(body);
++      if (!input.is_object() || input.size() != 2 || !input.contains("id") || !input.contains("client_fingerprint")) {
++        bad_request(response, request, "Invalid managed pairing fields"); return;
++      }
++      const auto id = input.at("id").get<std::string>();
++      const auto fingerprint = input.at("client_fingerprint").get<std::string>();
++      if (!nvhttp::valid_managed_pairing(id, fingerprint)) { bad_request(response, request, "Invalid managed pairing identity"); return; }
++      const auto status = request->method == "POST" ? nvhttp::register_managed_pairing(id, fingerprint) : nvhttp::cancel_managed_pairing(id, fingerprint);
++      send_response(response, nlohmann::json {{"protocol", 1}, {"status", status}});
++    } catch (const nlohmann::json::exception &) {
++      bad_request(response, request, "Invalid managed pairing JSON");
++    }
++  }
++
+   void cancelPairing(const resp_https_t &response, const req_https_t &request) {
+     if (!check_content_type(response, request, "application/json")) {
+       return;
+@@ -2310,6 +2336,159 @@ namespace confighttp {
+   /**
+    * @brief Start the HTTPS configuration server.
+    */
++  // Private engine extension, available only through Sunshine's existing
++  // administrator authentication. ClipRelay's paired control service filters
++  // streams to the authenticated client; credentials never travel to a phone.
++  const std::string &cliprelayInstance() {
++    static const auto instance = uuid_util::uuid_t::generate().string();
++    return instance;
++  }
++
++  nlohmann::json cliprelayDisplayState() {
++    const auto state = cliprelay::displays.snapshot();
++    nlohmann::json result = {
++      {"protocol", 1}, {"instance", cliprelayInstance()}, {"revision", state.revision}, {"generation", state.generation},
++      {"phase", state.phase}, {"displays", state.displays},
++      {"inputEpochSelection", true}, {"requestStream", state.request_stream}, {"inputEpoch", state.input_epoch},
++      {"requestId", state.request_id}, {"requested", state.requested},
++      {"result", state.result}, {"error", state.error}, {"capture", nullptr},
++      {"streams", nlohmann::json::array()}
++    };
++    if (state.capture) {
++      const auto &d = *state.capture;
++      result["capture"] = {{"id", d.id}, {"x", d.x}, {"y", d.y}, {"width", d.width},
++        {"height", d.height}, {"desktopX", d.desktop_x}, {"desktopY", d.desktop_y},
++        {"desktopWidth", d.desktop_width}, {"desktopHeight", d.desktop_height}};
++    }
++    for (const auto &s : state.streams) {
++      result["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"generation", s.generation},
++        {"width", s.width}, {"height", s.height}, {"firstFrame", s.first_frame},
++        {"audio", {{"capture", s.audio_capture}, {"generation", s.audio_generation}, {"ready", s.audio_ready}}}});
++    }
++    return result;
++  }
++
++  void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++#ifdef _WIN32
++    // EnumOutputs filters detached/non-capturable devices in the same way as
++    // the capture thread. Revalidate by ID there before applying a selection.
++    if (request->query_string == "refresh=1") {
++      cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::dxgi));
++    } else if (!request->query_string.empty()) {
++      bad_request(response, request, "Invalid display query"); return;
++    }
++    send_response(response, cliprelayDisplayState());
++#else
++    send_response(response, {{"protocol", 1}, {"error", "unsupported_platform"}});
++#endif
++  }
++
++  void cliprelaySelectDisplay(const resp_https_t &response, const req_https_t &request) {
++    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
++    if (!validate_csrf_token(response, request, get_client_id(request))) return;
++    // Bound parsing and reject unknown keys instead of accepting arbitrary
++    // configuration changes through this narrow control endpoint.
++    std::array<char, 1025> body {};
++    request->content.read(body.data(), body.size());
++    const auto length = request->content.gcount();
++    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
++    try {
++      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
++      const bool guarded = input.is_object() && (input.contains("inputEpoch") || input.contains("stream"));
++      if (!input.is_object() || input.size() != (guarded ? 5 : 3) || !input.contains("display") || !input.contains("revision") || !input.contains("instance") ||
++          !input["display"].is_string() || !input["revision"].is_number_unsigned() || !input["instance"].is_string() ||
++          (guarded && (!input.contains("stream") || !input.contains("inputEpoch") || !input["stream"].is_number_unsigned() ||
++            !input["inputEpoch"].is_number_unsigned() || input["stream"].get<std::uint64_t>() == 0 ||
++            input["stream"].get<std::uint64_t>() > 9007199254740991ULL || input["inputEpoch"].get<std::uint64_t>() > UINT32_MAX ||
++            !(input["inputEpoch"].get<std::uint32_t>() & 1)))) {
++        bad_request(response, request, "Expected display, revision and instance"); return;
++      }
++      const auto id = input["display"].get<std::string>();
++      if (id.empty() || id.size() > 256) { bad_request(response, request, "Invalid display"); return; }
++      std::string outcome = "stale_instance";
++      if (input["instance"].get<std::string>() == cliprelayInstance()) {
++        const auto revision = input["revision"].get<std::uint64_t>();
++        if (guarded) {
++          const auto stream = input["stream"].get<std::uint64_t>();
++          const auto epoch = input["inputEpoch"].get<std::uint32_t>();
++          outcome = cliprelay::inputs.select(stream, epoch, [&](const auto &selection) {
++            return cliprelay::displays.request(id, revision, stream, epoch, selection);
++          });
++        } else outcome = cliprelay::displays.request(id, revision);
++      }
++      auto output = cliprelayDisplayState();
++      output["accepted"] = outcome == "accepted";
++      output["outcome"] = outcome;
++      send_response(response, output);
++    } catch (const nlohmann::json::exception &) {
++      bad_request(response, request, "Invalid display request");
++    }
++  }
++
++  void cliprelayInput(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++    if (!request->query_string.empty()) { bad_request(response, request, "Invalid input query"); return; }
++    nlohmann::json output = {{"protocol", 1}, {"instance", cliprelayInstance()}, {"streams", nlohmann::json::array()}};
++    const auto streams = cliprelay::inputs.snapshot();
++    for (const auto &stream : streams) {
++      const auto state = stream.gate->snapshot();
++      output["streams"].push_back({{"id", stream.id}, {"owner", stream.owner}, {"epoch", state.epoch},
++        {"acknowledged", state.acknowledged}, {"enabled", state.enabled}, {"paused", state.paused},
++        {"pending", state.pending}, {"closed", state.closed}, {"failed", state.failed}, {"exclusive", streams.size() == 1}});
++    }
++    send_response(response, output);
++  }
++
++  nlohmann::json cliprelayBitrateState() {
++    nlohmann::json output = {{"protocol", 1}, {"instance", cliprelayInstance()}, {"streams", nlohmann::json::array()}};
++    for (const auto &s : cliprelay::bitrates.snapshot()) {
++      output["streams"].push_back({{"owner", s.owner}, {"id", s.id}, {"revision", s.revision},
++        {"supported", s.supported}, {"budgetKbps", s.budget}, {"videoKbps", s.video},
++        {"requestId", s.request_id}, {"requestedKbps", s.requested}, {"targetVideoKbps", s.target},
++        {"appliedFrame", s.applied_frame}, {"result", s.result}, {"error", s.error}});
++    }
++    return output;
++  }
++
++  void cliprelayBitrate(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++    if (!request->query_string.empty()) { bad_request(response, request, "Invalid bitrate query"); return; }
++    send_response(response, cliprelayBitrateState());
++  }
++
++  void cliprelaySetBitrate(const resp_https_t &response, const req_https_t &request) {
++    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
++    if (!validate_csrf_token(response, request, get_client_id(request))) return;
++    std::array<char, 1025> body {};
++    request->content.read(body.data(), body.size());
++    const auto length = request->content.gcount();
++    if (length > 1024) { bad_request(response, request, "Request too large"); return; }
++    try {
++      const auto input = nlohmann::json::parse(body.data(), body.data() + length);
++      if (!input.is_object() || input.size() != 5 || !input.contains("instance") || !input["instance"].is_string() ||
++          !input.contains("owner") || !input["owner"].is_string() || !input.contains("stream") || !input["stream"].is_number_unsigned() ||
++          !input.contains("revision") || !input["revision"].is_number_unsigned() ||
++          !input.contains("budgetKbps") || !input["budgetKbps"].is_number_unsigned()) {
++        bad_request(response, request, "Expected instance, owner, stream, revision and budgetKbps"); return;
++      }
++      const auto owner = input["owner"].get<std::string>();
++      const auto budget = input["budgetKbps"].get<std::uint64_t>();
++      if (owner.size() != 64 || owner.find_first_not_of("0123456789abcdef") != std::string::npos || budget < 500 || budget > 150000) {
++        bad_request(response, request, "Invalid bitrate request"); return;
++      }
++      const auto outcome = input["instance"].get<std::string>() == cliprelayInstance()
++        ? cliprelay::bitrates.request(input["stream"].get<std::uint64_t>(), owner, input["revision"].get<std::uint64_t>(), static_cast<int>(budget))
++        : "stale_instance";
++      auto output = cliprelayBitrateState();
++      output["accepted"] = outcome == "accepted";
++      output["outcome"] = outcome;
++      send_response(response, output);
++    } catch (const nlohmann::json::exception &) {
++      bad_request(response, request, "Invalid bitrate request");
++    }
++  }
++
+   void start() {
+     platf::set_thread_name("confighttp");
+     const auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+@@ -2354,6 +2533,13 @@ namespace confighttp {
+     server.resource["^/welcome/?$"]["GET"] = page_handler("welcome.html", false, true);
+ 
+     // rest api
++    server.resource["^/api/cliprelay/pairing$"]["POST"] = cliprelayManagedPairing;
++    server.resource["^/api/cliprelay/pairing$"]["DELETE"] = cliprelayManagedPairing;
++    server.resource["^/api/cliprelay/displays$"]["GET"] = cliprelayDisplays;
++    server.resource["^/api/cliprelay/displays$"]["POST"] = cliprelaySelectDisplay;
++    server.resource["^/api/cliprelay/input$"]["GET"] = cliprelayInput;
++    server.resource["^/api/cliprelay/bitrate$"]["GET"] = cliprelayBitrate;
++    server.resource["^/api/cliprelay/bitrate$"]["POST"] = cliprelaySetBitrate;
+     server.resource["^/api/browse$"]["GET"] = browseDirectory;
+     server.resource["^/api/apps$"]["GET"] = getApps;
+     server.resource["^/api/apps$"]["POST"] = saveApp;
+diff --git a/src/confighttp.h b/src/confighttp.h
+index 49c7039..9d6bcc9 100644
+--- a/src/confighttp.h
++++ b/src/confighttp.h
+@@ -93,6 +93,7 @@ namespace confighttp {
+    * @param request HTTP request data from the client.
+    */
+   void cancelPairing(const resp_https_t &response, const req_https_t &request);
++  void cliprelayManagedPairing(const resp_https_t &response, const req_https_t &request);
+ 
+   /**
+    * @brief Apply a PIN to an explicitly selected pairing request.
+diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
+index 8e33cad..d01d93a 100644
+--- a/src/nvhttp.cpp
++++ b/src/nvhttp.cpp
+@@ -185,6 +185,14 @@ namespace nvhttp {
+   // uniqueID, session
+   std::unordered_map<std::string, pair_session_t> map_id_sess;  ///< Pairing sessions keyed by temporary unique ID.
+ 
++  struct managed_pairing_t {
++    std::string fingerprint;
++    std::chrono::steady_clock::time_point expires;
++  };
++  // Serialized with the pending-session registry. Absence refuses late managed
++  // getservercert requests, so no unbounded cancellation tombstones are needed.
++  std::unordered_map<std::string, managed_pairing_t> managed_pairings;
++
+   /**
+    * @brief Get the mutex protecting pairing-session state.
+    *
+@@ -575,6 +583,7 @@ namespace nvhttp {
+    * @param now Monotonic time used to evaluate session deadlines.
+    */
+   void expire_pair_sessions_unlocked(const std::chrono::steady_clock::time_point now) {
++    std::erase_if(managed_pairings, [now](const auto &entry) { return entry.second.expires <= now; });
+     for (auto it = map_id_sess.begin(); it != map_id_sess.end();) {
+       if (it->second.async_insert_pin.expires_at > now) {
+         ++it;
+@@ -597,6 +606,18 @@ namespace nvhttp {
+     expire_pair_sessions_unlocked(now);
+     pairing_id.clear();
+ 
++    auto expires = now + PAIRING_SESSION_TIMEOUT;
++    if (!sess.managed_id.empty()) {
++      const auto registration = managed_pairings.find(sess.managed_id);
++      const auto fingerprint = pairing_certificate_fingerprint(sess.client.cert);
++      if (sess.client.uniqueID != sess.managed_id || registration == managed_pairings.end() ||
++          fingerprint.empty() || registration->second.fingerprint != fingerprint) {
++        return pair_session_insert_e::MANAGED_REFUSED;
++      }
++      sess.managed_fingerprint = fingerprint;
++      expires = registration->second.expires;
++    }
++
+     if (map_id_sess.contains(sess.client.uniqueID)) {
+       return pair_session_insert_e::ALREADY_EXISTS;
+     }
+@@ -611,7 +632,7 @@ namespace nvhttp {
+     }));
+ 
+     sess.async_insert_pin.id = pairing_id;
+-    sess.async_insert_pin.expires_at = now + PAIRING_SESSION_TIMEOUT;
++    sess.async_insert_pin.expires_at = expires;
+     map_id_sess.emplace(sess.client.uniqueID, std::move(sess));
+     return pair_session_insert_e::ADDED;
+   }
+@@ -622,6 +643,62 @@ namespace nvhttp {
+            });
+   }
+ 
++  std::string pairing_certificate_fingerprint(const std::string_view certificate) {
++    auto cert = crypto::x509(certificate);
++    unsigned char digest[EVP_MAX_MD_SIZE] {};
++    unsigned int length = 0;
++    if (!cert || X509_digest(cert.get(), EVP_sha256(), digest, &length) != 1 || length != 32) return {};
++    constexpr char hex[] = "0123456789abcdef";
++    std::string result;
++    result.reserve(64);
++    for (unsigned int i = 0; i < length; ++i) {
++      result += hex[digest[i] >> 4];
++      result += hex[digest[i] & 15];
++    }
++    return result;
++  }
++
++  bool valid_managed_pairing(const std::string_view id, const std::string_view fingerprint) {
++    const auto lower_hex = [](const char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); };
++    return id.size() == 32 && fingerprint.size() == 64 &&
++           std::ranges::all_of(id, lower_hex) && std::ranges::all_of(fingerprint, lower_hex);
++  }
++
++  bool register_managed_pairing(const std::string_view id, const std::string_view fingerprint) {
++    if (!valid_managed_pairing(id, fingerprint)) return false;
++    std::scoped_lock lock {map_id_sess_mutex()};
++    const auto now = std::chrono::steady_clock::now();
++    expire_pair_sessions_unlocked(now);
++    const auto existing = managed_pairings.find(std::string {id});
++    if (existing != managed_pairings.end()) return existing->second.fingerprint == fingerprint;
++    if (managed_pairings.size() >= MAX_MANAGED_PAIRINGS) return false;
++    managed_pairings.emplace(std::string {id}, managed_pairing_t {std::string {fingerprint}, now + MANAGED_PAIRING_TIMEOUT});
++    return true;
++  }
++
++  bool cancel_managed_pairing(const std::string_view id, const std::string_view fingerprint) {
++    if (!valid_managed_pairing(id, fingerprint)) return false;
++    std::scoped_lock lock {map_id_sess_mutex()};
++    expire_pair_sessions_unlocked(std::chrono::steady_clock::now());
++    const auto existing = managed_pairings.find(std::string {id});
++    if (existing != managed_pairings.end()) {
++      if (existing->second.fingerprint != fingerprint) return false;
++      managed_pairings.erase(existing);
++    }
++    for (auto it = map_id_sess.begin(); it != map_id_sess.end();) {
++      auto &session = it->second;
++      if (session.managed_id != id || session.managed_fingerprint != fingerprint) { ++it; continue; }
++      pt::ptree tree;
++      tree.put("root.paired", 0);
++      tree.put("root.<xmlattr>.status_code", 400);
++      tree.put("root.<xmlattr>.status_message", "Managed pairing request ended");
++      write_pairing_response(session, tree);
++      complete_pairing(session, false);
++      it = map_id_sess.erase(it);
++    }
++    return true;
++  }
++
+   bool is_valid_pairing_pin(const std::string_view pin) {
+     return pin.size() == 4 && std::ranges::all_of(pin, [](const char character) {
+              return character >= '0' && character <= '9';
+@@ -637,6 +714,16 @@ namespace nvhttp {
+     expire_pair_sessions_unlocked(now);
+   }
+ 
++  void maintain_pairing_expiry(const std::stop_token stop) {
++    std::mutex mutex;
++    std::condition_variable_any wake;
++    std::unique_lock lock {mutex};
++    while (!stop.stop_requested()) {
++      expire_pair_sessions();
++      wake.wait_for(lock, stop, std::chrono::seconds {1}, [] { return false; });
++    }
++  }
++
+   std::vector<pending_pairing_t> get_pending_pairings() {
+     std::scoped_lock lock {map_id_sess_mutex()};
+     expire_pair_sessions_unlocked(std::chrono::steady_clock::now());
+@@ -659,6 +746,8 @@ namespace nvhttp {
+         .id = sess->async_insert_pin.id,
+         .name = sess->async_insert_pin.device_name,
+         .address = sess->async_insert_pin.address,
++        .managed_id = sess->managed_id,
++        .client_fingerprint = sess->managed_fingerprint,
+       });
+     }
+     return result;
+@@ -973,6 +1062,7 @@ namespace nvhttp {
+   ) {
+     pair_session_t sess;
+     sess.client.uniqueID = unique_id;
++    sess.managed_id = get_arg(args, "cliprelay_pairing", "");
+     sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
+     sess.async_insert_pin.salt = get_arg(args, "salt");
+     sess.async_insert_pin.device_name = get_arg(args, "devicename");
+@@ -998,6 +1088,11 @@ namespace nvhttp {
+         tree.put("root.<xmlattr>.status_code", 503);
+         tree.put("root.<xmlattr>.status_message", "Too many pending pairing sessions");
+         return false;
++      case MANAGED_REFUSED:
++        tree.put("root.paired", 0);
++        tree.put("root.<xmlattr>.status_code", 403);
++        tree.put("root.<xmlattr>.status_message", "Managed pairing generation is unavailable");
++        return false;
+       case ADDED:
+         break;
+     }
+@@ -1735,10 +1830,16 @@ namespace nvhttp {
+     };
+     std::jthread ssl {accept_and_run, &https_server};
+     std::jthread tcp {accept_and_run, &http_server};
++    std::jthread pairing_expiry {maintain_pairing_expiry};
+ 
+     // Wait for any event
+     shutdown_event->view();
+ 
++    // Expiry may release deferred HTTP responses. Join while the servers and
++    // their I/O contexts are still running, before shutting down either server.
++    pairing_expiry.request_stop();
++    pairing_expiry.join();
++
+     https_server.stop();
+     http_server.stop();
+ 
+@@ -1811,6 +1912,22 @@ namespace nvhttp {
+ 
+ #ifdef SUNSHINE_TESTS
+   namespace test_support {
++    bool set_managed_pairing_deadline(const std::string_view id, const std::chrono::steady_clock::time_point deadline) {
++      std::scoped_lock lock {map_id_sess_mutex()};
++      const auto registration = managed_pairings.find(std::string {id});
++      if (registration == managed_pairings.end()) return false;
++      registration->second.expires = std::min(registration->second.expires, deadline);
++      for (auto &[_, session] : map_id_sess) {
++        if (session.managed_id == id) session.async_insert_pin.expires_at = std::min(session.async_insert_pin.expires_at, deadline);
++      }
++      return true;
++    }
++
++    std::size_t managed_pairing_count() {
++      std::scoped_lock lock {map_id_sess_mutex()};
++      return managed_pairings.size();
++    }
++
+     void pair_http(
+       std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response> response,
+       std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Request> request
+diff --git a/src/nvhttp.h b/src/nvhttp.h
+index fe7e2c6..3feeb6e 100644
+--- a/src/nvhttp.h
++++ b/src/nvhttp.h
+@@ -12,6 +12,7 @@
+ #include <memory>
+ #include <mutex>
+ #include <optional>
++#include <stop_token>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -162,6 +163,8 @@ namespace nvhttp {
+      */
+     PAIR_PHASE last_phase = PAIR_PHASE::NONE;
+     bool failed = false;  ///< Whether protocol validation failed and the session must be removed.
++    std::string managed_id;  ///< One host-registered ClipRelay bootstrap generation.
++    std::string managed_fingerprint;  ///< Certificate bound to that generation.
+   };
+ 
+   /**
+@@ -171,6 +174,8 @@ namespace nvhttp {
+     std::string id;  ///< Unguessable approval identifier.
+     std::string name;  ///< Untrusted device name reported by the pairing client.
+     std::string address;  ///< Network address from which the request originated.
++    std::string managed_id;
++    std::string client_fingerprint;
+   };
+ 
+   /**
+@@ -179,7 +184,8 @@ namespace nvhttp {
+   enum class pair_session_insert_e {
+     ADDED,  ///< The session was inserted successfully.
+     ALREADY_EXISTS,  ///< A session with the same client unique ID is already active.
+-    FULL  ///< The bounded session store has reached its limit.
++    FULL,  ///< The bounded session store has reached its limit.
++    MANAGED_REFUSED  ///< This managed generation is absent, expired or certificate-mismatched.
+   };
+ 
+   /**
+@@ -222,6 +228,12 @@ namespace nvhttp {
+    */
+   void expire_pair_sessions(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+ 
++  /**
++   * @brief Expire abandoned pairing requests until the HTTP server owner stops the worker.
++   * @param stop Stop token; the owner must join this worker before stopping HTTP servers.
++   */
++  void maintain_pairing_expiry(std::stop_token stop);
++
+   /**
+    * @brief List pairing requests that are waiting for operator PIN approval.
+    *
+@@ -237,6 +249,15 @@ namespace nvhttp {
+    */
+   bool cancel_pairing(std::string_view pairing_id);
+ 
++  // These reservations only admit a pending exchange. PIN and client-key proof
++  // remain mandatory; cancellation never changes an already paired certificate.
++  constexpr std::size_t MAX_MANAGED_PAIRINGS = 8;
++  constexpr auto MANAGED_PAIRING_TIMEOUT = std::chrono::minutes {2};
++  std::string pairing_certificate_fingerprint(std::string_view certificate);
++  bool valid_managed_pairing(std::string_view id, std::string_view fingerprint);
++  bool register_managed_pairing(std::string_view id, std::string_view fingerprint);
++  bool cancel_managed_pairing(std::string_view id, std::string_view fingerprint);
++
+   /**
+    * @brief removes the temporary pairing session
+    * @param sess
+@@ -367,6 +388,20 @@ namespace nvhttp {
+    * @brief Test-only accessors for paired-client authorization state.
+    */
+   namespace test_support {
++    /**
++     * @brief Shorten one test registration and its session deadline without expiring either.
++     * @param id Managed pairing generation.
++     * @param deadline Monotonic deadline used by the production expiry worker.
++     * @return Whether the registration exists.
++     */
++    bool set_managed_pairing_deadline(std::string_view id, std::chrono::steady_clock::time_point deadline);
++
++    /**
++     * @brief Count registrations without running expiry as a side effect.
++     * @return Number of managed pairing registrations.
++     */
++    std::size_t managed_pairing_count();
++
+     /**
+      * @brief Dispatch a plain-HTTP pairing request through the production handler.
+      *
+diff --git a/tests/unit/test_confighttp.cpp b/tests/unit/test_confighttp.cpp
+index 29e5529..87494cd 100644
+--- a/tests/unit/test_confighttp.cpp
++++ b/tests/unit/test_confighttp.cpp
+@@ -331,6 +331,8 @@ protected:
+     server->resource["^/pairing-test$"]["DELETE"] = confighttp::cancelPairing;
+     server->resource["^/pairing-test$"]["GET"] = confighttp::getPendingPairings;
+     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
++    server->resource["^/managed-pairing-test$"]["POST"] = confighttp::cliprelayManagedPairing;
++    server->resource["^/managed-pairing-test$"]["DELETE"] = confighttp::cliprelayManagedPairing;
+     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
+ 
+     // Start server
+@@ -573,6 +575,35 @@ TEST_F(ConfigHttpTest, PairingMutationsRejectUnauthenticatedRestRequests) {
+   EXPECT_EQ(delete_response->status_code, "401 Unauthorized");
+ }
+ 
++TEST_F(ConfigHttpTest, ClipRelayManagedPairingRequiresAuthenticationAndCSRF) {
++  const auto body = nlohmann::json {{"id", std::string(32, 'a')}, {"client_fingerprint", std::string(64, 'b')}}.dump();
++  for (const auto &method : {"POST", "DELETE"}) {
++    SimpleWeb::CaseInsensitiveMultimap headers;
++    headers.emplace("Content-Type", "application/json");
++    EXPECT_EQ(client->request(method, "/managed-pairing-test", body, headers)->status_code, "401 Unauthorized");
++    headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++    headers.emplace("Origin", "https://example.invalid");
++    EXPECT_EQ(client->request(method, "/managed-pairing-test", body, headers)->status_code, "400 Bad Request");
++  }
++}
++
++TEST_F(ConfigHttpTest, ClipRelayManagedPairingValidatesFieldsAndReturnsNativeResult) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  const auto body = nlohmann::json {{"id", std::string(32, 'a')}, {"client_fingerprint", std::string(64, 'b')}}.dump();
++  for (const auto &invalid : {std::string("{}"), std::string(513, 'a'), std::string("{\"id\":0,\"client_fingerprint\":false}")}) {
++    EXPECT_EQ(client->request("POST", "/managed-pairing-test", invalid, headers)->status_code, "400 Bad Request");
++  }
++  for (const auto &method : {"POST", "DELETE"}) {
++    const auto reply = client->request(method, "/managed-pairing-test", body, headers);
++    ASSERT_EQ(reply->status_code, "200 OK");
++    const auto result = nlohmann::json::parse(reply->content.string());
++    EXPECT_EQ(result.at("protocol"), 1);
++    EXPECT_EQ(result.at("status"), true);
++  }
++}
++
+ TEST_F(ConfigHttpTest, PairingMutationsRejectCrossOriginRestRequestsWithoutCsrfToken) {
+   const std::string pairing_id = insert_pending_pairing();
+   SimpleWeb::CaseInsensitiveMultimap headers;
+diff --git a/tests/unit/test_http_pairing.cpp b/tests/unit/test_http_pairing.cpp
+index 353180d..e84ce24 100644
+--- a/tests/unit/test_http_pairing.cpp
++++ b/tests/unit/test_http_pairing.cpp
+@@ -783,3 +783,201 @@ TEST_F(PairingSessionRegistryTest, ConcurrentInsertionAndCancellationLeaveConsis
+   EXPECT_EQ(successful_cancellations, session_count);
+   EXPECT_TRUE(get_pending_pairings().empty());
+ }
++
++class ClipRelayManagedPairingTest: public PairingSessionRegistryTest {
++protected:
++  const std::string first = std::string(32, 'a');
++  const std::string second = std::string(32, 'b');
++  const std::string fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  static pair_session_t managed_session(const std::string &id) {
++    auto session = pending_session(id, "same display name", "192.0.2.10");
++    session.client.cert = PUBLIC_CERT;
++    session.managed_id = id;
++    return session;
++  }
++};
++
++TEST_F(ClipRelayManagedPairingTest, AdmissionRequiresRegisteredGenerationAndCertificate) {
++  ASSERT_EQ(fingerprint.size(), 64);
++  std::string pairing_id;
++  EXPECT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  auto wrong_certificate = managed_session(first);
++  wrong_certificate.client.cert = "invalid certificate";
++  EXPECT_EQ(insert_pair_session(std::move(wrong_certificate), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  auto wrong_id = managed_session(first);
++  wrong_id.client.uniqueID = second;
++  EXPECT_EQ(insert_pair_session(std::move(wrong_id), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  ASSERT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::ADDED);
++  const auto pending = get_pending_pairings();
++  ASSERT_EQ(pending.size(), 1);
++  EXPECT_EQ(pending.front().managed_id, first);
++  EXPECT_EQ(pending.front().client_fingerprint, fingerprint);
++}
++
++TEST_F(ClipRelayManagedPairingTest, CancellationReleasesOnlyItsGenerationAndRefusesLateAdmission) {
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  ASSERT_TRUE(register_managed_pairing(second, fingerprint));
++  auto session = managed_session(first);
++  auto completion = session.completion;
++  std::string one, two;
++  ASSERT_EQ(insert_pair_session(std::move(session), one), pair_session_insert_e::ADDED);
++  ASSERT_EQ(insert_pair_session(managed_session(second), two), pair_session_insert_e::ADDED);
++  ASSERT_TRUE(cancel_managed_pairing(first, fingerprint));
++  ASSERT_TRUE(completion->result.has_value());
++  EXPECT_FALSE(*completion->result);
++  EXPECT_TRUE(cancel_managed_pairing(first, fingerprint));
++  EXPECT_EQ(insert_pair_session(managed_session(first), one), pair_session_insert_e::MANAGED_REFUSED);
++  const auto pending = get_pending_pairings();
++  ASSERT_EQ(pending.size(), 1);
++  EXPECT_EQ(pending.front().id, two);
++}
++
++TEST_F(ClipRelayManagedPairingTest, WrongCertificateCannotReplaceOrCancelRegistration) {
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  EXPECT_FALSE(register_managed_pairing(first, std::string(64, '0')));
++  EXPECT_FALSE(cancel_managed_pairing(first, std::string(64, '0')));
++  std::string pairing_id;
++  EXPECT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::ADDED);
++}
++
++TEST_F(ClipRelayManagedPairingTest, ExpiredGenerationCannotConsumeFreshRequestWithSameName) {
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  std::string pairing_id;
++  ASSERT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::ADDED);
++  expire_pair_sessions(std::chrono::steady_clock::now() + MANAGED_PAIRING_TIMEOUT + std::chrono::seconds {1});
++  EXPECT_TRUE(get_pending_pairings().empty());
++  EXPECT_EQ(insert_pair_session(managed_session(first), pairing_id), pair_session_insert_e::MANAGED_REFUSED);
++  ASSERT_TRUE(register_managed_pairing(second, fingerprint));
++  ASSERT_EQ(insert_pair_session(managed_session(second), pairing_id), pair_session_insert_e::ADDED);
++  EXPECT_TRUE(cancel_managed_pairing(first, fingerprint));
++  ASSERT_EQ(get_pending_pairings().size(), 1);
++  EXPECT_EQ(get_pending_pairings().front().managed_id, second);
++}
++
++TEST_F(ClipRelayManagedPairingTest, ReservationsAreBoundedAndExpire) {
++  for (std::size_t index = 0; index < MAX_MANAGED_PAIRINGS; ++index) {
++    EXPECT_TRUE(register_managed_pairing(std::format("{:032x}", index), fingerprint));
++  }
++  EXPECT_FALSE(register_managed_pairing(first, fingerprint));
++  EXPECT_TRUE(register_managed_pairing(std::string(32, '0'), fingerprint));
++  expire_pair_sessions(std::chrono::steady_clock::now() + MANAGED_PAIRING_TIMEOUT + std::chrono::seconds {1});
++  EXPECT_TRUE(register_managed_pairing(first, fingerprint));
++  EXPECT_FALSE(valid_managed_pairing("short", fingerprint));
++  EXPECT_FALSE(valid_managed_pairing(first, std::string(64, 'z')));
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedCancellationClosesPendingHTTPAndRefusesLateRequest) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'c');
++  const auto fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  ASSERT_TRUE(register_managed_pairing(id, fingerprint));
++  const auto target = server_certificate_target(id) + "&cliprelay_pairing=" + id;
++  auto response = std::async(std::launch::async, [this, target]() { return request(target); });
++  ASSERT_FALSE(wait_for_pending_pairing().empty());
++  EXPECT_TRUE(cancel_managed_pairing(id, fingerprint));
++  ASSERT_EQ(response.wait_for(std::chrono::seconds {1}), std::future_status::ready);
++  EXPECT_NE(response.get().find("status_code=\"400\""), std::string::npos);
++  EXPECT_NE(request(target).find("status_code=\"403\""), std::string::npos);
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedCancellationReleasesPINSubmitter) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'd');
++  const auto fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  ASSERT_TRUE(register_managed_pairing(id, fingerprint));
++  auto response = std::async(std::launch::async, [this, id]() { return request(server_certificate_target(id) + "&cliprelay_pairing=" + id); });
++  const auto pairing_id = wait_for_pending_pairing();
++  ASSERT_FALSE(pairing_id.empty());
++  config::stream.ping_timeout = std::chrono::seconds {3};
++  auto submitted = std::async(std::launch::async, [pairing_id]() { return pin(pairing_id, "5338", "Managed test"); });
++  EXPECT_NE(response.get().find("status_code=\"200\""), std::string::npos);
++  EXPECT_TRUE(cancel_managed_pairing(id, fingerprint));
++  ASSERT_EQ(submitted.wait_for(std::chrono::seconds {1}), std::future_status::ready);
++  EXPECT_FALSE(submitted.get());
++  EXPECT_TRUE(get_pending_pairings().empty());
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedWorkerExpiresHTTPWithoutPollingPairingAPI) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'e');
++  ASSERT_TRUE(register_managed_pairing(id, pairing_certificate_fingerprint(PUBLIC_CERT)));
++  const auto target = server_certificate_target(id) + "&cliprelay_pairing=" + id;
++  auto response = std::async(std::launch::async, [this, target]() { return request(target); });
++  ASSERT_FALSE(wait_for_pending_pairing().empty());
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(id, std::chrono::steady_clock::now() + std::chrono::milliseconds {150}));
++  std::jthread worker {maintain_pairing_expiry};
++  // No GET/list/cancel/PIN call may trigger lazy expiry during this wait.
++  ASSERT_EQ(response.wait_for(std::chrono::seconds {2}), std::future_status::ready);
++  const auto body = response.get();
++  EXPECT_NE(body.find("status_code=\"408\""), std::string::npos);
++  EXPECT_NE(body.find("<paired>0</paired>"), std::string::npos);
++  EXPECT_EQ(nvhttp::test_support::managed_pairing_count(), 0);
++  EXPECT_NE(request(target).find("status_code=\"403\""), std::string::npos);
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedWorkerWakesPINBeforeCapturedTimeout) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'f');
++  ASSERT_TRUE(register_managed_pairing(id, pairing_certificate_fingerprint(PUBLIC_CERT)));
++  auto response = std::async(std::launch::async, [this, id]() { return request(server_certificate_target(id) + "&cliprelay_pairing=" + id); });
++  const auto pairing_id = wait_for_pending_pairing();
++  ASSERT_FALSE(pairing_id.empty());
++  config::stream.ping_timeout = std::chrono::seconds {3};
++  auto submitted = std::async(std::launch::async, [pairing_id]() { return pin(pairing_id, "5338", "Expiry test"); });
++  EXPECT_NE(response.get().find("status_code=\"200\""), std::string::npos);
++  // The PIN submitter has already captured its three-second deadline.
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(id, std::chrono::steady_clock::now() + std::chrono::milliseconds {150}));
++  std::jthread worker {maintain_pairing_expiry};
++  ASSERT_EQ(submitted.wait_for(std::chrono::seconds {2}), std::future_status::ready);
++  EXPECT_FALSE(submitted.get());
++  EXPECT_EQ(nvhttp::test_support::managed_pairing_count(), 0);
++}
++
++TEST_F(PairingHttpHandlerTest, ClipRelayManagedWorkerStopJoinsWithoutCancellingLiveHTTP) {
++  setup(PRIVATE_KEY, PUBLIC_CERT);
++  const std::string id(32, 'a');
++  const auto fingerprint = pairing_certificate_fingerprint(PUBLIC_CERT);
++  ASSERT_TRUE(register_managed_pairing(id, fingerprint));
++  auto response = std::async(std::launch::async, [this, id]() { return request(server_certificate_target(id) + "&cliprelay_pairing=" + id); });
++  ASSERT_FALSE(wait_for_pending_pairing().empty());
++  for (int attempt = 0; attempt < 3; ++attempt) {
++    std::jthread worker {maintain_pairing_expiry};
++    std::this_thread::sleep_for(std::chrono::milliseconds {30});
++    const auto start = std::chrono::steady_clock::now();
++    worker.request_stop();
++    worker.join();
++    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds {750});
++    EXPECT_EQ(response.wait_for(std::chrono::milliseconds {0}), std::future_status::timeout);
++  }
++  EXPECT_TRUE(cancel_managed_pairing(id, fingerprint));
++  EXPECT_NE(response.get().find("status_code=\"400\""), std::string::npos);
++}
++
++TEST_F(ClipRelayManagedPairingTest, WorkerExpiresAbandonedRegistrationAndOnlyExpiredSession) {
++  const std::string abandoned(32, 'c');
++  ASSERT_TRUE(register_managed_pairing(first, fingerprint));
++  ASSERT_TRUE(register_managed_pairing(second, fingerprint));
++  ASSERT_TRUE(register_managed_pairing(abandoned, fingerprint));
++  auto session = managed_session(first);
++  const auto completion = session.completion;
++  std::string expired_id, live_id;
++  ASSERT_EQ(insert_pair_session(std::move(session), expired_id), pair_session_insert_e::ADDED);
++  ASSERT_EQ(insert_pair_session(managed_session(second), live_id), pair_session_insert_e::ADDED);
++  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds {150};
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(first, deadline));
++  ASSERT_TRUE(nvhttp::test_support::set_managed_pairing_deadline(abandoned, deadline));
++  std::jthread worker {maintain_pairing_expiry};
++  {
++    std::unique_lock lock {completion->mutex};
++    ASSERT_TRUE(completion->condition.wait_for(lock, std::chrono::seconds {2}, [&] { return completion->result.has_value(); }));
++    EXPECT_FALSE(*completion->result);
++  }
++  // This accessor deliberately has no expiry side effect, unlike GET /api/pin.
++  EXPECT_EQ(nvhttp::test_support::managed_pairing_count(), 1);
++  worker.request_stop();
++  worker.join();
++  const auto pending = get_pending_pairings();
++  ASSERT_EQ(pending.size(), 1);
++  EXPECT_EQ(pending.front().id, live_id);
++}

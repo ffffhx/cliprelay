@@ -1,8 +1,11 @@
 ﻿[CmdletBinding()]
-param([string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot) '.tools\windows-release'))
+param([string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot) '.tools\windows-release'), [string]$ViewerArtifact = $env:CLIPRELAY_VIEWER_ARTIFACT, [string]$NetworkArtifact = $env:CLIPRELAY_NETWORK_HELPER_ARTIFACT, [string]$EngineArtifact = $env:CLIPRELAY_HOST_ENGINE_ARTIFACT)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $source = Join-Path (Split-Path $PSScriptRoot) 'windows'
+. (Join-Path $source 'install-support.ps1')
+if (!$ViewerArtifact -or !$NetworkArtifact) { throw 'Complete Windows packages require ViewerArtifact and NetworkArtifact.' }
+$hostManifest = Get-ClipRelayHostManifest (Join-Path $source 'remote-desktop')
 $version = Get-Content (Join-Path $source 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $notes = (Get-Content (Join-Path $source 'release-notes.txt') -Raw -Encoding UTF8).Trim()
 if ($version.versionName -cnotmatch '^\d+\.\d+\.\d+$' -or $version.versionCode -isnot [int] -or $version.versionCode -le 0 -or !$notes -or $notes.Length -gt 20000) {
@@ -11,8 +14,7 @@ if ($version.versionName -cnotmatch '^\d+\.\d+\.\d+$' -or $version.versionCode -
 & python (Join-Path $PSScriptRoot 'build_network.py') windows
 if ($LASTEXITCODE -ne 0) { throw 'Embedded network build failed.' }
 & (Join-Path $source 'screen-share\setup.ps1') -Destination (Join-Path $source 'screen-share')
-& (Join-Path $source 'electron\setup.ps1')
-& (Join-Path $source 'remote-desktop\setup.ps1') -Destination (Join-Path $source 'remote-desktop')
+& (Join-Path $source 'remote-desktop\setup.ps1') -Destination (Join-Path $source 'remote-desktop') -EngineArtifact $EngineArtifact
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 [IO.Directory]::CreateDirectory($output) | Out-Null
 $staging = Join-Path ([IO.Path]::GetTempPath()) ('cliprelay-package-' + [Guid]::NewGuid().ToString('N'))
@@ -21,7 +23,7 @@ $package = Join-Path $staging 'ClipRelay-Windows'
 try {
     Copy-Item -LiteralPath (Join-Path (Split-Path $source) 'LICENSE') -Destination (Join-Path $package 'LICENSE')
     # Explicit allowlist: never bundle config, history, tokens, keys or test files.
-    foreach ($name in @('cliprelay.ps1','start.ps1','install.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','version.json','release-notes.txt')) {
+    foreach ($name in @('cliprelay.ps1','start.ps1','install.ps1','install-support.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','paired-relay.cs','version.json','release-notes.txt')) {
         Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $package $name)
     }
     $video = Join-Path $package 'screen-share'
@@ -29,7 +31,14 @@ try {
     foreach ($name in @('main.js','preload.js','package.json','share.html','share.css','share.js','bridge.ps1','setup.ps1','RESEARCH.md')) {
         Copy-Item -LiteralPath (Join-Path $source "screen-share\$name") -Destination (Join-Path $video $name)
     }
-    Copy-Item -LiteralPath (Join-Path $source 'desktop') -Destination $package -Recurse
+    # Build in the fresh package directory, never copy a previously configured app.
+    & (Join-Path $source 'electron\setup.ps1') -Destination (Join-Path $package 'desktop')
+    if ($ViewerArtifact) {
+        & (Join-Path $source 'electron\stage-viewer.ps1') -Artifact $ViewerArtifact -Destination (Join-Path $package 'remote-viewer')
+    }
+    if ($NetworkArtifact) {
+        & (Join-Path $source 'electron\stage-viewer.ps1') -Kind network -Artifact $NetworkArtifact -Destination (Join-Path $package 'desktop-network')
+    }
     $desktopSource = Join-Path $package 'electron'
     [IO.Directory]::CreateDirectory($desktopSource) | Out-Null
     $sourceFiles = Get-Content -LiteralPath (Join-Path $source 'electron\windows-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -41,14 +50,29 @@ try {
     }
     $remote = Join-Path $package 'remote-desktop'
     [IO.Directory]::CreateDirectory($remote) | Out-Null
-    foreach ($name in @('setup.ps1','remove.ps1','ui.ps1','remote-service.cs','remote-client.cs','input-focus.cs','voice-input.cs','engine.json','COPYING','NOTICE.txt','NETWORK-LICENSES.txt')) {
+    foreach ($name in @('files.json') + $hostManifest.serviceSources + $hostManifest.supportFiles) {
         Copy-Item -LiteralPath (Join-Path $source "remote-desktop\$name") -Destination $remote
     }
-    Copy-Item -LiteralPath (Join-Path $source 'remote-desktop\engine') -Destination $remote -Recurse
-    Copy-Item -LiteralPath (Join-Path $source 'remote-desktop\bin') -Destination $remote -Recurse
+    $engineFiles = Get-Content -LiteralPath (Join-Path $source 'remote-desktop/engine-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($file in $engineFiles.files.PSObject.Properties) {
+        $target = Join-Path $remote ('engine/' + $file.Name)
+        [IO.Directory]::CreateDirectory((Split-Path $target)) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $source ('remote-desktop/engine/' + $file.Name)) -Destination $target
+    }
+    [IO.Directory]::CreateDirectory((Join-Path $remote 'bin')) | Out-Null
+    foreach ($name in @('ClipRelay.Remote.Service.exe','ClipRelay.Remote.Client.dll','cliprelay-network.exe')) {
+        Copy-Item -LiteralPath (Join-Path $source "remote-desktop/bin/$name") -Destination (Join-Path $remote 'bin')
+    }
     $launcher = "@echo off`r`ncd /d `"%~dp0`"`r`n`"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -STA -ExecutionPolicy Bypass -File `"%~dp0install.ps1`"`r`npause`r`n"
     [IO.File]::WriteAllText((Join-Path $package 'Install.cmd'), $launcher, [Text.Encoding]::ASCII)
     [IO.File]::WriteAllText((Join-Path $package 'Readme.txt'), "先解压整个文件夹，再双击 Install.cmd。`r`n更新会保留设备列表、访问密钥、本机端口及开机启动设置。`r`n首次安装后，从托盘打开控制中心，添加或扫描另一台设备。`r`n版本更新：控制中心右下角或托盘菜单。`r`n", [Text.UTF8Encoding]::new($true))
+    $packageFiles = [ordered]@{}
+    foreach ($file in Get-ChildItem -LiteralPath $package -Recurse -File | Sort-Object FullName) {
+        $name = $file.FullName.Substring($package.Length + 1).Replace('\','/')
+        $packageFiles[$name] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    [IO.File]::WriteAllText((Join-Path $package 'package-files.json'), (@{protocol=1;platform='windows';files=$packageFiles} | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ClipRelayPackage -Directory $package
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     Add-Type -AssemblyName System.IO.Compression
     $archive = Join-Path $output "ClipRelay-Windows-$($version.versionName).zip"

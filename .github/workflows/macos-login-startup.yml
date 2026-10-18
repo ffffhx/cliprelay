@@ -1,0 +1,38 @@
+name: macOS login startup acceptance
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/desktop-client-input-20261015']
+    paths:
+      - '.github/workflows/macos-login-startup.yml'
+      - 'windows/electron/mac/login-startup.cjs'
+      - 'scripts/test_macos_login_startup.py'
+      - 'scripts/run_macos_login_fixture.swift'
+      - 'windows/tests/native-mac-login-startup.cjs'
+permissions:
+  contents: read
+jobs:
+  login:
+    runs-on: ${{ matrix.arch == 'x64' && 'macos-15-intel' || 'macos-26' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm run setup:electron
+      - run: node --test windows/tests/mac-login-startup.test.cjs windows/tests/mac-host-controller.test.cjs windows/tests/mac-host-ui.test.cjs windows/tests/mac-host-main.test.cjs windows/tests/mac-host-background.test.cjs windows/tests/mac-owned-window.test.cjs
+      - name: Build app and exercise its production login module with native Electron
+        run: npm run build:mac -- ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Mac-Login-${{ matrix.arch }}
+          path: .tools/mac-electron/native-login-startup-*.json
+          if-no-files-found: error

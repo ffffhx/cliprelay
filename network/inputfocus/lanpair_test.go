@@ -1,7 +1,6 @@
 package inputfocus
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -9,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -36,7 +36,7 @@ func TestLANPairingRequiresLocalApprovalAndBindsTheSession(t *testing.T) {
 	}
 	var calls atomic.Int32
 	submitted := make(chan map[string]string, 1)
-	id, _ := verification(p.serverCert, []byte("phone certificate"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	id, code := verification(p.serverCert, []byte("phone certificate"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	p.engine = func(ctx context.Context, method, path string, body any) ([]byte, error) {
 		calls.Add(1)
 		if method == "GET" {
@@ -50,13 +50,21 @@ func TestLANPairingRequiresLocalApprovalAndBindsTheSession(t *testing.T) {
 		t.Fatal(w.Code, w.Body)
 	}
 	var result map[string]any
-	json.Unmarshal(w.Body.Bytes(), &result)
-	if len(result) != 4 || result["id"] != id || result["pin"] != nil {
-		t.Fatal("unexpected public pairing data", result)
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]any{"id": id, "name": "test phone", "verification": code, "expires": result["expires"]}
+	expires, ok := result["expires"].(float64)
+	if !ok || expires <= float64(time.Now().Unix()) || expires > float64(time.Now().Add(2*time.Minute).Unix()) || !reflect.DeepEqual(result, expected) {
+		t.Fatal("unexpected public pairing schema or values")
 	}
 	onDisk, err := os.ReadFile(filepath.Join(p.dir, id+".json"))
-	if err != nil || bytes.Contains(onDisk, []byte("4567")) {
-		t.Fatal("PIN leaked into local UI record")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(onDisk, &record); err != nil || !reflect.DeepEqual(record, expected) {
+		t.Fatal("local UI record contains unexpected fields or values")
 	}
 	if w := lanCall(p, []byte("different phone"), "DELETE", "/v1/pair/"+id, ""); w.Code != 404 {
 		t.Fatal("another client cancelled pairing")
@@ -75,6 +83,26 @@ func TestLANPairingRequiresLocalApprovalAndBindsTheSession(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("approval not applied")
+	}
+}
+
+func TestLANPairingPublicRecordExcludesSecretsDespiteCoincidentDigits(t *testing.T) {
+	// A timestamp or user-supplied name may contain the PIN's digits. Check the
+	// exact public schema, not a substring search over unrelated field values.
+	request := lanRequest{ID: "public id", Name: "phone 4567", Verification: "1234-5678-9012", Expires: 1792145675,
+		pin: "4567", client: []byte("private certificate"), generation: "private generation", decision: "waiting",
+		cancel: func() {}, approval: make(chan bool), finalState: "private state"}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(encoded, &record); err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]any{"id": request.ID, "name": request.Name, "verification": request.Verification, "expires": float64(request.Expires)}
+	if !reflect.DeepEqual(record, expected) {
+		t.Fatal("public record contains unexpected fields or values")
 	}
 }
 
@@ -120,5 +148,55 @@ func TestLANVerificationChangesWithEitherIdentityOrNonce(t *testing.T) {
 		if id == otherID || code == otherCode {
 			t.Fatal("verification is not identity bound")
 		}
+	}
+}
+
+func TestLANPairingCloseJoinsApprovalAndRemovesPrivateRequests(t *testing.T) {
+	p := newLANPairer(context.Background(), t.TempDir(), tls.Certificate{Certificate: [][]byte{[]byte("fixture host")}})
+	defer p.close()
+	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	p.engine = func(ctx context.Context, _, _ string, _ any) ([]byte, error) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return nil, ctx.Err()
+	}
+	body := `{"name":"fixture phone","nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pin":"1234"}`
+	w := lanCall(p, []byte("fixture phone"), "POST", "/v1/pair", body)
+	var request lanRequest
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &request) != nil {
+		t.Fatal("pairing fixture not admitted")
+	}
+	if err := os.WriteFile(filepath.Join(p.dir, request.ID+".approved"), []byte("fixture approval"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitHostSignal(t, started, "pending approval")
+	done := make(chan struct{})
+	go func() { p.close(); close(done) }()
+	waitHostSignal(t, cancelled, "approval cancellation")
+	select {
+	case <-done:
+		t.Fatal("pairing owner returned before approval joined")
+	default:
+	}
+	if w := lanCall(p, []byte("another phone"), "POST", "/v1/pair", body); w.Code != 503 {
+		t.Fatal("closed owner created another pending request")
+	}
+	close(release)
+	waitHostSignal(t, done, "pairing owner close")
+	entries, err := os.ReadDir(p.dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("request or approval survived owner close", err)
+	}
+	if len(p.requests) != 0 {
+		t.Fatal("memory request survived owner close")
 	}
 }

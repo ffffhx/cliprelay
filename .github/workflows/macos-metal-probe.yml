@@ -1,0 +1,28 @@
+name: macOS Metal Presentation Control
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ['macos-26', 'macos-15', 'macos-15-intel']
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build independent Metal window control
+        run: xcrun swiftc -parse-as-library scripts/test_macos_metal_present.swift -o "$RUNNER_TEMP/cliprelay-metal-control"
+      - name: Check actual drawable presentation timestamps
+        continue-on-error: true
+        run: '"$RUNNER_TEMP/cliprelay-metal-control" > metal-presentation-control.json'
+      - name: Compare while display is explicitly awake
+        run: '/usr/bin/caffeinate -d -u -t 20 "$RUNNER_TEMP/cliprelay-metal-control" > metal-presentation-awake.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Metal-Control-${{ matrix.runner }}
+          path: metal-presentation-*.json
+          if-no-files-found: ignore

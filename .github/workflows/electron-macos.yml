@@ -2,26 +2,188 @@ name: Electron macOS build
 
 on:
   workflow_dispatch:
+    inputs:
+      architecture:
+        description: 'Architecture to package; each selected package keeps all native acceptance gates'
+        type: choice
+        options: ['both', 'arm64', 'x64']
+        default: 'both'
+      desktop_client_run_id:
+        description: 'Successful Desktop Client Build run to embed (empty: clipboard-only package)'
+        required: false
+        type: string
+      desktop_network_run_id:
+        description: 'Successful Desktop Network Build run to embed (empty: no external pairing)'
+        required: false
+        type: string
+      host_engine_run_id:
+        description: 'Successful Sunshine macOS Host Build with 46 native cases to embed (empty: no host engine)'
+        required: false
+        type: string
+      host_companion_run_id:
+        description: 'Successful macOS Host Companion Build to embed alongside the host engine'
+        required: false
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.arch == 'x64' && 'macos-15-intel' || 'macos-26' }}
     strategy:
+      fail-fast: false
       matrix:
-        arch: [arm64, x64]
+        arch: ${{ fromJSON(inputs.architecture == 'x64' && '["x64"]' || inputs.architecture == 'arm64' && '["arm64"]' || '["arm64","x64"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Build native certificate fixture
+        run: |
+          GOTOOLCHAIN=local go build -o "$RUNNER_TEMP/cliprelay-pairing-fixture" windows/tests/mac-pairing-fixture/main.go
+          printf '%s\n' "CLIPRELAY_PAIRING_TEST_FIXTURE=$RUNNER_TEMP/cliprelay-pairing-fixture" >> "$GITHUB_ENV"
       - run: npm run setup:electron
       - run: npm run test:electron
+      - run: node --test windows/tests/desktop-clipboard.test.cjs windows/tests/desktop-clipboard-protocol.test.cjs windows/tests/electron-mac-legacy.test.cjs
+      - run: node --test windows/tests/desktop-clipboard-sync.test.cjs windows/tests/desktop-clipboard-ui.test.cjs
+      - run: node --test --test-timeout=30000 windows/tests/mac-pairing.test.cjs windows/tests/mac-pair-feedback.test.cjs windows/tests/mac-controller.test.cjs
+      - run: node --test windows/tests/stream-viewer.test.cjs windows/tests/network-controller.test.cjs
+      - run: node --test windows/tests/mac-host-engine-artifact.test.cjs
+      - run: node --test windows/tests/mac-host-permissions.test.cjs windows/tests/mac-host-permissions-process.test.cjs
+      - run: node --test windows/tests/mac-host-permission-controller.test.cjs windows/tests/mac-host-permission-ui.test.cjs
+      - run: node --test windows/tests/mac-host-state.test.cjs
+      - run: node --test windows/tests/mac-host-admin.test.cjs windows/tests/mac-host-engine.test.cjs
+      - run: node --test windows/tests/mac-host-companion-artifact.test.cjs windows/tests/mac-host-companion.test.cjs windows/tests/mac-host-session.test.cjs
+      - run: node --test windows/tests/mac-host-pairing.test.cjs windows/tests/mac-host-controller.test.cjs windows/tests/mac-host-ui.test.cjs windows/tests/mac-host-main.test.cjs windows/tests/mac-host-clients.test.cjs windows/tests/mac-host-background.test.cjs
+      - run: node --test windows/tests/mac-login-startup.test.cjs
+      - run: python3 -m unittest discover -s scripts/tests -p test_fetch_host_companion.py
+      - run: python3 -m unittest discover -s scripts/tests -p test_fetch_sunshine_macos.py
+      - run: python3 -m unittest discover -s scripts/tests -p test_sunshine_permission_checker.py
+      - run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
+      - run: node --test windows/tests/desktop-privacy.test.cjs windows/tests/desktop-privacy-ui.test.cjs
+      - run: node --test windows/tests/desktop-audio-mute.test.cjs windows/tests/desktop-audio-mute-ui.test.cjs windows/tests/desktop-session-lock.test.cjs windows/tests/desktop-session-lock-ui.test.cjs windows/tests/desktop-wake-protocol.test.cjs windows/tests/desktop-wake-store.test.cjs windows/tests/desktop-wake.test.cjs windows/tests/desktop-wake-ui.test.cjs
+      - run: node --test --test-timeout=60000 windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs windows/tests/desktop-input-ui.test.cjs windows/tests/desktop-display.test.cjs windows/tests/desktop-display-ui.test.cjs
+      - run: node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/mac-owned-window.test.cjs
+      - run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs
+      - name: Fetch verified desktop viewer
+        if: inputs.desktop_client_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VIEWER_RUN_ID: ${{ inputs.desktop_client_run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, tarfile
+          run = os.environ['VIEWER_RUN_ID']
+          if not re.fullmatch(r'[0-9]+', run): raise SystemExit('Invalid viewer run ID')
+          metadata = json.loads(subprocess.check_output(['gh','run','view',run,'--json','conclusion,name,headSha']))
+          if metadata['conclusion'] != 'success' or metadata['name'] != 'Desktop Client Build':
+              raise SystemExit('Viewer build has not completed successfully')
+          directory = pathlib.Path('.tools/viewer-download'); directory.mkdir(parents=True)
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-Stream-macOS','-D',str(directory)],check=True)
+          with tarfile.open(directory/'ClipRelay-Stream-macOS.tar.gz') as archive:
+              archive.extractall(directory,filter='data')
+          artifact = (directory/'ClipRelay-Stream-macOS').resolve()
+          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('CLIPRELAY_VIEWER_ARTIFACT='+str(artifact)+'\n')
+          PY
+      - name: Fetch verified desktop network helper
+        if: inputs.desktop_network_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NETWORK_RUN_ID: ${{ inputs.desktop_network_run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, tarfile
+          run = os.environ['NETWORK_RUN_ID']
+          if not re.fullmatch(r'[0-9]+', run): raise SystemExit('Invalid network run ID')
+          metadata = json.loads(subprocess.check_output(['gh','run','view',run,'--json','conclusion,name,headSha']))
+          if metadata['conclusion'] != 'success' or metadata['name'] != 'Desktop Network Build':
+              raise SystemExit('Network build has not completed successfully')
+          directory = pathlib.Path('.tools/network-download'); directory.mkdir(parents=True)
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-Desktop-Network-macOS','-D',str(directory)],check=True)
+          with tarfile.open(directory/'desktop-network-macos.tar.gz') as archive:
+              archive.extractall(directory,filter='data')
+          artifact = (directory/'desktop-network').resolve()
+          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('CLIPRELAY_NETWORK_HELPER_ARTIFACT='+str(artifact)+'\n')
+          PY
+      - name: Fetch verified native host engine
+        if: inputs.host_engine_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST_RUN_ID: ${{ inputs.host_engine_run_id }}
+          APP_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          engine_arch="$APP_ARCH"
+          if [ "$engine_arch" = x64 ]; then engine_arch=x86_64; fi
+          python3 scripts/fetch_sunshine_macos.py --run "$HOST_RUN_ID" --arch "$engine_arch" --directory .tools/host-engine-download
+      - name: Fetch verified host companion
+        if: inputs.host_companion_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST_COMPANION_RUN_ID: ${{ inputs.host_companion_run_id }}
+          APP_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          companion_arch="$APP_ARCH"
+          if [ "$companion_arch" = x64 ]; then companion_arch=x86_64; fi
+          python3 scripts/fetch_host_companion.py --run "$HOST_COMPANION_RUN_ID" --arch "$companion_arch" --directory .tools/host-companion-download
+      - name: Build independent decoder for complete host privacy acceptance
+        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != ''
+        run: |
+          node --test scripts/tests/mac-privacy-receipt.test.cjs
+          python3 scripts/build_privacy_pixel_fixtures.py
+      - name: Build owned tone and decoder for complete host audio acceptance
+        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != ''
+        run: |
+          node --test scripts/tests/mac-audio-receipt.test.cjs
+          python3 scripts/build_macos_audio_fixture.py
       - run: npm run build:mac -- ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
           name: ClipRelay-macOS-${{ matrix.arch }}
-          path: .tools/mac-electron/*.zip
+          path: |
+            .tools/mac-electron/*.zip
+            .tools/mac-electron/viewer-bundle-*.json
+            .tools/mac-electron/network-bundle-*.json
+            .tools/mac-electron/host-engine-bundle-*.json
+            .tools/mac-electron/host-companion-bundle-*.json
+            .tools/mac-electron/host-pairing-bundle-*.json
+            .tools/mac-electron/host-clients-bundle-*.json
+            .tools/mac-electron/host-background-bundle-*.json
+            .tools/mac-electron/native-clipboard-bundle-*.json
+            .tools/mac-electron/native-login-startup-*.json
+            .tools/mac-electron/native-stream-bundle-*.json
+            .tools/mac-electron/native-audio-bundle-*.json
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ClipRelay-Mac-Login-Failure-${{ matrix.arch }}
+          path: .tools/mac-electron/native-login-startup-*.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ClipRelay-Mac-Native-Stream-Failure-${{ matrix.arch }}
+          path: .tools/mac-electron/native-stream-bundle-*.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ClipRelay-Mac-Native-Audio-Failure-${{ matrix.arch }}
+          path: .tools/mac-electron/native-audio-bundle-*.json
+          if-no-files-found: ignore

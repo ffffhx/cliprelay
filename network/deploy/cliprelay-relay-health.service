@@ -1,0 +1,17 @@
+[Unit]
+Description=Check ClipRelay relay TLS, DERP and STUN availability
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=cliprelay-network
+Group=cliprelay-network
+ExecStart=/usr/bin/python3 /usr/local/lib/cliprelay-network/relays.py probe --include-primary --published-map /etc/cliprelay-network/relays.yaml --output /var/lib/cliprelay-network/relay-health.json
+TimeoutStartSec=55
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cliprelay-network
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

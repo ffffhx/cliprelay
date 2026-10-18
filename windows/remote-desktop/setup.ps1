@@ -1,6 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [string]$Destination = '',
+    [string]$EngineArtifact = $env:CLIPRELAY_HOST_ENGINE_ARTIFACT,
+    [switch]$UsePreparedBinaries,
     [switch]$Install,
     [string]$OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 )
@@ -13,40 +15,34 @@ $enginePath = Join-Path $Destination 'engine'
 $binPath = Join-Path $Destination 'bin'
 [IO.Directory]::CreateDirectory($Destination) | Out-Null
 [IO.Directory]::CreateDirectory($binPath) | Out-Null
-$stampPath = Join-Path $enginePath 'cliprelay-engine.json'
-$stamp = $null
-if (Test-Path -LiteralPath $stampPath) { $stamp = Get-Content -LiteralPath $stampPath -Raw | ConvertFrom-Json }
-if ($null -eq $stamp -or $stamp.sha256 -ne $manifest.sha256 -or !(Test-Path -LiteralPath (Join-Path $enginePath 'sunshine.exe'))) {
-    $work = Join-Path ([IO.Path]::GetTempPath()) ('cliprelay-remote-' + [Guid]::NewGuid().ToString('N'))
-    [IO.Directory]::CreateDirectory($work) | Out-Null
-    try {
-        $archive = Join-Path $work 'engine.zip'
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -UseBasicParsing -Uri $manifest.archiveUrl -OutFile $archive
-        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine $manifest.sha256) { throw 'Remote engine checksum mismatch.' }
-        Expand-Archive -LiteralPath $archive -DestinationPath (Join-Path $work 'unpacked')
-        $unpacked = Join-Path $work 'unpacked\Sunshine'
-        [IO.Directory]::CreateDirectory($enginePath) | Out-Null
-        # Use our own service and configuration. Upstream setup scripts are never executed.
-        foreach ($item in @('sunshine.exe', 'zlib1.dll', 'assets')) {
-            Copy-Item -LiteralPath (Join-Path $unpacked $item) -Destination $enginePath -Recurse -Force
-        }
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'engine.json') -Destination $stampPath -Force
-    } finally {
-        $resolved = [IO.Path]::GetFullPath($work)
-        $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
-        if ($resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path $resolved -Leaf).StartsWith('cliprelay-remote-')) {
-            Remove-Item -LiteralPath $resolved -Recurse -Force
+. (Join-Path (Split-Path $PSScriptRoot) 'install-support.ps1')
+$hostManifest = Get-ClipRelayHostManifest $PSScriptRoot
+$engineFiles = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'engine-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($EngineArtifact) {
+    Assert-ClipRelayFiles -Directory $EngineArtifact -Files $engineFiles.files
+    foreach ($file in $engineFiles.files.PSObject.Properties) {
+        $target = Join-Path $enginePath $file.Name
+        [IO.Directory]::CreateDirectory((Split-Path $target)) | Out-Null
+        if ([IO.Path]::GetFullPath((Join-Path $EngineArtifact $file.Name)) -ine [IO.Path]::GetFullPath($target)) {
+            Copy-Item -LiteralPath (Join-Path $EngineArtifact $file.Name) -Destination $target -Force
         }
     }
 }
+# Always verify actual runtime bytes; a version stamp alone is insufficient.
+Assert-ClipRelayFiles -Directory $enginePath -Files $engineFiles.files
+$serviceSources = @($hostManifest.serviceSources | ForEach-Object { Join-Path $PSScriptRoot $_ })
+if (!$UsePreparedBinaries) {
 $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $wpf = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF'
-& $compiler /nologo /target:exe /platform:x64 /optimize+ "/out:$binPath\ClipRelay.Remote.Service.exe" /r:System.ServiceProcess.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll "/r:$wpf\UIAutomationClient.dll" "/r:$wpf\UIAutomationTypes.dll" "/r:$wpf\WindowsBase.dll" (Join-Path $PSScriptRoot 'remote-service.cs') (Join-Path $PSScriptRoot 'input-focus.cs') (Join-Path $PSScriptRoot 'voice-input.cs')
+& $compiler /nologo /codepage:65001 /target:exe /platform:x64 /optimize+ "/out:$binPath\ClipRelay.Remote.Service.exe" /r:System.ServiceProcess.dll /r:System.Management.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll "/r:$wpf\UIAutomationClient.dll" "/r:$wpf\UIAutomationTypes.dll" "/r:$wpf\WindowsBase.dll" @serviceSources
 if ($LASTEXITCODE -ne 0) { throw 'Remote service compilation failed.' }
 & $compiler /nologo /target:library /optimize+ "/out:$binPath\ClipRelay.Remote.Client.dll" (Join-Path $PSScriptRoot 'remote-client.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Remote control compilation failed.' }
+} else {
+    foreach ($name in @('ClipRelay.Remote.Service.exe','ClipRelay.Remote.Client.dll')) {
+        if (!(Test-Path -LiteralPath (Join-Path $binPath $name) -PathType Leaf)) { throw "Prepared host binary missing: $name" }
+    }
+}
 if (!$Install) { Write-Host 'ClipRelay remote engine and service prepared.'; return }
 if (!(Test-Path -LiteralPath (Join-Path $binPath 'cliprelay-network.exe'))) {
     throw 'Embedded network helper is missing. Build the network component before installing.'
@@ -81,7 +77,14 @@ foreach ($directory in @($serviceRoot, $stateRoot)) {
 }
 Copy-Item -LiteralPath (Join-Path $binPath 'ClipRelay.Remote.Service.exe') -Destination $serviceRoot -Force
 Copy-Item -LiteralPath (Join-Path $binPath 'cliprelay-network.exe') -Destination $serviceRoot -Force
-Copy-Item -LiteralPath $enginePath -Destination $serviceRoot -Recurse -Force
+$installedEngine = Join-Path $serviceRoot 'engine'
+foreach ($file in $engineFiles.files.PSObject.Properties) {
+    $target = Join-Path $installedEngine $file.Name
+    [IO.Directory]::CreateDirectory((Split-Path $target)) | Out-Null
+    Copy-Item -LiteralPath (Join-Path $enginePath $file.Name) -Destination $target -Force
+}
+Assert-ClipRelayFiles -Directory $installedEngine -Files $engineFiles.files
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'engine-files.json') -Destination $serviceRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'engine.json') -Destination $serviceRoot -Force
 $settingsPath = Join-Path $stateRoot 'service.json'
 if (!(Test-Path -LiteralPath $settingsPath)) {

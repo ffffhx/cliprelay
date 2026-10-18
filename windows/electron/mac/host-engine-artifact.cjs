@@ -1,0 +1,186 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const EXECUTABLE='Sunshine.app/Contents/MacOS/Sunshine';
+const UPSTREAM='63d35f702ee9e362e43263742981836ec0710384';
+const HID='53e1a949fc0784af716b782ddfa6c647cafd1f05';
+const AUDIO_SOURCE='engine/sunshine/macos-audio.patch';
+const PRIVACY_SOURCES=["engine/sunshine/control.patch","engine/sunshine/macos-control.patch","engine/sunshine/macos-capture.patch","engine/sunshine/macos-privacy.patch","engine/sunshine/cliprelay_control.h","engine/sunshine/cliprelay_input.h","engine/sunshine/cliprelay_owner.h","engine/sunshine/cliprelay_privacy.h","engine/sunshine/cliprelay_privacy_macos.mm","engine/sunshine/privacy_test.cpp","scripts/test_macos_privacy_filter.py","scripts/test_macos_privacy_filter.mm","scripts/privacy_fixture/main.go","network/go.mod","network/go.sum","LICENSE","network/hostprivacy/controller.go","network/hostprivacy/controller_test.go","network/hostprivacy/serve.go","network/hostprivacy/native_other.go","network/hostprivacy/native_darwin.go","network/hostprivacy/native_darwin.h","network/hostprivacy/native_darwin.m"];
+const PRIVACY_CASES=["native-foreign-process-window-and-layout-rejected","native-worker-mask-excluded-from-new-capture","native-release-retains-filter-while-worker-lives","native-confirmed-death-removes-filter-and-reconstructs-source"];
+const PRIVACY_POLICY_CASES=["filtered-source-and-real-encoded-generation-required","expiry-and-replays-retain-filter-without-renewal","foreign-and-malformed-native-bindings-are-rejected","unknown-worker-does-not-prove-restoration","source-and-observer-replays-cannot-claim-new-readiness","stream-display-and-capture-changes-withdraw-authorization","release-requires-confirmed-original-worker-death","concurrent-late-renewal-cannot-revive-expired-filter"];
+const SOURCES=[...new Set([
+  ...['upstream.json','control.patch','cliprelay_control.h','cliprelay_audio.h','cliprelay_input.h',
+    'control_test.cpp','input_test.cpp','input_integration_test.cpp','README.md','macos-control.patch','macos-capture.patch',
+    'libvirtualhid-macos.patch','cliprelay_macos.h','macos_mouse_test.cpp','cliprelay_capture.h',
+    'macos_capture_test.mm','macos-dependencies.json','cliprelay_permissions.h','permissions_test.cpp','cliprelay_state.h','state_test.cpp','cliprelay_owner.h','owner_test.cpp','macos_owner_test.cpp'].map(name=>'engine/sunshine/'+name),
+  'scripts/prepare_sunshine.py','scripts/package_sunshine_macos.py',
+  'scripts/build_sunshine_macos_dependencies.py','.github/workflows/sunshine-macos.yml','scripts/test_sunshine_macos_permissions.py','scripts/test_sunshine_macos_state.py','scripts/test_sunshine_macos_owner.py',
+  'scripts/test_macos_capture.py','scripts/test_macos_capture.mm',...PRIVACY_SOURCES
+])];
+const CAPTURE_CASES=['native-owned-mask-exclusion-and-source-isolation','native-static-desktop-current-images',
+  'native-mask-removal-restores-unfiltered-image','native-NV12-P010-geometry'];
+const REQUIRED=[EXECUTABLE,'Sunshine.app/Contents/Info.plist','Sunshine.app/Contents/Resources/assets/apps.json',
+  'Sunshine.app/Contents/Resources/assets/web/index.html','SUNSHINE-LICENSE','LIBVIRTUALHID-LICENSE',
+  'input-tests.xml','capture-tests.json','privacy-filter-tests.json','permission-tests.json','state-tests.json','owner-tests.json','dependency-build.json','dependency-licenses/boost/LICENSE_1_0.txt',
+  'dependency-licenses/icu/LICENSE','dependency-licenses/icu/license.html','dependency-licenses/miniupnpc/LICENSE',
+  'dependency-licenses/openssl/LICENSE.txt','dependency-licenses/opus/COPYING',...SOURCES.map(name=>'source/'+name)];
+const hash=data=>crypto.createHash('sha256').update(data).digest('hex');
+const object=value=>value!==null && typeof value==='object' && !Array.isArray(value);
+const sameKeys=(value,keys)=>object(value) && JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
+function reject(){throw new Error('Invalid Mac host engine artifact');}
+function validName(name){
+  return typeof name==='string' && name.length<=1024 && !/[\\\0-\x1f:]/.test(name) &&
+    !name.startsWith('/') && name.split('/').every(part=>part!=='' && part!=='.' && part!=='..');
+}
+function readFile(file,limit){
+  const stat=fs.lstatSync(file);
+  if(!stat.isFile() || stat.isSymbolicLink() || stat.size>limit)reject();
+  return fs.readFileSync(file);
+}
+// Verify the thin Mach-O itself; manifest architecture/OS labels are insufficient.
+function nativeInfo(data,arch){
+  if(data.length<32 || data.readUInt32LE(0)!==0xfeedfacf ||
+      data.readUInt32LE(4)!==({arm64:0x0100000c,x86_64:0x01000007})[arch])reject();
+  const count=data.readUInt32LE(16),end=32+data.readUInt32LE(20);
+  if(count>65536 || end>data.length)reject();
+  let offset=32,minimum=null,signature=false;
+  const dependencies=[];
+  for(let index=0;index<count;index++){
+    if(offset+8>end)reject();
+    const command=data.readUInt32LE(offset),size=data.readUInt32LE(offset+4);
+    if(size<8 || offset+size>end)reject();
+    if([0xc,0x80000018,0x8000001f,0x80000023].includes(command)){
+      if(size<24)reject();
+      const start=offset+data.readUInt32LE(offset+8),zero=data.indexOf(0,start);
+      if(start<offset+24 || start>=offset+size || zero<start || zero>=offset+size)reject();
+      dependencies.push(new TextDecoder('utf-8',{fatal:true}).decode(data.subarray(start,zero)));
+    }else if(command===0x32 || command===0x24){
+      if(minimum!==null || size<(command===0x32?24:16) || (command===0x32 && data.readUInt32LE(offset+8)!==1))reject();
+      const value=data.readUInt32LE(offset+(command===0x32?12:8));
+      if(value>0x000e0200)reject();
+      minimum=[value>>>16,(value>>>8)&255,value&255].join('.');
+    }else if(command===0x1d){
+      if(size<16)reject();
+      const start=data.readUInt32LE(offset+8),length=data.readUInt32LE(offset+12);
+      if(start<end || length===0 || start+length>data.length)reject();
+      signature=true;
+    }
+    offset+=size;
+  }
+  if(offset!==end || !signature || minimum===null)reject();
+  return {minimum,dependencies};
+}
+function verify(directory,pin){
+  if(!object(pin) || !['arm64','x86_64'].includes(pin.arch) || !/^[a-f0-9]{40}$/.test(pin.commit) || !/^[a-f0-9]{64}$/.test(pin.manifestSha256))reject();
+  const root=path.resolve(directory);
+  if(!fs.lstatSync(root).isDirectory() || fs.lstatSync(root).isSymbolicLink())reject();
+  const raw=readFile(path.join(root,'manifest.json'),1024*1024);
+  if(hash(raw)!==pin.manifestSha256)reject();
+  const manifest=JSON.parse(raw);
+  const audioSource=object(manifest.sourceHashes)&&Object.hasOwn(manifest.sourceHashes,AUDIO_SOURCE);
+  const sources=audioSource?[...SOURCES,AUDIO_SOURCE]:SOURCES;
+  if(manifest.protocol!==1 || manifest.platform!=='darwin' || manifest.arch!==pin.arch || manifest.sourceCommit!==pin.commit ||
+      manifest.upstreamCommit!==UPSTREAM || manifest.libvirtualhidCommit!==HID || manifest.executable!==EXECUTABLE ||
+      manifest.deploymentTarget!=='14.2' || manifest.signature!=='ad-hoc' || manifest.notarized!==false ||
+      manifest.permissionCommand!==1 || manifest.stateCommand!==1 || manifest.ownerCommand!==1 || manifest.bundleIdentifier!=='com.cliprelay.host-engine' ||
+      !object(manifest.files) || !sameKeys(manifest.sourceHashes,sources) || !sameKeys(manifest.symlinks,[]) ||
+      !object(manifest.nativeDependencies) || !Object.hasOwn(manifest.nativeDependencies,EXECUTABLE) ||
+      !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
+      manifest.privacyFilter!==1 || JSON.stringify(manifest.privacyFilterTests)!==JSON.stringify(PRIVACY_CASES) ||
+      manifest.captureBackend!=='screencapturekit' || JSON.stringify(manifest.captureTests)!==JSON.stringify(CAPTURE_CASES) ||
+      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==51 || new Set(manifest.inputTests).size!==51)reject();
+  const expected=Object.keys(manifest.files);
+  if(expected.length>4096 || REQUIRED.some(name=>!Object.hasOwn(manifest.files,name)))reject();
+  if(audioSource&&!Object.hasOwn(manifest.files,'source/'+AUDIO_SOURCE))reject();
+  const names=new Set(['manifest.json']);
+  for(const name of expected){
+    const folded=name.toLowerCase().normalize('NFC');
+    if(!validName(name) || name==='manifest.json' || names.has(folded) || !/^[a-f0-9]{64}$/.test(manifest.files[name]))reject();
+    names.add(folded);
+  }
+  const files=[];
+  let total=0,entries=0;
+  function walk(current,relative=''){
+    for(const item of fs.readdirSync(current,{withFileTypes:true})){
+      if(++entries>8192)reject();
+      const name=relative+item.name,file=path.join(current,item.name);
+      if(!validName(name) || item.isSymbolicLink())reject();
+      if(item.isDirectory())walk(file,name+'/');
+      else if(item.isFile())files.push(name);
+      else reject();
+    }
+  }
+  walk(root);
+  if(JSON.stringify(files.sort())!==JSON.stringify([...expected,'manifest.json'].sort()))reject();
+  const actualNative=[],expectedTests=[];
+  const testSuites={'source/engine/sunshine/input_integration_test.cpp':'ClipRelayInputTest',
+    'source/engine/sunshine/macos_mouse_test.cpp':'ClipRelayMacMouseTest',
+    'source/engine/sunshine/macos_capture_test.mm':'ClipRelayMacCaptureTest',
+    'source/engine/sunshine/macos_owner_test.cpp':'ClipRelayMacOwnerTest'};
+  for(const name of expected){
+    const data=readFile(path.join(root,name),128*1024*1024);total+=data.length;
+    if(total>256*1024*1024 || hash(data)!==manifest.files[name])reject();
+    if(name.startsWith('source/') && manifest.sourceHashes[name.slice(7)]!==hash(data))reject();
+    if(testSuites[name])for(const match of data.toString('utf8').matchAll(new RegExp('TEST_F\\('+testSuites[name]+',\\s*(\\w+)\\)','g')))expectedTests.push(match[1]);
+    if(data.length>=4 && [0xfeedfacf,0xcffaedfe,0xfeedface,0xcefaedfe,0xbebafeca,0xcafebabe,0xbfbafeca,0xcafebabf].includes(data.readUInt32LE(0))){
+      const info=nativeInfo(data,pin.arch);actualNative.push(name);
+      if(name===EXECUTABLE && data.readUInt32LE(12)!==2)reject();
+      if(info.minimum!==manifest.nativeMinimumOS[name] || JSON.stringify(info.dependencies)!==JSON.stringify(manifest.nativeDependencies[name]))reject();
+      for(const dependency of info.dependencies){
+        if(dependency.startsWith('/usr/lib/') || dependency.startsWith('/System/Library/')){
+          if(path.posix.normalize(dependency)!==dependency)reject();
+          continue;
+        }
+        let target;
+        if(dependency.startsWith('@executable_path/'))target=path.posix.join(path.posix.dirname(EXECUTABLE),dependency.slice(17));
+        else if(dependency.startsWith('@loader_path/'))target=path.posix.join(path.posix.dirname(name),dependency.slice(13));
+        else reject();
+        if(!target.startsWith('Sunshine.app/') || !Object.hasOwn(manifest.nativeDependencies,target))reject();
+      }
+    }
+  }
+  if(!sameKeys(manifest.nativeDependencies,actualNative) || JSON.stringify(expectedTests.sort())!==JSON.stringify([...manifest.inputTests].sort()))reject();
+  const permissions=JSON.parse(readFile(path.join(root,'permission-tests.json'),16384));
+  if(permissions.protocol!==1 || permissions.passed!==true || permissions.applicationStateUnchanged!==true || permissions.nativeRequestsExecuted!==false ||
+      JSON.stringify(permissions.cases)!==JSON.stringify(['status','invalid-action','misplaced-option','repeat-status']) ||
+      !sameKeys(permissions.lastStatus,['protocol','screenRecording','inputControl','requested']) || permissions.lastStatus.protocol!==1 ||
+      permissions.lastStatus.requested!=='none' || typeof permissions.lastStatus.screenRecording!=='boolean' || typeof permissions.lastStatus.inputControl!=='boolean')reject();
+  const state=JSON.parse(readFile(path.join(root,'state-tests.json'),16384));
+  if(state.protocol!==1 || state.passed!==true || state.defaultStateUnchanged!==true || state.stateFilesPrivate!==true ||
+      state.homeChanged!==false || state.nativeRequestsExecuted!==false || state.hostStarted!==false ||
+      JSON.stringify(state.cases)!==JSON.stringify(['missing-state-startup','relative-state-startup','root-state-startup','missing-directory-startup',
+        'permissive-directory-startup','readonly-directory-check','file-check','symlink-check','parent-symlink-check','malformed-command','private-check','private-config-startup']) ||
+      !Array.isArray(state.createdPrivateEntries) || !['sunshine.conf','sunshine.log','apps.json'].every(name=>state.createdPrivateEntries.includes(name)) ||
+      state.createdPrivateEntries.some(name=>!validName(name)))reject();
+  const owner=JSON.parse(readFile(path.join(root,'owner-tests.json'),16384));
+  if(owner.protocol!==1 || owner.passed!==true || owner.defaultStateUnchanged!==true || owner.ownedChildrenReaped!==true ||
+      owner.homeChanged!==false || owner.nativeRequestsExecuted!==false || owner.hostStarted!==false ||
+      JSON.stringify(owner.cases)!==JSON.stringify(['missing-owner','malformed-owner','different-parent','init-parent','null-input','file-input',
+        'tcp-input','datagram-input','malformed-command','pipe-check','unix-stream-check','pipe-eof','unexpected-input',
+        'parent-exit-pipe-held','parent-crash-pipe-held','full-host-missing-owner']))reject();
+  const capture=JSON.parse(readFile(path.join(root,'capture-tests.json'),65536));
+  const captureSources=['engine/sunshine/control.patch','engine/sunshine/macos-control.patch','engine/sunshine/macos-capture.patch',
+    'scripts/test_macos_capture.py','scripts/test_macos_capture.mm'];
+  if(capture.protocol!==1 || capture.passed!==true || capture.architecture!==pin.arch || capture.sourceCommit!==pin.commit ||
+      capture.upstreamCommit!==UPSTREAM || !/^[a-f0-9]{64}$/.test(capture.binarySha256) ||
+      JSON.stringify(capture.cases)!==JSON.stringify(CAPTURE_CASES) || !sameKeys(capture.sourceHashes,captureSources) ||
+      captureSources.some(name=>capture.sourceHashes[name]!==manifest.sourceHashes[name]))reject();
+  const privacy=JSON.parse(readFile(path.join(root,'privacy-filter-tests.json'),65536));
+  if(privacy.protocol!==1 || privacy.passed!==true || privacy.architecture!==pin.arch || privacy.sourceCommit!==pin.commit ||
+      privacy.upstreamCommit!==UPSTREAM || !/^[a-f0-9]{64}$/.test(privacy.binarySha256) || !/^[a-f0-9]{64}$/.test(privacy.workerSha256) ||
+      privacy.actualEncodedReadiness!==false || privacy.pairedClientAccepted!==false ||
+      JSON.stringify(privacy.cases)!==JSON.stringify(PRIVACY_CASES) || JSON.stringify(privacy.policyCases)!==JSON.stringify(PRIVACY_POLICY_CASES) ||
+      !sameKeys(privacy.sourceHashes,PRIVACY_SOURCES) || PRIVACY_SOURCES.some(name=>privacy.sourceHashes[name]!==manifest.sourceHashes[name]))reject();
+  return manifest;
+}
+function stage(source,destination,pin){
+  const manifest=verify(source,pin);
+  fs.mkdirSync(destination); // A new package directory only; never replace user state.
+  for(const name of [...Object.keys(manifest.files),'manifest.json']){
+    const target=path.join(destination,name);fs.mkdirSync(path.dirname(target),{recursive:true});
+    fs.copyFileSync(path.join(source,name),target,fs.constants.COPYFILE_EXCL);
+  }
+  if(process.platform==='darwin')fs.chmodSync(path.join(destination,EXECUTABLE),0o755);
+  verify(destination,pin);
+  return manifest;
+}
+module.exports={verify,stage,EXECUTABLE};

@@ -4,10 +4,19 @@
   const cancel=()=>api.request('cancel');
   if(kind==='alert'){root.className='alert';root.textContent=data.message;return;}
   document.addEventListener('keydown',event=>{if(event.key==='Escape')cancel();});
-  if(kind==='token'){
+  if(kind==='host-permissions'){
+    const {mount}=await import('./host-permission-ui.js');mount(root,api,cancel,data);return;
+  }
+  if(kind==='host'){
+    const {mount}=await import('./host-ui.js');mount(root,api,cancel,data);return;
+  }
+  if(kind==='paired'){
+    const {mount}=await import('./paired-ui.js');await mount(root,api,cancel,data);return;
+  }
+  if(kind==='token' || kind==='receiver-token'){
     root.className='token';const title=document.createElement('h1');title.textContent='ClipRelay 访问密钥';
-    const message=document.createElement('p');message.textContent=data.peer.text+' 要求访问密钥，请填写对方设备设置中的密钥。';
-    const input=document.createElement('input');input.type='password';input.ariaLabel='访问密钥';input.value=data.token;
+    const message=document.createElement('p');message.textContent=kind==='receiver-token'?'用于旧版局域网接收。密钥不提供加密；留空则不校验发送方。':data.peer.text+' 要求访问密钥，请填写对方设备设置中的密钥。';
+    const input=document.createElement('input');input.type='password';input.ariaLabel='访问密钥';input.value=data.token;input.maxLength=4096;
     const actions=document.createElement('div');actions.className='actions';const back=document.createElement('button');back.textContent='取消';back.onclick=cancel;
     const save=document.createElement('button');save.textContent='保存';save.onclick=()=>api.request('save',{token:input.value});actions.append(back,save);root.append(title,message,input,actions);
     document.addEventListener('keydown',event=>{if(event.key==='Enter')save.click();});input.focus();input.select();return;

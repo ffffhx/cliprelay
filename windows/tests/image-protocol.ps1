@@ -1,7 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version 2.0
+$script:LegacyReceiverEnabled = $true
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Drawing
@@ -19,7 +20,7 @@ if ($parseErrors.Count -gt 0) {
     throw "cliprelay.ps1 has parse errors: $($parseErrors[0].Message)"
 }
 
-foreach ($functionName in @("Read-HttpRequest", "Send-HttpResponse", "Handle-Client")) {
+foreach ($functionName in @("Test-IsLegacyLanAddress", "Read-HttpRequest", "Send-HttpResponse", "Handle-Client")) {
     $functionAst = $ast.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and

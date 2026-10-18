@@ -14,3 +14,6 @@ license of ClipRelay's original source does not replace these requirements.
 
 Native dependencies include ENet, nanors, Opus and OpenSSL. Their license notices
 and build files remain with their source/prebuilt libraries in src/main/jni.
+
+Remote terminal parsing/rendering additionally includes pinned Termux sources.
+See termux/NOTICE.txt, termux/LICENSE.md, termux/Apache-2.0.txt and termux/upstream.json.

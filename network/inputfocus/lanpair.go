@@ -7,15 +7,14 @@ package inputfocus
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,25 +28,42 @@ var pairNonce = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var pairPIN = regexp.MustCompile(`^[0-9]{4}$`)
 
 type lanRequest struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Verification string `json:"verification"`
-	Expires      int64  `json:"expires"`
-	pin          string
-	client       []byte
-	cancel       context.CancelFunc
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	Verification     string              `json:"verification"`
+	Expires          int64               `json:"expires"`
+	Feedback         *pairFeedbackTicket `json:"feedback,omitempty"`
+	Native           *nativePairTicket   `json:"native,omitempty"`
+	pin              string
+	client           []byte
+	cancel           context.CancelFunc
+	generation       string
+	decision         string
+	approval         chan bool
+	finalState       string
+	nativeReady      chan error
+	nativeRegistered bool
 }
 
 type lanPairer struct {
 	mu         sync.Mutex
+	closed     bool
+	pending    sync.WaitGroup
+	closeIdle  func()
 	dir        string
 	serverCert []byte
 	requests   map[string]*lanRequest
 	engine     func(context.Context, string, string, any) ([]byte, error)
 	ctx        context.Context
+	managed    bool
+	feedback   map[string]pairFeedbackResult
 }
 
 func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPairer {
+	return newLANPairerWithAccess(ctx, dir, cert, fileEngineAccess(dir))
+}
+
+func newLANPairerWithAccess(ctx context.Context, dir string, cert tls.Certificate, access EngineAccess) *lanPairer {
 	p := &lanPairer{ctx: ctx, dir: filepath.Join(dir, "lan-pairing"), serverCert: cert.Certificate[0], requests: make(map[string]*lanRequest)}
 	// The admin API stays loopback-only and uses the engine's pinned certificate.
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12,
@@ -59,16 +75,14 @@ func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPai
 			return nil
 		}}}
 	client := &http.Client{Transport: transport, Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	p.closeIdle = transport.CloseIdleConnections
 	p.engine = func(ctx context.Context, method, path string, body any) ([]byte, error) {
-		b, err := os.ReadFile(filepath.Join(dir, "service.json"))
+		password, certificate, err := access()
 		if err != nil {
 			return nil, err
 		}
-		var config struct {
-			Password string `json:"adminPassword"`
-		}
-		if json.Unmarshal(b, &config) != nil || config.Password == "" {
-			return nil, errors.New("missing local credential")
+		if password == "" || !bytes.Equal(certificate, p.serverCert) {
+			return nil, errors.New("local engine identity changed")
 		}
 		var data []byte
 		if body != nil {
@@ -81,7 +95,7 @@ func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPai
 		if err != nil {
 			return nil, err
 		}
-		r.SetBasicAuth("cliprelay", config.Password)
+		r.SetBasicAuth("cliprelay", password)
 		r.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(r)
 		if err != nil {
@@ -91,7 +105,7 @@ func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPai
 		if resp.StatusCode != 200 {
 			return nil, errors.New("local pairing API unavailable")
 		}
-		b, err = io.ReadAll(io.LimitReader(resp.Body, 32769))
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 32769))
 		if len(b) > 32768 {
 			return nil, errors.New("invalid local response")
 		}
@@ -118,16 +132,24 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientCert := r.TLS.PeerCertificates[0].Raw
+	if p.serveFeedback(w, r, clientCert) {
+		return
+	}
 	if r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/v1/pair/") {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/pair/")
 		p.mu.Lock()
 		request := p.requests[id]
-		p.mu.Unlock()
-		if request == nil || !bytes.Equal(request.client, clientCert) {
+		if request == nil || !bytes.Equal(request.client, clientCert) ||
+			(request.Feedback != nil && r.Header.Get("X-ClipRelay-Pairing-Receipt") != request.Feedback.Receipt) {
+			p.mu.Unlock()
 			http.Error(w, "unknown request", 404)
 			return
 		}
+		if request.finalState == "" {
+			request.finalState = "cancelled"
+		}
 		request.cancel()
+		p.mu.Unlock()
 		w.WriteHeader(204)
 		return
 	}
@@ -154,7 +176,17 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	id, code := verification(p.serverCert, clientCert, input.Nonce)
 	p.mu.Lock()
+	if p.closed || p.ctx.Err() != nil {
+		p.mu.Unlock()
+		http.Error(w, "pairing stopping", 503)
+		return
+	}
 	if existing := p.requests[id]; existing != nil {
+		if existing.finalState != "" || (existing.Native != nil && !existing.nativeRegistered) {
+			p.mu.Unlock()
+			http.Error(w, "pairing request is finishing or preparing", 409)
+			return
+		}
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(existing)
@@ -174,11 +206,35 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute)
 	request := &lanRequest{ID: id, Name: input.Name, Verification: code, Expires: time.Now().Add(2 * time.Minute).Unix(), pin: input.PIN, client: append([]byte(nil), clientCert...), cancel: cancel}
-	data, _ := json.Marshal(request)
-	err := os.MkdirAll(p.dir, 0700)
-	if err == nil {
-		_ = os.Remove(filepath.Join(p.dir, id+".approved"))
-		err = os.WriteFile(filepath.Join(p.dir, id+".json"), data, 0600)
+	var err error
+	if p.managed {
+		var generation [16]byte
+		_, err = rand.Read(generation[:])
+		request.generation = hex.EncodeToString(generation[:])
+		request.decision = "waiting"
+		request.approval = make(chan bool, 1)
+		if err == nil && r.Header.Get("X-ClipRelay-Pairing-Feedback") == "1" {
+			var receipt [16]byte
+			_, err = rand.Read(receipt[:])
+			request.Feedback = &pairFeedbackTicket{Protocol: 1, Receipt: hex.EncodeToString(receipt[:])}
+		}
+		if err == nil && r.Header.Get("X-ClipRelay-Pairing-Native") == "1" {
+			if request.Feedback == nil {
+				err = errors.New("native pairing requires generation-bound feedback")
+			} else {
+				var nativeID [16]byte
+				_, err = rand.Read(nativeID[:])
+				request.Native = &nativePairTicket{Protocol: 1, ID: hex.EncodeToString(nativeID[:])}
+				request.nativeReady = make(chan error, 1)
+			}
+		}
+	} else {
+		data, _ := json.Marshal(request)
+		err = os.MkdirAll(p.dir, 0700)
+		if err == nil {
+			_ = os.Remove(filepath.Join(p.dir, id+".approved"))
+			err = os.WriteFile(filepath.Join(p.dir, id+".json"), data, 0600)
+		}
 	}
 	if err != nil {
 		p.mu.Unlock()
@@ -187,21 +243,77 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.requests[id] = request
+	p.pending.Add(1)
 	p.mu.Unlock()
 	go p.run(ctx, request)
+	if request.Native != nil {
+		select {
+		case err := <-request.nativeReady:
+			if err != nil {
+				http.Error(w, "native pairing unavailable", 503)
+				return
+			}
+		case <-r.Context().Done():
+			p.mu.Lock()
+			if request.finalState == "" {
+				request.finalState = "cancelled"
+			}
+			request.cancel()
+			p.mu.Unlock()
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(request)
 }
 
 func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
+	defer p.pending.Done()
 	defer func() {
 		request.cancel()
+		// Keep this generation reserved until bounded native cleanup has joined.
+		// A fresh bootstrap receives another native ID, including nonce reuse.
+		if request.Native != nil {
+			p.finishNativePairing(request)
+		}
 		p.mu.Lock()
-		delete(p.requests, request.ID)
-		_ = os.Remove(filepath.Join(p.dir, request.ID+".json"))
-		_ = os.Remove(filepath.Join(p.dir, request.ID+".approved"))
+		p.retainFeedbackLocked(request, ctx.Err())
+		if p.requests[request.ID] == request {
+			delete(p.requests, request.ID)
+		}
+		if !p.managed {
+			_ = os.Remove(filepath.Join(p.dir, request.ID+".json"))
+			_ = os.Remove(filepath.Join(p.dir, request.ID+".approved"))
+		}
 		p.mu.Unlock()
 	}()
+	if request.Native != nil {
+		err := p.prepareNativePairing(ctx, request)
+		p.mu.Lock()
+		if err == nil && (p.closed || ctx.Err() != nil) {
+			err = context.Canceled
+		}
+		if err == nil {
+			request.nativeRegistered = true
+		} else if request.finalState == "" {
+			request.finalState = "cancelled"
+		}
+		p.mu.Unlock()
+		request.nativeReady <- err
+		if err != nil {
+			return
+		}
+	}
+	if p.managed {
+		select {
+		case <-ctx.Done():
+			return
+		case approved := <-request.approval:
+			if !approved {
+				return
+			}
+		}
+	}
 	ticker := time.NewTicker(400 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -210,8 +322,10 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 			return
 		case <-ticker.C:
 		}
-		if _, err := os.Stat(filepath.Join(p.dir, request.ID+".approved")); err != nil {
-			continue
+		if !p.managed {
+			if _, err := os.Stat(filepath.Join(p.dir, request.ID+".approved")); err != nil {
+				continue
+			}
 		}
 		b, err := p.engine(ctx, "GET", "/api/pin", nil)
 		if err != nil {
@@ -219,8 +333,10 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 		}
 		var pending struct {
 			Pairings []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
+				ID                string `json:"id"`
+				Name              string `json:"name"`
+				ManagedID         string `json:"managed_id"`
+				ClientFingerprint string `json:"client_fingerprint"`
 			} `json:"pairings"`
 		}
 		if json.Unmarshal(b, &pending) != nil {
@@ -230,25 +346,53 @@ func (p *lanPairer) run(ctx context.Context, request *lanRequest) {
 			// The temporary name and unique ID isolate this handshake from other
 			// phones. A forged pending request cannot complete the PIN proof or
 			// client-key signature, and the phone also checks the server TLS key.
-			if entry.Name != "ClipRelay-"+request.ID || !pairNonce.MatchString(entry.ID) {
+			if !pairNonce.MatchString(entry.ID) {
 				continue
 			}
+			if request.Native != nil {
+				if entry.ManagedID != request.Native.ID || entry.ClientFingerprint != nativePairFingerprint(request) {
+					continue
+				}
+			} else if entry.Name != "ClipRelay-"+request.ID {
+				continue
+			}
+			p.mu.Lock()
+			stopped := ctx.Err() != nil || time.Now().Unix() >= request.Expires || request.finalState != ""
+			p.mu.Unlock()
+			if stopped {
+				return
+			}
 			_, _ = p.engine(ctx, "POST", "/api/pin", map[string]string{"pairing_id": entry.ID, "pin": request.pin, "name": request.Name})
+			// A lost PIN reply is not proof of success or failure. Keep observing
+			// the native certificate proof; never replay this mutation.
+			p.mu.Lock()
+			if request.finalState == "" && ctx.Err() == nil {
+				request.finalState = "handshake"
+			}
+			p.mu.Unlock()
 			return
 		}
 	}
 }
 
-func serveLANPairing(ctx context.Context, dir string, cert tls.Certificate) error {
-	p := newLANPairer(ctx, dir, cert)
-	server := &http.Server{Addr: ":48792", Handler: p, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 4 * time.Second, WriteTimeout: 4 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
+func (p *lanPairer) close() {
+	p.mu.Lock()
+	p.closed = true
+	for _, request := range p.requests {
+		request.cancel()
+	}
+	p.mu.Unlock()
+	p.pending.Wait()
+	p.mu.Lock()
+	p.feedback = nil
+	p.mu.Unlock()
+	if p.closeIdle != nil {
+		p.closeIdle()
+	}
+}
+
+func lanPairingServer(cert tls.Certificate, p *lanPairer) *http.Server {
+	return &http.Server{Addr: ":48792", Handler: p, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 4 * time.Second, WriteTimeout: 4 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096,
 		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAnyClientCert},
 		ErrorLog:  nil}
-	// Bind separately so an occupied port fails before starting a permanent waiter.
-	listener, err := net.Listen("tcp", server.Addr)
-	if err != nil {
-		return fmt.Errorf("LAN pairing listener: %w", err)
-	}
-	go func() { <-ctx.Done(); server.Close() }()
-	return server.ServeTLS(listener, "", "")
 }

@@ -1,0 +1,41 @@
+name: Mac Privacy Worker Development Checks
+on:
+  push:
+    branches: ['codex/desktop-client-input-*', 'codex/macos-host-*']
+    paths: ['network/hostprivacy/**', 'network/cmd/cliprelay-host-network/**', 'scripts/privacy_fixture/**', 'scripts/test_macos_privacy_worker.py', '.github/workflows/macos-privacy-worker.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-15-intel, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Compile native worker and verify lease policy without opening windows
+        working-directory: network
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -json -count=1 -timeout=90s ./hostprivacy | tee privacy-policy-tests.json
+      - name: Production CLI admission, native masks, deadline and owner withdrawal
+        if: runner.os == 'macOS'
+        run: python3 scripts/test_macos_privacy_worker.py --output native-privacy-worker.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: privacy-policy-${{ matrix.runner }}
+          path: |
+            network/privacy-policy-tests.json
+            native-privacy-worker.json
+          if-no-files-found: error

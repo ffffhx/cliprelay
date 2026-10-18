@@ -25,6 +25,7 @@ namespace ClipRelay.Remote {
         static readonly string StateRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ClipRelay", "Remote");
         static readonly string SettingsPath = Path.Combine(StateRoot, "service.json");
         readonly object gate = new object();
+        string clientViewId = Guid.NewGuid().ToString("N");
         readonly ManualResetEvent stopped = new ManualResetEvent(false);
         Dictionary<string, object> settings;
         Process child;
@@ -34,6 +35,8 @@ namespace ClipRelay.Remote {
         readonly object networkGate = new object();
         IntPtr job;
         uint childSession;
+        readonly Stopwatch audioRecoveryClock = Stopwatch.StartNew();
+        readonly AudioMuteRecoverySchedule audioRecovery;
         Thread monitor;
         NamedPipeServerStream listeningPipe;
 
@@ -43,7 +46,10 @@ namespace ClipRelay.Remote {
         static void Log(string message) {
             try { File.AppendAllText(Path.Combine(StateRoot, "service.log"), DateTime.UtcNow.ToString("o") + " " + message + Environment.NewLine); } catch { }
         }
-        public HostService() { ServiceName = Name; CanHandleSessionChangeEvent = true; CanShutdown = true; }
+        public HostService() {
+            ServiceName = Name; CanHandleSessionChangeEvent = true; CanShutdown = true;
+            audioRecovery = new AudioMuteRecoverySchedule(() => audioRecoveryClock.ElapsedMilliseconds);
+        }
         protected override void OnStart(string[] args) {
             settings = Json().Deserialize<Dictionary<string, object>>(File.ReadAllText(SettingsPath));
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
@@ -61,6 +67,10 @@ namespace ClipRelay.Remote {
             Log("Service stopped");
         }
         protected override void OnShutdown() { OnStop(); }
+        protected override void OnSessionChange(SessionChangeDescription change) {
+            if (change.Reason == SessionChangeReason.SessionLogon || change.Reason == SessionChangeReason.ConsoleConnect)
+                lock (gate) audioRecovery.Request((uint)change.SessionId);
+        }
         void SaveSettings() {
             var temp = SettingsPath + ".new";
             File.WriteAllText(temp, Json().Serialize(settings), new UTF8Encoding(false));
@@ -81,6 +91,9 @@ namespace ClipRelay.Remote {
                 "port = 48789\norigin_web_ui_allowed = pc\nsystem_tray = disabled\n" +
                 "upnp = disabled\ncontroller = disabled\ngamepad_driver = vigembus\n" +
                 "min_log_level = 2\nlan_encryption_mode = 2\nwan_encryption_mode = 2\n" +
+                // Trusted service PID covers both the engine and voice workers.
+                // The engine verifies ancestry and liveness before accepting it.
+                "cliprelay_audio_exclude_pid = " + Process.GetCurrentProcess().Id + "\n" +
                 "file_apps = " + slashState + "/apps.json\n" +
                 "file_state = " + slashState + "/clients.json\n" +
                 "credentials_file = " + slashState + "/credentials.json\n" +
@@ -120,7 +133,11 @@ namespace ClipRelay.Remote {
                 lock (gate) {
                     try {
                         uint session = Native.WTSGetActiveConsoleSessionId();
+                        audioRecovery.Observe(session);
                         if (!Enabled || (IsRunning && session != childSession)) StopEngine();
+                        // Also recover when remote access is disabled. A missing
+                        // audio device must not require starting another stream.
+                        audioRecovery.Tick(session, RecoverAudioMute);
                         if (Enabled && !IsRunning && session != uint.MaxValue) {
                             StopEngine();
                             string executable = Path.Combine(Root, "engine", "sunshine.exe");
@@ -186,6 +203,7 @@ namespace ClipRelay.Remote {
             }
         }
         void StopEngine() {
+            clientViewId = Guid.NewGuid().ToString("N");
             StopFocus();
             if (IsRunning) {
                 try {
@@ -205,10 +223,28 @@ namespace ClipRelay.Remote {
             StopFocus();
             string executable = Path.Combine(Root, "cliprelay-network.exe");
             Native.StartInSession(executable, Quote(executable) + " --state-dir " + Quote(StateRoot) +
-                " --input-focus-probe " + Quote(typeof(HostService).Assembly.Location), Root, childSession, out focusChild, out focusJob);
+                " --local-pairing --input-focus-probe " + Quote(typeof(HostService).Assembly.Location), Root, childSession, out focusChild, out focusJob);
+        }
+        bool RecoverAudioMute(uint session) {
+            Process recovery = null; IntPtr recoveryJob = IntPtr.Zero;
+            try {
+                string self = typeof(HostService).Assembly.Location;
+                Native.StartInSession(self, Quote(self) + " --audio-mute-recover", Root, session, out recovery, out recoveryJob);
+                return recovery.WaitForExit(5000) && recovery.ExitCode == 0;
+            } catch { return false; }
+            finally {
+                if (recoveryJob != IntPtr.Zero) Native.CloseHandle(recoveryJob);
+                if (recovery != null) recovery.Dispose();
+            }
         }
         void StopFocus() {
             bool hadFocus = focusJob != IntPtr.Zero || focusChild != null;
+            // Drain pairing while the native engine is still alive. Authenticate
+            // the actual helper process; one bounded request, never a replay.
+            try {
+                if (focusChild != null && !focusChild.HasExited)
+                    RelayIpc.RequestPairing(new Dictionary<string, object> {{ "op", "host-pair-stop" }}, focusChild);
+            } catch { /* Job teardown remains the bounded fallback for a failed helper. */ }
             if (focusJob != IntPtr.Zero) { Native.CloseHandle(focusJob); focusJob = IntPtr.Zero; }
             if (focusChild != null) {
                 try { if (!focusChild.HasExited) focusChild.Kill(); } catch { }
@@ -227,6 +263,8 @@ namespace ClipRelay.Remote {
                     if (recoveryJob != IntPtr.Zero) Native.CloseHandle(recoveryJob);
                     if (recovery != null) recovery.Dispose();
                 }
+                audioRecovery.Request(childSession);
+                audioRecovery.Tick(childSession, RecoverAudioMute);
             }
         }
         PipeSecurity PipeAcl() {
@@ -273,6 +311,20 @@ namespace ClipRelay.Remote {
         }
         object Dispatch(Dictionary<string, object> request) {
             string action = Text(request, "action");
+            if (action == "relay") {
+                object value;
+                if (!request.TryGetValue("command", out value) || !(value is Dictionary<string, object>))
+                    throw new ArgumentException("RELAY_BAD_REQUEST");
+                Process expected;
+                lock (gate) {
+                    if (!Enabled || focusChild == null || focusChild.HasExited)
+                        throw new InvalidOperationException("RELAY_UNAVAILABLE");
+                    expected = Process.GetProcessById(focusChild.Id);
+                    try { IntPtr handle = expected.Handle; }
+                    catch { expected.Dispose(); throw; }
+                }
+                using (expected) return RelayIpc.Request((Dictionary<string, object>)value, expected);
+            }
             if (action == "networkEnable" || action == "networkDisable") {
                 lock (gate) {
                     settings["networkEnabled"] = action == "networkEnable";
@@ -297,16 +349,8 @@ namespace ClipRelay.Remote {
                 return new { enabled = action == "enable" };
             }
             if (action == "lanPairings") return new { pairings = LanPairings() };
-            if (action == "lanPairApprove") {
-                string id = Text(request, "id");
-                if (!System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-f]{32}\\z")) throw new ArgumentException("Invalid pairing ID");
-                lock (gate) { if (!Enabled || !IsReady) throw new InvalidOperationException("Remote desktop is not ready"); }
-                bool found = false;
-                foreach (var pending in LanPairings()) if (Text(pending, "id") == id) found = true;
-                if (!found) throw new InvalidOperationException("配对请求已取消或过期，请从手机重新发起。");
-                File.WriteAllText(Path.Combine(StateRoot, "lan-pairing", id + ".approved"), "approved", new UTF8Encoding(false));
-                return new { status = true };
-            }
+            if (action == "lanPairApprove" || action == "lanPairReject")
+                return LanPairingControl.Decide(request, action == "lanPairApprove", PairingRequest);
             if (action == "pairings") {
                 var result = (Dictionary<string, object>)EngineRequest("GET", "/api/pin", null);
                 var entries = new List<object>();
@@ -320,7 +364,22 @@ namespace ClipRelay.Remote {
                 }
                 return new { pairings = entries.ToArray() };
             }
-            if (action == "clients") return EngineRequest("GET", "/api/clients/list", null);
+            if (action == "clients") {
+                lock (gate) {
+                    if (!Enabled || !IsReady) throw new InvalidOperationException("远控服务尚未就绪，请稍后重试。");
+                    return HostClientsControl.Snapshot(clientViewId, ClientRequests());
+                }
+            }
+            if (action == "pairReject") {
+                string id = Text(request, "id");
+                if (request.Count != 2 || !System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-fA-F]{32}\\z"))
+                    throw new ArgumentException("Invalid pairing request");
+                var result = EngineRequest("DELETE", "/api/pin", new { pairing_id = id }) as Dictionary<string, object>;
+                object status;
+                if (result == null || !result.TryGetValue("status", out status) || !(status is bool) || !(bool)status)
+                    throw new InvalidOperationException("配对请求已改变或结束，请刷新后重试。");
+                return new { status = true };
+            }
             if (action == "pair") {
                 string id = Text(request, "id"), pin = Text(request, "pin"), name = Text(request, "name");
                 if (!System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-fA-F]{32}\\z") ||
@@ -329,61 +388,58 @@ namespace ClipRelay.Remote {
                 return EngineRequest("POST", "/api/pin", new { pairing_id = id, pin = pin, name = name });
             }
             if (action == "unpair") {
-                string uuid = Text(request, "uuid");
-                if (uuid.Length < 1 || uuid.Length > 128) throw new ArgumentException("Invalid client identifier");
-                return EngineRequest("POST", "/api/clients/unpair", new { uuid = uuid });
+                // Do not queue mutations behind a long stop or another revoke.
+                // The bounded policy holds the lifecycle gate so its requests
+                // cannot reach a replacement engine with the same stored cert.
+                if (!Monitor.TryEnter(gate, 100)) throw new InvalidOperationException("远控服务正在处理其他操作，请稍后重试。");
+                try {
+                    if (!Enabled || !IsReady) throw new InvalidOperationException("远控服务尚未就绪，请稍后重试。");
+                    return HostClientsControl.Revoke(request, clientViewId, ClientRequests());
+                } finally { Monitor.Exit(gate); }
             }
             if (action == "disconnect") return EngineRequest("POST", "/api/apps/close", new { });
             throw new ArgumentException("Unknown action");
         }
         List<Dictionary<string, object>> LanPairings() {
-            var entries = new List<Dictionary<string, object>>();
-            lock (gate) { if (!Enabled || !IsRunning) return entries; }
-            string directory = Path.Combine(StateRoot, "lan-pairing");
-            if (!Directory.Exists(directory)) return entries;
+            lock (gate) { if (!Enabled || !IsRunning) return new List<Dictionary<string, object>>(); }
             long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
-            foreach (string path in Directory.GetFiles(directory, "*.json")) {
-                if (entries.Count >= 8) break;
-                string id = Path.GetFileNameWithoutExtension(path);
-                if (!System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-f]{32}\\z")) continue;
-                try {
-                    if (new FileInfo(path).Length > 2048) continue;
-                    var value = Json().Deserialize<Dictionary<string, object>>(File.ReadAllText(path));
-                    if (Text(value, "id") != id || Convert.ToInt64(value["expires"]) <= now ||
-                        File.Exists(Path.Combine(directory, id + ".approved"))) continue;
-                    string verification = Text(value, "verification"), name = Text(value, "name");
-                    if (!System.Text.RegularExpressions.Regex.IsMatch(verification, "\\A[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}\\z")) continue;
-                    entries.Add(new Dictionary<string, object> { { "id", id }, { "name", name },
-                        { "address", verification }, { "verification", verification }, { "automatic", true } });
-                } catch (IOException) { } catch (ArgumentException) { } catch (KeyNotFoundException) { }
+            return LanPairingControl.List(PairingRequest, now);
+        }
+        object PairingRequest(Dictionary<string, object> command) {
+            Process expected;
+            lock (gate) {
+                if (!Enabled || !IsReady || focusChild == null || focusChild.HasExited)
+                    throw new InvalidOperationException("远控服务尚未就绪，请稍后重试。");
+                expected = Process.GetProcessById(focusChild.Id);
+                try { IntPtr handle = expected.Handle; }
+                catch { expected.Dispose(); throw; }
             }
-            return entries;
+            using (expected) return RelayIpc.RequestPairing(command, expected);
         }
 
-        object EngineRequest(string method, string path, object body) {
+        Func<string, string, object, object> ClientRequests() {
+            return HostClientsControl.BoundedRequests(delegate(string method, string path, object body, int timeoutMs) {
+                return EngineRequest(method, path, body, timeoutMs, 65536);
+            });
+        }
+        object EngineRequest(string method, string path, object body, int timeoutMs = 20000, int replyLimit = 1024 * 1024) {
             string password;
             lock (gate) { if (!Enabled || !IsRunning) throw new InvalidOperationException("Remote desktop is not running"); password = Text(settings, "adminPassword"); }
-            var request = (HttpWebRequest)WebRequest.Create("https://127.0.0.1:48790" + path);
-            request.Proxy = null; request.Method = method; request.Timeout = 20000; request.ReadWriteTimeout = 20000;
-            request.Headers["Authorization"] = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("cliprelay:" + password));
-            string pem = File.ReadAllText(Path.Combine(StateRoot, "cacert.pem"));
+            string certificatePath = Path.Combine(StateRoot, "cacert.pem");
+            if (new FileInfo(certificatePath).Length > 16384) throw new InvalidDataException("Invalid local engine certificate");
+            string pem = File.ReadAllText(certificatePath);
             string base64 = pem.Replace("-----BEGIN CERTIFICATE-----", "").Replace("-----END CERTIFICATE-----", "").Trim();
-            using (var expected = new X509Certificate2(Convert.FromBase64String(base64))) {
-                string thumb = expected.Thumbprint;
-                request.ServerCertificateValidationCallback = delegate(object sender, X509Certificate cert, X509Chain chain, System.Net.Security.SslPolicyErrors errors) {
-                    return cert != null && String.Equals(cert.GetCertHashString(), thumb, StringComparison.OrdinalIgnoreCase);
-                };
-                if (body != null) {
-                    byte[] data = Encoding.UTF8.GetBytes(Json().Serialize(body));
-                    request.ContentType = "application/json"; request.ContentLength = data.Length;
-                    using (var stream = request.GetRequestStream()) stream.Write(data, 0, data.Length);
-                }
-                using (var response = request.GetResponse())
-                using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) return Json().DeserializeObject(reader.ReadToEnd());
-            }
+            return EngineAdmin.Request(password, Convert.FromBase64String(base64), method, path, body, timeoutMs, replyLimit);
         }
         public static int Main(string[] args) {
+            if (args.Length == 1 && args[0] == "--clipboard-probe") return ClipboardExchange.Run();
+            if (args.Length == 1 && args[0] == "--privacy-probe") return PrivacyScreenWorker.Run();
+            if (args.Length == 1 && args[0] == "--audio-mute-recover") return AudioMuteRecovery.Run();
+            if (args.Length == 1 && args[0] == "--audio-mute-probe") return AudioMuteProbe.Run(InputFocus.IsInteractiveDesktop);
+            if (args.Length == 1 && args[0] == "--file-probe") return FileTransfer.Run();
             if (args.Length == 1 && args[0] == "--voice-probe") return VoiceInput.Run();
+            if (args.Length == 1 && args[0] == "--wake-probe") return WakeProbe.Run();
+            if (args.Length == 1 && args[0] == "--terminal-probe") return TerminalWorker.Run();
             if (args.Length == 1 && args[0] == "--voice-recover") return VoiceInput.Run(true);
             if (args.Length == 1 && args[0] == "--focus-probe") return InputFocus.Run();
             if (args.Length == 2 && args[0] == "--terminate") {

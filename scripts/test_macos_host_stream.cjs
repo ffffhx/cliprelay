@@ -1,0 +1,302 @@
+'use strict';
+// Real packaged Mac capture -> encoder -> encrypted loopback -> Qt presentation.
+// Disposable CI only. No frames, audio or user input are saved/injected.
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
+const {spawn,spawnSync}=require('node:child_process');
+const {snapshot,encryptedStorage}=require('./test_macos_host_state.cjs');
+assert.equal(process.platform,'darwin');assert.equal(process.env.GITHUB_ACTIONS,'true');assert.ok(process.env.RUNNER_TEMP);
+const directory=path.resolve(process.argv[2]),reportPath=path.resolve(process.argv[3]);
+const {HostController}=require(path.join(directory,'host-controller.cjs'));
+const {HostState,configuration}=require(path.join(directory,'host-state.cjs'));
+const {HostEngine}=require(path.join(directory,'host-engine.cjs'));
+const {HostCompanion}=require(path.join(directory,'host-companion.cjs'));
+const {HostSession}=require(path.join(directory,'host-session.cjs'));
+const {StreamViewer,envelope,executable}=require(path.join(directory,'stream-viewer.cjs'));
+const {DisplayController}=require(path.join(directory,'display-controller.cjs'));
+const {pairHost}=require(path.join(directory,'pairing.cjs'));
+const {jsonRequest,exchange}=require(path.join(directory,'paired-transport.cjs'));
+const {identities}=require('../windows/tests/mac-pairing-fixture.cjs');
+const viewerDirectory=process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||path.join(directory,'stream-viewer');
+if(process.env.CLIPRELAY_DIAGNOSTIC_VIEWER){
+  assert.ok(fs.realpathSync(viewerDirectory).startsWith(fs.realpathSync(process.env.RUNNER_TEMP)+path.sep));
+  assert.match(process.env.DIAGNOSTIC_VIEWER_COMMIT,/^[a-f0-9]{40}$/);
+}
+const options={width:1280,height:720,fps:30,bitrate:6000,fullscreen:false};
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function until(read,predicate,timeout=30000){
+  const end=Date.now()+timeout;
+  while(true){const value=await read();if(predicate(value))return value;if(Date.now()>end)throw Error('MAC_STREAM_WAIT_TIMEOUT');await pause(50);}
+}
+const protectedDirectories=[path.join(os.homedir(),'.config','sunshine'),path.join(os.homedir(),'Library/Application Support/ClipRelay/host')];
+const before=protectedDirectories.map(snapshot),originalHome=process.env.HOME;
+const base=fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'cliprelay-native-mac-stream-')));
+const nativeChildren=[],rawViewers=[],diagnostics=[],viewerExits=[],debuggers=[],viewStates=[];
+let companionDiagnostics='';
+const windowObservations=[];
+const windowHelper=path.join(base,'inspect-stream-window');
+if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'){
+  const built=spawnSync('/usr/bin/xcrun',['swiftc',path.join(__dirname,'test_macos_stream_window.swift'),'-o',windowHelper],{encoding:'utf8',timeout:120000});
+  assert.equal(built.status,0,'CI_WINDOW_HELPER_BUILD_FAILED');
+}
+async function activateViewer(child){
+  if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE!=='1')return;
+  assert.ok(nativeChildren.includes(child)&&Number.isInteger(child.pid)&&child.exitCode===null&&child.signalCode===null);
+  await new Promise((resolve,reject)=>{
+    const helper=spawn(windowHelper,[String(child.pid)],{stdio:['ignore','pipe','ignore']});let output='';
+    const timer=setTimeout(()=>helper.kill('SIGKILL'),5000);
+    helper.stdout.on('data',data=>{output+=data.toString('utf8');if(output.length>8192)helper.kill('SIGKILL');});
+    helper.once('error',reject);helper.once('close',code=>{clearTimeout(timer);try{assert.equal(code,0);windowObservations.push(JSON.parse(output));resolve();}catch(error){reject(error);}});
+  });
+}
+const testStarted=Date.now();
+function diagnosticLines(value){
+  return value.split('\n').filter(line=>/error|fail|decoder|encoder|render|permission|invalid|abort|fatal|exception|assert|library not loaded|reason:|screen|capture|video|vulkan|metal|molten|gpu/i.test(line)&&
+    !/rikey|pin=|uniqueid|PRIVATE KEY|certificate|authorization|credential|password|secret|token/i.test(line)).slice(-40).map(line=>line.slice(0,400));
+}
+function fileDiagnostics(){
+  const result=[];
+  for(const folder of new Set(['/tmp',os.tmpdir(),path.join(os.homedir(),'Library/Logs/DiagnosticReports'),'/Library/Logs/DiagnosticReports'])){
+    if(!fs.existsSync(folder))continue;
+    for(const name of fs.readdirSync(folder)){
+      if(!/^ClipRelayStream-.*\.log$|^(Moonlight|ClipRelay).*\.(ips|crash)$/.test(name))continue;
+      const file=path.join(folder,name),stat=fs.lstatSync(file);
+      if(stat.isFile()&&!stat.isSymbolicLink()&&stat.mtimeMs>=testStarted&&stat.size<=2*1024*1024){
+        const content=fs.readFileSync(file,'utf8');
+        if(name.endsWith('.ips')){
+          try{
+            const crash=JSON.parse(content.slice(content.indexOf('\n')+1));
+            result.push({kind:'crash',exception:crash.exception,termination:crash.termination,
+              threads:(crash.threads||[]).filter(thread=>thread.triggered).map(thread=>({
+                frames:(thread.frames||[]).slice(0,35).map(frame=>({symbol:frame.symbol,image:crash.usedImages?.[frame.imageIndex]?.name}))}))});
+          }catch{result.push({kind:'crash',parseFailed:true});}
+        }else result.push({kind:name.endsWith('.log')?'viewer':'crash',lines:diagnosticLines(content)});
+      }
+    }
+  }
+  try{result.push({kind:'engine',lines:diagnosticLines(hostState.read('engine.log',2*1024*1024).toString('utf8'))});}catch{}
+  return result;
+}
+let hostState,viewer,display,stage='prepare';
+const host=new HostController({directory,stateDirectory:path.join(base,'Host'),safeStorage:encryptedStorage(),localName:'Native stream CI',
+  create({stateDirectory,safeStorage,enginePin,companionPin,onUpdate}){
+    hostState=new HostState({directory:stateDirectory,safeStorage});
+    const prepare=hostState.prepare.bind(hostState);
+    hostState.prepare=name=>{
+      const result=prepare(name);
+      hostState.write('sunshine.conf',configuration(name)+'bind_address = 127.0.0.1\nmouse = disabled\nkeyboard = disabled\nstream_audio = disabled\n'+
+        (process.env.CLIPRELAY_MAC_STREAM_H264==='1'?'hevc_mode = 1\nav1_mode = 1\n':''));
+      return result;
+    };
+    const launch=(file,args,settings)=>{
+      const companion=path.basename(file)==='cliprelay-host-network';
+      const child=spawn(file,args,companion?{...settings,stdio:['pipe','pipe','pipe']}:settings);nativeChildren.push(child);
+      if(companion)child.stderr.on('data',data=>{companionDiagnostics=(companionDiagnostics+data.toString('utf8')).slice(-8192);});
+      return child;
+    };
+    const engine=new HostEngine({directory:path.join(directory,'host-engine'),pin:enginePin,state:hostState,launch});
+    const companion=new HostCompanion({directory:path.join(directory,'host-companion'),pin:companionPin,state:hostState,launch});
+    return {session:new HostSession({engine,companion,onUpdate}),companion};
+  }});
+function launchViewer(file,args,settings){
+  const env={...settings.env};
+  for(const key of ['ELECTRON_RUN_AS_NODE','QT_QPA_PLATFORM','QT_PLUGIN_PATH','QML2_IMPORT_PATH'])delete env[key];
+  const child=spawn(file,args,{...settings,env,stdio:['pipe','pipe','pipe']});nativeChildren.push(child);
+  if(process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'){
+    assert.equal(child.kill('SIGSTOP'),true);
+    const debuggerChild=spawn('/usr/bin/lldb',['--no-lldbinit','--batch','--attach-pid',String(child.pid),
+      '--one-line','continue','--one-line-on-crash','thread backtrace'],{stdio:['ignore','pipe','pipe']});
+    const debug={child:debuggerChild,output:'',exit:null};debuggers.push(debug);
+    const collect=data=>{debug.output+=data.toString('utf8');if(debug.output.length>1024*1024)debuggerChild.kill('SIGKILL');};
+    debuggerChild.stdout.on('data',collect);debuggerChild.stderr.on('data',collect);
+    debuggerChild.once('error',error=>{debug.output+='\nDebugger error: '+error.code;});
+    debuggerChild.once('close',(code,signal)=>{debug.exit={code,signal};if(child.exitCode===null&&child.signalCode===null)child.kill('SIGCONT');});
+  }
+  let count=0,tail='';
+  child.stderr.on('data',data=>{
+    count+=data.length;if(count>4*1024*1024){child.kill('SIGKILL');return;}
+    tail+=data.toString('utf8');if(tail.length>16384)tail=tail.slice(-8192);
+  });
+  child.once('close',(code,signal)=>{viewerExits.push({code,signal});diagnostics.push(...diagnosticLines(tail));});
+  return child;
+}
+async function pair(identity,name){
+  return pairHost({address:'127.0.0.1',port:48789,identity,name,onVerification:async verification=>{
+    const status=await host.action('host-status'),request=status.requests.find(item=>item.verification===verification.verification);
+    assert.ok(request);await host.action('host-pair-approve',{id:request.id,generation:request.generation,verification:request.verification});
+  }});
+}
+function selected(host){return {...host,clientId:crypto.randomBytes(16).toString('hex'),enabled:true};}
+function rawViewer(host,identity){
+  // No HTTP polling/controller can close this child on revocation. It must
+  // receive the host's native termination while its owner pipe stays open.
+  const child=launchViewer(executable(viewerDirectory),['--cliprelay-session'],{cwd:viewerDirectory,env:process.env});
+  const item={child,events:[],exit:null,buffer:'',error:null};rawViewers.push(item);
+  child.on('error',error=>{item.error=error.code||'VIEWER_SPAWN_FAILED';});
+  child.stdout.on('data',data=>{
+    item.buffer+=data.toString('utf8');
+    if(item.buffer.length>65536){item.error='VIEWER_OUTPUT_LIMIT';child.kill('SIGKILL');return;}
+    while(item.buffer.includes('\n')){
+      const index=item.buffer.indexOf('\n'),line=item.buffer.slice(0,index);item.buffer=item.buffer.slice(index+1);
+      try{const event=JSON.parse(line);assert.equal(event.version,1);assert.ok(item.events.length<2000);item.events.push(event);}
+      catch{item.error='VIEWER_PROTOCOL_ERROR';child.kill('SIGKILL');return;}
+    }
+  });
+  child.once('close',(code,signal)=>{item.exit={code,signal};});child.stdin.on('error',()=>{});
+  child.stdin.write(envelope(host,identity,options,true,false));
+  return item;
+}
+async function presented(item){
+  if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'){
+    await until(()=>item.events.filter(e=>e.event==='progress').at(-1),value=>value?.received>0,60000);
+    await activateViewer(item.child);
+  }
+  return until(()=>{assert.equal(item.error,null);assert.equal(item.exit,null);return item.events.filter(e=>e.event==='progress').at(-1);},
+    value=>value?.rendered>=60&&value.received>=value.rendered&&value.renderedAgeMs<2000&&value.width===1280&&value.height===720,60000);
+}
+async function closeRaw(item){
+  if(item.exit)return;
+  item.child.stdin.end();
+  try{await until(()=>item.exit,value=>value!==null,8000);}
+  finally{if(!item.exit){item.child.kill('SIGKILL');await until(()=>item.exit,value=>value!==null,5000);}}
+}
+async function main(){
+  const report={protocol:1,passed:false,testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.APP_SOURCE_COMMIT,
+    architecture:process.arch,cases:[],componentOnly:process.env.CLIPRELAY_COMPONENT_PRIVACY_TEST==='1',
+    diagnosticOnly:process.env.CLIPRELAY_COMPONENT_PRIVACY_TEST==='1'||process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'||!!process.env.CLIPRELAY_DIAGNOSTIC_VIEWER||process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'||process.env.CLIPRELAY_MAC_STREAM_H264==='1',
+    diagnosticCodec:process.env.CLIPRELAY_MAC_STREAM_H264==='1'?'h264':'auto',
+    diagnosticViewerCommit:process.env.DIAGNOSTIC_VIEWER_COMMIT||null,
+    windowObservations,
+    physicalInputInjected:false,audioEnabled:false,screenContentSaved:false,keychainValidated:false};
+  try{
+    stage='host-start';await host.action('host-start');await host.startTask;assert.equal(host.snapshot().phase,'running');
+    stage='pair-two';const first=selected(await pair(identities.client,'Mac stream A')),second=selected(await pair(identities.wrong,'Mac stream B'));
+    const admin=()=>jsonRequest({address:'127.0.0.1',port:48790,path:'/api/cliprelay/displays',method:'GET',identity:identities.wrong,
+      trust:{cert:second.certificate},headers:{Authorization:hostState.authorization()},timeout:3000,limit:65536});
+    const store={data:{legacySelected:false},selected:()=>first,identity:async()=>identities.client};
+    viewer=new StreamViewer({directory:viewerDirectory,store,spawnProcess:launchViewer,onUpdate:value=>{
+      viewStates.push(value);if(viewStates.length>12)viewStates.shift();display?.reconcile();
+    },
+      startupMs:process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'?180000:45000});
+    display=new DisplayController({store,viewer});
+    stage='production-video';await viewer.open(options);
+    if(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE==='1'){
+      await until(()=>viewer.snapshot().progress,value=>value?.received>0,60000);
+      await activateViewer(viewer.child);
+    }
+    const visible=await until(()=>{
+      const value=viewer.snapshot();assert.notEqual(value.phase,'error',value.error);return value;
+    },value=>value.phase==='running'&&value.progress?.rendered>=60&&value.progress.renderedAgeMs<2000&&value.input.phase==='active',
+      process.env.CLIPRELAY_MAC_STREAM_DEBUG==='1'?240000:60000);
+    const native=await admin();assert.equal(native.phase,'active');assert.equal(native.streams.length,1);
+    const binding=native.streams[0];assert.ok(binding.firstFrame>0&&visible.progress.rendered>=binding.firstFrame);
+    assert.equal(binding.owner,new crypto.X509Certificate(identities.client.cert).fingerprint256.replaceAll(':','').toLowerCase());
+    assert.equal(visible.progress.width,1280);assert.equal(visible.progress.height,720);
+    report.presentation={first:visible.progress,hostFirstFrame:binding.firstFrame};
+    report.cases.push('packaged-Mac-capture-encode-encrypted-transport-and-Qt-present');
+    stage='pause-and-reconstruct';await until(()=>display.snapshot(),value=>value.input.canPause&&value.canSelect);
+    const record=viewer.currentSession();display.setInput({viewId:display.snapshot().viewId,paused:true});
+    await until(()=>display.snapshot(),value=>value.input.canResume&&value.input.manualPaused);
+    const epoch=record.input.epoch,pausedFrame=viewer.snapshot().progress.rendered;
+    display.apply({viewId:display.snapshot().viewId,display:display.snapshot().capture});
+    await until(()=>display.snapshot(),value=>value.result?.kind==='applied'&&value.input.canResume);
+    const switched=await admin();assert.ok(switched.generation>native.generation);assert.equal(switched.streams[0].id,binding.id);
+    assert.equal(record.input.epoch,epoch);assert.equal(viewer.inputPaused(record),true);
+    await until(()=>viewer.snapshot().progress,value=>value?.rendered>pausedFrame&&value.rendered>=switched.streams[0].firstFrame);
+    display.setInput({viewId:display.snapshot().viewId,paused:false});
+    await until(()=>display.snapshot(),value=>value.input.canPause&&!value.input.manualPaused);
+    assert.equal(viewer.currentSession(),record);assert.ok(record.input.epoch>epoch);
+    report.presentation.last=viewer.snapshot().progress;
+    report.input={pausedEpoch:epoch,resumedEpoch:record.input.epoch,generationBefore:native.generation,
+      generationAfter:switched.generation,streamPreserved:switched.streams[0].id===binding.id,
+      hostFirstFrameAfter:switched.streams[0].firstFrame};
+    report.cases.push('production-input-ACK-pause-display-reconstruction-and-fresh-frame-resume');
+    stage='owner-eof';display.close();viewer.stop();await until(()=>viewer.child,value=>!value,10000);
+    assert.deepEqual(viewerExits[0],{code:0,signal:null});
+    await until(admin,value=>value.streams.length===0);
+    report.cases.push('desktop-owner-EOF-releases-native-stream');
+    stage='raw-video';const receiver=rawViewer(first,identities.client);report.rawPresentation=await presented(receiver);
+    await until(admin,value=>value.phase==='active'&&value.streams.length===1&&value.streams[0].firstFrame>0);
+    const companionManifest=JSON.parse(fs.readFileSync(path.join(directory,'host-companion/manifest.json'),'utf8'));
+    const privacy=companionManifest.privacyControl===1?require('./test_macos_host_privacy.cjs').create({
+      directory,base,nativeChildren,hostState,admin,first,second,identities,until,report,setStage:value=>{stage=value;}}):null;
+    const masked=privacy?await privacy.exercise(receiver):null;
+    stage='revoke-active';const current=(await host.action('host-status')).clients;
+    const target=current.devices.find(device=>device.name==='Mac stream A');assert.ok(target?.enabled);
+    const started=Date.now();await host.action('host-client-revoke',{viewId:current.viewId,uuid:target.uuid});
+    await until(()=>receiver.exit,value=>value!==null,10000);
+    const ended=receiver.events.filter(event=>event.event==='ended');
+    report.revocation={elapsedMs:Date.now()-started,exit:receiver.exit,event:ended[0]||null,
+      endedCount:ended.length,ownerPipeStayedOpen:!receiver.child.stdin.writableEnded};
+    assert.equal(receiver.child.stdin.writableEnded,false,'owner EOF caused termination');
+    // The native host-ended event carries the cause. Qt then exits normally
+    // through its SDL_QUIT cleanup, with status zero rather than a crash code.
+    assert.deepEqual(receiver.exit,{code:0,signal:null});
+    assert.equal(ended.length,1);assert.equal(ended[0].reason,'host');
+    await until(admin,value=>value.streams.length===0);
+    // Sunshine reports certificate authorization failures as XML status 401
+    // over HTTP 200, after the pinned TLS connection has been established.
+    const refusal=await exchange({address:'127.0.0.1',port:48784,path:'/serverinfo',method:'GET',identity:identities.client,trust:{cert:first.certificate},timeout:3000,limit:16384});
+    assert.ok(!/<!/.test(refusal));assert.match(refusal,/<root\b[^>]*\bstatus_code="401"(?:\s|\/|>)/);
+    report.revocation.nativeAuthorizationStatus=401;
+    report.cases.push('native-host-termination-after-revocation-without-client-control-polling');
+    if(privacy)await privacy.revoked(masked);
+    stage='preserved-client';const preserved=rawViewer(second,identities.wrong);report.preservedPresentation=await presented(preserved);
+    await closeRaw(preserved);assert.deepEqual(preserved.exit,{code:0,signal:null});
+    await until(admin,value=>value.streams.length===0);
+    report.cases.push('other-paired-client-still-renders-and-EOF-releases-stream');
+    if(privacy&&process.env.CLIPRELAY_PRIVACY_DECODE_FIXTURE){
+      await require('./test_macos_privacy_pixels.cjs').verify({directory,host:second,identity:identities.wrong,hostState,
+        admin,until,nativeChildren,report,setStage:value=>{stage=value;}});
+    }
+    stage='close-host';await host.close();
+    for(const child of nativeChildren)assert.ok(child.exitCode!==null||child.signalCode!==null);
+    assert.deepEqual(protectedDirectories.map(snapshot),before);assert.equal(process.env.HOME,originalHome);
+    report.cases.push('all-owned-native-processes-reaped-and-default-state-preserved');
+    report.ownedChildrenReaped=true;
+    assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_DEBUG,'1','DEBUGGER_RUN_NOT_ACCEPTANCE');
+    assert.equal(process.env.CLIPRELAY_DIAGNOSTIC_VIEWER,undefined,'COMPONENT_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
+    assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_ACTIVATE,'1','ACTIVATION_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
+    assert.notEqual(process.env.CLIPRELAY_MAC_STREAM_H264,'1','CODEC_RUN_NOT_COMPLETE_APP_ACCEPTANCE');
+    report.passed=true;
+  }catch(error){
+    // ReportCrash writes asynchronously after the native process has exited.
+    if(viewerExits.some(exit=>exit.signal))await pause(10000);
+    report.failure={stage,code:error.code||error.message,location:error.stack?.match(/test_macos_(?:host|privacy)_[a-z_]+\.cjs:\d+:\d+/)?.[0],
+      assertion:error.code==='ERR_ASSERTION'&&/^[A-Z][A-Z_]{5,80}$/.test(error.message)?error.message:undefined,
+      host:host.snapshot().phase,viewer:viewer?.snapshot(),viewStates,viewerExits,
+      companionDiagnostics:companionDiagnostics.split('\n').filter(line=>/privacy operation|privacy maintenance|^HOST_[A-Z_]+$/.test(line)).map(line=>line.slice(0,400)).slice(-16),
+      diagnostics:diagnostics.slice(-24),files:fileDiagnostics(),debuggers:debuggers.map(debug=>({exit:debug.exit,
+        lines:debug.output.split('\n').filter(line=>/stop reason|error:|frame #|stop-reason|exited with status/.test(line))
+          .map(line=>line.replace(/\([^)]*\)/g,'(...)').slice(0,300)).slice(0,60)}))};
+    process.exitCode=1;
+  }finally{
+    for(const debug of debuggers)if(!debug.exit)debug.child.kill('SIGKILL');
+    display?.close();viewer?.stop();
+    if(viewer)await until(()=>viewer.child,value=>!value,10000);
+    for(const item of rawViewers)await closeRaw(item);
+    await host.close();
+    if(report.failure?.stage==='production-video'&&viewStates.some(value=>value.progress?.received>0&&value.progress.rendered===0)){
+      // After the owned viewer closes, distinguish an unavailable runner
+      // presentation prerequisite from failures specific to the stream stack.
+      const probe=path.join(base,'metal-presentation-control');
+      const built=spawnSync('/usr/bin/xcrun',['swiftc','-parse-as-library',path.join(__dirname,'test_macos_metal_present.swift'),'-o',probe],
+        {encoding:'utf8',timeout:100000,maxBuffer:65536});
+      if(built.status===0){
+        const observed=spawnSync(probe,[],{encoding:'utf8',timeout:20000,maxBuffer:16384});
+        try{
+          const control=JSON.parse(observed.stdout);
+          assert.equal(control.protocol,1);assert.equal(control.testCommit,process.env.GITHUB_SHA);
+          report.failure.presentationControl=control;
+          if(control.submitted>=60&&control.displayed===0&&control.gpuErrors===0&&control.windowVisible&&control.windowOcclusionVisible&&control.applicationActive)
+            report.failure.presentationPrerequisite='unavailable-on-this-runner';
+        }catch{report.failure.presentationControl={exit:observed.status,signal:observed.signal};}
+      }else report.failure.presentationControl={buildExit:built.status};
+    }
+    assert.deepEqual(protectedDirectories.map(snapshot),before);
+    assert.ok(base.startsWith(fs.realpathSync(process.env.RUNNER_TEMP)+path.sep)&&path.basename(base).startsWith('cliprelay-native-mac-stream-'));
+    fs.rmSync(base,{recursive:true,force:true});
+    fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n');
+  }
+  process.stdout.write(JSON.stringify(report)+'\n');
+}
+main().catch(error=>{console.error(JSON.stringify({stage,code:error.code||error.message}));process.exitCode=1;});

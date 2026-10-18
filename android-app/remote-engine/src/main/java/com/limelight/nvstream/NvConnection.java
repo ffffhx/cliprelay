@@ -47,6 +47,7 @@ public class NvConnection {
     private ConnectionContext context;
     private static Semaphore connectionAllowed = new Semaphore(1);
     private final boolean isMonkey;
+    private final InputPause inputPause = new InputPause();
     private final Context appContext;
 
     public NvConnection(Context appContext, ComputerDetails.AddressTuple host, int httpsPort, String uniqueId, StreamConfiguration config, LimelightCryptoProvider cryptoProvider, X509Certificate serverCert)
@@ -142,7 +143,7 @@ public class NvConnection {
     private int detectServerConnectionType() {
         // This loopback address is the app's encrypted overlay bridge. Its
         // path MTU is remote even though the native socket itself is local.
-        if ("127.120.0.1".equals(context.serverAddress.address)) {
+        if (com.limelight.computers.EmbeddedNetwork.isAddress(context.serverAddress)) {
             return StreamConfiguration.STREAM_CFG_REMOTE;
         }
         ConnectivityManager connMgr = (ConnectivityManager) appContext.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -503,86 +504,102 @@ public class NvConnection {
         }).start();
     }
     
-    public void sendMouseMove(final short deltaX, final short deltaY)
+    public synchronized void setInputPaused(boolean paused) {
+        setInputPaused(InputPause.DISPLAY, paused);
+    }
+
+    public synchronized void setInputPaused(int reason, boolean paused) {
+        inputPause.setPaused(reason, paused, new InputPause.Releases() {
+            public void key(short key) { MoonBridge.sendKeyboardInput(key, com.limelight.nvstream.input.KeyboardPacket.KEY_UP, (byte)0, (byte)0); }
+            public void button(byte button) { MoonBridge.sendMouseButton(MouseButtonPacket.RELEASE_EVENT, button); }
+            public void touches() { MoonBridge.sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0, 0, 0, 0, 0, 0, MoonBridge.LI_ROT_UNKNOWN); }
+            public void pen() { MoonBridge.sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL, (byte)0, (byte)0, 0, 0, 0, 0, 0, MoonBridge.LI_ROT_UNKNOWN, (byte)0); }
+            public void controller(short number, short mask) { MoonBridge.sendMultiControllerInput(number, mask, 0, (byte)0, (byte)0, (short)0, (short)0, (short)0, (short)0); }
+            public void controllerTouch(byte number, int pointer, float x, float y) { MoonBridge.sendControllerTouchEvent(number, MoonBridge.LI_TOUCH_EVENT_UP, pointer, x, y, 0); }
+        });
+    }
+
+    public synchronized void sendMouseMove(final short deltaX, final short deltaY)
     {
-        if (!isMonkey) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendMouseMove(deltaX, deltaY);
         }
     }
 
-    public void sendMousePosition(short x, short y, short referenceWidth, short referenceHeight)
+    public synchronized void sendMousePosition(short x, short y, short referenceWidth, short referenceHeight)
     {
-        if (!isMonkey) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendMousePosition(x, y, referenceWidth, referenceHeight);
         }
     }
 
-    public void sendMouseMoveAsMousePosition(short deltaX, short deltaY, short referenceWidth, short referenceHeight)
+    public synchronized void sendMouseMoveAsMousePosition(short deltaX, short deltaY, short referenceWidth, short referenceHeight)
     {
-        if (!isMonkey) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendMouseMoveAsMousePosition(deltaX, deltaY, referenceWidth, referenceHeight);
         }
     }
 
-    public void sendMouseButtonDown(final byte mouseButton)
+    public synchronized void sendMouseButtonDown(final byte mouseButton)
     {
-        if (!isMonkey) {
+        if (!isMonkey && inputPause.button(mouseButton, true)) {
             MoonBridge.sendMouseButton(MouseButtonPacket.PRESS_EVENT, mouseButton);
         }
     }
     
-    public void sendMouseButtonUp(final byte mouseButton)
+    public synchronized void sendMouseButtonUp(final byte mouseButton)
     {
-        if (!isMonkey) {
+        if (!isMonkey && inputPause.button(mouseButton, false)) {
             MoonBridge.sendMouseButton(MouseButtonPacket.RELEASE_EVENT, mouseButton);
         }
     }
     
-    public void sendControllerInput(final short controllerNumber,
+    public synchronized void sendControllerInput(final short controllerNumber,
             final short activeGamepadMask, final int buttonFlags,
             final byte leftTrigger, final byte rightTrigger,
             final short leftStickX, final short leftStickY,
             final short rightStickX, final short rightStickY)
     {
-        if (!isMonkey) {
+        if (!isMonkey && inputPause.controller(activeGamepadMask)) {
             MoonBridge.sendMultiControllerInput(controllerNumber, activeGamepadMask, buttonFlags,
                     leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
         }
     }
 
-    public void sendKeyboardInput(final short keyMap, final byte keyDirection, final byte modifier, final byte flags) {
-        if (!isMonkey) {
+    public synchronized void sendKeyboardInput(final short keyMap, final byte keyDirection, final byte modifier, final byte flags) {
+        if (!isMonkey && inputPause.key(keyMap, keyDirection == com.limelight.nvstream.input.KeyboardPacket.KEY_DOWN)) {
             MoonBridge.sendKeyboardInput(keyMap, keyDirection, modifier, flags);
         }
     }
     
-    public void sendMouseScroll(final byte scrollClicks) {
-        if (!isMonkey) {
+    public synchronized void sendMouseScroll(final byte scrollClicks) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendMouseHighResScroll((short)(scrollClicks * 120)); // WHEEL_DELTA
         }
     }
 
-    public void sendMouseHScroll(final byte scrollClicks) {
-        if (!isMonkey) {
+    public synchronized void sendMouseHScroll(final byte scrollClicks) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendMouseHighResHScroll((short)(scrollClicks * 120)); // WHEEL_DELTA
         }
     }
 
-    public void sendMouseHighResScroll(final short scrollAmount) {
-        if (!isMonkey) {
+    public synchronized void sendMouseHighResScroll(final short scrollAmount) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendMouseHighResScroll(scrollAmount);
         }
     }
 
-    public void sendMouseHighResHScroll(final short scrollAmount) {
-        if (!isMonkey) {
+    public synchronized void sendMouseHighResHScroll(final short scrollAmount) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendMouseHighResHScroll(scrollAmount);
         }
     }
 
-    public int sendTouchEvent(byte eventType, int pointerId, float x, float y, float pressureOrDistance,
+    public synchronized int sendTouchEvent(byte eventType, int pointerId, float x, float y, float pressureOrDistance,
                               float contactAreaMajor, float contactAreaMinor, short rotation) {
-        if (!isMonkey) {
+        if (!inputPause.allowed()) return 0;
+        if (!isMonkey && inputPause.touch()) {
             return MoonBridge.sendTouchEvent(eventType, pointerId, x, y, pressureOrDistance,
                     contactAreaMajor, contactAreaMinor, rotation);
         }
@@ -591,10 +608,11 @@ public class NvConnection {
         }
     }
 
-    public int sendPenEvent(byte eventType, byte toolType, byte penButtons, float x, float y,
+    public synchronized int sendPenEvent(byte eventType, byte toolType, byte penButtons, float x, float y,
                             float pressureOrDistance, float contactAreaMajor, float contactAreaMinor,
                             short rotation, byte tilt) {
-        if (!isMonkey) {
+        if (!inputPause.allowed()) return 0;
+        if (!isMonkey && inputPause.pen()) {
             return MoonBridge.sendPenEvent(eventType, toolType, penButtons, x, y, pressureOrDistance,
                     contactAreaMajor, contactAreaMinor, rotation, tilt);
         }
@@ -603,14 +621,15 @@ public class NvConnection {
         }
     }
 
-    public int sendControllerArrivalEvent(byte controllerNumber, short activeGamepadMask, byte type,
+    public synchronized int sendControllerArrivalEvent(byte controllerNumber, short activeGamepadMask, byte type,
                                           int supportedButtonFlags, short capabilities) {
         return MoonBridge.sendControllerArrivalEvent(controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities);
     }
 
-    public int sendControllerTouchEvent(byte controllerNumber, byte eventType, int pointerId,
+    public synchronized int sendControllerTouchEvent(byte controllerNumber, byte eventType, int pointerId,
                                         float x, float y, float pressure) {
-        if (!isMonkey) {
+        if (!inputPause.allowed()) return 0;
+        if (!isMonkey && inputPause.controllerTouch(controllerNumber, eventType, pointerId, x, y)) {
             return MoonBridge.sendControllerTouchEvent(controllerNumber, eventType, pointerId, x, y, pressure);
         }
         else {
@@ -618,9 +637,10 @@ public class NvConnection {
         }
     }
 
-    public int sendControllerMotionEvent(byte controllerNumber, byte motionType,
+    public synchronized int sendControllerMotionEvent(byte controllerNumber, byte motionType,
                                          float x, float y, float z) {
-        if (!isMonkey) {
+        if (!inputPause.allowed()) return 0;
+        if (!isMonkey && inputPause.allowed()) {
             return MoonBridge.sendControllerMotionEvent(controllerNumber, motionType, x, y, z);
         }
         else {
@@ -628,14 +648,20 @@ public class NvConnection {
         }
     }
 
-    public void sendControllerBatteryEvent(byte controllerNumber, byte batteryState, byte batteryPercentage) {
+    public synchronized void sendControllerBatteryEvent(byte controllerNumber, byte batteryState, byte batteryPercentage) {
         MoonBridge.sendControllerBatteryEvent(controllerNumber, batteryState, batteryPercentage);
     }
 
-    public void sendUtf8Text(final String text) {
-        if (!isMonkey) {
+    public synchronized void sendUtf8Text(final String text) {
+        if (!isMonkey && inputPause.allowed()) {
             MoonBridge.sendUtf8Text(text);
         }
+    }
+
+    /** Explicit dictation confirmation: report whether input was queued, never retry it. */
+    public synchronized boolean trySendUtf8Text(final String text) {
+        if (isMonkey || !ownsNativeConnection || !inputPause.allowed()) return false;
+        return MoonBridge.sendUtf8TextChecked(text) == 0;
     }
 
     public static String findExternalAddressForMdns(String stunHostname, int stunPort) {

@@ -1,0 +1,341 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "sessionimport.h"
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QHostAddress>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QNetworkReply>
+#include <QRegularExpression>
+#include <QSet>
+#include <QThread>
+#include <QTimer>
+#include <QQueue>
+#include <QtEndian>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <atomic>
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <poll.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <fcntl.h>
+#endif
+
+namespace ClipRelayImport {
+static Session current;
+static bool loaded = false;
+static QMutex eventMutex;
+static bool connectedEvent = false, endedEvent = false;
+static QMutex progressMutex;
+static QElapsedTimer progressClock;
+static quint64 receivedFrame = 0, renderedFrame = 0;
+static qint64 receivedAt = 0, renderedAt = 0, reportedAt = -200;
+static int renderedWidth = 0, renderedHeight = 0;
+static std::atomic<bool> outputFailed{false};
+static QMutex inputMutex;
+static QByteArray inputBytes;
+static QQueue<InputCommand> inputCommands;
+static qint64 inputPartialSince = -1;
+
+// Small, constant-schema messages on the owner pipe. No addresses,
+// credentials, server responses or arbitrary diagnostic text enter this stream.
+static void writeEvent(const QByteArray& bytes) {
+    if (outputFailed.load()) return;
+#ifdef Q_OS_WIN
+    HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD written = 0;
+    if (GetFileType(handle) != FILE_TYPE_PIPE || !WriteFile(handle, bytes.constData(), bytes.size(), &written, nullptr) || written != static_cast<DWORD>(bytes.size())) outputFailed.store(true);
+#else
+    ssize_t written;
+    do { written = ::write(STDOUT_FILENO, bytes.constData(), bytes.size()); } while (written < 0 && errno == EINTR);
+    if (written != bytes.size()) outputFailed.store(true);
+#endif
+}
+void reportConnected() {
+    QMutexLocker guard(&eventMutex);
+    if (!loaded || connectedEvent || endedEvent) return;
+    connectedEvent = true;
+    writeEvent("{\"version\":1,\"event\":\"connected\"}\n");
+}
+void reportEnded(EndReason reason) {
+    QMutexLocker guard(&eventMutex);
+    if (!loaded || endedEvent) return;
+    endedEvent = true;
+    const char* value = "host";
+    switch (reason) {
+    case EndReason::Network: value = "network"; break;
+    case EndReason::Pairing: value = "pairing"; break;
+    case EndReason::Host: value = "host"; break;
+    case EndReason::User: value = "user"; break;
+    case EndReason::Parent: value = "parent"; break;
+    case EndReason::Decoder: value = "decoder"; break;
+    }
+    writeEvent(QByteArray("{\"version\":1,\"event\":\"ended\",\"reason\":\"") + value + "\"}\n");
+}
+void reportReceived(quint64 frame) {
+    if (!loaded || !current.telemetry || !frame || frame > 0xffffffffULL) return;
+    QMutexLocker guard(&progressMutex);
+    if (frame > receivedFrame) { receivedFrame = frame; receivedAt = progressClock.elapsed(); }
+}
+void reportRendered(quint64 frame, int width, int height) {
+    if (!loaded || !current.telemetry || !frame || width < 1 || width > 65536 || height < 1 || height > 65536) return;
+    QMutexLocker guard(&progressMutex);
+    if (frame <= renderedFrame || frame > receivedFrame) return;
+    renderedFrame = frame; renderedWidth = width; renderedHeight = height; renderedAt = progressClock.elapsed();
+}
+void reportProgress() {
+    if (!loaded || !current.telemetry) return;
+    QMutexLocker eventGuard(&eventMutex);
+    if (!connectedEvent || endedEvent) return;
+    QMutexLocker guard(&progressMutex);
+    const auto now = progressClock.elapsed();
+    if (now - reportedAt < 200) return;
+    reportedAt = now;
+    const QJsonObject state{{"version",1},{"event","progress"},{"received",qint64(receivedFrame)},
+        {"rendered",qint64(renderedFrame)},{"width",renderedWidth},{"height",renderedHeight},
+        {"receivedAgeMs",receivedFrame?qMin<qint64>(60000,now-receivedAt):60000},
+        {"renderedAgeMs",renderedFrame?qMin<qint64>(60000,now-renderedAt):60000}};
+    writeEvent(QJsonDocument(state).toJson(QJsonDocument::Compact) + '\n');
+}
+void reportInputCommand(quint32 epoch, bool acknowledged) {
+    QMutexLocker guard(&eventMutex);
+    if (!loaded || !current.inputEpochs || !connectedEvent || endedEvent || !epoch) return;
+    const QJsonObject state{{"version",1},{"event","input"},{"epoch",qint64(epoch)},
+        {"stage",acknowledged?"acknowledged":"submitted"}};
+    writeEvent(QJsonDocument(state).toJson(QJsonDocument::Compact) + '\n');
+}
+bool takeInputCommand(InputCommand& command) {
+    QMutexLocker guard(&inputMutex);
+    if (inputCommands.isEmpty()) return false;
+    command = inputCommands.dequeue();
+    return true;
+}
+bool retryableNetworkError(int error) {
+    return error == QNetworkReply::ConnectionRefusedError || error == QNetworkReply::RemoteHostClosedError ||
+        error == QNetworkReply::HostNotFoundError || error == QNetworkReply::TimeoutError ||
+        error == QNetworkReply::TemporaryNetworkFailureError || error == QNetworkReply::NetworkSessionFailedError;
+}
+
+static bool integer(const QJsonObject& o, const char* key, int low, int high, int& out) {
+    auto value = o.value(QLatin1String(key));
+    if (!value.isDouble()) return false;
+    double number = value.toDouble();
+    if (number < low || number > high || number != static_cast<int>(number)) return false;
+    out = static_cast<int>(number);
+    return true;
+}
+
+static bool certificate(const QJsonValue& v, QByteArray& pem, QSslCertificate& cert) {
+    if (!v.isString()) return false;
+    pem = v.toString().toUtf8();
+    if (pem.size() > 16384 || !pem.startsWith("-----BEGIN CERTIFICATE-----") ||
+        !pem.trimmed().endsWith("-----END CERTIFICATE-----")) return false;
+    const auto certificates = QSslCertificate::fromData(pem);
+    if (certificates.size() != 1 || certificates.first().isNull()) return false;
+    cert = certificates.first();
+    return true;
+}
+
+bool parse(const QByteArray& bytes, Session& result) {
+    if (bytes.isEmpty() || bytes.size() > MaxFrame) return false;
+    QJsonParseError error;
+    const auto doc = QJsonDocument::fromJson(bytes, &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject()) return false;
+    const auto o = doc.object();
+    QSet<QString> keys{"version", "address", "port", "clientId", "certificate",
+        "privateKey", "hostCertificate", "width", "height", "fps", "bitrate", "fullscreen"};
+    if (o.contains("overlay")) keys.insert("overlay");
+    if (o.contains("overlayPort")) keys.insert("overlayPort");
+    if (o.contains("telemetry")) keys.insert("telemetry");
+    if (o.contains("inputEpochs")) keys.insert("inputEpochs");
+    const auto actualKeys = o.keys();
+    if (QSet<QString>(actualKeys.cbegin(), actualKeys.cend()) != keys) return false;
+    Session candidate;
+    int version = 0, port = 0;
+    if (!integer(o, "version", 1, 1, version) || !integer(o, "port", 6, 65514, port) ||
+        !integer(o, "width", 320, 7680, candidate.width) ||
+        !integer(o, "height", 240, 4320, candidate.height) ||
+        !integer(o, "fps", 15, 120, candidate.fps) ||
+        !integer(o, "bitrate", 1000, 100000, candidate.bitrate) ||
+        !o.value("fullscreen").isBool()) return false;
+    candidate.port = static_cast<quint16>(port);
+    candidate.fullscreen = o.value("fullscreen").toBool();
+    if (o.contains("telemetry") && !o.value("telemetry").isBool()) return false;
+    candidate.telemetry = o.value("telemetry").toBool(false);
+    if (o.contains("inputEpochs") && !o.value("inputEpochs").isBool()) return false;
+    candidate.inputEpochs = o.value("inputEpochs").toBool(false);
+    if (candidate.inputEpochs && !candidate.telemetry) return false;
+    candidate.address = o.value("address").toString();
+    QHostAddress ip;
+    if (candidate.address.isEmpty() || candidate.address.size() > 253 ||
+        (!ip.setAddress(candidate.address) && !QRegularExpression("^[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$").match(candidate.address).hasMatch())) return false;
+    // Link-local scoped addresses are not supported by the stream transport.
+    if (candidate.address.contains('%')) return false;
+    if (o.contains("overlay") && !o.value("overlay").isBool()) return false;
+    candidate.overlay = o.value("overlay").toBool(false);
+    if (candidate.overlay) {
+        int hostPort = 48789;
+        if (candidate.address != "127.0.0.1" || port < 1029 ||
+            (o.contains("overlayPort") && !integer(o, "overlayPort", 1029, 65514, hostPort))) return false;
+        candidate.overlayPort = static_cast<quint16>(hostPort);
+    } else if (o.contains("overlayPort")) return false;
+    candidate.clientId = o.value("clientId").toString();
+    if (!QRegularExpression("^[a-f0-9]{32}$").match(candidate.clientId).hasMatch()) return false;
+    QByteArray hostPem;
+    QSslCertificate clientCert;
+    if (!certificate(o.value("certificate"), candidate.certificate, clientCert) ||
+        !certificate(o.value("hostCertificate"), hostPem, candidate.hostCertificate) ||
+        !o.value("privateKey").isString()) return false;
+    candidate.privateKey = o.value("privateKey").toString().toUtf8();
+    if (candidate.privateKey.isEmpty() || candidate.privateKey.size() > 16384 ||
+        candidate.privateKey.contains("ENCRYPTED")) return false;
+    BIO* keyBio = BIO_new_mem_buf(candidate.privateKey.constData(), candidate.privateKey.size());
+    BIO* certBio = BIO_new_mem_buf(candidate.certificate.constData(), candidate.certificate.size());
+    EVP_PKEY* key = keyBio ? PEM_read_bio_PrivateKey(keyBio, nullptr, nullptr, nullptr) : nullptr;
+    X509* cert = certBio ? PEM_read_bio_X509(certBio, nullptr, nullptr, nullptr) : nullptr;
+    const bool valid = key && cert && EVP_PKEY_base_id(key) == EVP_PKEY_RSA &&
+        EVP_PKEY_bits(key) >= 2048 && X509_check_private_key(cert, key) == 1;
+    EVP_PKEY_free(key); X509_free(cert); BIO_free(keyBio); BIO_free(certBio);
+    if (!valid) return false;
+    result = std::move(candidate);
+    return true;
+}
+
+// Require a pipe, never read credentials from a terminal or an arbitrary file.
+// Four-byte big-endian length, then UTF-8 JSON. The pipe remains open as a lease.
+static bool readExact(char* out, int count, QElapsedTimer& elapsed) {
+    int readCount = 0;
+    while (readCount < count && elapsed.elapsed() < 5000) {
+#ifdef Q_OS_WIN
+        HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD available = 0, got = 0;
+        if (GetFileType(handle) != FILE_TYPE_PIPE || !PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr)) return false;
+        if (!available) { QThread::msleep(5); continue; }
+        if (!ReadFile(handle, out + readCount, qMin<DWORD>(available, count - readCount), &got, nullptr) || !got) return false;
+#else
+        pollfd fd{STDIN_FILENO, POLLIN, 0};
+        int ready = poll(&fd, 1, 20);
+        if (ready < 0) { if (errno == EINTR) continue; return false; }
+        if (!ready) continue;
+        if (!(fd.revents & POLLIN)) return false;
+        ssize_t got = read(STDIN_FILENO, out + readCount, count - readCount);
+        if (got <= 0) return false;
+#endif
+        readCount += static_cast<int>(got);
+    }
+    return readCount == count;
+}
+
+bool loadStdin() {
+    if (loaded) return false;
+#ifndef Q_OS_WIN
+    // Losing the owner must still reach decoder/input cleanup, not SIGPIPE.
+    signal(SIGPIPE, SIG_IGN);
+    struct stat inputStat{};
+    if (fstat(STDIN_FILENO, &inputStat) || (!S_ISFIFO(inputStat.st_mode) && !S_ISSOCK(inputStat.st_mode))) return false;
+#endif
+    QElapsedTimer elapsed; elapsed.start();
+    char header[4];
+    if (!readExact(header, 4, elapsed)) return false;
+    quint32 length = qFromBigEndian<quint32>(header);
+    if (!length || length > MaxFrame) return false;
+    QByteArray bytes(static_cast<int>(length), '\0');
+    if (!readExact(bytes.data(), bytes.size(), elapsed)) return false;
+    loaded = parse(bytes, current);
+    if (loaded && current.telemetry) {
+        // A stalled owner must not block SDL/input cleanup behind progress output.
+#ifdef Q_OS_WIN
+        DWORD mode = PIPE_NOWAIT;
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (GetFileType(output) != FILE_TYPE_PIPE || !SetNamedPipeHandleState(output, &mode, nullptr, nullptr)) loaded = false;
+#else
+        struct stat outputStat{};
+        const int flags = fcntl(STDOUT_FILENO, F_GETFL);
+        if (fstat(STDOUT_FILENO, &outputStat) || (!S_ISFIFO(outputStat.st_mode) && !S_ISSOCK(outputStat.st_mode)) || flags < 0 || fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK) < 0) loaded = false;
+#endif
+    }
+    if (loaded) progressClock.start();
+    bytes.fill('\0');
+    return loaded;
+}
+bool active() { return loaded; }
+const Session& get() { Q_ASSERT(loaded); return current; }
+// Optional owner commands use fixed 16-byte frames: CRIC, version1, op1/2/3,
+// two reserved zeros, epoch BE32, four reserved zeros. Four commands and a
+// two-second partial-frame deadline bound both buffering and stalled writers.
+static bool readInputCommands() {
+    QMutexLocker guard(&inputMutex);
+    if (inputPartialSince >= 0 && progressClock.elapsed()-inputPartialSince > 2000) return false;
+    char bytes[65];
+    int got = 0;
+#ifdef Q_OS_WIN
+    HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD available = 0, received = 0;
+    if (!PeekNamedPipe(handle,nullptr,0,nullptr,&available,nullptr) || available > 64) return false;
+    if (available && (!ReadFile(handle,bytes,available,&received,nullptr) || !received)) return false;
+    got = static_cast<int>(received);
+#else
+    pollfd fd{STDIN_FILENO,POLLIN,0};
+    const int ready = poll(&fd,1,0);
+    if (ready < 0) return errno == EINTR;
+    if (ready > 0) {
+        if (!(fd.revents & POLLIN)) return false;
+        const ssize_t received = ::read(STDIN_FILENO,bytes,sizeof(bytes));
+        if (received < 0) return errno == EINTR || errno == EAGAIN;
+        if (received <= 0 || received > 64) return false;
+        got = static_cast<int>(received);
+    }
+#endif
+    if (!got) return true;
+    {
+        QMutexLocker eventGuard(&eventMutex);
+        if (!connectedEvent || endedEvent) return false;
+    }
+    if (inputBytes.size()+got+inputCommands.size()*16 > 64) return false;
+    if (inputBytes.isEmpty()) inputPartialSince = progressClock.elapsed();
+    inputBytes.append(bytes,got);
+    while (inputBytes.size() >= 16) {
+        const auto* data = reinterpret_cast<const unsigned char*>(inputBytes.constData());
+        const quint32 epoch = qFromBigEndian<quint32>(data+8);
+        if (inputBytes.left(4) != "CRIC" || data[4] != 1 || data[5] < 1 || data[5] > 3 ||
+            data[6] || data[7] || data[12] || data[13] || data[14] || data[15] || !epoch) return false;
+        inputCommands.enqueue({epoch,static_cast<InputOperation>(data[5])});
+        inputBytes.remove(0,16);
+    }
+    if (inputBytes.isEmpty()) inputPartialSince = -1;
+    return true;
+}
+bool parentAlive() {
+    reportProgress();
+    if (outputFailed.load()) return false;
+    if (loaded && current.inputEpochs) return readInputCommands();
+#ifdef Q_OS_WIN
+    DWORD available = 0;
+    return PeekNamedPipe(GetStdHandle(STD_INPUT_HANDLE), nullptr, 0, nullptr, &available, nullptr) && !available;
+#else
+    pollfd fd{STDIN_FILENO, POLLIN, 0};
+    int result = poll(&fd, 1, 0);
+    return result == 0 || (result < 0 && errno == EINTR);
+#endif
+}
+void watchParent(std::function<void()> onLost) {
+    auto timer = new QTimer(QCoreApplication::instance());
+    QObject::connect(timer, &QTimer::timeout, [timer, onLost] {
+        // EOF or unexpected further messages terminate this one-shot session.
+        if (!parentAlive()) {
+            timer->stop();
+            reportEnded(EndReason::Parent);
+            if (onLost) onLost(); else QCoreApplication::quit();
+        }
+    });
+    timer->start(100);
+}
+}

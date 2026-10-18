@@ -1,0 +1,4 @@
+# Keep vendored upstream bytes identical to their integrity manifests on Windows.
+windows/electron/mac/vendor/terminal/*.js -text
+windows/electron/mac/vendor/terminal/*.css -text
+windows/electron/mac/vendor/terminal/*-LICENSE.txt -text

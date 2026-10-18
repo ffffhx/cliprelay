@@ -31,10 +31,17 @@ function importLuaDefaults(file=path.join(os.homedir(),'.hammerspoon','init.lua'
 }
 function loadConfig(directory,{legacy=importHammerspoon,defaults=importLuaDefaults,hostname=os.hostname}={}){
   const file=path.join(directory,'config.json');
-  if(fs.existsSync(file))return JSON.parse(fs.readFileSync(file,'utf8'));
+  if(fs.existsSync(file)){
+    const config=JSON.parse(fs.readFileSync(file,'utf8'));
+    let changed=false;
+    for(const key of ['legacyEnabled','hostAutoStart'])if(typeof config[key]!=='boolean'){config[key]=false;changed=true;}
+    if(changed)saveConfig(directory,config);
+    return config;
+  }
   const old=legacy();
   const initial=defaults();
   const config={peer:old.peer || initial.defaultPeer || 'peer-mac.local',peerPort:Number(old.peerPort) || 47632,localPort:initial.localPort || 47632,hotkey:initial.hotkey || 'Control+Alt+G',peerToken:old.peerToken || '',deviceId:old.deviceId || crypto.randomUUID(),deviceName:hostname(),discoveryEnabled:old.discoveryEnabled===undefined || !['0','false'].includes(String(old.discoveryEnabled))};
+  config.legacyEnabled=false;config.hostAutoStart=false;config.accessToken='';
   saveConfig(directory,config);return config;
 }
 function saveConfig(directory,config){

@@ -103,12 +103,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private TouchMode touchMode;
     private TouchMode touchModeBeforeGamePointer;
     private com.limelight.binding.input.AutoKeyboardMonitor autoKeyboard;
+    private com.limelight.ui.RemoteDisplays remoteDisplays;
+    private com.limelight.ui.RemoteBitrate remoteBitrate;
+    private com.limelight.ui.RemoteClipboard remoteClipboard;
+    private com.limelight.ui.RemotePrivacy remotePrivacy;
+    private boolean liveBitratePending;
     private boolean autoKeyboardShown;
     private boolean virtualKeyboardBack;
     private volatile boolean imageTransfer;
     private com.limelight.ui.ImagePasteRequest imagePaste = new com.limelight.ui.ImagePasteRequest();
     private boolean imageResumeReady;
-    private com.limelight.ui.RemoteVoiceInput voiceInput;
+    private com.limelight.ui.VoiceInputController voiceInput;
     private boolean returningToComputers;
     private boolean resumeInputAfterPip;
     private static final int IMAGE_TRANSFER = 701;
@@ -139,13 +144,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private int streamBitrateKbps;
     private int streamTargetFps;
     private final com.limelight.ui.StreamInfoDialog streamInfo = new com.limelight.ui.StreamInfoDialog();
-    private boolean networkRouteChanged, networkBudgetNotice;
+    private volatile boolean networkRouteChanged, networkInputPaused;
+    private volatile boolean nativeStreamTerminated;
+    private boolean networkBudgetNotice, continuityWatching, recoveryFailurePending;
+    private long streamNetworkHandle;
+    private final com.limelight.nvstream.StreamContinuity continuity = new com.limelight.nvstream.StreamContinuity();
+    private com.limelight.nvstream.StreamContinuity.RecoveryBudget recoveryBudget = new com.limelight.nvstream.StreamContinuity.RecoveryBudget();
+    private final Runnable continuityMonitor = this::checkStreamContinuity;
     private final Runnable applyNetworkBudget = this::applyNetworkBudgetNow;
 
     private void applyNetworkBudgetNow() {
         if (connected && !bitrateRestarting && !imageTransfer &&
-                (currentBitrate() != streamBitrateKbps || networkRouteChanged)) {
-            reconnectForBitrate(currentBitrate(), networkRouteChanged);
+                currentBitrate() != streamBitrateKbps && !liveBitratePending) {
+            adjustBitrate(currentBitrate());
         }
     }
     private final Handler bitrateHandler = new Handler(android.os.Looper.getMainLooper());
@@ -155,6 +166,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     /** Retain policy/cooldowns and controls only, never Activity or connection objects. */
     private static final class RetainedStreamState {
         com.limelight.nvstream.AdaptiveBitrateController policy;
+        com.limelight.nvstream.StreamContinuity.RecoveryBudget recoveryBudget;
         com.limelight.ui.ImagePasteRequest imagePaste;
         boolean gameMode, expanded, adjusting, networkBudgetNotice;
         TouchMode touchMode;
@@ -162,11 +174,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private final Runnable bitrateMonitor = new Runnable() {
         @Override public void run() {
-            if (!connected || adaptiveBitrate == null || bitrateRestarting || isFinishing()) return;
+            if (!connected || adaptiveBitrate == null || bitrateRestarting || liveBitratePending || isFinishing()) return;
+            if (networkInputPaused) {
+                adaptiveBitrate.resetObservation();
+                bitrateHandler.postDelayed(this, 1_000);
+                return;
+            }
             if (activityResumed && hasWindowFocus() && !isInPictureInPictureMode()) {
                 int target = adaptiveBitrate.observe(decoderRenderer.getNetworkSample(), SystemClock.uptimeMillis());
                 if (target > 0) {
-                    reconnectForBitrate(target);
+                    adjustBitrate(target);
                     return;
                 }
             } else {
@@ -280,12 +297,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Read the stream preferences
         prefConfig = PreferenceConfiguration.readPreferences(this);
         RetainedStreamState retained = (RetainedStreamState) getLastNonConfigurationInstance();
+        if (retained != null && retained.recoveryBudget != null) recoveryBudget = retained.recoveryBudget;
         if (retained != null && retained.imagePaste != null) imagePaste = retained.imagePaste;
         dataPolicy = com.limelight.nvstream.CellularDataPolicy.forStream(prefConfig.bitrate,
                 PreferenceConfiguration.getDefaultBitrate(prefConfig.width + "x" + prefConfig.height,
                         Integer.toString(prefConfig.fps)), prefConfig.adaptiveBitrate, prefConfig.cellularDataSaver);
         streamNetworkMonitor = new com.limelight.nvstream.StreamNetworkMonitor(this, this::onStreamNetworkChanged);
         streamNetworkType = streamNetworkMonitor.snapshot();
+        streamNetworkHandle = streamNetworkMonitor.snapshotHandle();
         dataPolicy.update(streamNetworkType);
         if (prefConfig.adaptiveBitrate) {
             adaptiveBitrate = retained != null && retained.policy != null &&
@@ -295,7 +314,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         rateWasAdjusted = retained != null && retained.adjusting;
         networkBudgetNotice = retained != null && retained.networkBudgetNotice;
-        if (prefConfig.cellularDataSaver || prefConfig.adaptiveBitrate) streamNetworkMonitor.start(bitrateHandler);
+        streamNetworkMonitor.start(bitrateHandler);
         if (rateWasAdjusted && spinner != null) {
             spinner.setMessage(getString(R.string.adaptive_bitrate_reconnecting, currentBitrate() / 1000.0));
         }
@@ -595,18 +614,38 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         try {
             NvHTTP controlHttp = new NvHTTP(new ComputerDetails.AddressTuple(host, port), httpsPort, uniqueId,
                     serverCert, PlatformBinding.getCryptoProvider(this));
-            voiceInput = new com.limelight.ui.RemoteVoiceInput(this, controlHttp, () -> {
+            voiceInput = new com.limelight.ui.VoiceInputController(this, controlHttp, () -> {
                 cancelDesktopTouches(); keyboardDismissed();
                 if (desktopToolbar != null) desktopToolbar.hideVirtualKeyboard();
                 ((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE))
                         .hideSoftInputFromWindow(streamView.getWindowToken(), 0);
-            }, state -> { if (desktopToolbar != null) desktopToolbar.setVoiceState(state); });
+            }, state -> { if (desktopToolbar != null) desktopToolbar.setVoiceState(state); },
+                    () -> connected && activityResumed && !networkInputPaused && !isFinishing() && !isDestroyed() && !isInPictureInPictureMode(),
+                    text -> conn != null && conn.trySendUtf8Text(text));
             applicationMonitor = new com.limelight.binding.input.ApplicationMonitor(controlHttp, app -> {
                 if (desktopToolbar != null && connected && activityResumed && hasWindowFocus()
                         && !isInPictureInPictureMode()) desktopToolbar.observeApplication(app);
             });
+            remoteDisplays = new com.limelight.ui.RemoteDisplays(this, controlHttp,
+                    () -> decoderRenderer.getLastRenderedFrameNumber(), new com.limelight.ui.RemoteDisplays.Controls() {
+                public void pauseInput(boolean paused) {
+                    if (paused) {
+                        cancelDesktopTouches(); keyboardDismissed();
+                        if (desktopToolbar != null) { desktopToolbar.releaseTouches(); desktopToolbar.hideVirtualKeyboard(); }
+                        if (voiceInput != null) voiceInput.end(false);
+                        ((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE))
+                                .hideSoftInputFromWindow(streamView.getWindowToken(), 0);
+                    }
+                    conn.setInputPaused(paused);
+                }
+                public void disconnect() { finish(); }
+            });
+            remoteClipboard = new com.limelight.ui.RemoteClipboard(this, controlHttp);
+            remotePrivacy = new com.limelight.ui.RemotePrivacy(this, controlHttp, remoteDisplays::currentState);
+            remoteBitrate = new com.limelight.ui.RemoteBitrate(controlHttp, remoteDisplays::currentState,
+                    decoderRenderer::getLastRenderedFrameNumber);
             autoKeyboard = new com.limelight.binding.input.AutoKeyboardMonitor(
-                    controlHttp, action -> {
+                    remoteDisplays::focus, action -> {
                 if (!canAutoKeyboard()) return;
                 InputMethodManager ime = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
                 if (action == com.limelight.binding.input.AutoKeyboardPolicy.SHOW) {
@@ -641,6 +680,28 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 conn.sendMouseButtonDown(button); conn.sendMouseButtonUp(button);
             }
         });
+        com.limelight.ui.GameInputState zoomKeys = new com.limelight.ui.GameInputState((key, down, modifiers) ->
+                conn.sendKeyboardInput((short)(0x8000 | key),
+                        down ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP, (byte)modifiers, (byte)0));
+        zoomKeys.setEnabled(true);
+        phoneTouch.setPinchSink(new com.limelight.binding.input.touch.PhonePinchState.Sink() {
+            public void position(float x, float y) {
+                conn.sendMousePosition((short)Math.max(0, Math.min(streamView.getWidth(), x)),
+                        (short)Math.max(0, Math.min(streamView.getHeight(), y)),
+                        (short)streamView.getWidth(), (short)streamView.getHeight());
+            }
+            public void scroll(short vertical, short horizontal) {
+                if (vertical != 0) conn.sendMouseHighResScroll(vertical);
+                if (horizontal != 0) conn.sendMouseHighResHScroll(horizontal);
+            }
+            public void zoom(boolean in) {
+                if (!connected || !hasWindowFocus()) return;
+                // Orca routes Ctrl+= / Ctrl+- to the focused terminal's font size.
+                // Each step releases all of its keys immediately, including on failure.
+                try { zoomKeys.update("pinch", 0x11, in ? 0xBB : 0xBD); }
+                finally { zoomKeys.releaseAll(); }
+            }
+        });
 
         // The toolbar captures the connection, so attach only after it and the
         // touch contexts have been initialized.
@@ -652,6 +713,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void disconnect() { finish(); }
                     @Override public void home() { returnToComputers(); }
                     @Override public void image() { openImageTransfer(); }
+                    @Override public void files() { openTransfer(com.limelight.files.FileTransferActivity.class, 702); }
+                    @Override public void terminal() { openTransfer(com.limelight.terminal.TerminalActivity.class, 703); }
+                    @Override public void displays() { if (remoteDisplays != null) remoteDisplays.showPicker(); }
+                    @Override public void privacy() { if (remotePrivacy != null) remotePrivacy.show(); }
+                    @Override public void clipboard() { if (remoteClipboard != null) remoteClipboard.show(); }
+                    @Override public void voiceSettings() { if (voiceInput != null) voiceInput.showOptions(); }
                     @Override public void voice() {
                         if (voiceInput != null && connected && activityResumed && !isInPictureInPictureMode()) voiceInput.toggle();
                         else Toast.makeText(Game.this, R.string.voice_failed, Toast.LENGTH_LONG).show();
@@ -660,7 +727,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void scrollCompatibilityChanged(boolean enabled) {
                         phoneTouch.setScrollCompatibility(enabled);
                     }
+                    @Override public void pinchCompatibilityChanged(boolean enabled) {
+                        phoneTouch.setPinchCompatibility(enabled);
+                    }
                     @Override public void applicationChanged() {
+                        if (voiceInput != null) voiceInput.end(true);
                         cancelDesktopTouches();
                         if (autoKeyboard != null) autoKeyboard.foregroundChanged();
                         if (desktopToolbar != null) desktopToolbar.releaseTouches();
@@ -928,6 +999,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             resumeInputAfterPip |= grabbedInput;
             setInputGrabState(false);
         } else restoreInputAfterPip();
+        updateApplicationMonitor();
+        if (!inPip) showRecoveryFailureIfVisible();
     }
 
     public void setMetaKeyCaptureState(boolean enabled) {
@@ -999,7 +1072,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (!hasFocus && voiceInput != null) voiceInput.end(true);
+        if (voiceInput != null) voiceInput.windowFocusChanged(hasFocus);
         updateApplicationMonitor();
         if (!hasFocus) { cancelDesktopTouches(); keyboardDismissed(); }
         if (desktopToolbar != null) desktopToolbar.setFocused(hasFocus);
@@ -1303,6 +1376,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         com.limelight.ui.LiveStreamSession.clear(this);
         if (applicationMonitor != null) applicationMonitor.close();
         if (autoKeyboard != null) autoKeyboard.close();
+        if (remoteDisplays != null) remoteDisplays.close();
+        if (remoteBitrate != null) remoteBitrate.close();
+        if (remoteClipboard != null) remoteClipboard.close();
+        if (remotePrivacy != null) remotePrivacy.close();
         if (streamNetworkMonitor != null) streamNetworkMonitor.close();
         bitrateHandler.removeCallbacksAndMessages(null);
         cancelDesktopTouches();
@@ -1337,6 +1414,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     protected void onResume() {
         super.onResume();
         activityResumed = true;
+        showRecoveryFailureIfVisible();
         if (imageResumeReady) {
             imageResumeReady = false;
             recreate();
@@ -1480,6 +1558,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void openImageTransfer() {
+        openTransfer(ImageTransferActivity.class, IMAGE_TRANSFER);
+    }
+
+    private void openTransfer(Class<? extends android.app.Activity> destination, int requestCode) {
         if (!connected || imageTransfer || bitrateRestarting || isFinishing()) return;
         imageTransfer = true;
         displayedFailureDialog = true;
@@ -1493,8 +1575,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return;
             }
             try {
-                Intent target = new Intent(this, ImageTransferActivity.class).putExtras(getIntent());
-                startActivityForResult(target, IMAGE_TRANSFER);
+                Intent target = new Intent(this, destination).putExtras(getIntent());
+                startActivityForResult(target, requestCode);
             } catch (RuntimeException error) {
                 imageTransfer = false;
                 recreate();
@@ -1504,9 +1586,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request == IMAGE_TRANSFER) {
+        if (request == IMAGE_TRANSFER || request == 702 || request == 703) {
             imageTransfer = false;
-            if (result == RESULT_OK) imagePaste.uploaded();
+            if (request == IMAGE_TRANSFER && result == RESULT_OK) imagePaste.uploaded();
             imageResumeReady = true;
         }
     }
@@ -1872,10 +1954,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == com.limelight.ui.RemoteVoiceInput.PERMISSION && voiceInput != null) {
+        if ((requestCode == com.limelight.ui.RemoteVoiceInput.PERMISSION || requestCode == com.limelight.ui.PhoneSpeechInput.PERMISSION) && voiceInput != null) {
             boolean granted = results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
             streamView.postDelayed(() -> {
-                if (voiceInput != null) voiceInput.permissionResult(granted, connected && activityResumed
+                if (voiceInput != null) voiceInput.permissionResult(requestCode, granted, connected && activityResumed
                         && !isFinishing() && !isDestroyed() && !isInPictureInPictureMode());
             }, 200);
         }
@@ -1896,6 +1978,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void updateApplicationMonitor() {
+        updateContinuityMonitoring();
+        if (remotePrivacy != null) remotePrivacy.setActive(connected && activityResumed && !isFinishing() && !isInPictureInPictureMode());
+        if (remoteClipboard != null) remoteClipboard.setActive(connected && activityResumed && !isFinishing() && !isInPictureInPictureMode());
+        if (remoteDisplays != null) {
+            remoteDisplays.setMonitoring(connected && !isFinishing());
+            remoteDisplays.setActive(connected && activityResumed && !isFinishing() && !isInPictureInPictureMode());
+        }
         if (applicationMonitor != null) applicationMonitor.setActive(connected && activityResumed
                 && hasWindowFocus() && !isFinishing() && !isInPictureInPictureMode());
     }
@@ -2613,23 +2702,89 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return adaptiveBitrate != null ? adaptiveBitrate.getBitrateKbps() : dataPolicy.getCeilingKbps();
     }
 
-    private void onStreamNetworkChanged(com.limelight.nvstream.CellularDataPolicy.NetworkType type) {
-        if (isFinishing() || isDestroyed() || (!prefConfig.cellularDataSaver && !prefConfig.adaptiveBitrate)) return;
+    private void updateContinuityMonitoring() {
+        boolean watch = connected && !bitrateRestarting && !imageTransfer && !isFinishing() &&
+                (activityResumed || isInPictureInPictureMode());
+        if (watch == continuityWatching) return;
+        continuityWatching = watch;
+        bitrateHandler.removeCallbacks(continuityMonitor);
+        if (watch) {
+            continuity.activate(SystemClock.uptimeMillis(), decoderRenderer.getLastRenderedFrameNumber());
+            bitrateHandler.post(continuityMonitor);
+        } else continuity.suspend();
+    }
+
+    private void checkStreamContinuity() {
+        if (!continuityWatching || !connected || nativeStreamTerminated || bitrateRestarting || isFinishing() || isDestroyed()) return;
+        com.limelight.binding.video.RenderedFrameTracker.Presentation frame = decoderRenderer.getLastPresentation();
+        boolean captureConfirmed = remoteDisplays != null && remoteDisplays.readyAfterNetworkPause(continuity.pausedAt(), frame.frame);
+        com.limelight.nvstream.StreamContinuity.Action action = continuity.observe(
+                SystemClock.uptimeMillis(), frame.frame, frame.receivedAtMs, captureConfirmed);
+        networkRouteChanged = continuity.routePending();
+        setNetworkInputPaused(continuity.inputPaused());
+        if (action == com.limelight.nvstream.StreamContinuity.Action.RECONNECT) {
+            LimeLog.info("Stream stopped presenting fresh frames; recovering the connection");
+            reconnectForBitrate(currentBitrate(), true);
+            return;
+        }
+        bitrateHandler.postDelayed(continuityMonitor, 250);
+    }
+
+    private void setNetworkInputPaused(boolean paused) {
+        if (networkInputPaused == paused) return;
+        networkInputPaused = paused;
+        if (paused) {
+            cancelDesktopTouches(); keyboardDismissed();
+            if (desktopToolbar != null) { desktopToolbar.releaseTouches(); desktopToolbar.hideVirtualKeyboard(); }
+            if (voiceInput != null) voiceInput.end(false);
+            ((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE))
+                    .hideSoftInputFromWindow(streamView.getWindowToken(), 0);
+        }
+        conn.setInputPaused(com.limelight.nvstream.InputPause.NETWORK, paused);
+        if (activityResumed && !isInPictureInPictureMode()) Toast.makeText(this,
+                paused ? R.string.stream_recovery_waiting : R.string.stream_recovery_resumed, Toast.LENGTH_SHORT).show();
+    }
+
+    private void showRecoveryFailureIfVisible() {
+        if (!recoveryFailurePending || !activityResumed || isInPictureInPictureMode() || isFinishing() || isDestroyed()) return;
+        recoveryFailurePending = false;
+        new android.app.AlertDialog.Builder(this).setTitle(R.string.stream_recovery_title)
+                .setMessage(R.string.stream_recovery_failed).setCancelable(false)
+                .setPositiveButton(R.string.stream_recovery_retry, (dialog, which) -> {
+                    recoveryBudget.reset(); bitrateRestarting = true; recreate();
+                }).setNegativeButton(R.string.desktop_disconnect, (dialog, which) -> finish()).show();
+    }
+
+    private void onStreamNetworkChanged(com.limelight.nvstream.CellularDataPolicy.NetworkType type, long networkHandle) {
+        if (isFinishing() || isDestroyed()) return;
         bitrateHandler.removeCallbacks(applyNetworkBudget);
-        if (type == com.limelight.nvstream.CellularDataPolicy.NetworkType.UNKNOWN) return;
         int oldCeiling = dataPolicy.getCeilingKbps();
         boolean changedNetworkType = streamNetworkType != type;
-        networkRouteChanged |= streamNetworkType != com.limelight.nvstream.CellularDataPolicy.NetworkType.UNKNOWN &&
-                changedNetworkType;
+        boolean changedNetwork = streamNetworkHandle != networkHandle;
+        streamNetworkHandle = networkHandle;
         streamNetworkType = type;
         dataPolicy.update(type);
-        if (changedNetworkType || oldCeiling != dataPolicy.getCeilingKbps()) {
+        if (changedNetwork || changedNetworkType || oldCeiling != dataPolicy.getCeilingKbps()) {
             // Congestion observations from the old network are no longer useful.
             if (adaptiveBitrate != null) {
                 adaptiveBitrate = new com.limelight.nvstream.AdaptiveBitrateController(
-                        dataPolicy.getInitialBitrateKbps(), dataPolicy.getCeilingKbps());
+                        type == com.limelight.nvstream.CellularDataPolicy.NetworkType.UNKNOWN ?
+                                Math.min(currentBitrate(), dataPolicy.getInitialBitrateKbps()) : dataPolicy.getInitialBitrateKbps(),
+                        dataPolicy.getCeilingKbps());
+                if (connected) adaptiveBitrate.onConnected(SystemClock.uptimeMillis());
             }
             networkBudgetNotice |= oldCeiling != dataPolicy.getCeilingKbps();
+        }
+        if (changedNetwork) {
+            networkRouteChanged = true;
+            long frame = decoderRenderer == null ? 0 : decoderRenderer.getLastRenderedFrameNumber();
+            continuity.networkChanged(SystemClock.uptimeMillis(), frame, networkHandle != 0);
+            if (connected && continuity.inputPaused()) setNetworkInputPaused(true);
+            if (com.limelight.computers.EmbeddedNetwork.isAddress(getIntent().getStringExtra(EXTRA_HOST)) &&
+                    com.limelight.computers.EmbeddedNetwork.provider != null) {
+                try { com.limelight.computers.EmbeddedNetwork.provider.restore(getApplicationContext()); }
+                catch (RuntimeException error) { LimeLog.warning("Unable to request channel recovery"); }
+            }
         }
         if (networkRouteChanged || currentBitrate() != streamBitrateKbps) {
             LimeLog.info("Stream network: " + type + "; bitrate limit " + dataPolicy.getCeilingKbps() + " Kbps");
@@ -2642,6 +2797,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public Object onRetainNonConfigurationInstance() {
         RetainedStreamState state = new RetainedStreamState();
         state.policy = adaptiveBitrate;
+        state.recoveryBudget = recoveryBudget;
         state.imagePaste = imagePaste;
         state.adjusting = bitrateRestarting;
         state.networkBudgetNotice = networkBudgetNotice;
@@ -2653,12 +2809,55 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return state;
     }
 
+    private void adjustBitrate(int bitrateKbps) {
+        if (!connected || bitrateRestarting || liveBitratePending || isFinishing() || isDestroyed()) return;
+        if (remoteBitrate == null) { reconnectForBitrate(bitrateKbps); return; }
+        liveBitratePending = true;
+        if (!remoteBitrate.request(bitrateKbps, (result, actualBudget) -> {
+            liveBitratePending = false;
+            if (!connected || bitrateRestarting || isFinishing() || isDestroyed()) return;
+            switch (result) {
+                case APPLIED:
+                    streamBitrateKbps = actualBudget;
+                    if (adaptiveBitrate != null) adaptiveBitrate.resetObservation();
+                    LimeLog.info("Live bitrate applied at " + actualBudget + " Kbps without reconnecting");
+                    break;
+                case REJECTED:
+                    if (actualBudget >= 500 && actualBudget <= 150000) streamBitrateKbps = actualBudget;
+                    if (adaptiveBitrate != null) adaptiveBitrate.onRateRejected(streamBitrateKbps, SystemClock.uptimeMillis());
+                    LimeLog.warning("Live bitrate request rejected; keeping the current connection");
+                    break;
+                case UNSUPPORTED:
+                case UNCONFIRMED:
+                    // Legacy encoders and an unconfirmed network request retain
+                    // the established reconnect recovery path.
+                    reconnectForBitrate(currentBitrate(), networkRouteChanged);
+                    return;
+            }
+            if (networkRouteChanged || currentBitrate() != bitrateKbps) bitrateHandler.post(applyNetworkBudget);
+            if (adaptiveBitrate != null) {
+                bitrateHandler.removeCallbacks(bitrateMonitor);
+                bitrateHandler.postDelayed(bitrateMonitor, 1_000);
+            }
+        })) {
+            liveBitratePending = false;
+            reconnectForBitrate(currentBitrate(), networkRouteChanged);
+        }
+    }
+
     private void reconnectForBitrate(int bitrateKbps) {
         reconnectForBitrate(bitrateKbps, false);
     }
 
     private void reconnectForBitrate(int bitrateKbps, boolean recoverRoute) {
         if (!connected || bitrateRestarting || isFinishing() || isDestroyed()) return;
+        if (recoverRoute && !recoveryBudget.take(SystemClock.uptimeMillis())) {
+            displayedFailureDialog = true;
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            setInputGrabState(false);
+            stopConnection(() -> { recoveryFailurePending = true; showRecoveryFailureIfVisible(); });
+            return;
+        }
         bitrateRestarting = true;
         displayedFailureDialog = true;
         LimeLog.info("Adaptive bitrate: reconnect at " + bitrateKbps + " Kbps; resolution and FPS unchanged");
@@ -2666,11 +2865,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (desktopToolbar != null) desktopToolbar.releaseTouches();
         setInputGrabState(false);
         if (!isInPictureInPictureMode()) {
-            spinner = SpinnerDialog.displayDialog(this, getString(R.string.adaptive_bitrate_adjusting),
-                    getString(R.string.adaptive_bitrate_reconnecting, bitrateKbps / 1000.0), true);
+            spinner = SpinnerDialog.displayDialog(this,
+                    getString(recoverRoute ? R.string.stream_recovery_title : R.string.adaptive_bitrate_adjusting),
+                    recoverRoute ? getString(R.string.stream_recovery_connecting) : getString(R.string.adaptive_bitrate_reconnecting, bitrateKbps / 1000.0), true);
         }
         if (recoverRoute && com.limelight.computers.EmbeddedNetwork.provider != null) {
-            com.limelight.computers.EmbeddedNetwork.provider.restore(getApplicationContext());
+            try { com.limelight.computers.EmbeddedNetwork.provider.restore(getApplicationContext()); }
+            catch (RuntimeException error) { LimeLog.warning("Unable to request channel recovery"); }
         }
         stopConnection(() -> {
             if (isFinishing() || isDestroyed()) return;
@@ -2706,6 +2907,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void stopConnection() { stopConnection(null); }
 
     private void stopConnection(Runnable afterStop) {
+        if (remoteClipboard != null) remoteClipboard.close();
+        if (remotePrivacy != null) remotePrivacy.close();
+        continuityWatching = false;
+        continuity.suspend();
+        bitrateHandler.removeCallbacks(continuityMonitor);
+        if (remoteDisplays != null) remoteDisplays.close();
+        if (remoteBitrate != null) remoteBitrate.close();
+        liveBitratePending = false;
         if (voiceInput != null) voiceInput.pause();
         streamInfo.dismiss();
         resumeInputAfterPip = false;
@@ -2762,7 +2971,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void stageFailed(final String stage, final int portFlags, final int errorCode) {
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
-        final boolean embedded = com.limelight.computers.EmbeddedNetwork.ADDRESS.equals(getIntent().getStringExtra(EXTRA_HOST));
+        final boolean embedded = com.limelight.computers.EmbeddedNetwork.isAddress(getIntent().getStringExtra(EXTRA_HOST));
         // Public GameStream port probes say nothing about an app-owned tunnel.
         final int portTestResult = embedded ? MoonBridge.ML_TEST_RESULT_INCONCLUSIVE :
                 MoonBridge.testClientConnectivity(ServerHelper.CONNECTION_TEST_SERVER, 443, portFlags);
@@ -2803,11 +3012,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void connectionTerminated(final int errorCode) {
+        nativeStreamTerminated = true;
         if (bitrateRestarting || imageTransfer) return;
+        if ((networkRouteChanged || networkInputPaused || errorCode == MoonBridge.ML_ERROR_NO_VIDEO_TRAFFIC ||
+                errorCode == MoonBridge.ML_ERROR_NO_VIDEO_FRAME) && errorCode != MoonBridge.ML_ERROR_GRACEFUL_TERMINATION &&
+                errorCode != MoonBridge.ML_ERROR_PROTECTED_CONTENT && errorCode != MoonBridge.ML_ERROR_FRAME_CONVERSION) {
+            runOnUiThread(() -> {
+                if (connected && !bitrateRestarting && !imageTransfer && !isFinishing() && !isDestroyed())
+                    reconnectForBitrate(currentBitrate(), true);
+            });
+            return;
+        }
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
         final int portFlags = MoonBridge.getPortFlagsFromTerminationErrorCode(errorCode);
-        final boolean embedded = com.limelight.computers.EmbeddedNetwork.ADDRESS.equals(getIntent().getStringExtra(EXTRA_HOST));
+        final boolean embedded = com.limelight.computers.EmbeddedNetwork.isAddress(getIntent().getStringExtra(EXTRA_HOST));
         final int portTestResult = embedded ? MoonBridge.ML_TEST_RESULT_INCONCLUSIVE :
                 MoonBridge.testClientConnectivity(ServerHelper.CONNECTION_TEST_SERVER,443, portFlags);
 

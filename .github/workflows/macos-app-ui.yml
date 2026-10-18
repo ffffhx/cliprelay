@@ -1,0 +1,42 @@
+name: macOS Complete Application UI Development
+on:
+  push:
+    branches: ['codex/desktop-client-input-*']
+    paths: ['.github/workflows/macos-app-ui.yml']
+  workflow_dispatch:
+    inputs:
+      permission_probe:
+        description: 'Observe the normal permission request UI on a disposable runner'
+        type: choice
+        options: ['none', 'screen', 'input', 'screen-settings', 'screen-grant', 'input-settings', 'input-grant']
+        default: 'none'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Fetch unchanged independently verified complete application
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/app_ui/fetch.py
+      - name: Install pinned UI automation without install hooks or browser downloads
+        run: npm ci --prefix scripts/app_ui --ignore-scripts --no-audit --no-fund
+      - name: Observe normal application menu and permission UI
+        env:
+          CLIPRELAY_PERMISSION_PROBE: ${{ inputs.permission_probe || 'none' }}
+        run: |
+          python3 -m unittest discover -s scripts/app_ui -p 'test_*.py'
+          python3 scripts/app_ui/run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Complete-App-UI-x64
+          path: macos-app-ui.json
+          if-no-files-found: error

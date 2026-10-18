@@ -1,0 +1,976 @@
+diff --git a/app/Info.plist b/app/Info.plist
+index 24980b77..425851cb 100644
+--- a/app/Info.plist
++++ b/app/Info.plist
+@@ -13,7 +13,7 @@
+ 	<key>CFBundleIconFile</key>
+ 	<string>moonlight</string>
+ 	<key>CFBundleIdentifier</key>
+-	<string>com.moonlight-stream.Moonlight</string>
++	<string>com.cliprelay.stream</string>
+ 	<key>NSHighResolutionCapable</key>
+ 	<true/>
+ 	<key>CFBundlePackageType</key>
+@@ -41,7 +41,7 @@
+ 		<true/>
+ 	</dict>
+ 	<key>NSLocalNetworkUsageDescription</key>
+-	<string>Moonlight uses the local network to connect to your gaming PC for streaming.</string>
++	<string>ClipRelay connects to your paired computer to display and control its desktop.</string>
+ 	<key>NSBonjourServices</key>
+ 	<array>
+ 		<string>_nvstream._tcp</string>
+@@ -51,8 +51,8 @@
+ 	<key>CFBundleShortVersionString</key>
+ 	<string>VERSION</string>
+ 	<key>CFBundleDisplayName</key>
+-	<string>Moonlight</string>
++	<string>ClipRelay Stream</string>
+     <key>LSApplicationCategoryType</key>
+-	<string>public.app-category.games</string>
++	<string>public.app-category.utilities</string>
+ </dict>
+ </plist>
+diff --git a/app/app.pro b/app/app.pro
+index 1c0661b3..5cfcc119 100644
+--- a/app/app.pro
++++ b/app/app.pro
+@@ -1,4 +1,7 @@
+ QT += core quick network quickcontrols2 svg
++SOURCES += backend/sessionimport.cpp
++HEADERS += backend/sessionimport.h streaming/input/inputstate.h
++SOURCES += streaming/input/inputepoch.cpp
+ CONFIG += c++17
+ 
+ unix:!macx {
+diff --git a/app/backend/computermanager.cpp b/app/backend/computermanager.cpp
+index 96177da7..27626000 100644
+--- a/app/backend/computermanager.cpp
++++ b/app/backend/computermanager.cpp
+@@ -1,4 +1,5 @@
+ #include "computermanager.h"
++#include "sessionimport.h"
+ #include "boxartmanager.h"
+ #include "nvhttp.h"
+ #include "nvpairingmanager.h"
+@@ -176,6 +177,8 @@ ComputerManager::ComputerManager(StreamingPreferences* prefs)
+         hosts = settings.beginReadArray(SER_HOSTS);
+     }
+ 
++    if (ClipRelayImport::active()) hosts = 0;
++
+     // Inflate our hosts from QSettings
+     for (int i = 0; i < hosts; i++) {
+         settings.setArrayIndex(i);
+@@ -186,7 +189,7 @@ ComputerManager::ComputerManager(StreamingPreferences* prefs)
+     settings.endArray();
+ 
+     // Fetch latest compatibility data asynchronously
+-    m_CompatFetcher.start();
++    if (!ClipRelayImport::active()) m_CompatFetcher.start();
+ 
+     // Start the delayed flush thread to handle saveHosts() calls
+     m_DelayedFlushThread = new DelayedFlushThread(this);
+diff --git a/app/backend/identitymanager.cpp b/app/backend/identitymanager.cpp
+index 943a88e7..2d11ec71 100644
+--- a/app/backend/identitymanager.cpp
++++ b/app/backend/identitymanager.cpp
+@@ -1,4 +1,5 @@
+ #include "identitymanager.h"
++#include "sessionimport.h"
+ #include "utils.h"
+ 
+ #include <QDebug>
+@@ -108,6 +109,14 @@ void IdentityManager::createCredentials(QSettings& settings)
+ 
+ IdentityManager::IdentityManager()
+ {
++    if (ClipRelayImport::active()) {
++        const auto& input = ClipRelayImport::get();
++        m_CachedPemCert = input.certificate;
++        m_CachedPrivateKey = input.privateKey;
++        m_CachedUniqueId = input.clientId;
++        if (getSslCertificate().isNull() || getSslKey().isNull()) qFatal("Invalid imported identity");
++        return;
++    }
+     QSettings settings;
+ 
+     m_CachedPemCert = settings.value(SER_CERT).toByteArray();
+@@ -198,6 +207,7 @@ QSslConfiguration
+ IdentityManager::getSslConfig()
+ {
+     QSslConfiguration sslConfig(QSslConfiguration::defaultConfiguration());
++    if (ClipRelayImport::active()) sslConfig.setProtocol(QSsl::TlsV1_2OrLater);
+     sslConfig.setLocalCertificate(getSslCertificate());
+     sslConfig.setPrivateKey(getSslKey());
+     return sslConfig;
+diff --git a/app/backend/nvhttp.cpp b/app/backend/nvhttp.cpp
+index f447b4ff..896f2f78 100644
+--- a/app/backend/nvhttp.cpp
++++ b/app/backend/nvhttp.cpp
+@@ -1,4 +1,5 @@
+ #include "nvcomputer.h"
++#include "sessionimport.h"
+ #include <Limelight.h>
+ 
+ #include <QDebug>
+@@ -134,6 +135,12 @@ QString
+ NvHTTP::getServerInfo(NvLogLevel logLevel, bool fastFail)
+ {
+     QString serverInfo;
++    if (ClipRelayImport::active()) {
++        serverInfo = openConnectionToString(m_BaseUrlHttps, "serverinfo", nullptr,
++                                            fastFail ? FAST_FAIL_TIMEOUT_MS : REQUEST_TIMEOUT_MS, NVLL_NONE);
++        verifyResponseStatus(serverInfo);
++        return serverInfo;
++    }
+ 
+     // Check if we have a pinned cert and HTTPS port for this host yet
+     if (!m_ServerCert.isNull() && httpsPort() != 0)
+@@ -237,7 +244,7 @@ NvHTTP::startApp(QString verb,
+                                    LiGetLaunchUrlQueryParameters(),
+                                    LAUNCH_TIMEOUT_MS);
+ 
+-    qInfo() << "Launch response:" << response;
++    if (!ClipRelayImport::active()) qInfo() << "Launch response:" << response;
+ 
+     // Throws if the request failed
+     verifyResponseStatus(response);
+@@ -485,6 +492,15 @@ NvHTTP::openConnection(QUrl baseUrl,
+                        int timeoutMs,
+                        NvLogLevel logLevel)
+ {
++    if (ClipRelayImport::active()) {
++        const auto& input = ClipRelayImport::get();
++        QUrl expected; expected.setHost(input.address);
++        if (baseUrl.scheme() != "https" || baseUrl.host() != expected.host() ||
++            baseUrl.port() != input.port - 5 || m_ServerCert != input.hostCertificate) {
++            throw GfeHttpResponseException(401, "Paired endpoint mismatch");
++        }
++        logLevel = NVLL_NONE;
++    }
+     // Port must be set
+     Q_ASSERT(baseUrl.port(0) != 0);
+ 
+@@ -498,6 +514,7 @@ NvHTTP::openConnection(QUrl baseUrl,
+                  ((arguments != nullptr) ? ("&" + arguments) : ""));
+ 
+     QNetworkRequest request(url);
++    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+ 
+     // Add our client certificate
+     request.setSslConfiguration(IdentityManager::get()->getSslConfig());
+@@ -516,6 +533,22 @@ NvHTTP::openConnection(QUrl baseUrl,
+ 
+     auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
+     QNetworkReply* reply = m_Nam->get(request);
++    // sslErrors alone cannot pin a certificate that chains to a trusted root.
++    // encrypted is emitted before request data is sent on each fresh connection.
++    if (ClipRelayImport::active()) {
++        connect(reply, &QNetworkReply::encrypted, reply, [reply, pin = m_ServerCert] {
++            if (reply->sslConfiguration().peerCertificate() != pin) {
++                reply->setProperty("cliprelayPinMismatch", true);
++                reply->abort();
++            }
++        });
++        connect(reply, &QNetworkReply::readyRead, reply, [reply] {
++            if (reply->bytesAvailable() > 1024 * 1024) {
++                reply->setProperty("cliprelayInvalidResponse", true);
++                reply->abort();
++            }
++        });
++    }
+ 
+     // Run the request with a timeout if requested
+     QEventLoop loop;
+@@ -544,6 +577,14 @@ NvHTTP::openConnection(QUrl baseUrl,
+ #endif
+     disconnect(sslErrorsConnection);
+ 
++    if (ClipRelayImport::active() && reply->property("cliprelayPinMismatch").toBool()) {
++        delete reply;
++        throw GfeHttpResponseException(401, "Server certificate mismatch");
++    }
++    if (ClipRelayImport::active() && reply->property("cliprelayInvalidResponse").toBool()) {
++        delete reply;
++        throw GfeHttpResponseException(502, "Invalid response");
++    }
+     // Handle error
+     if (reply->error() != QNetworkReply::NoError)
+     {
+diff --git a/app/cli/startstream.cpp b/app/cli/startstream.cpp
+index 5f79b555..24070a98 100644
+--- a/app/cli/startstream.cpp
++++ b/app/cli/startstream.cpp
+@@ -1,4 +1,6 @@
+ #include "startstream.h"
++#include "backend/sessionimport.h"
++#include <memory>
+ #include "backend/computermanager.h"
+ #include "backend/computerseeker.h"
+ #include "streaming/session.h"
+@@ -60,6 +62,11 @@ public:
+             if (m_State == StateInit) {
+                 m_State = StateSeekComputer;
+                 m_ComputerManager = event.computerManager;
++                if (ClipRelayImport::active()) {
++                    emit q->searchingComputer();
++                    QTimer::singleShot(0, q, [this] { startPairedSession(); });
++                    break;
++                }
+ 
+                 m_ComputerSeeker = new ComputerSeeker(m_ComputerManager, m_ComputerName, q);
+                 q->connect(m_ComputerSeeker, &ComputerSeeker::computerFound,
+@@ -140,6 +147,46 @@ public:
+         }
+     }
+ 
++    void startPairedSession()
++    {
++        Q_Q(Launcher);
++        try {
++            const auto& input = ClipRelayImport::get();
++            NvHTTP http(NvAddress(input.address, input.port), input.port - 5, input.hostCertificate, true);
++            QString info = http.getServerInfo(NvHTTP::NVLL_NONE);
++            if (!ClipRelayImport::parentAlive()) return;
++            m_PairedComputer.reset(new NvComputer(http, info));
++            m_Computer = m_PairedComputer.get();
++            if (m_Computer->pairState != NvComputer::PS_PAIRED || m_Computer->isNvidiaServerSoftware)
++                throw GfeHttpResponseException(401, "Pairing was revoked. Pair again in ClipRelay.");
++            m_Computer->activeHttpsPort = input.port - 5;
++            emit q->searchingApp();
++            m_Computer->appList = http.getAppList();
++            int index = getAppIndex();
++            if (index < 0) throw GfeHttpResponseException(404, "Desktop is unavailable on this computer.");
++            NvApp app = m_Computer->appList[index];
++            if (!isNotStreaming() && !isStreamingApp(app))
++                throw GfeHttpResponseException(409, "Another application is streaming. End it on the computer first.");
++            if (!ClipRelayImport::parentAlive()) return;
++            m_State = StateStartSession;
++            emit q->sessionCreated(app.name, new Session(m_Computer, app, m_Preferences));
++        }
++        catch (const GfeHttpResponseException& error) {
++            ClipRelayImport::reportEnded(error.getStatusCode() == 401 || error.getStatusCode() == 403 ?
++                ClipRelayImport::EndReason::Pairing : ClipRelayImport::EndReason::Host);
++        }
++        catch (const QtNetworkReplyException& error) {
++            ClipRelayImport::reportEnded(ClipRelayImport::retryableNetworkError(error.getError()) ?
++                ClipRelayImport::EndReason::Network : ClipRelayImport::EndReason::Host);
++        }
++        catch (const std::exception&) {
++            ClipRelayImport::reportEnded(ClipRelayImport::EndReason::Host);
++        }
++        if (m_State == StateStartSession) return;
++        m_State = StateFailure;
++        emit q->failed(QObject::tr("Unable to open the paired desktop."));
++    }
++
+     int getAppIndex() const
+     {
+         for (int i = 0; i < m_Computer->appList.length(); i++) {
+@@ -170,6 +217,7 @@ public:
+         return "<UNKNOWN>";
+     }
+ 
++    std::unique_ptr<NvComputer> m_PairedComputer;
+     Launcher *q_ptr;
+     QString m_ComputerName;
+     QString m_AppName;
+diff --git a/app/gui/CliStartStreamSegue.qml b/app/gui/CliStartStreamSegue.qml
+index cc1be12a..1620b712 100644
+--- a/app/gui/CliStartStreamSegue.qml
++++ b/app/gui/CliStartStreamSegue.qml
+@@ -23,8 +23,7 @@ Item {
+     }
+ 
+     function onLaunchFailed(message) {
+-        errorDialog.text = message
+-        errorDialog.open()
++        Qt.quit()
+         console.error(message)
+     }
+ 
+diff --git a/app/gui/StreamSegue.qml b/app/gui/StreamSegue.qml
+index d7c0c5d1..a831917f 100644
+--- a/app/gui/StreamSegue.qml
++++ b/app/gui/StreamSegue.qml
+@@ -73,7 +73,7 @@ Item {
+             stackView.pop()
+         }
+ 
+-        if (quitAfter && !streamSegueErrorDialog.text) {
++        if (quitAfter) {
+             // If this was a CLI launch without errors, exit now
+             Qt.quit()
+         }
+diff --git a/app/main.cpp b/app/main.cpp
+index 2b701d71..22f9047f 100644
+--- a/app/main.cpp
++++ b/app/main.cpp
+@@ -39,6 +39,7 @@
+ #include <openssl/ssl.h>
+ #endif
+ 
++#include "backend/sessionimport.h"
+ #include "cli/listapps.h"
+ #include "cli/quitstream.h"
+ #include "cli/startstream.h"
+@@ -428,11 +429,11 @@ int main(int argc, char *argv[])
+     // Set these here to allow us to use the default QSettings constructor.
+     // These also ensure that our cache directory is named correctly. As such,
+     // it is critical that these be called before Path::initialize().
+-    QCoreApplication::setOrganizationName("Moonlight Game Streaming Project");
+-    QCoreApplication::setOrganizationDomain("moonlight-stream.com");
+-    QCoreApplication::setApplicationName("Moonlight");
++    QCoreApplication::setOrganizationName("ClipRelay");
++    QCoreApplication::setOrganizationDomain("cliprelay.local");
++    QCoreApplication::setApplicationName("ClipRelay Stream");
+ 
+-    if (QFile(QDir::currentPath() + "/portable.dat").exists()) {
++    if (false) { // ClipRelay never imports portable Moonlight settings.
+         QSettings::setDefaultFormat(QSettings::IniFormat);
+         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QDir::currentPath());
+         QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, QDir::currentPath());
+@@ -464,7 +465,7 @@ int main(int argc, char *argv[])
+     if (IS_UNSPECIFIED_HANDLE(oldConErr))
+ #endif
+     {
+-        s_LoggerFile = new QFile(tempDir.filePath(QString("Moonlight-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
++        s_LoggerFile = new QFile(tempDir.filePath(QString("ClipRelayStream-%1.log").arg(QDateTime::currentSecsSinceEpoch())));
+         if (s_LoggerFile->open(QIODevice::WriteOnly | QIODevice::Text)) {
+             QTextStream(stderr) << "Redirecting log output to " << s_LoggerFile->fileName() << Qt::endl;
+             s_LoggerStream.setDevice(s_LoggerFile);
+@@ -497,7 +498,7 @@ int main(int argc, char *argv[])
+ 
+ #ifdef LOG_TO_FILE
+     // Prune the oldest existing logs if there are more than 10
+-    QStringList existingLogNames = tempDir.entryList(QStringList("Moonlight-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
++    QStringList existingLogNames = tempDir.entryList(QStringList("ClipRelayStream-*.log"), QDir::NoFilter, QDir::SortFlag::Time);
+     for (int i = 10; i < existingLogNames.size(); i++) {
+         qInfo() << "Removing old log file:" << existingLogNames.at(i);
+         QFile(tempDir.filePath(existingLogNames.at(i))).remove();
+@@ -715,8 +716,8 @@ int main(int argc, char *argv[])
+     // Set our app name for SDL to use with PulseAudio and PipeWire. This matches what we
+     // provide as our app name to libsoundio too. On SDL 2.0.18+, SDL_APP_NAME is also used
+     // for screensaver inhibitor reporting.
+-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Moonlight");
+-    SDL_SetHint(SDL_HINT_APP_NAME, "Moonlight");
++    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "ClipRelay Stream");
++    SDL_SetHint(SDL_HINT_APP_NAME, "ClipRelay Stream");
+ 
+     // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
+     // support applications that assume they can warp the cursor (which isn't possible
+@@ -803,8 +804,22 @@ int main(int argc, char *argv[])
+     }
+ #endif
+ 
+-    GlobalCommandLineParser parser;
+-    GlobalCommandLineParser::ParseResult commandLineParserResult = parser.parse(app.arguments());
++    // This build only accepts an ephemeral paired session from the desktop app.
++    if (app.arguments().size() != 2 || app.arguments().at(1) != "--cliprelay-session" ||
++        !ClipRelayImport::loadStdin()) {
++        qCritical("Invalid ClipRelay session envelope");
++        return 2;
++    }
++    QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
++        ClipRelayImport::reportEnded(ClipRelayImport::EndReason::User);
++    });
++    ClipRelayImport::watchParent([] {
++        if (auto session = Session::get()) {
++            session->setShouldExit();
++            session->interrupt();
++        } else QCoreApplication::quit();
++    });
++    GlobalCommandLineParser::ParseResult commandLineParserResult = GlobalCommandLineParser::StreamRequested;
+     switch (commandLineParserResult) {
+     case GlobalCommandLineParser::ListRequested:
+         // Don't log to the console since it will jumble the command output
+@@ -995,10 +1010,32 @@ int main(int argc, char *argv[])
+         {
+             initialView = "qrc:/gui/CliStartStreamSegue.qml";
+             StreamingPreferences* preferences = StreamingPreferences::get();
+-            StreamCommandLineParser streamParser;
+-            streamParser.parse(app.arguments(), preferences);
+-            QString host    = streamParser.getHost();
+-            QString appName = streamParser.getAppName();
++            const auto& input = ClipRelayImport::get();
++            preferences->width = input.width;
++            preferences->height = input.height;
++            preferences->fps = input.fps;
++            preferences->bitrateKbps = input.bitrate;
++            preferences->windowMode = input.fullscreen ? StreamingPreferences::WM_FULLSCREEN_DESKTOP : StreamingPreferences::WM_WINDOWED;
++            preferences->videoCodecConfig = StreamingPreferences::VCC_AUTO;
++#ifdef Q_OS_DARWIN
++            // Keep Mac sessions on native Metal. Automatic MoltenVK selection
++            // can crash inside the driver before a stream is established.
++            preferences->rendererSelection = StreamingPreferences::RS_METAL;
++#endif
++            preferences->audioConfig = StreamingPreferences::AC_STEREO;
++            preferences->enableMdns = false;
++            preferences->quitAppAfter = false;
++            preferences->gameOptimizations = false;
++            preferences->richPresence = false;
++            preferences->absoluteMouseMode = true;
++            preferences->backgroundGamepad = false;
++            preferences->gamepadMouse = false;
++            preferences->playAudioOnHost = true;
++            preferences->enableHdr = false;
++            preferences->enableYUV444 = false;
++            preferences->detectNetworkBlocking = false;
++            QString host = input.address;
++            QString appName = "Desktop";
+             auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app);
+             engine.rootContext()->setContextProperty("launcher", launcher);
+             break;
+diff --git a/app/streaming/input/abstouch.cpp b/app/streaming/input/abstouch.cpp
+index 0fe6dac6..c2b4729f 100644
+--- a/app/streaming/input/abstouch.cpp
++++ b/app/streaming/input/abstouch.cpp
+@@ -184,7 +184,7 @@ void SdlInputHandler::emulateAbsoluteFingerEvent(SDL_TouchFingerEvent* event)
+ 
+     if (qSqrt(qPow(event->x - m_LastTouchDownEvent.x, 2) + qPow(event->y - m_LastTouchDownEvent.y, 2)) > LONG_PRESS_ACTIVATION_DELTA) {
+         // Moved too far since touch down. Cancel the long press timer.
+-        SDL_RemoveTimer(m_LongPressTimer);
++        removeInputTimer(m_LongPressTimer);
+         m_LongPressTimer = 0;
+     }
+ 
+@@ -204,8 +204,8 @@ void SdlInputHandler::emulateAbsoluteFingerEvent(SDL_TouchFingerEvent* event)
+         m_LastTouchDownEvent = *event;
+ 
+         // Start/restart the long press timer
+-        SDL_RemoveTimer(m_LongPressTimer);
+-        m_LongPressTimer = SDL_AddTimer(LONG_PRESS_ACTIVATION_DELAY,
++        removeInputTimer(m_LongPressTimer);
++        m_LongPressTimer = addInputTimer(LONG_PRESS_ACTIVATION_DELAY,
+                                         longPressTimerCallback,
+                                         nullptr);
+ 
+@@ -216,7 +216,7 @@ void SdlInputHandler::emulateAbsoluteFingerEvent(SDL_TouchFingerEvent* event)
+         m_LastTouchUpEvent = *event;
+ 
+         // Cancel the long press timer
+-        SDL_RemoveTimer(m_LongPressTimer);
++        removeInputTimer(m_LongPressTimer);
+         m_LongPressTimer = 0;
+ 
+         // Left button up on finger up
+diff --git a/app/streaming/input/gamepad.cpp b/app/streaming/input/gamepad.cpp
+index b649971b..35d06066 100644
+--- a/app/streaming/input/gamepad.cpp
++++ b/app/streaming/input/gamepad.cpp
+@@ -253,6 +253,8 @@ void SdlInputHandler::handleControllerAxisEvent(SDL_ControllerAxisEvent* event)
+                 return;
+         }
+ 
++        // Opt-in input passes each event through the transition filter.
++        if (m_InputEpochs) break;
+         // Check for another event to batch with
+         if (SDL_PeepEvents(&nextEvent, 1, SDL_PEEKEVENT, SDL_CONTROLLERAXISMOTION, SDL_CONTROLLERAXISMOTION) <= 0) {
+             break;
+@@ -347,7 +349,7 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
+         if (event->button == SDL_CONTROLLER_BUTTON_START) {
+             if (SDL_GetTicks() - state->lastStartDownTime > MOUSE_EMULATION_LONG_PRESS_TIME) {
+                 if (state->mouseEmulationTimer != 0) {
+-                    SDL_RemoveTimer(state->mouseEmulationTimer);
++                    removeInputTimer(state->mouseEmulationTimer);
+                     state->mouseEmulationTimer = 0;
+ 
+                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+@@ -358,7 +360,7 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
+                     // Send the start button up event to the host, since we won't do it below
+                     sendGamepadState(state);
+ 
+-                    state->mouseEmulationTimer = SDL_AddTimer(MOUSE_EMULATION_POLLING_INTERVAL, SdlInputHandler::mouseEmulationTimerCallback, state);
++                    state->mouseEmulationTimer = addInputTimer(MOUSE_EMULATION_POLLING_INTERVAL, SdlInputHandler::mouseEmulationTimerCallback, state);
+ 
+                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                 "Mouse emulation active");
+@@ -760,6 +762,9 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
+ #endif
+             type == LI_CTYPE_PS;
+ 
++        state->cliprelayType = type;
++        state->cliprelayButtons = supportedButtonFlags;
++        state->cliprelayCapabilities = capabilities;
+         LiSendControllerArrivalEvent(state->index, m_GamepadMask, type, supportedButtonFlags, capabilities);
+ #else
+ 
+@@ -777,7 +782,7 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
+         if (state != NULL) {
+             if (state->mouseEmulationTimer != 0) {
+                 Session::get()->notifyMouseEmulationMode(false);
+-                SDL_RemoveTimer(state->mouseEmulationTimer);
++                removeInputTimer(state->mouseEmulationTimer);
+             }
+ 
+             SDL_GameControllerClose(state->controller);
+diff --git a/app/streaming/input/input.cpp b/app/streaming/input/input.cpp
+index 2597f998..ee47d7fc 100644
+--- a/app/streaming/input/input.cpp
++++ b/app/streaming/input/input.cpp
+@@ -1,4 +1,5 @@
+ #include <Limelight.h>
++#include "backend/sessionimport.h"
+ #include "SDL_compat.h"
+ #include "streaming/session.h"
+ #include "settings/mappingmanager.h"
+@@ -35,6 +36,9 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
+       m_DragButton(0),
+       m_NumFingersDown(0)
+ {
++    m_InputEpochs = ClipRelayImport::active() && ClipRelayImport::get().inputEpochs;
++    m_InputClock.start();
++    m_InputSince = SDL_GetTicks();
+     // System keys are always captured when running without a DE
+     if (!WMUtils::isRunningDesktopEnvironment()) {
+         m_CaptureSystemKeysMode = StreamingPreferences::CSK_ALWAYS;
+@@ -221,7 +225,7 @@ SdlInputHandler::~SdlInputHandler()
+     for (int i = 0; i < MAX_GAMEPADS; i++) {
+         if (m_GamepadState[i].mouseEmulationTimer != 0) {
+             Session::get()->notifyMouseEmulationMode(false);
+-            SDL_RemoveTimer(m_GamepadState[i].mouseEmulationTimer);
++            removeInputTimer(m_GamepadState[i].mouseEmulationTimer);
+         }
+ #if !SDL_VERSION_ATLEAST(2, 0, 9)
+         if (m_GamepadState[i].haptic != nullptr) {
+@@ -233,10 +237,10 @@ SdlInputHandler::~SdlInputHandler()
+         }
+     }
+ 
+-    SDL_RemoveTimer(m_LongPressTimer);
+-    SDL_RemoveTimer(m_LeftButtonReleaseTimer);
+-    SDL_RemoveTimer(m_RightButtonReleaseTimer);
+-    SDL_RemoveTimer(m_DragTimer);
++    removeInputTimer(m_LongPressTimer);
++    removeInputTimer(m_LeftButtonReleaseTimer);
++    removeInputTimer(m_RightButtonReleaseTimer);
++    removeInputTimer(m_DragTimer);
+ 
+ #if !SDL_VERSION_ATLEAST(2, 0, 9)
+     SDL_QuitSubSystem(SDL_INIT_HAPTIC);
+diff --git a/app/streaming/input/input.h b/app/streaming/input/input.h
+index 151c69c4..0ff67887 100644
+--- a/app/streaming/input/input.h
++++ b/app/streaming/input/input.h
+@@ -4,6 +4,8 @@
+ #include "backend/computermanager.h"
+ 
+ #include "SDL_compat.h"
++#include "inputstate.h"
++#include <QElapsedTimer>
+ 
+ struct GamepadState {
+     SDL_GameController* controller;
+@@ -32,6 +34,8 @@ struct GamepadState {
+     uint32_t lastAccelEventTime;
+ #endif
+ 
++    uint8_t cliprelayType;
++    uint32_t cliprelayButtons, cliprelayCapabilities;
+     int buttons;
+     short lsX, lsY;
+     short rsX, rsY;
+@@ -90,6 +94,10 @@ public:
+ 
+     void setWindow(SDL_Window* window);
+ 
++    bool inputEpochsEnabled() const;
++    bool processInputEpochCommands();
++    bool acceptInputEpochEvent(SDL_Event& event);
++
+     void handleKeyEvent(SDL_KeyboardEvent* event);
+ 
+     void handleMouseButtonEvent(SDL_MouseButtonEvent* event);
+@@ -156,6 +164,15 @@ public:
+     QString getUnmappedGamepads();
+ 
+ private:
++    SDL_TimerID addInputTimer(Uint32 interval, SDL_TimerCallback callback, void* param);
++    void removeInputTimer(SDL_TimerID id);
++    void resetInputEpochState();
++    bool m_InputEpochs = false;
++    Uint32 m_InputSince = 0;
++    QElapsedTimer m_InputClock;
++    ClipRelayInput::State m_InputState;
++    ClipRelayInput::Timers m_InputTimers;
++
+     enum KeyCombo {
+         KeyComboQuit,
+         KeyComboUngrabInput,
+diff --git a/app/streaming/input/mouse.cpp b/app/streaming/input/mouse.cpp
+index c5bd1fdd..d65176b4 100644
+--- a/app/streaming/input/mouse.cpp
++++ b/app/streaming/input/mouse.cpp
+@@ -104,7 +104,7 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
+     // Batch all pending mouse motion events to save CPU time
+     Sint32 x = event->x, y = event->y, xrel = event->xrel, yrel = event->yrel;
+     SDL_Event nextEvent;
+-    while (SDL_PeepEvents(&nextEvent, 1, SDL_GETEVENT, SDL_MOUSEMOTION, SDL_MOUSEMOTION) > 0) {
++    while (!m_InputEpochs && SDL_PeepEvents(&nextEvent, 1, SDL_GETEVENT, SDL_MOUSEMOTION, SDL_MOUSEMOTION) > 0) {
+         event = &nextEvent.motion;
+ 
+         // Ignore synthetic mouse events
+diff --git a/app/streaming/input/reltouch.cpp b/app/streaming/input/reltouch.cpp
+index 0ddc778a..c9f7ac39 100644
+--- a/app/streaming/input/reltouch.cpp
++++ b/app/streaming/input/reltouch.cpp
+@@ -108,8 +108,8 @@ void SdlInputHandler::handleRelativeFingerEvent(SDL_TouchFingerEvent* event)
+     // fingers go down
+     if (event->type == SDL_FINGERDOWN &&
+             (fingerIndex == 0 || fingerIndex == 1)) {
+-        SDL_RemoveTimer(m_DragTimer);
+-        m_DragTimer = SDL_AddTimer(DRAG_ACTIVATION_DELAY,
++        removeInputTimer(m_DragTimer);
++        m_DragTimer = addInputTimer(DRAG_ACTIVATION_DELAY,
+                                    dragTimerCallback,
+                                    this);
+     }
+@@ -118,7 +118,7 @@ void SdlInputHandler::handleRelativeFingerEvent(SDL_TouchFingerEvent* event)
+         // If it's outside the deadzone delta, cancel drags and taps
+         if (qSqrt(qPow(event->x - m_TouchDownEvent[fingerIndex].x, 2) +
+                   qPow(event->y - m_TouchDownEvent[fingerIndex].y, 2)) > DEAD_ZONE_DELTA) {
+-            SDL_RemoveTimer(m_DragTimer);
++            removeInputTimer(m_DragTimer);
+             m_DragTimer = 0;
+ 
+             // This effectively cancels the tap logic below
+@@ -128,7 +128,7 @@ void SdlInputHandler::handleRelativeFingerEvent(SDL_TouchFingerEvent* event)
+ 
+     if (event->type == SDL_FINGERUP) {
+         // Cancel the drag timer on finger up
+-        SDL_RemoveTimer(m_DragTimer);
++        removeInputTimer(m_DragTimer);
+         m_DragTimer = 0;
+ 
+         // Release any drag
+@@ -146,8 +146,8 @@ void SdlInputHandler::handleRelativeFingerEvent(SDL_TouchFingerEvent* event)
+             LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
+ 
+             // Queue a timer to release it in 100 ms
+-            SDL_RemoveTimer(m_RightButtonReleaseTimer);
+-            m_RightButtonReleaseTimer = SDL_AddTimer(TAP_BUTTON_RELEASE_DELAY,
++            removeInputTimer(m_RightButtonReleaseTimer);
++            m_RightButtonReleaseTimer = addInputTimer(TAP_BUTTON_RELEASE_DELAY,
+                                                      releaseRightButtonTimerCallback,
+                                                      nullptr);
+         }
+@@ -157,8 +157,8 @@ void SdlInputHandler::handleRelativeFingerEvent(SDL_TouchFingerEvent* event)
+             LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
+ 
+             // Queue a timer to release it in 100 ms
+-            SDL_RemoveTimer(m_LeftButtonReleaseTimer);
+-            m_LeftButtonReleaseTimer = SDL_AddTimer(TAP_BUTTON_RELEASE_DELAY,
++            removeInputTimer(m_LeftButtonReleaseTimer);
++            m_LeftButtonReleaseTimer = addInputTimer(TAP_BUTTON_RELEASE_DELAY,
+                                                     releaseLeftButtonTimerCallback,
+                                                     nullptr);
+         }
+diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
+index 40c1e59c..c78718a2 100644
+--- a/app/streaming/session.cpp
++++ b/app/streaming/session.cpp
+@@ -1,4 +1,5 @@
+ #include "session.h"
++#include "backend/sessionimport.h"
+ #include "settings/streamingpreferences.h"
+ #include "streaming/streamutils.h"
+ #include "backend/richpresencemanager.h"
+@@ -76,6 +77,16 @@ void Session::clStageStarting(int stage)
+ 
+ void Session::clStageFailed(int stage, int errorCode)
+ {
++    if (ClipRelayImport::active()) {
++        const bool transport = stage == STAGE_NAME_RESOLUTION || stage == STAGE_RTSP_HANDSHAKE ||
++            stage == STAGE_CONTROL_STREAM_START || stage == STAGE_VIDEO_STREAM_START || stage == STAGE_INPUT_STREAM_START;
++        // Unknown errors and host protocol rejection never trigger retries.
++        const bool network = errorCode == 10060 || errorCode == 10061 || errorCode == 10054 ||
++            errorCode == 110 || errorCode == 111 || errorCode == 104 || errorCode == 60 || errorCode == 61 || errorCode == 54;
++        ClipRelayImport::reportEnded(errorCode == 401 || errorCode == 403 ? ClipRelayImport::EndReason::Pairing :
++            transport && network ? ClipRelayImport::EndReason::Network : ClipRelayImport::EndReason::Host);
++        return;
++    }
+     // Perform the port test now, while we're on the async connection thread and not blocking the UI.
+     unsigned int portFlags = LiGetPortFlagsFromStage(stage);
+     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
+@@ -87,6 +98,19 @@ void Session::clStageFailed(int stage, int errorCode)
+ 
+ void Session::clConnectionTerminated(int errorCode)
+ {
++    if (ClipRelayImport::active()) {
++        const bool network = errorCode == ML_ERROR_NETWORK_LOST || errorCode == ML_ERROR_NO_VIDEO_TRAFFIC || errorCode == ML_ERROR_NO_VIDEO_FRAME ||
++            errorCode == 10060 || errorCode == 10061 || errorCode == 10054 || errorCode == 10053 || errorCode == 10051 || errorCode == 10065 ||
++            errorCode == 110 || errorCode == 111 || errorCode == 104 || errorCode == 103 || errorCode == 101 || errorCode == 113 ||
++            errorCode == 60 || errorCode == 61 || errorCode == 54 || errorCode == 53 || errorCode == 51 || errorCode == 65;
++        ClipRelayImport::reportEnded(network ? ClipRelayImport::EndReason::Network :
++            errorCode == ML_ERROR_FRAME_CONVERSION ? ClipRelayImport::EndReason::Decoder : ClipRelayImport::EndReason::Host);
++        SDL_Event event{};
++        event.type = SDL_QUIT;
++        event.quit.timestamp = SDL_GetTicks();
++        SDL_PushEvent(&event);
++        return;
++    }
+     unsigned int portFlags = LiGetPortFlagsFromTerminationErrorCode(errorCode);
+     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
+ 
+@@ -656,6 +680,7 @@ bool Session::initialize(QQuickWindow* qtWindow)
+     SDL_StopTextInput();
+ 
+     LiInitializeStreamConfiguration(&m_StreamConfig);
++    m_StreamConfig.cliprelayInputEpochs = ClipRelayImport::active() && ClipRelayImport::get().inputEpochs;
+     m_StreamConfig.width = m_Preferences->width;
+     m_StreamConfig.height = m_Preferences->height;
+ 
+@@ -684,7 +709,7 @@ bool Session::initialize(QQuickWindow* qtWindow)
+ #ifndef STEAM_LINK
+     // Opt-in to all encryption features if we detect that the platform
+     // has AES cryptography acceleration instructions and more than 2 cores.
+-    if (StreamUtils::hasFastAes() && SDL_GetCPUCount() > 2) {
++    if (ClipRelayImport::active() || (StreamUtils::hasFastAes() && SDL_GetCPUCount() > 2)) {
+         m_StreamConfig.encryptionFlags = ENCFLG_ALL;
+     }
+     else {
+@@ -1620,9 +1645,13 @@ bool Session::startConnectionAsync()
+                       !m_Preferences->multiController,
+                       rtspSessionUrl);
+     } catch (const GfeHttpResponseException& e) {
++        if (ClipRelayImport::active()) ClipRelayImport::reportEnded(e.getStatusCode() == 401 || e.getStatusCode() == 403 ?
++            ClipRelayImport::EndReason::Pairing : ClipRelayImport::EndReason::Host);
+         emit displayLaunchError(tr("Host returned error: %1").arg(e.toQString()));
+         return false;
+     } catch (const QtNetworkReplyException& e) {
++        if (ClipRelayImport::active()) ClipRelayImport::reportEnded(ClipRelayImport::retryableNetworkError(e.getError()) ?
++            ClipRelayImport::EndReason::Network : ClipRelayImport::EndReason::Host);
+         emit displayLaunchError(e.toQString());
+         return false;
+     }
+@@ -1651,7 +1680,14 @@ bool Session::startConnectionAsync()
+         hostInfo.rtspSessionUrl = rtspSessionUrlStr.data();
+     }
+ 
+-    if (m_Preferences->packetSize != 0) {
++    if (ClipRelayImport::active() && ClipRelayImport::get().overlay) {
++        m_StreamConfig.cliprelayLocalPort = ClipRelayImport::get().port;
++        m_StreamConfig.cliprelayHostPort = ClipRelayImport::get().overlayPort;
++        m_StreamConfig.streamingRemotely = STREAM_CFG_REMOTE;
++        m_StreamConfig.packetSize = 1024;
++        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay embedded network: 1024-byte remote packets");
++    }
++    else if (m_Preferences->packetSize != 0) {
+         // Override default packet size and remote streaming detection
+         // NB: Using STREAM_CFG_AUTO will cap our packet size at 1024 for remote hosts.
+         m_StreamConfig.streamingRemotely = STREAM_CFG_LOCAL;
+@@ -1712,6 +1748,7 @@ bool Session::startConnectionAsync()
+         return false;
+     }
+ 
++    ClipRelayImport::reportConnected();
+     emit connectionStarted();
+     return true;
+ }
+@@ -1780,7 +1817,8 @@ void Session::interrupt()
+ void Session::exec()
+ {
+     // If the connection failed, clean up and abort the connection.
+-    if (!m_AsyncConnectionSuccess) {
++    if (!m_AsyncConnectionSuccess || (ClipRelayImport::active() && !ClipRelayImport::parentAlive())) {
++        if (ClipRelayImport::active()) setShouldExit();
+         delete m_InputHandler;
+         m_InputHandler = nullptr;
+         SDL_QuitSubSystem(SDL_INIT_VIDEO);
+@@ -1843,7 +1881,7 @@ void Session::exec()
+ #ifdef Q_OS_DARWIN
+     std::string windowName = QString(m_Computer->name).toStdString();
+ #else
+-    std::string windowName = QString(m_Computer->name + " - Moonlight").toStdString();
++    std::string windowName = QString(m_Computer->name + " - ClipRelay").toStdString();
+ #endif
+ 
+     m_Window = SDL_CreateWindow(windowName.c_str(),
+@@ -1964,6 +2002,14 @@ void Session::exec()
+     // because we want to suspend all Qt processing until the stream is over.
+     SDL_Event event;
+     for (;;) {
++        // Qt timers are suspended while this thread runs SDL. Keep the parent
++        // lease active here too, and use the normal input/decoder cleanup path.
++        if (ClipRelayImport::active() &&
++                (!ClipRelayImport::parentAlive() || !m_InputHandler->processInputEpochCommands())) {
++            ClipRelayImport::reportEnded(ClipRelayImport::EndReason::Parent);
++            setShouldExit();
++            goto DispatchDeferredCleanup;
++        }
+ #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
+         // SDL 2.0.18 has a proper wait event implementation that uses platform
+         // support to block on events rather than polling on Windows, macOS, X11,
+@@ -1974,7 +2020,7 @@ void Session::exec()
+         // NB: This behavior was introduced in SDL 2.0.16, but had a few critical
+         // issues that could cause indefinite timeouts, delayed joystick detection,
+         // and other problems.
+-        if (!SDL_WaitEventTimeout(&event, 1000)) {
++        if (!SDL_WaitEventTimeout(&event, m_InputHandler->inputEpochsEnabled() ? 20 : 1000)) {
+             presence.runCallbacks();
+             continue;
+         }
+@@ -1995,8 +2041,13 @@ void Session::exec()
+             continue;
+         }
+ #endif
++        if (!m_InputHandler->acceptInputEpochEvent(event)) continue;
+         switch (event.type) {
+         case SDL_QUIT:
++            if (ClipRelayImport::active()) {
++                ClipRelayImport::reportEnded(ClipRelayImport::EndReason::User);
++                setShouldExit();
++            }
+             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                         "Quit event received");
+             goto DispatchDeferredCleanup;
+diff --git a/app/streaming/video/ffmpeg-renderers/d3d11va.cpp b/app/streaming/video/ffmpeg-renderers/d3d11va.cpp
+index fed027f1..4a8b16f9 100644
+--- a/app/streaming/video/ffmpeg-renderers/d3d11va.cpp
++++ b/app/streaming/video/ffmpeg-renderers/d3d11va.cpp
+@@ -1,3 +1,4 @@
++#include "backend/sessionimport.h"
+ // For D3D11_DECODER_PROFILE values
+ #include <initguid.h>
+ 
+@@ -825,6 +826,8 @@ void D3D11VARenderer::renderFrame(AVFrame* frame)
+ 
+     // Present according to the decoder parameters
+     hr = m_SwapChain->Present(0, flags);
++    // Occlusion and failed/device-lost presents do not advance the displayed boundary.
++    if (hr == S_OK) ClipRelayImport::reportRendered(reinterpret_cast<quintptr>(frame->opaque), frame->width, frame->height);
+ 
+     if (m_DecodeDevice == m_RenderDevice) {
+         // Release the context lock
+diff --git a/app/streaming/video/ffmpeg-renderers/dxva2.cpp b/app/streaming/video/ffmpeg-renderers/dxva2.cpp
+index e4386157..65c3f08d 100644
+--- a/app/streaming/video/ffmpeg-renderers/dxva2.cpp
++++ b/app/streaming/video/ffmpeg-renderers/dxva2.cpp
+@@ -1,3 +1,4 @@
++#include "backend/sessionimport.h"
+ // minwindef.h defines min() and max() macros that conflict with
+ // std::numeric_limits, which Qt uses in some of its headers.
+ #define NOMINMAX
+@@ -1018,6 +1019,7 @@ void DXVA2Renderer::renderFrame(AVFrame *frame)
+             SDL_Delay(1);
+         }
+     } while (hr == D3DERR_WASSTILLDRAWING);
++    if (hr == S_OK) ClipRelayImport::reportRendered(reinterpret_cast<quintptr>(frame->opaque), frame->width, frame->height);
+     if (FAILED(hr)) {
+         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                      "PresentEx() failed: %x",
+diff --git a/app/streaming/video/ffmpeg-renderers/vt_metal.mm b/app/streaming/video/ffmpeg-renderers/vt_metal.mm
+index 2852d437..2c64bc45 100644
+--- a/app/streaming/video/ffmpeg-renderers/vt_metal.mm
++++ b/app/streaming/video/ffmpeg-renderers/vt_metal.mm
+@@ -10,6 +10,7 @@
+ #include "streaming/session.h"
+ #include "streaming/streamutils.h"
+ #include "path.h"
++#include "backend/sessionimport.h"
+ 
+ #import <Cocoa/Cocoa.h>
+ #import <VideoToolbox/VideoToolbox.h>
+@@ -564,12 +565,31 @@ public:
+ 
+         [renderEncoder endEncoding];
+ 
++        // Capture scalar metadata: the frame may be freed before presentation.
++        const quint64 cliprelayFrame = reinterpret_cast<quintptr>(frame->opaque);
++        const int cliprelayWidth = frame->width, cliprelayHeight = frame->height;
++        static SDL_atomic_t cliprelaySubmissionLogged = {};
++        if (ClipRelayImport::active() && SDL_AtomicCAS(&cliprelaySubmissionLogged, 0, 1))
++            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay Metal submission frame=%llu size=%dx%d", static_cast<unsigned long long>(cliprelayFrame), cliprelayWidth, cliprelayHeight);
++        if (@available(macOS 10.15.4, *)) {
++            [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
++                const bool visible = presented.presentedTime > 0;
++                static SDL_atomic_t cliprelayPresentationLogged[2] = {};
++                if (ClipRelayImport::active() && SDL_AtomicCAS(&cliprelayPresentationLogged[visible ? 1 : 0], 0, 1)) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay Metal presentation visible=%d frame=%llu", visible, static_cast<unsigned long long>(cliprelayFrame));
++                if (presented.presentedTime > 0) ClipRelayImport::reportRendered(cliprelayFrame, cliprelayWidth, cliprelayHeight);
++            }];
++        }
+         // Flip to the newly rendered buffer
+         [commandBuffer presentDrawable:drawable];
+         [commandBuffer commit];
+ 
+         // Wait for the command buffer to complete and free our CVMetalTextureCache references
+         [commandBuffer waitUntilCompleted];
++        if (ClipRelayImport::active() && commandBuffer.status == MTLCommandBufferStatusError) {
++            static SDL_atomic_t cliprelayGpuErrorLogged = {};
++            if (SDL_AtomicCAS(&cliprelayGpuErrorLogged, 0, 1))
++                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ClipRelay Metal command buffer failed: %ld", static_cast<long>(commandBuffer.error.code));
++        }
+     }}
+ 
+     // Caller frees frame after we return
+diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
+index c20d3126..f7dd6021 100644
+--- a/app/streaming/video/ffmpeg.cpp
++++ b/app/streaming/video/ffmpeg.cpp
+@@ -1,3 +1,4 @@
++#include "backend/sessionimport.h"
+ #include <Limelight.h>
+ #include "ffmpeg.h"
+ #include "utils.h"
+@@ -313,6 +314,16 @@ bool FFmpegVideoDecoder::initializeRendererInternal(IFFmpegRenderer* renderer, PDECODER_PARAMETERS params)
+ {
++#ifdef Q_OS_DARWIN
++    // Decoder probes and native renderer selections must not silently enter
++    // MoltenVK through a software-decoder or alternate-renderer fallback.
++    if (renderer->getRendererType() == IFFmpegRenderer::RendererType::Vulkan &&
++            (params->renderer == StreamingPreferences::RS_PROBE_ONLY ||
++             params->renderer == StreamingPreferences::RS_METAL || params->renderer == StreamingPreferences::RS_AVSBDL)) {
++        return false;
++    }
++#endif
++
+     if (renderer->getRendererType() != IFFmpegRenderer::RendererType::Unknown &&
+             m_FailedRenderers.find(renderer->getRendererType()) != m_FailedRenderers.end()) {
+         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                     "Skipping '%s' due to prior failure",
+                     renderer->getRendererName());
+@@ -542,6 +553,11 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
+     m_VideoDecoderCtx->get_format = ffGetFormat;
+     m_VideoDecoderCtx->pkt_timebase.num = 1;
+     m_VideoDecoderCtx->pkt_timebase.den = 90000;
++#ifdef AV_CODEC_FLAG_COPY_OPAQUE
++    // Preserve the network frame identity through decoder drops/reordering.
++    // Older decoders leave opaque null, so they cannot claim presentation.
++    m_VideoDecoderCtx->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
++#endif
+ 
+     // Allocate enough extra frames for Pacer to avoid stalling the decoder
+     m_VideoDecoderCtx->extra_hw_frames = PACER_MAX_OUTSTANDING_FRAMES;
+@@ -2095,6 +2111,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
+ 
+ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+ {
++    ClipRelayImport::reportReceived(static_cast<quint32>(du->frameNumber));
+     PLENTRY entry = du->bufferList;
+     int err;
+ 
+@@ -2173,6 +2190,7 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+ 
+     m_Pkt->data = reinterpret_cast<uint8_t*>(m_DecodeBuffer.data());
+     m_Pkt->size = offset;
++    m_Pkt->opaque = reinterpret_cast<void*>(static_cast<quintptr>(static_cast<quint32>(du->frameNumber)));
+ 
+     if (du->frameType == FRAME_TYPE_IDR) {
+         m_Pkt->flags = AV_PKT_FLAG_KEY;
+@@ -2220,4 +2238,3 @@ void FFmpegVideoDecoder::renderFrameOnMainThread()
+ {
+     m_Pacer->renderOnMainThread();
+ }
+-
+diff --git a/app/streaming/audio/renderers/sdlaud.cpp b/app/streaming/audio/renderers/sdlaud.cpp
+--- a/app/streaming/audio/renderers/sdlaud.cpp
++++ b/app/streaming/audio/renderers/sdlaud.cpp
+@@ -128,6 +128,7 @@
+         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                      "Failed to queue audio sample: %s",
+                      SDL_GetError());
++        return false;
+     }
+ 
+     return true;

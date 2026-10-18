@@ -1,0 +1,1283 @@
+diff --git a/src/config.cpp b/src/config.cpp
+index 4bea96b..a78461d 100644
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -1790,7 +1790,11 @@ namespace config {
+       fs::permissions(
+         stream.file_apps,
+         fs::perms::owner_read | fs::perms::owner_write,
++  #ifdef __APPLE__
++        fs::perm_options::replace
++  #else
+         fs::perm_options::add
++  #endif
+       );
+     }
+ #endif
+diff --git a/src/confighttp.cpp b/src/confighttp.cpp
+index c364049..eb4804b 100644
+--- a/src/confighttp.cpp
++++ b/src/confighttp.cpp
+@@ -35,6 +35,12 @@
+   #include <Windows.h>
+ #endif
+ 
++#ifdef __APPLE__
++  #include "cliprelay_owner.h"
++
++  #include <CoreGraphics/CoreGraphics.h>
++#endif
++
+ // local includes
+ #include "config.h"
+ #include "cliprelay_control.h"
+@@ -1254,6 +1260,20 @@ namespace confighttp {
+     }
+   }
+ 
++#ifdef __APPLE__
++  /**
++   * @brief Identify the managed engine process after local admin authentication.
++   * @param response HTTPS response containing process ownership and current grants.
++   * @param request Authenticated read-only request; no permission prompt is opened.
++   */
++  void cliprelayHost(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) {
++      return;
++    }
++    send_response(response, nlohmann::json {{"protocol", 1}, {"pid", getpid()}, {"ownerPid", getppid()}, {"owned", cliprelay::macos::owner_admitted(STDIN_FILENO, getenv("CLIPRELAY_HOST_OWNER_PID"))}, {"screenRecording", CGPreflightScreenCaptureAccess()}, {"inputControl", CGPreflightPostEventAccess()}});
++  }
++#endif
++
+   /**
+    * @brief Get the list of paired clients.
+    * @param response The HTTP response object.
+@@ -2346,11 +2366,15 @@ namespace confighttp {
+ 
+   void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
+     if (!authenticate(response, request)) return;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(__APPLE__)
+     // EnumOutputs filters detached/non-capturable devices in the same way as
+     // the capture thread. Revalidate by ID there before applying a selection.
+     if (request->query_string == "refresh=1") {
++  #ifdef __APPLE__
++      cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::videotoolbox));
++  #else
+       cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::dxgi));
++  #endif
+     } else if (!request->query_string.empty()) {
+       bad_request(response, request, "Invalid display query"); return;
+     }
+@@ -2520,6 +2544,9 @@ namespace confighttp {
+     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
+     server.resource["^/api/apps/close$"]["POST"] = closeApp;
+     server.resource["^/api/clients/list$"]["GET"] = getClients;
++#ifdef __APPLE__
++    server.resource["^/api/cliprelay/host$"]["GET"] = cliprelayHost;
++#endif
+     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
+     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
+     server.resource["^/api/clients/update$"]["POST"] = updateClient;
+diff --git a/src/httpcommon.cpp b/src/httpcommon.cpp
+index d12d010..8e91318 100644
+--- a/src/httpcommon.cpp
++++ b/src/httpcommon.cpp
+@@ -192,7 +192,13 @@ namespace http {
+       return -1;
+     }
+ 
++#ifdef __APPLE__
++    // Keep every engine-managed file inside the application's private state
++    // contract; the parent validates it before certificate pinning or restart.
++    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
++#else
+     fs::permissions(cert_path, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
++#endif
+ 
+     if (err_code) {
+       BOOST_LOG(error) << "Couldn't change permissions of ["sv << config::nvhttp.cert << "] :"sv << err_code.message();
+diff --git a/src/main.cpp b/src/main.cpp
+index f349a23..601aaaa 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -13,6 +13,9 @@
+ 
+ // platform includes
+ #ifdef __APPLE__
++  #include "cliprelay_owner.h"
++  #include "platform/macos/misc.h"
++
+   #include <mach-o/dyld.h>
+ #endif
+ #ifdef __linux__
+@@ -182,6 +185,19 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event)
+  * @return Process or platform callback exit code.
+  */
+ int main(int argc, char *argv[]) {
++#ifdef __APPLE__
++  // Permission queries must not create config/log files, open listeners or
++  // initialize capture. Only an explicit request action may ask macOS for access.
++  if (auto code = platf::cliprelay_permission_command(argc, argv, std::cout)) {
++    return *code;
++  }
++  if (auto code = platf::cliprelay_owner_command(argc, argv, std::cout)) {
++    return *code;
++  }
++  if (auto code = platf::cliprelay_state_command(argc, argv, std::cout)) {
++    return *code;
++  }
++#endif
+ #ifdef __linux__
+   const bool privileged_execution = getauxval(AT_SECURE) != 0 || platf::has_elevated_privileges(true);
+   if (privileged_execution && !platf::sanitize_process_environment()) {
+@@ -291,6 +307,31 @@ int main(int argc, char *argv[]) {
+   config::select_all_gamepad_drivers_if_licensed(lvh::get_license_status().license.licensed());
+ #endif
+ 
++#ifdef __APPLE__
++  // Configuration-only commands above remain usable without hosting. Every
++  // actual host must retain its original parent and the application's pipe.
++  const int owner_parent = getppid();
++  if (!cliprelay::macos::owner_admitted(STDIN_FILENO, getenv("CLIPRELAY_HOST_OWNER_PID"), owner_parent)) {
++    BOOST_LOG(error) << "ClipRelay host requires a live application owner";
++    return 2;
++  }
++  auto owner_shutdown_event = mail::man->event<bool>(mail::shutdown);
++  std::unique_ptr<cliprelay::macos::owner_monitor> owner;
++  try {
++    owner = std::make_unique<cliprelay::macos::owner_monitor>(STDIN_FILENO, owner_parent, [owner_shutdown_event] {
++      owner_shutdown_event->raise(true);
++    },
++                                                              [] {
++                                                                std::_Exit(70);
++                                                              });
++  } catch (...) {
++    return 2;
++  }
++  if (!owner->connected() || owner_shutdown_event->peek()) {
++    return 0;
++  }
++#endif
++
+   // Adding guard here first as it also performs recovery after crash,
+   // otherwise people could theoretically end up without display output.
+   // It also should be destroyed before forced shutdown to expedite the cleanup.
+@@ -436,6 +477,11 @@ int main(int argc, char *argv[]) {
+   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+ #endif
+ 
++#ifdef __APPLE__
++  if (!owner->connected() || owner_shutdown_event->peek()) {
++    return 0;
++  }
++#endif
+   proc::refresh(config::stream.file_apps);
+ 
+   // If any of the following fail, we log an error and continue event though sunshine will not function correctly.
+diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
+--- a/src/nvhttp.cpp
++++ b/src/nvhttp.cpp
+@@ -1744,6 +1744,18 @@ namespace nvhttp {
+ 
+     ssl.join();
+     tcp.join();
++
++    // A cancelled caller can leave its deferred PIN response in the global
++    // registry. Its deleter posts to the owning server's I/O context: release
++    // it after request handlers join, while both local servers still exist.
++    // Also wake any local PIN submitter before the registry is discarded.
++    {
++      std::scoped_lock lock {map_id_sess_mutex()};
++      for (auto &[_, session] : map_id_sess) {
++        complete_pairing(session, false);
++      }
++      map_id_sess.clear();
++    }
+   }
+ 
+   void erase_all_clients() {
+diff --git a/src/platform/common.h b/src/platform/common.h
+index f9e144e..9caefb1 100644
+--- a/src/platform/common.h
++++ b/src/platform/common.h
+@@ -784,6 +784,9 @@ namespace platf {
+     std::string cliprelay_display_id;
+     int cliprelay_desktop_x {0}, cliprelay_desktop_y {0};
+     std::uint64_t cliprelay_generation {0};
++    int cliprelay_capture_x {0}, cliprelay_capture_y {0};  ///< macOS capture origin in logical desktop points.
++    int cliprelay_capture_width {0}, cliprelay_capture_height {0};  ///< macOS capture extent in logical points, separate from video pixels.
++    int cliprelay_desktop_width {0}, cliprelay_desktop_height {0};  ///< macOS active desktop extent in logical points.
+ 
+     // Offsets for when streaming a specific monitor. By default, they are 0.
+     int offset_x {0};  ///< Horizontal capture offset in physical pixels.
+diff --git a/src/platform/macos/av_video.h b/src/platform/macos/av_video.h
+index 8832f32..88d8b1c 100644
+--- a/src/platform/macos/av_video.h
++++ b/src/platform/macos/av_video.h
+@@ -9,17 +9,51 @@
+ #import <CoreGraphics/CoreGraphics.h>
+ 
+ /**
+- * @brief macOS capture session and video output handles.
++ * @brief One bounded latest-frame mailbox, independently owned by a capture loop.
++ *
++ * AVFoundation callbacks only retain the latest sample. Image conversion and
++ * encoding stay on the caller's capture thread. Stop detaches the delegate and
++ * drains its serial queue before releasing any pending sample or output.
++ */
++@interface AVVideoFrameSource: NSObject <AVCaptureVideoDataOutputSampleBufferDelegate> {
++@private
++  AVCaptureVideoDataOutput *_output;  ///< Output retained until queue cleanup.
++  dispatch_queue_t _queue;  ///< Serial system callback queue owned by this source.
++  dispatch_semaphore_t _ready;  ///< Signals a pending frame or cancellation.
++  NSLock *_frameLock;  ///< Protects the pending frame and stopped flag.
++  NSLock *_stopLock;  ///< Serializes external stop and queue draining.
++  CMSampleBufferRef _sample;  ///< Latest retained frame; at most one is queued.
++  BOOL _stopped;  ///< Cancellation barrier for future frame delivery.
++}
++
++/** @brief Output registered with the owner's AVFoundation session. */
++@property (nonatomic, readonly) AVCaptureVideoDataOutput *output;
++
++/**
++ * @brief Attach a bounded mailbox to an output's serial callback queue.
++ * @param output Output configured by the owner before session registration.
++ * @return Owned frame source, or nil when allocation fails.
+  */
+-struct CaptureSession {
+-  AVCaptureVideoDataOutput *output;  ///< Output.
+-  NSCondition *captureStopped;  ///< Capture stopped.
+-};
++- (id)initWithOutput:(AVCaptureVideoDataOutput *)output;
++
++/**
++ * @brief Take the newest retained sample using a monotonic dispatch deadline.
++ * @param deadline Absolute dispatch deadline, including DISPATCH_TIME_NOW.
++ * @return Owned sample to CFRelease, or nil on timeout/cancellation.
++ */
++- (CMSampleBufferRef)copyNextFrameBefore:(dispatch_time_t)deadline;
++
++/**
++ * @brief Cancel delivery, wake the reader and drain the callback queue.
++ * @details Called by the owner, never from this source's callback queue.
++ */
++- (void)stop;
++@end
+ 
+ /**
+  * @brief AVFoundation video capture controller used by the macOS backend.
+  */
+-@interface AVVideo: NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
++@interface AVVideo: NSObject
+ 
+ /**
+  * @brief Display ID property.
+@@ -42,27 +76,14 @@ struct CaptureSession {
+  */
+ @property (nonatomic, assign) int frameHeight;
+ 
+-/**
+- * @brief Objective-C block invoked for each captured sample buffer.
+- */
+-typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
+-
+ /**
+  * @brief Capture session that owns the active AVFoundation inputs and outputs.
+  */
+ @property (nonatomic, assign) AVCaptureSession *session;
+ /**
+- * @brief Video outputs property.
++ * @brief Independently owned frame sources registered with the session.
+  */
+-@property (nonatomic, assign) NSMapTable<AVCaptureConnection *, AVCaptureVideoDataOutput *> *videoOutputs;
+-/**
+- * @brief Capture callbacks property.
+- */
+-@property (nonatomic, assign) NSMapTable<AVCaptureConnection *, FrameCallbackBlock> *captureCallbacks;
+-/**
+- * @brief Capture signals property.
+- */
+-@property (nonatomic, assign) NSMapTable<AVCaptureConnection *, dispatch_semaphore_t> *captureSignals;
++@property (nonatomic, assign) NSMutableArray<AVVideoFrameSource *> *frameSources;
+ 
+ /**
+  * @brief Initialize AVFoundation capture for a display and frame rate.
+@@ -81,11 +102,15 @@ typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
+  */
+ - (void)setFrameWidth:(int)frameWidth frameHeight:(int)frameHeight;
+ /**
+- * @brief Run the capture loop for this backend.
+- *
+- * @param frameCallback Frame callback.
+- * @return Capture status reported to the streaming pipeline.
++ * @brief Register a new independently cancellable capture output.
++ * @return Owned source; the caller must stopCapture: and release it.
++ */
++- (AVVideoFrameSource *)newCapture;
++
++/**
++ * @brief Remove only the specified output after its callbacks have drained.
++ * @param source Source returned by newCapture; repeated stops are harmless.
+  */
+-- (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback;
++- (void)stopCapture:(AVVideoFrameSource *)source;
+ 
+ @end
+diff --git a/src/platform/macos/av_video.m b/src/platform/macos/av_video.m
+index 5ad931c..17c21ac 100644
+--- a/src/platform/macos/av_video.m
++++ b/src/platform/macos/av_video.m
+@@ -5,10 +5,104 @@
+ // local includes
+ #import "av_video.h"
+ 
++@implementation AVVideoFrameSource
++@synthesize output = _output;
++
++- (id)initWithOutput:(AVCaptureVideoDataOutput *)output {
++  self = [super init];
++  if (!self) {
++    return nil;
++  }
++  _output = [output retain];
++  _frameLock = [[NSLock alloc] init];
++  _stopLock = [[NSLock alloc] init];
++  _ready = dispatch_semaphore_create(0);
++  dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
++  _queue = dispatch_queue_create("cliprelay.video.frames", qos);
++  [_output setSampleBufferDelegate:self queue:_queue];
++  return self;
++}
++
++- (void)captureOutput:(AVCaptureOutput *)captureOutput
++  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
++         fromConnection:(AVCaptureConnection *)connection {
++  if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer) || !CMSampleBufferGetImageBuffer(sampleBuffer)) {
++    return;
++  }
++  [_frameLock lock];
++  CMSampleBufferRef old = NULL;
++  if (!_stopped) {
++    old = _sample;
++    _sample = (CMSampleBufferRef) CFRetain(sampleBuffer);
++    if (!old) {
++      dispatch_semaphore_signal(_ready);
++    }
++  }
++  [_frameLock unlock];
++  if (old) {
++    CFRelease(old);
++  }
++}
++
++- (CMSampleBufferRef)copyNextFrameBefore:(dispatch_time_t)deadline {
++  [_frameLock lock];
++  BOOL stopped = _stopped;
++  [_frameLock unlock];
++  if (stopped || dispatch_semaphore_wait(_ready, deadline) != 0) {
++    return NULL;
++  }
++  [_frameLock lock];
++  CMSampleBufferRef result = _sample;
++  _sample = NULL;
++  [_frameLock unlock];
++  return result;
++}
++
++- (void)stop {
++  [_stopLock lock];
++  [_frameLock lock];
++  if (!_stopped) {
++    _stopped = YES;
++    dispatch_semaphore_signal(_ready);
++  }
++  CMSampleBufferRef old = _sample;
++  _sample = NULL;
++  [_frameLock unlock];
++  [_output setSampleBufferDelegate:nil queue:nil];
++  // The callback never calls stop or waits for its owner. Once this barrier
++  // finishes, no callback can retain another frame or touch released state.
++  if (_queue) {
++    dispatch_sync(_queue, ^ {});
++  }
++  if (old) {
++    CFRelease(old);
++  }
++  [_stopLock unlock];
++}
++
++- (void)dealloc {
++  [self stop];
++  [_output release];
++  [_frameLock release];
++  [_stopLock release];
++  if (_ready) {
++    dispatch_release(_ready);
++  }
++  if (_queue) {
++    dispatch_release(_queue);
++  }
++  [super dealloc];
++}
++
++@end
++
+ @implementation AVVideo
+ 
+ - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
+   self = [super init];
++  if (!self) {
++    return nil;
++  }
+ 
+   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+   if (!mode) {
+@@ -22,41 +116,45 @@
+   self.frameHeight = (int) CGDisplayModeGetPixelHeight(mode);
+   self.minFrameDuration = CMTimeMake(1, frameRate);
+   self.session = [[AVCaptureSession alloc] init];
+-  self.videoOutputs = [[NSMapTable alloc] init];
+-  self.captureCallbacks = [[NSMapTable alloc] init];
+-  self.captureSignals = [[NSMapTable alloc] init];
++  self.frameSources = [[NSMutableArray alloc] init];
+ 
+   CFRelease(mode);
+ 
+   AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
+   [screenInput setMinFrameDuration:self.minFrameDuration];
+ 
+-  if ([self.session canAddInput:screenInput]) {
++  if (screenInput && [self.session canAddInput:screenInput]) {
+     [self.session addInput:screenInput];
+   } else {
+     [screenInput release];
++    [self release];
+     return nil;
+   }
+-
+-  [self.session startRunning];
++  [screenInput release];
+ 
+   return self;
+ }
+ 
+ - (void)dealloc {
+-  [self.videoOutputs release];
+-  [self.captureCallbacks release];
+-  [self.captureSignals release];
++  NSArray *sources = [self.frameSources copy];
++  for (AVVideoFrameSource *source in sources) {
++    [self stopCapture:source];
++  }
++  [sources release];
++  [self.frameSources release];
+   [self.session stopRunning];
++  [self.session release];
+   [super dealloc];
+ }
+ 
+ - (void)setFrameWidth:(int)frameWidth frameHeight:(int)frameHeight {
+-  self.frameWidth = frameWidth;
+-  self.frameHeight = frameHeight;
++  @synchronized(self) {
++    self.frameWidth = frameWidth;
++    self.frameHeight = frameHeight;
++  }
+ }
+ 
+-- (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback {
++- (AVVideoFrameSource *)newCapture {
+   @synchronized(self) {
+     AVCaptureVideoDataOutput *videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+ 
+@@ -67,50 +165,47 @@
+       (NSString *) AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
+     }];
+ 
+-    dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
+-    dispatch_queue_t recordingQueue = dispatch_queue_create("videoCaptureQueue", qos);
+-    [videoOutput setSampleBufferDelegate:self queue:recordingQueue];
+-
+-    [self.session stopRunning];
+-
+-    if ([self.session canAddOutput:videoOutput]) {
+-      [self.session addOutput:videoOutput];
+-    } else {
++    AVVideoFrameSource *source = [[AVVideoFrameSource alloc] initWithOutput:videoOutput];
++    if (!source || ![self.session canAddOutput:videoOutput]) {
++      [source release];
+       [videoOutput release];
+       return nil;
+     }
+-
+-    AVCaptureConnection *videoConnection = [videoOutput connectionWithMediaType:AVMediaTypeVideo];
+-    dispatch_semaphore_t signal = dispatch_semaphore_create(0);
+-
+-    [self.videoOutputs setObject:videoOutput forKey:videoConnection];
+-    [self.captureCallbacks setObject:frameCallback forKey:videoConnection];
+-    [self.captureSignals setObject:signal forKey:videoConnection];
+-
+-    [self.session startRunning];
+-
+-    return signal;
++    [self.session beginConfiguration];
++    [self.session addOutput:videoOutput];
++    [self.frameSources addObject:source];
++    [self.session commitConfiguration];
++    [videoOutput release];
++    if (![self.session isRunning]) {
++      [self.session startRunning];
++    }
++    return source;
+   }
+ }
+ 
+-- (void)captureOutput:(AVCaptureOutput *)captureOutput
+-  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+-         fromConnection:(AVCaptureConnection *)connection {
+-  FrameCallbackBlock callback = [self.captureCallbacks objectForKey:connection];
+-
+-  if (callback != nil) {
+-    if (!callback(sampleBuffer)) {
+-      @synchronized(self) {
++- (void)stopCapture:(AVVideoFrameSource *)source {
++  if (!source) {
++    return;
++  }
++  @synchronized(self) {
++    if (![self.frameSources containsObject:source]) {
++      return;
++    }
++    [source retain];
++  }
++  [source stop];
++  @synchronized(self) {
++    if ([self.frameSources containsObject:source]) {
++      [self.session beginConfiguration];
++      [self.session removeOutput:source.output];
++      [self.frameSources removeObject:source];
++      [self.session commitConfiguration];
++      if (self.frameSources.count == 0) {
+         [self.session stopRunning];
+-        [self.captureCallbacks removeObjectForKey:connection];
+-        [self.session removeOutput:[self.videoOutputs objectForKey:connection]];
+-        [self.videoOutputs removeObjectForKey:connection];
+-        dispatch_semaphore_signal([self.captureSignals objectForKey:connection]);
+-        [self.captureSignals removeObjectForKey:connection];
+-        [self.session startRunning];
+       }
+     }
+   }
++  [source release];
+ }
+ 
+ @end
+diff --git a/src/platform/macos/display.mm b/src/platform/macos/display.mm
+index d5fe3d0..09a3db0 100644
+--- a/src/platform/macos/display.mm
++++ b/src/platform/macos/display.mm
+@@ -6,10 +6,13 @@
+ // standard includes
+ #include <charconv>
+ #include <chrono>
++#include <climits>
+ #include <optional>
+ #include <string_view>
+ 
+ // local includes
++#include "src/cliprelay_capture.h"
++#include "src/cliprelay_macos.h"
+ #include "src/config.h"
+ #include "src/display_device.h"
+ #include "src/logging.h"
+@@ -18,6 +21,7 @@
+ #include "src/platform/macos/av_video.h"
+ #include "src/platform/macos/misc.h"
+ #include "src/platform/macos/nv12_zero_device.h"
++#include "src/utility.h"
+ 
+ // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
+ /**
+@@ -32,6 +36,87 @@ namespace platf {
+   using namespace std::literals;
+ 
+   namespace {
++    /** @brief Move-free ownership of one sample taken from the native mailbox. */
++    struct captured_sample {
++      CMSampleBufferRef sample;  ///< Owned sample, or null after a timeout.
++
++      /** @brief Take the reference returned by copyNextFrameBefore:. */
++      explicit captured_sample(CMSampleBufferRef value):
++          sample(value) {}
++
++      captured_sample(const captured_sample &) = delete;
++      captured_sample &operator=(const captured_sample &) = delete;
++
++      /** @brief Release the mailbox's reference after processing finishes. */
++      ~captured_sample() {
++        if (sample) {
++          CFRelease(sample);
++        }
++      }
++
++      /** @brief Distinguish a real sample from a timeout. */
++      explicit operator bool() const {
++        return sample != nullptr;
++      }
++    };
++
++    /**
++     * @brief Read the captured display and active desktop in native logical points.
++     * @param id Actual display selected for AVFoundation capture.
++     * @return Geometry only when the selected display is active and representable.
++     */
++    std::optional<cliprelay::display_geometry> capture_geometry(CGDirectDisplayID id) {
++      uint32_t count = 0;
++      if (!CGDisplayIsActive(id) || CGGetActiveDisplayList(0, nullptr, &count) != kCGErrorSuccess || count == 0 || count > 1024) {
++        return std::nullopt;
++      }
++      std::vector<CGDirectDisplayID> active(count);
++      if (CGGetActiveDisplayList(count, active.data(), &count) != kCGErrorSuccess || count == 0) {
++        return std::nullopt;
++      }
++      auto desktop = CGRectNull;
++      bool found = false;
++      for (uint32_t index = 0; index < count; ++index) {
++        found |= active[index] == id;
++        desktop = CGRectUnion(desktop, CGDisplayBounds(active[index]));
++      }
++      if (!found) {
++        return std::nullopt;
++      }
++      const auto selected = CGDisplayBounds(id);
++      return cliprelay::macos::geometry(std::to_string(id), {selected.origin.x, selected.origin.y, selected.size.width, selected.size.height}, {desktop.origin.x, desktop.origin.y, desktop.size.width, desktop.size.height});
++    }
++
++    /**
++     * @brief Replace image storage while retaining the old sample until unlock.
++     * @param image Image owned by the capture thread or its free-image pool.
++     * @param sample Borrowed valid AVFoundation sample with a pixel buffer.
++     * @return Whether the image has a valid, representable pixel extent.
++     */
++    bool assign_sample(img_t *image, CMSampleBufferRef sample) {
++      if (!sample || !CMSampleBufferIsValid(sample) || !CMSampleBufferGetImageBuffer(sample)) {
++        return false;
++      }
++      auto new_sample = std::make_shared<av_sample_buf_t>(sample);
++      auto new_pixels = std::make_shared<av_pixel_buf_t>(sample);
++      const auto width = CVPixelBufferGetWidth(new_pixels->buf);
++      const auto height = CVPixelBufferGetHeight(new_pixels->buf);
++      const auto pitch = CVPixelBufferGetBytesPerRow(new_pixels->buf);
++      if (!width || !height || width > INT_MAX || height > INT_MAX || pitch > INT_MAX) {
++        return false;
++      }
++      auto av_image = static_cast<av_img_t *>(image);
++      auto previous = std::make_shared<temp_retain_av_img_t>(av_image->sample_buffer, av_image->pixel_buffer, image->data);
++      av_image->sample_buffer = std::move(new_sample);
++      av_image->pixel_buffer = std::move(new_pixels);
++      image->data = av_image->pixel_buffer->data();
++      image->width = static_cast<int>(width);
++      image->height = static_cast<int>(height);
++      image->row_pitch = static_cast<int>(pitch);
++      image->pixel_pitch = image->row_pitch / image->width;
++      return true;
++    }
++
+     std::optional<CGDirectDisplayID> parse_display_id(std::string_view display_name) {
+       if (display_name.empty()) {
+         return std::nullopt;
+@@ -66,49 +151,76 @@ namespace platf {
+       [av_capture release];
+     }
+ 
+-    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+-      auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+-        auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
+-        auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
+-
+-        std::shared_ptr<img_t> img_out;
+-        if (!pull_free_image_cb(img_out)) {
+-          // got interrupt signal
+-          // returning false here stops capture backend
+-          return false;
+-        }
+-        auto av_img = std::static_pointer_cast<av_img_t>(img_out);
+-
+-        auto old_data_retainer = std::make_shared<temp_retain_av_img_t>(
+-          av_img->sample_buffer,
+-          av_img->pixel_buffer,
+-          img_out->data
+-        );
+-
+-        av_img->sample_buffer = new_sample_buffer;
+-        av_img->pixel_buffer = new_pixel_buffer;
+-        img_out->data = new_pixel_buffer->data();
+-
+-        img_out->width = (int) CVPixelBufferGetWidth(new_pixel_buffer->buf);
+-        img_out->height = (int) CVPixelBufferGetHeight(new_pixel_buffer->buf);
+-        img_out->row_pitch = (int) CVPixelBufferGetBytesPerRow(new_pixel_buffer->buf);
+-        img_out->pixel_pitch = img_out->row_pitch / img_out->width;
+-
+-        old_data_retainer = nullptr;
++    /**
++     * @brief Detect display removal, native mode changes and desktop rearrangement.
++     * @return Whether the actual capture still matches its published geometry.
++     */
++    bool geometry_current() const {
++      const auto g = capture_geometry(display_id);
++      if (!g || g->id != cliprelay_display_id || g->x != cliprelay_capture_x || g->y != cliprelay_capture_y || g->width != cliprelay_capture_width || g->height != cliprelay_capture_height || g->desktop_x != cliprelay_desktop_x || g->desktop_y != cliprelay_desktop_y || g->desktop_width != cliprelay_desktop_width || g->desktop_height != cliprelay_desktop_height) {
++        return false;
++      }
++      const auto mode = CGDisplayCopyDisplayMode(display_id);
++      if (!mode) {
++        return false;
++      }
++      const bool unchanged = CGDisplayModeGetPixelWidth(mode) == width && CGDisplayModeGetPixelHeight(mode) == height;
++      CFRelease(mode);
++      return unchanged;
++    }
+ 
+-        if (!push_captured_image_cb(std::move(img_out), true)) {
+-          // got interrupt signal
+-          // returning false here stops capture backend
+-          return false;
++    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
++      auto source = [av_capture newCapture];
++      if (!source) {
++        return capture_e::error;
++      }
++      auto close = util::fail_guard([&] {
++        [av_capture stopCapture:source];
++        [source release];
++      });
++      std::shared_ptr<img_t> last_image;
++      if (!pull_free_image_cb(last_image)) {
++        return capture_e::ok;
++      }
++      const auto result = cliprelay::capture_loop(
++        [&](auto budget) {
++          const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(budget).count();
++          return captured_sample {[source copyNextFrameBefore:dispatch_time(DISPATCH_TIME_NOW, nanos)]};
++        },
++        [&](const captured_sample &sample) {
++          std::shared_ptr<img_t> image;
++          if (!pull_free_image_cb(image)) {
++            return cliprelay::frame_result::stopped;
++          }
++          if (!assign_sample(image.get(), sample.sample)) {
++            return cliprelay::frame_result::error;
++          }
++          last_image = image;
++          return push_captured_image_cb(std::move(image), true) ? cliprelay::frame_result::keep_going : cliprelay::frame_result::stopped;
++        },
++        [&] {
++          // A timeout can service control requests without claiming a new image.
++          auto heartbeat = last_image;
++          return push_captured_image_cb(std::move(heartbeat), false);
++        },
++        [&] {
++          // The platform flag records startup permission only. Recheck native
++          // authorization so a later revocation is not hidden by that cache.
++          return platf::is_screen_capture_allowed() && CGPreflightScreenCaptureAccess() && geometry_current();
++        },
++        [] {
++          return std::chrono::steady_clock::now();
+         }
+-
+-        return true;
+-      }];
+-
+-      // FIXME: We should time out if an image isn't returned for a while
+-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+-
+-      return capture_e::ok;
++      );
++      switch (result) {
++        case cliprelay::capture_result::stopped:
++          return capture_e::ok;
++        case cliprelay::capture_result::reinit:
++          return capture_e::reinit;
++        case cliprelay::capture_result::error:
++          return capture_e::error;
++      }
++      return capture_e::error;
+     }
+ 
+     /**
+@@ -150,43 +262,28 @@ namespace platf {
+      * @return Capture status reported to the streaming pipeline.
+      */
+     int dummy_img(img_t *img) override {
+-      if (!platf::is_screen_capture_allowed()) {
+-        // If we don't have the screen capture permission, this function will hang
+-        // indefinitely without doing anything useful. Exit instead to avoid this.
+-        // A non-zero return value indicates failure to the calling function.
++      if (!platf::is_screen_capture_allowed() || !CGPreflightScreenCaptureAccess()) {
++        // Check permission before opening a native capture output. A non-zero
++        // return value indicates failure to the calling function.
+         return 1;
+       }
+ 
+-      auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+-        auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
+-        auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
+-
+-        auto av_img = (av_img_t *) img;
+-
+-        auto old_data_retainer = std::make_shared<temp_retain_av_img_t>(
+-          av_img->sample_buffer,
+-          av_img->pixel_buffer,
+-          img->data
+-        );
+-
+-        av_img->sample_buffer = new_sample_buffer;
+-        av_img->pixel_buffer = new_pixel_buffer;
+-        img->data = new_pixel_buffer->data();
+-
+-        img->width = (int) CVPixelBufferGetWidth(new_pixel_buffer->buf);
+-        img->height = (int) CVPixelBufferGetHeight(new_pixel_buffer->buf);
+-        img->row_pitch = (int) CVPixelBufferGetBytesPerRow(new_pixel_buffer->buf);
+-        img->pixel_pitch = img->row_pitch / img->width;
+-
+-        old_data_retainer = nullptr;
+-
+-        // returning false here stops capture backend
+-        return false;
+-      }];
+-
+-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+-
+-      return 0;
++      auto source = [av_capture newCapture];
++      if (!source) {
++        return 1;
++      }
++      auto close = util::fail_guard([&] {
++        [av_capture stopCapture:source];
++        [source release];
++      });
++      const auto sample = [source copyNextFrameBefore:dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)];
++      if (!sample) {
++        return 1;
++      }
++      auto release_sample = util::fail_guard([&] {
++        CFRelease(sample);
++      });
++      return assign_sample(img, sample) ? 0 : 1;
+     }
+ 
+     /**
+@@ -240,10 +337,24 @@ namespace platf {
+     if (const auto configured_display_id {parse_display_id(display_name)}) {
+       display->display_id = *configured_display_id;
+     } else if (!display_name.empty()) {
+-      BOOST_LOG(warning) << "Configured display ["sv << display_name
+-                         << "] is not a valid macOS capture display id. Falling back to main display ["sv
+-                         << display->display_id << "]."sv;
++      BOOST_LOG(error) << "Configured display is not a valid macOS capture display id: "sv << display_name;
++      return nullptr;
++    }
++
++    const auto geometry = capture_geometry(display->display_id);
++    if (!geometry) {
++      BOOST_LOG(error) << "Selected display is inactive or has unavailable logical geometry."sv;
++      return nullptr;
+     }
++    display->cliprelay_display_id = geometry->id;
++    display->cliprelay_capture_x = geometry->x;
++    display->cliprelay_capture_y = geometry->y;
++    display->cliprelay_capture_width = geometry->width;
++    display->cliprelay_capture_height = geometry->height;
++    display->cliprelay_desktop_x = geometry->desktop_x;
++    display->cliprelay_desktop_y = geometry->desktop_y;
++    display->cliprelay_desktop_width = geometry->desktop_width;
++    display->cliprelay_desktop_height = geometry->desktop_height;
+ 
+     // Print all displays available with their names and ids
+     BOOST_LOG(debug) << "Detecting displays"sv;
+diff --git a/src/platform/macos/misc.h b/src/platform/macos/misc.h
+index 0af5d1a..2d43beb 100644
+--- a/src/platform/macos/misc.h
++++ b/src/platform/macos/misc.h
+@@ -5,12 +5,42 @@
+ #pragma once
+ 
+ // standard includes
++#include <optional>
++#include <ostream>
++#include <tuple>
+ #include <vector>
+ 
+ // platform includes
+ #include <CoreGraphics/CoreGraphics.h>
+ 
+ namespace platf {
++  /**
++   * @brief Handle ownership diagnostics without configuration or host startup.
++   * @param argc Argument count.
++   * @param argv Process arguments.
++   * @param output Bounded JSON replies for check or wait diagnostics.
++   * @return Command status, or no value when no ownership command is present.
++   */
++  std::optional<int> cliprelay_owner_command(int argc, const char *const *argv, std::ostream &output);
++
++  /**
++   * @brief Handle explicit permission commands before any host initialization.
++   * @param argc Process argument count.
++   * @param argv Process arguments.
++   * @param output One bounded JSON reply for a handled permission command.
++   * @return Command exit status, or no value for ordinary host startup.
++   */
++  std::optional<int> cliprelay_permission_command(int argc, const char *const *argv, std::ostream &output);
++
++  /**
++   * @brief Admit an explicit private state root or handle a read-only state check.
++   * @param argc Argument count.
++   * @param argv Process arguments.
++   * @param output Bounded JSON response on rejection or a state check.
++   * @return Status for a handled command, or no value for admitted host startup.
++   */
++  std::optional<int> cliprelay_state_command(int argc, const char *const *argv, std::ostream &output);
++
+   /**
+    * @brief Check whether macOS has granted screen-capture permission.
+    *
+diff --git a/src/platform/macos/misc.mm b/src/platform/macos/misc.mm
+index 7c3127d..c456f19 100644
+--- a/src/platform/macos/misc.mm
++++ b/src/platform/macos/misc.mm
+@@ -24,6 +24,7 @@
+ #include <net/if_dl.h>
+ #include <pwd.h>
+ #include <sys/qos.h>
++#include <sys/stat.h>
+ 
+ // lib includes
+ #include <boost/asio/ip/address.hpp>
+@@ -32,6 +33,9 @@
+ 
+ // local includes
+ #include "misc.h"
++#include "src/cliprelay_owner.h"
++#include "src/cliprelay_permissions.h"
++#include "src/cliprelay_state.h"
+ #include "src/entry_handler.h"
+ #include "src/logging.h"
+ #include "src/platform/common.h"
+@@ -42,6 +46,77 @@ namespace bp = boost::process::v1;
+ 
+ namespace platf {
+ 
++  std::optional<int> cliprelay_owner_command(int argc, const char *const *argv, std::ostream &output) {
++    constexpr std::string_view option = "--cliprelay-owner";
++    bool reserved = false;
++    for (int index = 1; argv && index < argc; ++index) {
++      reserved |= argv[index] && std::string_view(argv[index]).starts_with(option);
++    }
++    if (!reserved) {
++      return std::nullopt;
++    }
++    const auto error = [&](const char *code) {
++      output << "{\"protocol\":1,\"error\":\"" << code << "\"}\n";
++      return 2;
++    };
++    if (argc != 3 || !argv[1] || !argv[2] || argv[1] != option || (std::string_view(argv[2]) != "check" && std::string_view(argv[2]) != "wait")) {
++      return error("invalid_command");
++    }
++    const auto *parent = getenv("CLIPRELAY_HOST_OWNER_PID");
++    if (!parent) {
++      return error("owner_required");
++    }
++    const int owner_parent = getppid();
++    if (!cliprelay::macos::owner_admitted(STDIN_FILENO, parent, owner_parent)) {
++      return error("invalid_owner");
++    }
++    if (std::string_view(argv[2]) == "check") {
++      output << "{\"protocol\":1,\"ready\":true}\n";
++      return 0;
++    }
++    std::atomic<bool> stopped {false};
++    cliprelay::macos::owner_monitor owner(STDIN_FILENO, owner_parent, [&] {
++      stopped.store(true);
++    },
++                                          [] {
++                                            std::_Exit(70);
++                                          });
++    output << "{\"protocol\":1,\"ready\":true}\n"
++           << std::flush;
++    while (!stopped.load()) {
++      std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    }
++    output << "{\"protocol\":1,\"stopped\":true}\n";
++    return 0;
++  }
++
++  std::optional<int> cliprelay_permission_command(int argc, const char *const *argv, std::ostream &output) {
++    const cliprelay::macos::permission_api api {
++      CGPreflightScreenCaptureAccess,
++      CGPreflightPostEventAccess,
++      CGRequestScreenCaptureAccess,
++      CGRequestPostEventAccess
++    };
++    return cliprelay::macos::permission_command(argc, argv, api, output);
++  }
++
++  std::optional<int> cliprelay_state_command(int argc, const char *const *argv, std::ostream &output) {
++    const auto secure_directory = [](std::string_view value) {
++      const fs::path directory {value};
++      struct stat status {};
++      std::error_code error;
++      return lstat(directory.c_str(), &status) == 0 && S_ISDIR(status.st_mode) &&
++             status.st_uid == geteuid() && (status.st_mode & 07777) == 0700 &&
++             fs::canonical(directory, error) == directory && !error;
++    };
++    auto result = cliprelay::macos::state_command(argc, argv, getenv("CLIPRELAY_HOST_STATE_DIR"), secure_directory, output);
++    if (!result) {
++      // Config, logs, certificates and later implicit state share this mode.
++      umask(S_IRWXG | S_IRWXO);
++    }
++    return result;
++  }
++
+ // Even though the following two functions are available starting in macOS 10.15, they weren't
+ // actually in the Mac SDK until Xcode 12.2, the first to include the SDK for macOS 11
+ #if __MAC_OS_X_VERSION_MAX_ALLOWED < 110000  // __MAC_11_0
+@@ -93,7 +168,7 @@ namespace platf {
+         CGPreflightScreenCaptureAccess != nullptr && CGRequestScreenCaptureAccess != nullptr && !CGPreflightScreenCaptureAccess()) {
+       BOOST_LOG(error) << "No screen capture permission!"sv;
+       BOOST_LOG(error) << "Please activate it in 'System Preferences' -> 'Privacy' -> 'Screen Recording'"sv;
+-      CGRequestScreenCaptureAccess();
++      // Permission requests are owned by the explicit application settings flow.
+       return nullptr;
+     }
+ #pragma clang diagnostic pop
+@@ -103,12 +178,13 @@ namespace platf {
+   }
+ 
+   fs::path appdata() {
+-    const char *homedir;
+-    if ((homedir = getenv("HOME")) == nullptr) {
+-      homedir = getpwuid(geteuid())->pw_dir;
++    // Static defaults are computed before main. Validation in main runs before
++    // config/log writes; do not fall back for a malformed explicit override.
++    if (const auto *directory = getenv("CLIPRELAY_HOST_STATE_DIR")) {
++      return fs::path {directory};
+     }
+-
+-    return fs::path {homedir} / ".config/sunshine"sv;
++    const auto *account = getpwuid(geteuid());
++    return fs::path {account && account->pw_dir ? account->pw_dir : "/nonexistent"} / "Library/Application Support/ClipRelay/host"sv;
+   }
+ 
+   using ifaddr_t = util::safe_ptr<ifaddrs, freeifaddrs>;
+@@ -269,96 +345,13 @@ namespace platf {
+     // Nothing to do
+   }
+ 
+-  static pid_t g_restart_child_pid = 0;  ///< PID of the restarted child process for signal forwarding.
+-
+   /**
+-   * @brief Forward a signal to the restarted child process.
+-   *
+-   * This handler is installed in the parent (supervisor) process after forking
+-   * the new Sunshine instance. It ensures that signals like SIGINT (Ctrl+C)
+-   * are delivered to the child.
++   * @brief Stop the managed engine; only ClipRelay may launch its replacement.
+    *
+-   * @param sig The signal number to forward.
++   * Native self-restart must not fork a process that escapes the application's
++   * child handle and ownership pipe. Existing signal handlers perform cleanup.
+    */
+-  static void forward_signal_to_child(int sig) {
+-    if (g_restart_child_pid > 0) {
+-      kill(g_restart_child_pid, sig);
+-    }
+-  }
+-
+-  /**
+-   * @brief Request a Sunshine process restart on exit.
+-   *
+-   * This is registered as an atexit handler by restart(). It forks a child
+-   * process with a fresh PID so that macOS WindowServer treats it as a new
+-   * application (required for the system tray icon to reinitialize).
+-   *
+-   * The parent process stays alive as a transparent supervisor: it forwards
+-   * signals (SIGINT, SIGTERM, SIGHUP) to the child and blocks in waitpid().
+-   * This keeps the shell tracking the original PID as its foreground job,
+-   * preserving Ctrl+C and terminal log output.
+-   */
+-  void restart_on_exit() {
+-    char executable[2048];
+-    uint32_t size = sizeof(executable);
+-    if (_NSGetExecutablePath(executable, &size) < 0) {
+-      BOOST_LOG(fatal) << "NSGetExecutablePath() failed: "sv << errno;
+-      return;
+-    }
+-
+-    // ASIO doesn't use O_CLOEXEC, so we have to close all fds ourselves.
+-    int openmax = (int) sysconf(_SC_OPEN_MAX);
+-    for (int fd = STDERR_FILENO + 1; fd < openmax; fd++) {
+-      close(fd);
+-    }
+-
+-    // Fork a child process to get a fresh PID.
+-    // A new PID is required on macOS because WindowServer associates GUI state
+-    // (tray icons, activation policy) with the PID. After execv with the same PID,
+-    // WindowServer retains stale state and silently refuses to show new tray icons.
+-    pid_t child = fork();
+-    if (child < 0) {
+-      BOOST_LOG(fatal) << "fork() failed: "sv << errno;
+-      return;
+-    }
+-
+-    if (child == 0) {
+-      // Child: create a new process group so that the parent's signal
+-      // forwarding targets only this child, not the parent itself.
+-      setpgid(0, 0);
+-
+-      // Replace this child with the new Sunshine instance
+-      execv(executable, lifetime::get_argv());
+-
+-      // If execv fails, exit the child immediately without running atexit handlers
+-      _exit(1);
+-    }
+-
+-    // Parent: become a transparent supervisor.
+-    // The parent stays alive so the shell continues to track it as the
+-    // foreground job, keeping Ctrl+C and terminal output working.
+-    g_restart_child_pid = child;
+-
+-    struct sigaction sa;
+-    memset(&sa, 0, sizeof(sa));
+-    sa.sa_handler = forward_signal_to_child;
+-    sigemptyset(&sa.sa_mask);
+-    sa.sa_flags = 0;
+-    sigaction(SIGINT, &sa, nullptr);
+-    sigaction(SIGTERM, &sa, nullptr);
+-    sigaction(SIGHUP, &sa, nullptr);
+-
+-    int status;
+-    waitpid(child, &status, 0);
+-
+-    // Exit immediately without running additional atexit handlers or
+-    // static destructors. The child has already taken over.
+-    _exit(WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+-  }
+-
+   void restart() {
+-    // Gracefully clean up and restart ourselves instead of exiting
+-    atexit(restart_on_exit);
+     lifetime::exit_sunshine(0, true);
+   }
+ 
+diff --git a/src/platform/virtualhid_input.cpp b/src/platform/virtualhid_input.cpp
+index 362f50a..ee3dcc5 100644
+--- a/src/platform/virtualhid_input.cpp
++++ b/src/platform/virtualhid_input.cpp
+@@ -19,6 +19,7 @@
+ #include <utility>
+ 
+ // local includes
++#include "src/cliprelay_macos.h"
+ #include "src/config.h"
+ #include "src/logging.h"
+ #include "virtualhid_input.h"
+@@ -793,9 +794,19 @@ namespace platf::virtualhid {
+     log_failure("submit libvirtualhid gamepad battery"sv, gamepad->adapter->set_battery(value));
+   }
+ 
++  /**
++   * @brief Attach the host's actual capture and cancellation version to an event.
++   * @param event Portable mouse action before native routing.
++   * @return Event bound to the current capture; inactive captures reject new input.
++   */
++  lvh::MouseEvent cliprelay_mouse(lvh::MouseEvent event) {
++    event.target = cliprelay::macos::pointer_target(cliprelay::displays.snapshot());
++    return event;
++  }
++
+   void move_mouse(input_context_t &context, int delta_x, int delta_y) {
+     if (context.mouse) {
+-      log_failure("submit libvirtualhid mouse movement"sv, context.mouse->move_relative(delta_x, delta_y));
++      log_failure("submit libvirtualhid mouse movement"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::relative_motion, .x = delta_x, .y = delta_y})));
+     }
+   }
+ 
+@@ -803,12 +814,7 @@ namespace platf::virtualhid {
+     if (context.mouse) {
+       log_failure(
+         "submit libvirtualhid absolute mouse movement"sv,
+-        context.mouse->move_absolute(
+-          static_cast<std::int32_t>(std::lround(x)),
+-          static_cast<std::int32_t>(std::lround(y)),
+-          touch_port.width,
+-          touch_port.height
+-        )
++        context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::absolute_motion, .absolute_x = x, .absolute_y = y, .has_fractional_absolute_coordinates = true, .width = touch_port.width, .height = touch_port.height}))
+       );
+     }
+   }
+@@ -820,19 +826,19 @@ namespace platf::virtualhid {
+         return;
+       }
+ 
+-      log_failure("submit libvirtualhid mouse button"sv, context.mouse->button(*converted, !release));
++      log_failure("submit libvirtualhid mouse button"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::button, .button = *converted, .pressed = !release})));
+     }
+   }
+ 
+   void scroll(input_context_t &context, int high_res_distance) {
+     if (context.mouse) {
+-      log_failure("submit libvirtualhid vertical scroll"sv, context.mouse->vertical_scroll(high_res_distance));
++      log_failure("submit libvirtualhid vertical scroll"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::vertical_scroll, .high_resolution_scroll = high_res_distance})));
+     }
+   }
+ 
+   void hscroll(input_context_t &context, int high_res_distance) {
+     if (context.mouse) {
+-      log_failure("submit libvirtualhid horizontal scroll"sv, context.mouse->horizontal_scroll(high_res_distance));
++      log_failure("submit libvirtualhid horizontal scroll"sv, context.mouse->submit(cliprelay_mouse({.kind = lvh::MouseEventKind::horizontal_scroll, .high_resolution_scroll = high_res_distance})));
+     }
+   }
+ 
+diff --git a/src/video.cpp b/src/video.cpp
+index f6b081e..0e9b758 100644
+--- a/src/video.cpp
++++ b/src/video.cpp
+@@ -1548,6 +1548,9 @@ namespace video {
+    * @param config Configuration values to apply.
+    */
+   void cliprelay_begin_capture(platf::display_t &display) {
++#ifdef __APPLE__
++    display.cliprelay_generation = cliprelay::displays.begin_capture({display.cliprelay_display_id, display.cliprelay_capture_x, display.cliprelay_capture_y, display.cliprelay_capture_width, display.cliprelay_capture_height, display.cliprelay_desktop_x, display.cliprelay_desktop_y, display.cliprelay_desktop_width, display.cliprelay_desktop_height});
++#else
+     display.cliprelay_generation = cliprelay::displays.begin_capture({
+       display.cliprelay_display_id,
+       display.offset_x + display.cliprelay_desktop_x,
+@@ -1556,6 +1559,7 @@ namespace video {
+       display.cliprelay_desktop_x, display.cliprelay_desktop_y,
+       display.env_width, display.env_height
+     });
++#endif
+   }
+ 
+   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 85b5aca..d71b1c4 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -184,6 +184,13 @@ add_executable(${PROJECT_NAME}
+         ${TEST_SOURCES}
+         ${SUNSHINE_SOURCES})
+ 
++if(APPLE)
++    # The ClipRelay native fixture includes the production backend with only
++    # CoreGraphics posting/cursor/display boundaries replaced.
++    target_include_directories(${PROJECT_NAME} PRIVATE
++            "${CMAKE_SOURCE_DIR}/third-party/libvirtualhid/src")
++endif()
++
+ # Copy files needed for config consistency tests to build directory
+ # This ensures both CLI and CLion can access the same files relative to the test executable
+ # Using configure_file ensures files are copied when they change between builds

@@ -1,0 +1,34 @@
+<resources>
+    <string name="privacy_title">隐私与锁屏</string>
+    <string name="privacy_loading">正在检查这台电脑…</string>
+    <string name="privacy_screen_option">遮住电脑屏幕</string>
+    <string name="privacy_option_on">已开启</string>
+    <string name="privacy_option_off">未开启</string>
+    <string name="privacy_option_unavailable">当前不可用</string>
+    <string name="audio_mute_title">电脑扬声器静音</string>
+    <string name="audio_mute_enable">电脑静音</string>
+    <string name="audio_mute_disable">恢复电脑声音</string>
+    <string name="audio_mute_description">电脑扬声器和耳机静音，声音继续在手机播放。离开当前界面或连接结束后，恢复各设备之前的静音状态，不改变音量和麦克风设置。在电脑上手动调整静音，也会结束此设置。</string>
+    <string name="audio_mute_active">本次远程期间，电脑扬声器已静音，声音继续在手机播放。恢复时，原本静音的设备仍保持静音。</string>
+    <string name="audio_mute_unsupported">请等待声音和画面就绪，并断开其他远程会话。此功能还需要受支持的 Windows 电脑和更新后的电脑端 ClipRelay。</string>
+    <string name="audio_mute_recovering">电脑仍在恢复之前的声音设置。请重新接入已断开的音频设备，稍后再试。</string>
+    <string name="audio_mute_enabled">电脑扬声器已静音</string>
+    <string name="audio_mute_restored">电脑静音已结束，正在恢复之前的声音设置。</string>
+    <string name="audio_mute_unavailable">无法确认电脑静音状态，正在恢复之前的声音设置。请检查连接后重试。</string>
+    <string name="privacy_description">本次远程期间遮住电脑显示器。本机按 Ctrl + Alt + Shift + P 可恢复显示。锁屏、显示器变化、离开当前界面或连接异常时，隐私屏会自动结束。仅支持一个远程会话使用。</string>
+    <string name="privacy_active">隐私屏已开启。本机按 Ctrl + Alt + Shift + P 可恢复显示。</string>
+    <string name="privacy_enable">开启</string>
+    <string name="privacy_disable">恢复显示</string>
+    <string name="privacy_enabled">隐私屏已开启</string>
+    <string name="privacy_restored">隐私屏已结束，电脑正在恢复显示。</string>
+    <string name="privacy_unavailable">无法开启或确认隐私屏状态，请检查连接和电脑后重试。</string>
+    <string name="privacy_unsupported">隐私屏需要 Windows 10 2004 及以上版本，并更新电脑端 ClipRelay。</string>
+    <string name="privacy_exclusive">请等待画面就绪，并先断开其他远程会话。</string>
+    <string name="session_lock_description">也可设置在本次远程结束后锁定电脑。设置仅对本次会话生效，网络短暂抖动不会触发锁屏。</string>
+    <string name="session_lock_armed">已开启本次远程结束后锁屏。出现新的远程会话、本机锁定或解锁，或无法持续确认电脑状态时，会取消此设置。</string>
+    <string name="session_lock_enable">结束后锁屏</string>
+    <string name="session_lock_disable">取消结束锁屏</string>
+    <string name="session_lock_enabled">已开启本次远程结束后锁屏</string>
+    <string name="session_lock_disabled">已取消本次远程结束后锁屏</string>
+    <string name="session_lock_unavailable">无法确认锁屏设置，请检查连接后重新打开此菜单查看状态。</string>
+</resources>

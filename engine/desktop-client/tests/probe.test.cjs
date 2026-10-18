@@ -1,0 +1,143 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const {spawn,execFileSync}=require('node:child_process');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),https=require('node:https'),http=require('node:http');
+const {once}=require('node:events');
+const directory=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-qt-probe-'));
+test.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+function identity(name,ca=false){
+  const key=path.join(directory,name+'.key'),cert=path.join(directory,name+'.crt');
+  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','2','-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1,DNS:localhost',...(ca?['-addext','basicConstraints=critical,CA:TRUE']:[])],{stdio:'ignore'});
+  return {key:fs.readFileSync(key,'utf8'),cert:fs.readFileSync(cert,'utf8'),file:cert};
+}
+const host=identity('host'),client=identity('client'),wrong=identity('wrong',true);
+function envelope(port=48789){return {version:1,address:'127.0.0.1',port,clientId:'a'.repeat(32),certificate:client.cert,privateKey:client.key,hostCertificate:host.cert,width:1920,height:1080,fps:60,bitrate:12000,fullscreen:false};}
+function frame(value){const json=Buffer.from(JSON.stringify(value)),header=Buffer.alloc(4);header.writeUInt32BE(json.length);return Buffer.concat([header,json]);}
+function start(value,args=[],extraEnv={}){
+  const child=spawn(process.env.CLIPRELAY_QT_PROBE,args,{stdio:['pipe','pipe','pipe'],env:{...process.env,CLIPRELAY_PROBE_SETTINGS:directory,...extraEnv}});
+  let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);
+  child.stdin.on('error',()=>{});child.stdin.write(Buffer.isBuffer(value)?value:frame(value));
+  const done=once(child,'close').then(([code])=>({code,stdout,stderr}));
+  const timer=setTimeout(()=>child.kill(),12000);done.finally(()=>clearTimeout(timer));
+  return {child,done};
+}
+test('bounded envelope imports existing identity without writing Qt settings',async()=>{
+  const result=await start(envelope(),['--parse']).done;assert.equal(result.code,0,result.stderr);
+  assert.equal(fs.existsSync(path.join(directory,'ClipRelay Probe')),false);
+});
+test('lifecycle reports one connection and the first terminal reason only',async()=>{
+  const result=await start(envelope(),['--events']).done;assert.equal(result.code,0,result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line=>JSON.parse(line)),[
+    {version:1,event:'connected'},{version:1,event:'ended',reason:'network'}]);
+  assert.equal((await start(envelope(),['--network-errors']).done).code,0);
+});
+test('invalid identity, types, limits and unknown properties fail closed',async()=>{
+  for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001},{telemetry:1},{inputEpochs:true},{inputEpochs:1,telemetry:true}]){
+    const result=await start({...envelope(),...change},['--parse']).done;assert.equal(result.code,2,JSON.stringify(change));
+  }
+  const result=await start(Buffer.from([0,2,0,0]),['--parse']).done;assert.equal(result.code,2);
+});
+
+function inputFrame(epoch,operation){
+  const bytes=Buffer.alloc(16);bytes.write('CRIC');bytes[4]=1;bytes[5]=operation;bytes.writeUInt32BE(epoch,8);return bytes;
+}
+async function startInputCommands(enabled=true){
+  const run=start({...envelope(),telemetry:true,...(enabled?{inputEpochs:true}:{})},['--input-commands']);
+  await once(run.child.stdout,'data');
+  return run;
+}
+async function untilInput(run,count){
+  let output='';
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{cleanup();reject(new Error('No input event'));},3000);
+    function cleanup(){clearTimeout(timer);run.child.stdout.off('data',read);run.child.off('close',closed);}
+    function closed(){cleanup();reject(new Error('Input probe ended early'));}
+    function read(bytes){output+=bytes;const lines=output.split('\n');output=lines.pop();for(const line of lines)if(JSON.parse(line).event==='input'&&!--count){cleanup();resolve();}}
+    run.child.stdout.on('data',read);run.child.on('close',closed);
+  });
+}
+test('opt-in owner commands accept fragmented frames and distinguish submitted from acknowledged',async()=>{
+  const run=await startInputCommands();
+  const first=inputFrame(1,1),ready=untilInput(run,1);
+  run.child.stdin.write(first.subarray(0,7));await new Promise(r=>setTimeout(r,25));run.child.stdin.write(first.subarray(7));
+  await ready;
+  const next=untilInput(run,3);
+  run.child.stdin.write(Buffer.concat([inputFrame(1,3),inputFrame(2,2),inputFrame(0xffffffff,3)]));
+  await next;run.child.stdin.end();
+  const result=await run.done;assert.equal(result.code,0,result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse).filter(e=>e.event==='input'),[
+    {version:1,event:'input',epoch:1,stage:'submitted'},
+    {version:1,event:'input',epoch:1,stage:'acknowledged'},
+    {version:1,event:'input',epoch:2,stage:'submitted'},
+    {version:1,event:'input',epoch:0xffffffff,stage:'acknowledged'}]);
+});
+test('invalid owner command headers, reserved bytes and zero epochs close the lease',async()=>{
+  const invalid=[];
+  for(const index of [0,4,5,6,7,12,15]){const bytes=inputFrame(1,1);bytes[index]=255;invalid.push(bytes);}
+  invalid.push(inputFrame(0,1));
+  for(const bytes of invalid){
+    const run=await startInputCommands();run.child.stdin.write(bytes);
+    const result=await run.done;assert.equal(result.code,0,result.stderr);
+    assert.equal(result.stdout.includes('"event":"input"'),false);
+  }
+});
+test('unnegotiated commands and bursts beyond four frames fail closed',async()=>{
+  const legacy=await startInputCommands(false);legacy.child.stdin.write(inputFrame(1,1));
+  assert.equal((await legacy.done).code,0);
+  const burst=await startInputCommands();burst.child.stdin.write(Buffer.concat(Array(5).fill(inputFrame(1,1))));
+  const result=await burst.done;assert.equal(result.code,0);assert.equal(result.stdout.includes('"event":"input"'),false);
+});
+test('partial owner commands expire while an otherwise idle command lease stays alive',async()=>{
+  const run=await startInputCommands();const started=performance.now();
+  run.child.stdin.write(inputFrame(1,1).subarray(0,5));
+  const result=await run.done;assert.equal(result.code,0);
+  assert.ok(performance.now()-started>=1900&&performance.now()-started<4000);
+  assert.equal(result.stdout.includes('"event":"input"'),false);
+});
+
+test('opt-in progress is monotonic, bounded, rate-limited and stops after the terminal event',async()=>{
+  const result=await start({...envelope(),telemetry:true},['--progress']).done;assert.equal(result.code,0,result.stderr);
+  const events=result.stdout.trim().split('\n').map(line=>JSON.parse(line));assert.deepEqual(events.map(e=>e.event),['connected','progress','progress','ended']);
+  assert.deepEqual(events.filter(e=>e.event==='progress').map(({received,rendered,width,height})=>({received,rendered,width,height})),[
+    {received:10,rendered:9,width:1280,height:720},{received:20,rendered:19,width:1920,height:1080}]);
+  for(const e of events.filter(e=>e.event==='progress'))for(const key of ['receivedAgeMs','renderedAgeMs'])assert.ok(Number.isInteger(e[key])&&e[key]>=0&&e[key]<=60000);
+  const legacy=await start(envelope(),['--progress']).done;assert.equal(legacy.code,0);assert.deepEqual(legacy.stdout.trim().split('\n').map(line=>JSON.parse(line).event),['connected','ended']);
+});
+
+test('a blocked output pipe cannot hold the viewer alive or block its cleanup',async()=>{
+  const child=spawn(process.env.CLIPRELAY_QT_PROBE,['--progress-backpressure'],{stdio:['pipe','pipe','pipe'],env:{...process.env,CLIPRELAY_PROBE_SETTINGS:directory}});
+  const ended=once(child,'exit'),timer=setTimeout(()=>child.kill(),3000);child.stdin.on('error',()=>{});child.stdin.write(frame({...envelope(),telemetry:true}));
+  try{assert.equal((await ended)[0],0);}finally{clearTimeout(timer);child.stdout.resume();child.stderr.resume();child.stdin.destroy();}
+});
+test('parent pipe close ends session and a truncated frame cannot hang',async()=>{
+  const run=start(envelope(),['--lease']);await once(run.child.stdout,'data');run.child.stdin.end();
+  assert.equal((await run.done).code,0);
+  const broken=start(Buffer.from([0,0,0,100]),['--parse']);broken.child.stdin.end();assert.equal((await broken.done).code,2);
+});
+test('embedded route requires literal loopback and bounded advertised ports',async()=>{
+  assert.equal((await start({...envelope(32000),overlay:true},['--overlay']).done).code,0);
+  assert.equal((await start({...envelope(32000),overlay:true,overlayPort:48789},['--overlay']).done).code,0);
+  for(const change of [{address:'localhost'},{address:'127.0.0.2'},{address:'192.168.1.1'},{port:1028},{overlay:1},{overlayPort:65515},{overlayPort:1028},{overlayPort:'48789'},{overlay:false,overlayPort:48789}]){
+    assert.equal((await start({...envelope(32000),overlay:true,...change},['--parse']).done).code,2,JSON.stringify(change));
+  }
+});
+async function listen(server){server.listen(0,'127.0.0.1');await once(server,'listening');return server.address().port;}
+async function close(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+test('real mutual TLS uses paired identity and preserves client ID',async()=>{
+  let count=0;
+  const server=https.createServer({key:host.key,cert:host.cert,requestCert:true,rejectUnauthorized:false},(req,res)=>{
+    count++;assert.ok(req.socket.getPeerCertificate().raw);assert.equal(new URL(req.url,'https://local').searchParams.get('uniqueid'),'a'.repeat(32));
+    res.end('<root status_code="200"><PairStatus>1</PairStatus></root>');
+  });
+  try{const port=await listen(server);const result=await start(envelope(port+5)).done;assert.equal(result.code,0,result.stderr);assert.equal(count,1);}finally{await close(server);}
+});
+test('wrong pinned certificate receives zero HTTP even when trusted by the system',async()=>{
+  let count=0;const server=https.createServer({key:wrong.key,cert:wrong.cert},(req,res)=>{count++;res.end('<root status_code="200"/>');});
+  try{const port=await listen(server);const result=await start(envelope(port+5),[],{CLIPRELAY_PROBE_CA:wrong.file}).done;assert.equal(result.code,6,result.stderr);assert.equal(count,0);assert.equal(JSON.parse(result.stdout).reason,'pairing');}finally{await close(server);}
+});
+test('redirect is not followed and 401 does not fall back to HTTP',async()=>{
+  let plain=0;const fallback=http.createServer((req,res)=>{plain++;res.end('<root status_code="200"/>');});
+  const fallbackPort=await listen(fallback);let status=302;
+  const server=https.createServer({key:host.key,cert:host.cert},(req,res)=>{if(status===302){res.writeHead(302,{Location:`http://127.0.0.1:${fallbackPort}/stolen`});res.end();}else res.end('<root status_code="401"/>');});
+  try{const port=await listen(server);assert.equal((await start(envelope(port+5)).done).code,6);status=401;assert.equal((await start(envelope(port+5)).done).code,6);assert.equal(plain,0);}finally{await close(server);await close(fallback);}
+});

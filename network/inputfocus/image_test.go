@@ -82,3 +82,42 @@ func TestImageUploadBoundariesAndAuthorization(t *testing.T) {
 		t.Fatal("revoked client accepted")
 	}
 }
+
+func TestImageUploadManagedClipboardIdentityAndPostReadRevocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clients.json")
+	cert := []byte("paired")
+	filePairing(t, path, cert)
+	var payload bytes.Buffer
+	if err := png.Encode(&payload, image.NewNRGBA(image.Rect(0, 0, 2, 3))); err != nil {
+		t.Fatal(err)
+	}
+	revoked := false
+	focus := func(string) (json.RawMessage, error) { t.Fatal("image reached focus worker"); return nil, nil }
+	provider := func(command string) (json.RawMessage, error) {
+		var value map[string]string
+		if !strings.HasPrefix(command, "clipboard:") || json.Unmarshal([]byte(command[10:]), &value) != nil {
+			t.Fatal(command)
+		}
+		if value["owner"] != displayOwner(cert) || !fileID.MatchString(value["id"]) || value["op"] != "write" || value["kind"] != "png" || value["data"] != base64.StdEncoding.EncodeToString(payload.Bytes()) {
+			t.Fatal("image identity or payload changed")
+		}
+		if revoked {
+			if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	}
+	h := handler(path, focus, focus, focus, provider)
+	for _, code := range []int{200, 403} {
+		revoked = code == 403
+		r := httptest.NewRequest("POST", "/v1/clipboard-image", bytes.NewReader(payload.Bytes()))
+		r.Header.Set("Content-Type", "image/png")
+		r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Raw: cert}}}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != code {
+			t.Fatal(w.Code, w.Body)
+		}
+	}
+}

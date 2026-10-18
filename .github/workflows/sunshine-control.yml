@@ -1,0 +1,120 @@
+name: Sunshine Control Build
+
+on:
+  push:
+    branches: ['codex/sunshine-control-*']
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', '.github/workflows/sunshine-control.yml']
+  pull_request:
+    paths: ['engine/sunshine/**', 'scripts/prepare_sunshine.py', '.github/workflows/sunshine-control.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sunshine-control-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 55
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: LizardByte/Sunshine
+          ref: 63d35f702ee9e362e43263742981836ec0710384
+          submodules: recursive
+          path: sunshine-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply pinned engine patch
+        shell: powershell
+        run: |
+          python scripts/prepare_sunshine.py sunshine-source
+          if ($LASTEXITCODE -ne 0) { throw 'Engine patch failed' }
+          $nodeDirectory = Split-Path (Get-Command node.exe).Source
+          "NATIVE_NODE_DIRECTORY=$nodeDirectory" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-curl-winssl
+            mingw-w64-ucrt-x86_64-miniupnpc
+            mingw-w64-ucrt-x86_64-onevpl
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-MinHook
+      - uses: actions/cache/restore@v4
+        id: compiler-cache
+        with:
+          path: .sunshine-ccache
+          key: sunshine-control-ucrt64-v1-${{ hashFiles('engine/sunshine/upstream.json', '.github/workflows/sunshine-control.yml') }}
+          restore-keys: sunshine-control-ucrt64-v1-
+      - name: Test display state and build complete engine
+        run: |
+          set -euo pipefail
+          export PATH="$(cygpath "$NATIVE_NODE_DIRECTORY"):$PATH"
+          export CCACHE_DIR="$(cygpath -m "$PWD/.sunshine-ccache")"
+          ccache --max-size=600M
+          g++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/control_test.cpp -o control-test.exe
+          ./control-test.exe
+          g++ -std=c++23 -Wall -Wextra -Werror -pthread engine/sunshine/input_test.cpp -o input-test.exe
+          ./input-test.exe
+          g++ -std=c++23 -Wall -Wextra -Werror engine/sunshine/audio_test.cpp -lole32 -luuid -lmmdevapi -o audio-test.exe
+          ./audio-test.exe --self
+          cmake -S sunshine-source -B sunshine-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DBUILD_TESTS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DSUNSHINE_ENABLE_TRAY=OFF -DSUNSHINE_USE_STATIC_QT=OFF \
+            -DSUNSHINE_ASSETS_DIR=assets -DSUNSHINE_PUBLISHER_NAME=ClipRelay \
+            -DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/ffffhx/cliprelay \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/ffffhx/cliprelay/issues
+          cmake --build sunshine-build --parallel 2
+          ./sunshine-build/tests/test_sunshine.exe --gtest_filter='ClipRelayInputTest.*'
+          ./sunshine-build/tests/test_sunshine.exe --gtest_filter='PairingSessionRegistryTest.*:ClipRelayManagedPairingTest.*:PairingHttpHandlerTest.ClipRelayManaged*:ConfigHttpTest.ClipRelayManaged*'
+          cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component application
+          cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component assets
+          # Common assets and the compiled Web UI have no CMake component.
+          # Copy the complete runtime assets without installing Boost's SDK.
+          cmake -E copy_directory sunshine-build/assets engine-artifact/assets
+          test -f engine-artifact/assets/web/index.html
+          cp engine/sunshine/upstream.json engine-artifact/
+          cp sunshine-source/LICENSE engine-artifact/SUNSHINE-LICENSE
+          # Windows checkout and MSYS Git can disagree on CRLF normalization.
+          # Ship the reviewed patch, not a build-directory diff of the whole tree.
+          cp engine/sunshine/control.patch engine-artifact/cliprelay-source.patch
+          cp engine/sunshine/cliprelay_control.h engine-artifact/
+          cp engine/sunshine/cliprelay_audio.h engine-artifact/
+          cp engine/sunshine/cliprelay_input.h engine-artifact/
+          mkdir -p engine-artifact/engine/sunshine
+          cp engine/sunshine/{upstream.json,control.patch,cliprelay_control.h,cliprelay_audio.h,cliprelay_input.h,control_test.cpp,input_test.cpp,input_integration_test.cpp,README.md} engine-artifact/engine/sunshine/
+          cp scripts/prepare_sunshine.py engine-artifact/scripts/
+          sha256sum engine-artifact/sunshine.exe > engine-artifact/SHA256SUMS
+          ccache --show-stats
+      - uses: actions/cache/save@v4
+        if: always() && steps.compiler-cache.outputs.cache-hit != 'true'
+        with:
+          path: .sunshine-ccache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunshine-cliprelay-control-windows-amd64
+          path: engine-artifact/
+          if-no-files-found: error
+          retention-days: 14

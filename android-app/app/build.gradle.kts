@@ -36,8 +36,8 @@ android {
         applicationId = "com.cliprelay.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 58
-        versionName = "0.10.28"
+        versionCode = 60
+        versionName = "0.10.30"
 
         val updateManifestUrl = providers.gradleProperty("cliprelayUpdateManifestUrl")
             .orElse("https://124-221-36-36.anyip.dev:8443/cliprelay/update.json")
@@ -47,7 +47,7 @@ android {
         testInstrumentationRunner = if (providers.gradleProperty("cliprelayTestBuildType").orNull == "release") {
             "com.cliprelay.app.RemoteDesktopSmokeInstrumentation"
         } else {
-            "androidx.test.runner.AndroidJUnitRunner"
+            "com.cliprelay.app.ManagedDeviceTestRunner"
         }
         vectorDrawables.useSupportLibrary = true
     }
@@ -134,8 +134,11 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20260814")
+    // JVM pairing tests exercise the real XML parser instead of android.jar stubs.
+    testImplementation("net.sf.kxml:kxml2:2.3.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    add("qaImplementation", "androidx.compose.ui:ui-test-manifest")
 }

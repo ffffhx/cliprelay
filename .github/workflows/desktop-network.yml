@@ -1,0 +1,155 @@
+name: Desktop Network Build
+on:
+  push:
+    branches: ['codex/desktop-network-*']
+    paths: ['network/**', 'scripts/build_desktop_network.py', 'scripts/network_notices.py', 'windows/tests/**', 'windows/electron/**', 'LICENSE', '.github/workflows/desktop-network.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache: true
+          cache-dependency-path: network/go.sum
+      - name: Build native certificate fixture
+        shell: bash
+        run: |
+          fixture="$RUNNER_TEMP/cliprelay-pairing-fixture"
+          if [ "$RUNNER_OS" = Windows ]; then fixture="$fixture.exe"; fi
+          GOTOOLCHAIN=local go build -o "$fixture" windows/tests/mac-pairing-fixture/main.go
+          printf '%s\n' "CLIPRELAY_PAIRING_TEST_FIXTURE=$fixture" >> "$GITHUB_ENV"
+      - name: Ownership and transport tests
+        working-directory: network
+        run: go test -count=1 -timeout=120s ./broker ./cmd/cliprelay-client-network ./desktopclient ./mobile ./transport
+      - name: Host companion ownership and credential channel
+        working-directory: network
+        run: go test -v -count=1 -timeout=90s ./hostcompanion ./cmd/cliprelay-host-network
+      - name: Desktop enrollment, ownership and route recovery
+        run: node --test windows/tests/network-controller.test.cjs windows/tests/network-artifact.test.cjs windows/tests/desktop-client-window.test.cjs windows/tests/mac-owned-window.test.cjs windows/tests/mac-controller.test.cjs windows/tests/mac-paired-relay.test.cjs windows/tests/mac-pairing.test.cjs windows/tests/stream-viewer.test.cjs
+      - name: Pairing rejection, expiry and joined cancellation
+        run: node --test --test-timeout=30000 windows/tests/mac-pair-feedback.test.cjs
+      - name: Windows managed host pairing settings
+        run: node --test windows/tests/windows-host-pairing-ui.test.cjs
+      - name: Windows managed pairing pipe ownership
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& windows/tests/host-pairing.ps1'
+      - name: Windows client revocation policy
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& windows/tests/host-clients.ps1'
+      - name: Windows pinned native administration deadlines
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& windows/tests/engine-admin.ps1'
+      - name: Desktop live bitrate and presentation confirmation
+        run: node --test windows/tests/desktop-bitrate.test.cjs windows/tests/desktop-bitrate-ui.test.cjs
+      - name: Desktop input ownership and presentation gating
+        run: node --test windows/tests/desktop-input.test.cjs windows/tests/desktop-input-session.test.cjs windows/tests/stream-viewer-input.test.cjs windows/tests/desktop-input-ui.test.cjs
+      - name: Desktop guarded display selection
+        run: node --test windows/tests/desktop-display.test.cjs windows/tests/desktop-display-ui.test.cjs
+      - name: Desktop privacy lease lifecycle
+        run: node --test windows/tests/desktop-privacy.test.cjs windows/tests/desktop-privacy-ui.test.cjs
+      - name: Desktop audio mute and restoration
+        run: node --test windows/tests/desktop-audio-mute.test.cjs windows/tests/desktop-audio-mute-ui.test.cjs windows/tests/desktop-session-lock.test.cjs windows/tests/desktop-session-lock-ui.test.cjs windows/tests/desktop-wake-protocol.test.cjs windows/tests/desktop-wake-store.test.cjs windows/tests/desktop-wake.test.cjs windows/tests/desktop-wake-ui.test.cjs
+      - name: Paired display and input binding
+        working-directory: network
+        run: go test -v -count=1 -timeout=90s ./inputfocus -run 'TestDisplay|TestInputState|TestPrivacy|TestAudioMute|TestSessionLock|TestWake|TestEngineAccess|TestLANPairing|TestLANVerification|TestProbeOwner|TestTerminalShutdown|TestHostListeners|TestRelayLocal'
+      - name: Build native file interoperability fixture
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path .tools -Force | Out-Null
+          & windows/tests/file-transfer.ps1 -TestWorkerOutput .tools/file-transfer-tests.exe
+      - name: Desktop file transfer, restart and destination boundaries
+        env:
+          CLIPRELAY_TEST_FILE_WORKER: ${{ runner.os == 'Windows' && format('{0}/.tools/file-transfer-tests.exe', github.workspace) || '' }}
+        run: node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs
+      - name: Windows component staging
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & windows/tests/desktop-viewer-package.ps1
+          & windows/tests/desktop-network-package.ps1
+      - name: Build native terminal interoperability fixture
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
+          & windows/tests/terminal.ps1
+      - name: Desktop terminal sessions, replay and window ownership
+        if: runner.os != 'Windows'
+        run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs
+      - name: Desktop terminal under an ordinary Windows user
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& windows/tests/desktop-terminal-ci.ps1'
+      - name: Check concurrent helper lifecycle
+        if: runner.os == 'Linux'
+        working-directory: network
+        run: go test -race -count=1 -timeout=120s ./desktopclient
+      - name: Lock cancellation, wake receipts and concurrent host observation
+        if: runner.os == 'Linux'
+        working-directory: network
+        run: go test -v -race -count=1 -timeout=120s ./inputfocus -run 'TestSessionLock|TestWake|TestEngineAccess|TestLANPairing|TestLANVerification|TestProbeOwner|TestPrivacy|TestAudioMute|TestTerminalShutdown|TestHostListeners|TestRelayLocal'
+      - name: Host companion concurrent lifetime
+        if: runner.os == 'Linux'
+        working-directory: network
+        run: go test -v -race -count=1 -timeout=90s ./hostcompanion ./cmd/cliprelay-host-network
+      - name: Real encrypted desktop TCP and UDP channels
+        working-directory: network
+        run: go test -tags=integration -count=1 -timeout=120s -run '^TestDesktopForwardLocalChannelsAndCleanup$' -v ./mobile
+      - name: Build Windows helper
+        if: runner.os == 'Windows'
+        run: python scripts/build_desktop_network.py windows --output .tools/desktop-network
+      - name: Build universal Mac helper
+        if: runner.os == 'macOS'
+        run: python3 scripts/build_desktop_network.py macos --output .tools/desktop-network
+      - name: Verify Windows process ownership
+        if: runner.os == 'Windows'
+        run: python windows/tests/desktop_network_process.py .tools/desktop-network/runtime/cliprelay-client-network.exe --report .tools/desktop-network/process-report.json
+      - name: Verify Mac process ownership
+        if: runner.os == 'macOS'
+        run: python3 windows/tests/desktop_network_process.py .tools/desktop-network/runtime/cliprelay-client-network --report .tools/desktop-network/process-report.json
+      - name: Build universal Mac host companion
+        if: runner.os == 'macOS'
+        run: python3 scripts/build_host_companion.py --output .tools/host-companion
+      - name: Verify packaged Mac host companion lifetime
+        if: runner.os == 'macOS'
+        run: python3 scripts/test_host_companion.py .tools/host-companion/runtime/cliprelay-host-network --report .tools/host-companion/process-report.json
+      - name: Preserve Mac host companion mode
+        if: runner.os == 'macOS'
+        run: tar -czf .tools/host-companion-macos.tar.gz -C .tools host-companion
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: ClipRelay-Host-Companion-macOS
+          path: .tools/host-companion-macos.tar.gz
+          if-no-files-found: error
+      - name: Verify main-process helper manager with the native packaged helper
+        if: runner.os != 'Linux'
+        env:
+          CLIPRELAY_NETWORK_HELPER_ARTIFACT: ${{ github.workspace }}/.tools/desktop-network
+        run: node --test windows/tests/network-channel.test.cjs
+      - name: Preserve Mac executable mode
+        if: runner.os == 'macOS'
+        run: tar -czf .tools/desktop-network-macos.tar.gz -C .tools desktop-network
+      - uses: actions/upload-artifact@v4
+        if: runner.os != 'Linux'
+        with:
+          name: ClipRelay-Desktop-Network-${{ runner.os }}
+          path: ${{ runner.os == 'macOS' && '.tools/desktop-network-macos.tar.gz' || '.tools/desktop-network' }}
+          if-no-files-found: error

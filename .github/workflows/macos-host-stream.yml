@@ -1,0 +1,108 @@
+name: macOS Packaged Host Stream
+on:
+  workflow_dispatch:
+    inputs:
+      app_run_id:
+        description: 'Successful complete Electron macOS build to test'
+        type: string
+        required: true
+      debug_native:
+        description: 'Attach LLDB for diagnosis only; this cannot pass acceptance'
+        type: boolean
+        default: false
+      viewer_run_id:
+        description: 'Optional successful viewer component build for diagnosis; cannot pass complete app acceptance'
+        type: string
+        required: false
+      activate_viewer:
+        description: 'Diagnose CI window visibility by activating only the owned viewer'
+        type: boolean
+        default: false
+      arm_runner:
+        description: 'ARM operating system for compatibility diagnosis'
+        type: choice
+        options: ['macos-26', 'macos-15']
+        default: 'macos-26'
+      h264_only:
+        description: 'Diagnose codec differences with native host H.264-only advertisement'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+jobs:
+  stream:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ${{ inputs.arm_runner || 'macos-26' }}
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - name: Build disposable certificate identity generator
+        run: |
+          go build -o "$RUNNER_TEMP/cliprelay-pairing-fixture" windows/tests/mac-pairing-fixture/main.go
+          echo "CLIPRELAY_PAIRING_TEST_FIXTURE=$RUNNER_TEMP/cliprelay-pairing-fixture" >> "$GITHUB_ENV"
+      - name: Select successful immutable application build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_RUN_ID: ${{ inputs.app_run_id }}
+          APP_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PY'
+          import json,os,re,subprocess
+          run=os.environ['APP_RUN_ID']; assert re.fullmatch(r'[0-9]+',run)
+          metadata=json.loads(subprocess.check_output(['gh','run','view',run,'--json','name,headSha,status,conclusion']))
+          assert metadata['name']=='Electron macOS build' and metadata['status']=='completed' and metadata['conclusion']=='success'
+          assert re.fullmatch(r'[a-f0-9]{40}',metadata['headSha'])
+          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('APP_SOURCE_COMMIT='+metadata['headSha']+'\n')
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-macOS-'+os.environ['APP_ARCH'],'-D','app-download'],check=True)
+          PY
+          ditto -x -k app-download/ClipRelay-macOS-${{ matrix.arch }}-*.zip app-unpacked
+      - name: Select diagnostic viewer component
+        if: inputs.viewer_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VIEWER_RUN_ID: ${{ inputs.viewer_run_id }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,re,subprocess,tarfile
+          run=os.environ['VIEWER_RUN_ID']; assert re.fullmatch(r'[0-9]+',run)
+          metadata=json.loads(subprocess.check_output(['gh','run','view',run,'--json','name,headSha,status,conclusion']))
+          assert metadata['name']=='Desktop Client Build' and metadata['status']=='completed' and metadata['conclusion']=='success'
+          directory=pathlib.Path(os.environ['RUNNER_TEMP'])/'cliprelay-diagnostic-viewer'; directory.mkdir()
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-Stream-macOS','-D',str(directory)],check=True)
+          with tarfile.open(directory/'ClipRelay-Stream-macOS.tar.gz') as archive: archive.extractall(directory,filter='data')
+          artifact=directory/'ClipRelay-Stream-macOS'
+          manifest=json.loads((artifact/'manifest.json').read_text())
+          assert manifest['platform']=='macos' and manifest['protocol']==1
+          for name,digest in manifest['files'].items():
+              file=(artifact/name).resolve(); assert file.is_relative_to(artifact.resolve())
+              assert hashlib.sha256(file.read_bytes()).hexdigest()==digest
+          with open(os.environ['GITHUB_ENV'],'a') as output:
+              output.write('CLIPRELAY_DIAGNOSTIC_VIEWER='+str(artifact)+'\nDIAGNOSTIC_VIEWER_COMMIT='+metadata['headSha']+'\n')
+          PY
+      - name: Real packaged capture, Qt presentation, input receipts and revocation
+        env:
+          CLIPRELAY_MAC_STREAM_DEBUG: ${{ inputs.debug_native && '1' || '' }}
+          CLIPRELAY_MAC_STREAM_ACTIVATE: ${{ inputs.activate_viewer && '1' || '' }}
+          CLIPRELAY_MAC_STREAM_H264: ${{ inputs.h264_only && '1' || '' }}
+        run: node scripts/test_macos_host_stream.cjs app-unpacked/ClipRelay.app/Contents/Resources/app/mac native-stream-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Mac-Native-Stream-${{ matrix.arch }}
+          path: native-stream-report.json
+          if-no-files-found: ignore

@@ -11,7 +11,11 @@ try {
     $name = "electron-v$version-win32-$architecture.zip"
     $base = "https://github.com/electron/electron/releases/download/v$version"
     $archive = Join-Path $staging $name
-    $sums = (Invoke-WebRequest -UseBasicParsing "$base/SHASUMS256.txt").Content
+    # GitHub serves this text as application/octet-stream. Windows PowerShell 5.1
+    # then exposes Content as byte[], so splitting it directly cannot find a hash.
+    $sumsPath = Join-Path $staging 'SHASUMS256.txt'
+    Invoke-WebRequest -UseBasicParsing "$base/SHASUMS256.txt" -OutFile $sumsPath
+    $sums = Get-Content -LiteralPath $sumsPath -Raw -Encoding UTF8
     $expected = (($sums -split "`n" | Where-Object { $_ -match ('\s+\*?' + [regex]::Escape($name) + '\s*$') }) -split '\s+')[0]
     if ($expected -notmatch '^[a-f0-9]{64}$') { throw 'Cannot verify the video engine download.' }
     Invoke-WebRequest -UseBasicParsing "$base/$name" -OutFile $archive

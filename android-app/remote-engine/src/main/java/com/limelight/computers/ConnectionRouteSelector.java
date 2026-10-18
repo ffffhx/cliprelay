@@ -20,7 +20,14 @@ public final class ConnectionRouteSelector {
     }
 
     public static <T> T select(List<Callable<T>> probes, long preferenceMs) throws InterruptedException {
+        return select(probes, preferenceMs, 15000);
+    }
+
+    public static <T> T select(List<Callable<T>> probes, long preferenceMs, long timeoutMs) throws InterruptedException {
+        if (preferenceMs < 0 || timeoutMs <= 0 || timeoutMs > 120000)
+            throw new IllegalArgumentException("Invalid route selection timeout");
         if (probes.isEmpty()) return null;
+        final long expires = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
         ExecutorService executor = Executors.newFixedThreadPool(probes.size(), runnable -> {
             Thread thread = new Thread(runnable, "ClipRelay route probe");
             thread.setDaemon(true);
@@ -31,7 +38,7 @@ public final class ConnectionRouteSelector {
         boolean[] done = new boolean[probes.size()];
         int bestIndex = probes.size();
         T best = null;
-        long deadline = Long.MAX_VALUE;
+        long deadline = expires;
         try {
             for (int i = 0; i < probes.size(); i++) {
                 final int index = i;
@@ -46,15 +53,16 @@ public final class ConnectionRouteSelector {
                     for (int i = 0; i < bestIndex; i++) preferredDone &= done[i];
                     if (preferredDone) return best;
                 }
-                Future<Result<T>> future = best == null ? completed.take() :
-                        completed.poll(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                Future<Result<T>> future = completed.poll(
+                        Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
                 if (future == null) return best;
                 Result<T> result;
                 try { result = future.get(); }
                 catch (java.util.concurrent.ExecutionException error) { throw new IllegalStateException(error.getCause()); }
                 done[result.index] = true;
                 if (result.value != null && result.index < bestIndex) {
-                    if (best == null) deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(preferenceMs);
+                    if (best == null) deadline = Math.min(expires,
+                            System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.min(preferenceMs, timeoutMs)));
                     best = result.value;
                     bestIndex = result.index;
                 }

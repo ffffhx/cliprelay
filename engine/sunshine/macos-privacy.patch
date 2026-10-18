@@ -1,0 +1,278 @@
+diff --git a/cmake/compile_definitions/macos.cmake b/cmake/compile_definitions/macos.cmake
+index 1cf6e35..b99517e 100644
+--- a/cmake/compile_definitions/macos.cmake
++++ b/cmake/compile_definitions/macos.cmake
+@@ -45,6 +45,7 @@ set(APPLE_ENTITLEMENTS_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/entitlements.pl
+ configure_file("${APPLE_PLIST_TEMPLATE}" "${APPLE_PLIST_FILE}" @ONLY)
+ 
+ set(PLATFORM_TARGET_FILES
++        "${CMAKE_SOURCE_DIR}/src/cliprelay_privacy_macos.mm"
+         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.h"
+         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.mm"
+         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_img_t.h"
+@@ -62,3 +63,8 @@ set(PLATFORM_TARGET_FILES
+         "${CMAKE_SOURCE_DIR}/third-party/TPCircularBuffer/TPCircularBuffer.h"
+         ${APPLE_ENTITLEMENTS_FILE}
+         ${APPLE_PLIST_FILE})
++
++set_source_files_properties("${CMAKE_SOURCE_DIR}/src/cliprelay_privacy_macos.mm"
++        PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-std=c++23")
++set_source_files_properties("${CMAKE_SOURCE_DIR}/src/platform/macos/display.mm"
++        PROPERTIES COMPILE_OPTIONS "-std=c++23")
+diff --git a/src/confighttp.cpp b/src/confighttp.cpp
+index ffbbc2d..f0c2abd 100644
+--- a/src/confighttp.cpp
++++ b/src/confighttp.cpp
+@@ -37,6 +37,9 @@
+ 
+ #ifdef __APPLE__
+   #include "cliprelay_owner.h"
++  #include "cliprelay_privacy.h"
++  #include <climits>
++  #include <stdexcept>
+ 
+   #include <CoreGraphics/CoreGraphics.h>
+ #endif
+@@ -2388,6 +2391,73 @@ namespace confighttp {
+     return result;
+   }
+ 
++#ifdef __APPLE__
++  nlohmann::json cliprelayPrivacyState(const std::string &outcome = "status") {
++    const auto state = cliprelay::privacy::native_state();
++    return {{"protocol", 1}, {"instance", cliprelayInstance()}, {"supported", cliprelay::privacy::native_supported()},
++      {"retained", state.retained}, {"authorized", state.authorized}, {"ready", state.ready},
++      {"epoch", state.epoch}, {"generation", state.generation}, {"firstFrame", state.first_frame},
++      {"expiresMs", state.expires_ms}, {"lease", state.session.lease}, {"owner", state.session.owner},
++      {"stream", state.session.stream}, {"outcome", outcome}, {"reason", state.reason}};
++  }
++
++  void cliprelayPrivacy(const resp_https_t &response, const req_https_t &request) {
++    if (!authenticate(response, request)) return;
++    if (!request->query_string.empty()) { bad_request(response, request, "Invalid privacy query"); return; }
++    if (request->method == "GET") { send_response(response, cliprelayPrivacyState()); return; }
++    if (!check_content_type(response, request, "application/json") || !validate_csrf_token(response, request, get_client_id(request))) return;
++    std::array<char, 4097> body {};
++    request->content.read(body.data(), body.size());
++    const auto length = request->content.gcount();
++    if (length > 4096) { bad_request(response, request, "Request too large"); return; }
++    try {
++      std::vector<std::set<std::string>> keys;
++      const auto input = nlohmann::json::parse(body.data(), body.data() + length, [&](int, nlohmann::json::parse_event_t event, nlohmann::json &value) {
++        if (event == nlohmann::json::parse_event_t::object_start) keys.emplace_back();
++        else if (event == nlohmann::json::parse_event_t::key && !keys.back().insert(value.get<std::string>()).second) throw std::invalid_argument("duplicate");
++        else if (event == nlohmann::json::parse_event_t::object_end) keys.pop_back();
++        return true;
++      });
++      if (!input.is_object() || !input.contains("op") || !input["op"].is_string()) throw std::invalid_argument("op");
++      const auto op = input["op"].get<std::string>();
++      if (op != "prepare" && op != "status" && op != "renew" && op != "release") throw std::invalid_argument("op");
++      if (input.size() != (op == "prepare" ? 6 : 5) || !input.contains("instance") || !input["instance"].is_string() ||
++          !input.contains("owner") || !input["owner"].is_string() || !input.contains("lease") || !input["lease"].is_string() ||
++          !input.contains("stream") || !input["stream"].is_number_unsigned()) throw std::invalid_argument("binding");
++      cliprelay::privacy::binding session {input["owner"].get<std::string>(), input["lease"].get<std::string>(), input["stream"].get<std::uint64_t>()};
++      if (!cliprelay::privacy::valid(session)) throw std::invalid_argument("binding");
++      cliprelay::privacy::process_identity worker;
++      if (op == "prepare") {
++        const auto &value = input.at("worker");
++        if (!value.is_object() || value.size() != 4 || !value.contains("pid") || !value["pid"].is_number_unsigned() ||
++            value["pid"].get<std::uint64_t>() > INT_MAX || !value.contains("birthSec") || !value["birthSec"].is_number_unsigned() ||
++            value["birthSec"].get<std::uint64_t>() >= (1ULL << 53) || !value.contains("birthUsec") || !value["birthUsec"].is_number_unsigned() ||
++            value["birthUsec"].get<std::uint64_t>() >= 1000000 || !value.contains("windows") || !value["windows"].is_array() ||
++            value["windows"].empty() || value["windows"].size() > 16) throw std::invalid_argument("worker");
++        worker.pid = value["pid"].get<int>(); worker.birth_sec = value["birthSec"].get<std::uint64_t>(); worker.birth_usec = value["birthUsec"].get<std::uint32_t>();
++        for (const auto &item : value["windows"]) {
++          if (!item.is_object() || item.size() != 2 || !item.contains("id") || !item["id"].is_number_unsigned() ||
++              item["id"].get<std::uint64_t>() > UINT32_MAX || !item.contains("display") || !item["display"].is_number_unsigned() ||
++              item["display"].get<std::uint64_t>() > UINT32_MAX) throw std::invalid_argument("window");
++          worker.windows.push_back({item["id"].get<std::uint32_t>(), item["display"].get<std::uint32_t>()});
++        }
++        std::sort(worker.windows.begin(), worker.windows.end(), [](const auto &a, const auto &b) { return a.id < b.id; });
++        if (!cliprelay::privacy::valid(worker)) throw std::invalid_argument("worker");
++      }
++      std::string outcome = "stale_instance";
++      if (input["instance"].get<std::string>() == cliprelayInstance()) {
++        if (op == "prepare") outcome = cliprelay::privacy::prepare_native(session, worker);
++        else if (op == "renew") outcome = cliprelay::privacy::renew_native(session);
++        else if (op == "release") outcome = cliprelay::privacy::release_native(session);
++        else outcome = cliprelay::privacy::native_state().session == session ? "status" : "stale";
++      }
++      send_response(response, cliprelayPrivacyState(outcome));
++    } catch (const std::exception &) {
++      bad_request(response, request, "Invalid privacy request");
++    }
++  }
++#endif
++
+   void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
+     if (!authenticate(response, request)) return;
+ #if defined(_WIN32) || defined(__APPLE__)
+@@ -2572,6 +2642,8 @@ namespace confighttp {
+     server.resource["^/api/clients/list$"]["GET"] = getClients;
+ #ifdef __APPLE__
+     server.resource["^/api/cliprelay/host$"]["GET"] = cliprelayHost;
++    server.resource["^/api/cliprelay/privacy$"]["GET"] = cliprelayPrivacy;
++    server.resource["^/api/cliprelay/privacy$"]["POST"] = cliprelayPrivacy;
+ #endif
+     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
+     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
+diff --git a/src/confighttp.h b/src/confighttp.h
+index 9d6bcc9..b77116d 100644
+--- a/src/confighttp.h
++++ b/src/confighttp.h
+@@ -94,6 +94,9 @@ namespace confighttp {
+    */
+   void cancelPairing(const resp_https_t &response, const req_https_t &request);
+   void cliprelayManagedPairing(const resp_https_t &response, const req_https_t &request);
++#ifdef __APPLE__
++  void cliprelayPrivacy(const resp_https_t &response, const req_https_t &request);
++#endif
+ 
+   /**
+    * @brief Apply a PIN to an explicitly selected pairing request.
+diff --git a/src/platform/macos/display.mm b/src/platform/macos/display.mm
+index 09a3db0..345a20c 100644
+--- a/src/platform/macos/display.mm
++++ b/src/platform/macos/display.mm
+@@ -12,6 +12,7 @@
+ 
+ // local includes
+ #include "src/cliprelay_capture.h"
++#include "src/cliprelay_privacy.h"
+ #include "src/cliprelay_macos.h"
+ #include "src/config.h"
+ #include "src/display_device.h"
+@@ -170,7 +171,11 @@ namespace platf {
+     }
+ 
+     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+-      auto source = [av_capture newCapture];
++      std::uint64_t filter_epoch = 0;
++      auto windows = cliprelay::privacy::copy_native_windows(filter_epoch);
++      if (!windows) return capture_e::error;
++      auto source = [av_capture newCaptureExcludingWindows:windows];
++      [windows release];
+       if (!source) {
+         return capture_e::error;
+       }
+@@ -178,6 +183,8 @@ namespace platf {
+         [av_capture stopCapture:source];
+         [source release];
+       });
++      if (!cliprelay::privacy::native_source_current(filter_epoch)) return capture_e::reinit;
++      cliprelay::privacy::native_source_started(filter_epoch, cliprelay_generation);
+       std::shared_ptr<img_t> last_image;
+       if (!pull_free_image_cb(last_image)) {
+         return capture_e::ok;
+@@ -206,7 +213,7 @@ namespace platf {
+         [&] {
+           // The platform flag records startup permission only. Recheck native
+           // authorization so a later revocation is not hidden by that cache.
+-          return platf::is_screen_capture_allowed() && CGPreflightScreenCaptureAccess() && geometry_current();
++          return cliprelay::privacy::native_source_current(filter_epoch) && platf::is_screen_capture_allowed() && CGPreflightScreenCaptureAccess() && geometry_current();
+         },
+         [] {
+           return std::chrono::steady_clock::now();
+@@ -268,7 +275,11 @@ namespace platf {
+         return 1;
+       }
+ 
+-      auto source = [av_capture newCapture];
++      std::uint64_t filter_epoch = 0;
++      auto windows = cliprelay::privacy::copy_native_windows(filter_epoch);
++      if (!windows) return 1;
++      auto source = [av_capture newCaptureExcludingWindows:windows];
++      [windows release];
+       if (!source) {
+         return 1;
+       }
+@@ -283,7 +294,7 @@ namespace platf {
+       auto release_sample = util::fail_guard([&] {
+         CFRelease(sample);
+       });
+-      return assign_sample(img, sample) ? 0 : 1;
++      return cliprelay::privacy::native_source_current(filter_epoch) && assign_sample(img, sample) ? 0 : 1;
+     }
+ 
+     /**
+diff --git a/tests/unit/test_confighttp.cpp b/tests/unit/test_confighttp.cpp
+index 87494cd..6be3d7a 100644
+--- a/tests/unit/test_confighttp.cpp
++++ b/tests/unit/test_confighttp.cpp
+@@ -333,6 +333,10 @@ protected:
+     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
+     server->resource["^/managed-pairing-test$"]["POST"] = confighttp::cliprelayManagedPairing;
+     server->resource["^/managed-pairing-test$"]["DELETE"] = confighttp::cliprelayManagedPairing;
++#ifdef __APPLE__
++    server->resource["^/privacy-test$"]["GET"] = confighttp::cliprelayPrivacy;
++    server->resource["^/privacy-test$"]["POST"] = confighttp::cliprelayPrivacy;
++#endif
+     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
+ 
+     // Start server
+@@ -587,6 +591,65 @@ TEST_F(ConfigHttpTest, ClipRelayManagedPairingRequiresAuthenticationAndCSRF) {
+   }
+ }
+ 
++#ifdef __APPLE__
++TEST_F(ConfigHttpTest, ClipRelayPrivacyRequiresAuthenticationAndCSRF) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  for (const auto &method : {"GET", "POST"}) {
++    EXPECT_EQ(client->request(method, "/privacy-test", "{}", headers)->status_code, "401 Unauthorized");
++  }
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  headers.emplace("Origin", "https://example.invalid");
++  EXPECT_EQ(client->request("POST", "/privacy-test", "{}", headers)->status_code, "400 Bad Request");
++  EXPECT_EQ(client->request("GET", "/privacy-test?worker=1", "", headers)->status_code, "400 Bad Request");
++}
++
++TEST_F(ConfigHttpTest, ClipRelayPrivacyRejectsMalformedAndDuplicateIdentities) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  auto request = nlohmann::json {{"op", "prepare"}, {"instance", "stale"}, {"owner", std::string(64, 'a')},
++    {"stream", 1}, {"lease", std::string(32, 'b')}, {"worker", {{"pid", 2}, {"birthSec", 1}, {"birthUsec", 0},
++      {"windows", nlohmann::json::array({{{"id", 1}, {"display", 1}}})}}}};
++  std::vector<std::string> invalid {"{}", std::string(4097, 'a'), "[]", request.dump() + "{}"};
++  for (const auto &field : {"owner", "stream", "lease", "worker", "instance"}) {
++    auto changed = request; changed[field] = false; invalid.push_back(changed.dump());
++  }
++  auto changed = request; changed["extra"] = 1; invalid.push_back(changed.dump());
++  changed = request; changed["stream"] = (1ULL << 53); invalid.push_back(changed.dump());
++  changed = request; changed["worker"]["birthUsec"] = 1000000; invalid.push_back(changed.dump());
++  changed = request; changed["worker"]["windows"].push_back(changed["worker"]["windows"][0]); invalid.push_back(changed.dump());
++  auto duplicate = request.dump(); duplicate.insert(1, "\"op\":\"status\","); invalid.push_back(duplicate);
++  duplicate = request.dump(); duplicate.insert(duplicate.find("\"pid\""), "\"pid\":3,"); invalid.push_back(duplicate);
++  for (const auto &body : invalid) {
++    EXPECT_EQ(client->request("POST", "/privacy-test", body, headers)->status_code, "400 Bad Request") << body;
++  }
++}
++
++TEST_F(ConfigHttpTest, ClipRelayPrivacyStaleBindingCannotAuthorizeCapture) {
++  SimpleWeb::CaseInsensitiveMultimap headers;
++  headers.emplace("Content-Type", "application/json");
++  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
++  const auto initial = client->request("GET", "/privacy-test", "", headers);
++  ASSERT_EQ(initial->status_code, "200 OK");
++  const auto before = nlohmann::json::parse(initial->content.string());
++  EXPECT_EQ(before.at("retained"), false); EXPECT_EQ(before.at("ready"), false);
++  for (const auto &op : {"status", "renew", "release", "prepare"}) {
++    auto request = nlohmann::json {{"op", op}, {"instance", "stale"}, {"owner", std::string(64, 'a')},
++      {"stream", 1}, {"lease", std::string(32, 'b')}};
++    if (std::string(op) == "prepare") request["worker"] = {{"pid", 2}, {"birthSec", 1}, {"birthUsec", 0},
++      {"windows", nlohmann::json::array({{{"id", 1}, {"display", 1}}})}};
++    const auto reply = client->request("POST", "/privacy-test", request.dump(), headers);
++    ASSERT_EQ(reply->status_code, "200 OK");
++    const auto state = nlohmann::json::parse(reply->content.string());
++    EXPECT_EQ(state.at("outcome"), "stale_instance"); EXPECT_EQ(state.at("epoch"), before.at("epoch"));
++    EXPECT_EQ(state.at("retained"), false); EXPECT_EQ(state.at("authorized"), false); EXPECT_EQ(state.at("ready"), false);
++    EXPECT_EQ(state.at("firstFrame"), 0); EXPECT_EQ(state.at("expiresMs"), 0);
++    EXPECT_FALSE(state.contains("worker")); EXPECT_FALSE(state.contains("windows"));
++  }
++}
++#endif
++
+ TEST_F(ConfigHttpTest, ClipRelayManagedPairingValidatesFieldsAndReturnsNativeResult) {
+   SimpleWeb::CaseInsensitiveMultimap headers;
+   headers.emplace("Content-Type", "application/json");

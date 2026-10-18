@@ -1,0 +1,72 @@
+name: macOS Privacy Stream Development
+on:
+  push:
+    branches: ['codex/desktop-client-input-*']
+    paths: ['.github/workflows/macos-privacy-stream.yml']
+  workflow_dispatch:
+    inputs:
+      engine_run_id:
+        description: 'Successful native filter engine build'
+        type: string
+        default: '38994396737'
+        required: true
+      viewer_run_id:
+        description: 'Successful native presentation viewer build'
+        type: string
+        default: '38973983319'
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: network/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - name: Build unchanged native companion and disposable identity generator
+        run: |
+          python3 scripts/build_host_companion.py --output .tools/privacy-companion
+          go build -o "$RUNNER_TEMP/cliprelay-pairing-fixture" windows/tests/mac-pairing-fixture/main.go
+          echo "CLIPRELAY_PAIRING_TEST_FIXTURE=$RUNNER_TEMP/cliprelay-pairing-fixture" >> "$GITHUB_ENV"
+      - name: Select immutable native engine and viewer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_RUN: ${{ inputs.engine_run_id || '38994396737' }}
+          VIEWER_RUN: ${{ inputs.viewer_run_id || '38973983319' }}
+        run: |
+          python3 scripts/fetch_sunshine_macos.py --run "$ENGINE_RUN" --arch x86_64 --directory .tools/privacy-engine
+          python3 - <<'PY'
+          import json,os,re,subprocess
+          run=os.environ['VIEWER_RUN'];assert re.fullmatch(r'[0-9]+',run)
+          value=json.loads(subprocess.check_output(['gh','run','view',run,'--json','name,status,conclusion,headSha']))
+          assert value['name']=='Desktop Client Build' and value['status']=='completed' and value['conclusion']=='success'
+          assert re.fullmatch(r'[0-9a-f]{40}',value['headSha'])
+          subprocess.run(['gh','run','download',run,'-n','ClipRelay-Stream-macOS','-D','.tools/privacy-viewer'],check=True)
+          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('PRIVACY_VIEWER_COMMIT='+value['headSha']+'\n')
+          PY
+      - name: Stage verified components for development acceptance
+        run: python3 scripts/stage_privacy_stream.py
+      - name: Build disposable Sunshine-compatible decoder and owned color fixture
+        run: |
+          node --test scripts/tests/mac-privacy-receipt.test.cjs
+          python3 scripts/build_privacy_pixel_fixtures.py
+      - name: Real paired privacy activation, recovery and decoded colors
+        env:
+          CLIPRELAY_COMPONENT_PRIVACY_TEST: '1'
+        run: node scripts/test_macos_host_stream.cjs .tools/privacy-stream-mac privacy-stream-development.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-Privacy-Stream-Development-x64
+          path: |
+            privacy-stream-development.json
+            .tools/privacy-stream-components.json
+          if-no-files-found: error

@@ -2,9 +2,23 @@
   "project": "Sunshine",
   "version": "2026.914.233613",
   "license": "GPL-3.0-only",
-  "source": "https://github.com/LizardByte/Sunshine/tree/v2026.914.233613",
-  "archiveUrl": "https://github.com/LizardByte/Sunshine/releases/download/v2026.914.233613/Sunshine-Windows-AMD64-lite.zip",
-  "sha256": "233008e46f4c0e501a586cbfd6c4fd4a4c0d414a0b5fc7f13c070eb92ec3824b",
+  "source": "https://github.com/LizardByte/Sunshine/tree/63d35f702ee9e362e43263742981836ec0710384",
   "hostPort": 48789,
-  "serviceName": "ClipRelayRemote"
+  "serviceName": "ClipRelayRemote",
+  "cliprelaySource": "https://github.com/ffffhx/cliprelay/tree/8d8248ce3ba16acbed1cd654313cdae2145c495c",
+  "artifactRun": 38903273488,
+  "artifactName": "sunshine-cliprelay-control-windows-amd64",
+  "controlProtocol": 1,
+  "executableSha256": "8060cd341ece609d60b22146cfc6bd9d04de3a48cb0271a03919ac639064910a",
+  "capabilities": [
+    "display-switch",
+    "live-bitrate",
+    "process-audio",
+    "audio-exclusion",
+    "input-epochs-v1",
+    "guarded-display-selection",
+    "graceful-device-revocation-v1",
+    "managed-pairing-lifetime-v1",
+    "autonomous-pairing-expiry-v1"
+  ]
 }

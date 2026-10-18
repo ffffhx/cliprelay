@@ -12,11 +12,43 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 class ClipRelayHttpServerTest {
+    @Test fun legacyReceptionRequiresExplicitEnableAndHonorsDisableBeforeNextWrite() {
+        val listening = CountDownLatch(1)
+        val port = AtomicReference<Int>()
+        val enabled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val writes = java.util.concurrent.atomic.AtomicInteger()
+        val listener = object : ClipRelayHttpServer.Listener {
+            override fun onListening(value: Int) { port.set(value); listening.countDown() }
+            override fun onTextReceived(text: String) { writes.incrementAndGet() }
+            override fun onImageReceived(bytes: ByteArray, mediaType: String) { writes.incrementAndGet() }
+            override fun onFailure(message: String) = error(message)
+        }
+        // Omitted setting must reject requests even when no access token exists.
+        val defaultServer = ClipRelayHttpServer(0, { "" }, listener)
+        try {
+            defaultServer.start(); assertTrue(listening.await(3, TimeUnit.SECONDS))
+            assertTrue(post(port.get(), "{\"text\":\"blocked\"}").startsWith("HTTP/1.1 403"))
+            assertEquals(0, writes.get())
+        } finally { defaultServer.stop() }
+        val second = CountDownLatch(1)
+        val dynamicListener = object : ClipRelayHttpServer.Listener by listener {
+            override fun onListening(value: Int) { port.set(value); second.countDown() }
+        }
+        val dynamic = ClipRelayHttpServer(0, { "" }, dynamicListener, { enabled.get() })
+        try {
+            dynamic.start(); assertTrue(second.await(3, TimeUnit.SECONDS))
+            enabled.set(true)
+            assertTrue(post(port.get(), "{\"text\":\"allowed\"}").startsWith("HTTP/1.1 200"))
+            enabled.set(false)
+            assertTrue(post(port.get(), "{\"text\":\"blocked\"}").startsWith("HTTP/1.1 403"))
+            assertEquals(1, writes.get())
+        } finally { dynamic.stop() }
+    }
     @Test fun previewStateRequiresAuthAndReportsOnlyReadingPosition() {
         val listening = CountDownLatch(1)
         val actualPort = AtomicReference<Int>()
         val state = AtomicReference(com.cliprelay.app.runtime.PreviewRemoteState())
-        val server = ClipRelayHttpServer(0, { "secret" }, object : ClipRelayHttpServer.Listener {
+        val server = legacyServer(0, { "secret" }, object : ClipRelayHttpServer.Listener {
             override fun onListening(port: Int) { actualPort.set(port); listening.countDown() }
             override fun onTextReceived(text: String) = error("State must not change the clipboard")
             override fun onImageReceived(bytes: ByteArray, mediaType: String) = error("State must not create history")
@@ -57,7 +89,7 @@ class ClipRelayHttpServerTest {
         val port = AtomicReference<Int>()
         val commands = mutableListOf<Int>()
         var active = false
-        val server = ClipRelayHttpServer(0, { "secret" }, object : ClipRelayHttpServer.Listener {
+        val server = legacyServer(0, { "secret" }, object : ClipRelayHttpServer.Listener {
             override fun onListening(value: Int) { port.set(value); listening.countDown() }
             override fun onTextReceived(text: String) { error("Must not change clipboard") }
             override fun onImageReceived(bytes: ByteArray, mediaType: String) = Unit
@@ -93,7 +125,7 @@ class ClipRelayHttpServerTest {
         val received = CountDownLatch(1)
         val actualPort = AtomicReference<Int>()
         val receivedText = AtomicReference<String>()
-        val server = ClipRelayHttpServer(
+        val server = legacyServer(
             port = 0,
             accessToken = { "" },
             listener = object : ClipRelayHttpServer.Listener {
@@ -134,7 +166,7 @@ class ClipRelayHttpServerTest {
         val actualPort = AtomicReference<Int>()
         val receivedText = AtomicReference<String>()
         val failure = AtomicReference<String>()
-        val server = ClipRelayHttpServer(
+        val server = legacyServer(
             port = 0,
             accessToken = { "secret" },
             listener = object : ClipRelayHttpServer.Listener {
@@ -194,7 +226,7 @@ class ClipRelayHttpServerTest {
         val receivedBytes = AtomicReference<ByteArray>()
         val receivedMediaType = AtomicReference<String>()
         val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xD9.toByte())
-        val server = ClipRelayHttpServer(
+        val server = legacyServer(
             port = 0,
             accessToken = { "secret" },
             listener = object : ClipRelayHttpServer.Listener {
@@ -241,7 +273,7 @@ class ClipRelayHttpServerTest {
     fun rejectsNonJpegImagePush() {
         val listening = CountDownLatch(1)
         val actualPort = AtomicReference<Int>()
-        val server = ClipRelayHttpServer(
+        val server = legacyServer(
             port = 0,
             accessToken = { "" },
             listener = object : ClipRelayHttpServer.Listener {
@@ -270,6 +302,9 @@ class ClipRelayHttpServerTest {
             server.stop()
         }
     }
+
+    private fun legacyServer(port: Int, accessToken: () -> String, listener: ClipRelayHttpServer.Listener) =
+        ClipRelayHttpServer(port, accessToken, listener, legacyEnabled = { true })
 
     private fun post(port: Int, body: String, token: String? = null): String {
         val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)

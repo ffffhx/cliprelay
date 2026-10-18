@@ -1,0 +1,39 @@
+{
+  "version": "v0.118.3",
+  "commit": "5b657c6adf4304e5198951ce815fe0205dcac29c",
+  "paths": [
+    "terminal-emulator/src/main/java/com/termux/terminal/KeyHandler.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/Logger.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalBuffer.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalColorScheme.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalColors.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalEmulator.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalOutput.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalRow.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TextStyle.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/WcWidth.java",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalSessionClient.java",
+    "terminal-view/src/main/java/com/termux/view/TerminalRenderer.java"
+  ],
+  "url": "https://github.com/termux/termux-app",
+  "changes": [
+    "TerminalSessionClient reduced to parser and logging callbacks; logs suppressed by remote client.",
+    "TerminalEmulator uses java.util.Base64 instead of Android Base64.",
+    "TerminalRenderer highlights a wide glyph when either of its terminal cells is selected, matching getSelectedText.",
+    "No Termux native session, JNI, app, or local shell included."
+  ],
+  "upstreamSha256": {
+    "terminal-emulator/src/main/java/com/termux/terminal/KeyHandler.java": "543043c05d38450a4a805422b02ac77085bfa727e0cdb088353b7996c0b1856f",
+    "terminal-emulator/src/main/java/com/termux/terminal/Logger.java": "7ab53c7ee035e9658a60525c93613e6b8126db36abc46f8cdbc5fdf49032a04f",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalBuffer.java": "cffbc9f96d861627e2e2680c116da8d69b3927f9c0ffa450f270d5f6fe175f1d",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalColorScheme.java": "a303825f79925387b2a70087b640fdb097c723cfb8e341b7d82c958d73eb4563",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalColors.java": "27cc579af682cab7e6a30bdd166630d596e6215d33ab6b50c58dd55d3fb6867a",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalEmulator.java": "6c0ab4df53f73dc38ff0db0f112b467595642746fe8e03f681c87eef5e1e8fe8",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalOutput.java": "f844b820e8a344e97bdbf421251daf9312dbf3f69a367b084bd920ed8a4898bc",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalRow.java": "280c12d7f6e750413f8a2748e2827d4f5dbe5932cabd079b3ef4e2e441f01830",
+    "terminal-emulator/src/main/java/com/termux/terminal/TextStyle.java": "234faa9646aca6b04329998106d9b29aac757abdc7e0400f2a3ed90c95a07297",
+    "terminal-emulator/src/main/java/com/termux/terminal/WcWidth.java": "68fc84a28813b13e4a1dfec8d9acbd9d7bd2a6cea62fe2f38319d1eca6cca776",
+    "terminal-emulator/src/main/java/com/termux/terminal/TerminalSessionClient.java": "853c3816ea1fc827895cea8191628482e1845e888a33d6c7da7e7ddac63af1b9",
+    "terminal-view/src/main/java/com/termux/view/TerminalRenderer.java": "3511efd82b87db856404191d584fc2e9526e4da303edbd6a5efff111571f3b74"
+  }
+}

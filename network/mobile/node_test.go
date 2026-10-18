@@ -3,6 +3,7 @@ package mobile
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestRequiresExplicitHTTPSCoordinator(t *testing.T) {
@@ -10,6 +11,50 @@ func TestRequiresExplicitHTTPSCoordinator(t *testing.T) {
 		if n, err := New(t.TempDir(), "test", u, ""); err == nil {
 			n.Close()
 			t.Fatalf("accepted %q", u)
+		}
+	}
+}
+
+func TestSeparateComputersUseSeparatePreferredPorts(t *testing.T) {
+	for _, port := range []int{47633, 47634, 64016} {
+		n, err := NewWithPort(t.TempDir(), "test", "https://control.invalid", "", port)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int(n.server.Port) != port {
+			t.Fatalf("preferred port = %d, want %d", n.server.Port, port)
+		}
+		n.Close()
+	}
+	for _, port := range []int{-1, 0, 1023, 65536} {
+		if _, err := NewWithPort(t.TempDir(), "test", "https://control.invalid", "", port); err == nil {
+			t.Fatalf("accepted invalid port %d", port)
+		}
+	}
+}
+
+func TestConcurrentCloseWaitsForAllLocalListeners(t *testing.T) {
+	n, err := New(t.TempDir(), "test", "https://control.invalid", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.workers.Add(1)
+	first, second := make(chan struct{}), make(chan struct{})
+	go func() { n.Close(); close(first) }()
+	<-n.ctx.Done()
+	go func() { n.Close(); close(second) }()
+	select {
+	case <-second:
+		n.workers.Done()
+		t.Fatal("concurrent close returned before local workers finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	n.workers.Done()
+	for _, done := range []chan struct{}{first, second} {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("close did not finish")
 		}
 	}
 }

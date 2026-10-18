@@ -13,11 +13,13 @@ def json_stream(value):
         value = value[end:]
 
 
-def write_notices(root, go, environment, target):
+def write_notices(root, go, environment, target, *, output=None, packages=None):
     env = environment.copy()
-    env.update(GOOS="android" if target == "android" else "windows",
-               GOARCH="arm64" if target == "android" else "amd64", CGO_ENABLED="1")
-    raw = subprocess.check_output([go, "list", "-mod=readonly", "-deps", "-json", "./mobile", "./cmd/cliprelay-network"],
+    architecture = "arm64" if target == "android" else "amd64"
+    env.update(GOOS={"android": "android", "windows": "windows", "macos": "darwin"}[target],
+               GOARCH=env.get("GOARCH", architecture) if packages else architecture,
+               CGO_ENABLED=env.get("CGO_ENABLED", "1") if packages else "1")
+    raw = subprocess.check_output([go, "list", "-mod=readonly", "-deps", "-json", *(packages or ["./mobile", "./cmd/cliprelay-network"])],
                                   cwd=root / "network", env=env, text=True, encoding="utf-8")
     modules = {}
     for package in json_stream(raw):
@@ -39,8 +41,9 @@ def write_notices(root, go, environment, target):
             sections.append(f"\n--- {file.relative_to(directory).as_posix()} ---\n" + file.read_text(encoding="utf-8", errors="replace"))
     goroot = Path(subprocess.check_output([go, "env", "GOROOT"], env=env, text=True).strip())
     sections.append("\nGo runtime — https://go.dev/\n" + (goroot / "LICENSE").read_text(encoding="utf-8"))
-    output = root / ("android-app/app/src/main/assets/cliprelay-remote/NETWORK-LICENSES.txt" if target == "android"
-                     else "windows/remote-desktop/NETWORK-LICENSES.txt")
+    if output is None:
+        output = root / ("android-app/app/src/main/assets/cliprelay-remote/NETWORK-LICENSES.txt" if target == "android"
+                        else "windows/remote-desktop/NETWORK-LICENSES.txt")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(sections), encoding="utf-8")
     print(f"Collected notices for {len(modules)} linked modules: {output}")

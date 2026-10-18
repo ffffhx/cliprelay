@@ -6,7 +6,7 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import com.limelight.nvstream.jni.MoonBridge;
 
-/** Native contacts, with an app-specific single-finger mouse-wheel fallback. */
+/** Native contacts, with app-specific scrolling and two-finger zoom compatibility. */
 public final class PhoneTouchContext {
     public interface TapListener { void tapped(float x, float y); }
     public interface ScrollFeedback {
@@ -26,6 +26,9 @@ public final class PhoneTouchContext {
     private PhoneScrollState scroll;
     private ScrollFeedback scrollFeedback;
     private boolean scrollCompatibility, mouseGesture;
+    private PhonePinchState pinch;
+    private boolean pinchCompatibility, pinchAllowed, pinchGesture;
+    private int pinchFirstId, pinchSecondId;
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable longPress = () -> { if (mouseGesture && scroll != null) scroll.longPress(); };
     private final int[] sourceLocation = new int[2];
@@ -54,6 +57,16 @@ public final class PhoneTouchContext {
         scrollCompatibility = enabled;
     }
 
+    public void setPinchSink(PhonePinchState.Sink sink) {
+        cancel();
+        pinch = new PhonePinchState(sink, touchSlop, video.getResources().getDisplayMetrics().density);
+    }
+
+    public void setPinchCompatibility(boolean enabled) {
+        // As with scroll compatibility, the current gesture retains its original route.
+        pinchCompatibility = enabled;
+    }
+
     public void setScrollFeedback(ScrollFeedback feedback) {
         if (scrollFeedback != null) scrollFeedback.clear();
         scrollFeedback = feedback;
@@ -65,6 +78,8 @@ public final class PhoneTouchContext {
 
     private void endGesture(boolean fadeFeedback) {
         tapCandidate = mouseGesture = false; ignoredGesture = true;
+        pinchAllowed = pinchGesture = false;
+        if (pinch != null) pinch.cancel();
         handler.removeCallbacks(longPress);
         if (scroll != null) scroll.cancel();
         if (scrollFeedback != null) {
@@ -85,6 +100,7 @@ public final class PhoneTouchContext {
             state.begin(); downX = event.getX(); downY = event.getY(); downTime = event.getEventTime(); tapCandidate = true;
             ignoredGesture = false;
             mouseGesture = scrollCompatibility && scroll != null;
+            pinchAllowed = pinchCompatibility && pinch != null;
         }
         if (event.getPointerCount() > 1 || Math.abs(event.getX() - downX) > touchSlop ||
                 Math.abs(event.getY() - downY) > touchSlop) tapCandidate = false;
@@ -96,6 +112,35 @@ public final class PhoneTouchContext {
             dy = sourceLocation[1] - videoLocation[1];
         }
         if (ignoredGesture) return true;
+        if (action == MotionEvent.ACTION_DOWN && !inside(event, 0, dx, dy)) pinchAllowed = false;
+        if (pinchGesture) {
+            // Do not let a remaining finger become a click/drag, or a third finger change the pair.
+            if (action != MotionEvent.ACTION_MOVE || event.getPointerCount() != 2) {
+                cancel(); return true;
+            }
+            int first = event.findPointerIndex(pinchFirstId), second = event.findPointerIndex(pinchSecondId);
+            if (first < 0 || second < 0) { cancel(); return true; }
+            pinch.move(event.getX(first) + dx, event.getY(first) + dy,
+                    event.getX(second) + dx, event.getY(second) + dy);
+            return true;
+        }
+        if (pinchAllowed && event.getPointerCount() > 1) {
+            if (action != MotionEvent.ACTION_POINTER_DOWN || event.getPointerCount() != 2 ||
+                    !inside(event, 0, dx, dy) || !inside(event, 1, dx, dy)) {
+                cancel(); return true;
+            }
+            // Cancel the initial native contact before taking over so Orca never
+            // receives a simultaneous native scroll and zoom.
+            state.cancel();
+            handler.removeCallbacks(longPress);
+            if (scroll != null) scroll.cancel();
+            if (scrollFeedback != null) scrollFeedback.clear();
+            mouseGesture = tapCandidate = false;
+            pinchFirstId = event.getPointerId(0); pinchSecondId = event.getPointerId(1);
+            pinch.begin(event.getX(0) + dx, event.getY(0) + dy, event.getX(1) + dx, event.getY(1) + dy);
+            pinchGesture = true;
+            return true;
+        }
         if (mouseGesture) {
             float x = event.getX() + dx, y = event.getY() + dy;
             if (action == MotionEvent.ACTION_DOWN) {
@@ -158,5 +203,11 @@ public final class PhoneTouchContext {
             }
         }
         return true;
+    }
+
+    private boolean inside(MotionEvent event, int index, float dx, float dy) {
+        float x = event.getX(index) + dx, y = event.getY(index) + dy;
+        return Float.isFinite(x) && Float.isFinite(y) && x >= 0 && x <= video.getWidth()
+                && y >= 0 && y <= video.getHeight();
     }
 }

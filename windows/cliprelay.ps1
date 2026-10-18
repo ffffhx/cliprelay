@@ -445,6 +445,31 @@ namespace ClipRelay
         }
     }
 
+    public static class LegacyLanPolicy
+    {
+        public static bool IsLocal(IPAddress address)
+        {
+            if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+            if (IPAddress.IsLoopback(address)) return true;
+            byte[] bytes = address.GetAddressBytes();
+            if (bytes.Length == 4) return bytes[0] == 10 || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+                (bytes[0] == 192 && bytes[1] == 168) || (bytes[0] == 169 && bytes[1] == 254);
+            return bytes.Length == 16 && ((bytes[0] & 254) == 252 || (bytes[0] == 254 && (bytes[1] & 192) == 128));
+        }
+        public static IPAddress Resolve(string host, int timeout)
+        {
+            IPAddress literal;
+            if (IPAddress.TryParse(host.Trim('[', ']'), out literal)) {
+                if (IsLocal(literal)) return literal;
+                throw new InvalidOperationException("旧版未加密连接只允许局域网地址，请使用配对加密连接访问外网设备。");
+            }
+            var resolve = Dns.GetHostAddressesAsync(host);
+            if (!resolve.Wait(Math.Min(2500, Math.Max(1, timeout)))) throw new TimeoutException("旧版设备地址解析超时。");
+            foreach (IPAddress address in resolve.Result) if (IsLocal(address)) return address;
+            throw new InvalidOperationException("旧版未加密连接只允许局域网地址，请使用配对加密连接访问外网设备。");
+        }
+    }
+
     public sealed class RelayTarget
     {
         public string Name { get; set; }
@@ -452,6 +477,8 @@ namespace ClipRelay
         public string Uri { get; set; }
         public string HostHeader { get; set; }
         public string AccessToken { get; set; }
+        public string PairedOwner { get; set; }
+        public bool LegacyAllowed { get; set; }
     }
 
     public sealed class RelayDeliveryResult
@@ -468,6 +495,23 @@ namespace ClipRelay
 
     public static class RelayBroadcaster
     {
+        public static Func<string, string, byte[], int, string> PairedSend;
+        private static string PairedError(string code)
+        {
+            switch (code)
+            {
+                case "RELAY_OFFLINE": return "手机尚未开启接收，或加密连接尚未建立。";
+                case "RELAY_UNPAIRED": return "目标设备的配对已撤销，请重新配对。";
+                case "RELAY_BUSY": return "发送队列已满，请稍后重试。";
+                case "RELAY_REJECTED": return "手机未能确认处理这条内容，请重新发送。";
+                case "RELAY_DELIVERY_UNCONFIRMED": return "未收到手机的送达确认，请检查接收服务后重试。";
+                case "RELAY_EXPIRED": case "RELAY_CANCELLED": return "此次发送已过期或取消，请重新发送。";
+                case "RELAY_UNAVAILABLE": case "RELAY_SERVER_MISMATCH": return "配对传输服务暂不可用，请开启或更新电脑的手机远控。";
+                case "RELAY_BAD_REQUEST": return "内容超出支持范围，请缩短文本或减小截图。";
+                case "RELAY_PREVIEW_UNSUPPORTED": return "这台设备的配对连接暂不支持预览翻页。";
+                default: return "加密发送失败，请检查两端连接后重试。";
+            }
+        }
         public static Task<RelayDeliveryResult> GetPreviewStateAsync(RelayTarget target, int timeoutMilliseconds)
         {
             return Task.Factory.StartNew(
@@ -593,7 +637,24 @@ namespace ClipRelay
             Stream requestStream = null;
             try
             {
-                request = (HttpWebRequest)WebRequest.Create(target.Uri.TrimEnd('/') + path);
+                if (!String.IsNullOrEmpty(target.PairedOwner))
+                {
+                    if (path != "/push" && path != "/push-image")
+                        throw new InvalidOperationException("RELAY_PREVIEW_UNSUPPORTED");
+                    if (PairedSend == null) throw new InvalidOperationException("RELAY_UNAVAILABLE");
+                    string state = PairedSend(target.PairedOwner, path == "/push" ? "json" : "jpeg", body, timeoutMilliseconds);
+                    if (state != "delivered") throw new IOException("RELAY_DELIVERY_UNCONFIRMED");
+                    result.Success = state == "delivered";
+                    result.StatusCode = result.Success ? 200 : 0;
+                    return result;
+                }
+                if (!target.LegacyAllowed) throw new InvalidOperationException("尚未允许向此设备进行旧版未加密发送，请改用配对加密或在设备设置中明确开启兼容模式。");
+                var originalUri = new Uri(target.Uri.TrimEnd('/') + path);
+                if (originalUri.Scheme != "http") throw new InvalidOperationException("Invalid legacy protocol");
+                var localUri = new UriBuilder(originalUri) { Host = LegacyLanPolicy.Resolve(originalUri.Host, timeoutMilliseconds).ToString() };
+                request = (HttpWebRequest)WebRequest.Create(localUri.Uri);
+                request.Host = originalUri.Authority;
+                request.AllowAutoRedirect = false;
                 request.Method = "POST";
                 request.ContentType = contentType;
                 request.ContentLength = body.Length;
@@ -637,8 +698,8 @@ namespace ClipRelay
             catch (WebException exception)
             {
                 result.Success = false;
-                result.ErrorKind = exception.Status.ToString();
-                result.ErrorMessage = exception.Message;
+                result.ErrorKind = String.IsNullOrEmpty(target.PairedOwner) ? exception.Status.ToString() : "SecureDelivery";
+                result.ErrorMessage = String.IsNullOrEmpty(target.PairedOwner) ? exception.Message : PairedError(exception.Message);
                 HttpWebResponse errorResponse = exception.Response as HttpWebResponse;
                 if (errorResponse != null)
                 {
@@ -649,8 +710,8 @@ namespace ClipRelay
             catch (Exception exception)
             {
                 result.Success = false;
-                result.ErrorKind = exception.GetType().Name;
-                result.ErrorMessage = exception.Message;
+                result.ErrorKind = String.IsNullOrEmpty(target.PairedOwner) ? exception.GetType().Name : "SecureDelivery";
+                result.ErrorMessage = String.IsNullOrEmpty(target.PairedOwner) ? exception.Message : PairedError(exception.Message);
             }
             finally
             {
@@ -1739,15 +1800,18 @@ namespace ClipRelay
     }
 }
 "@
+    $clipRelaySource += [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'paired-relay.cs'))
     Add-Type -TypeDefinition $clipRelaySource -ReferencedAssemblies @(
         "System.dll",
         "System.Core.dll",
+        "System.Web.Extensions.dll",
         "System.Drawing.dll",
         "System.Windows.Forms.dll"
     )
 }
 
 [ClipRelay.NativeMethods]::EnableBestDpiAwareness()
+[ClipRelay.RelayBroadcaster]::PairedSend = [Delegate]::CreateDelegate([ClipRelay.RelayBroadcaster].GetField('PairedSend').FieldType, [ClipRelay.PairedRelayPublisher].GetMethod('Send'))
 
 function Get-PropertyValue {
     param(
@@ -1789,6 +1853,19 @@ function Get-NormalizedPeerAddress {
     }
 
     return $normalized
+}
+
+function Test-IsLegacyLanAddress {
+    param([Net.IPAddress]$Address)
+    if ($null -eq $Address) { return $false }
+    if ($Address.IsIPv4MappedToIPv6) { $Address = $Address.MapToIPv4() }
+    if ([Net.IPAddress]::IsLoopback($Address)) { return $true }
+    $bytes = $Address.GetAddressBytes()
+    if ($bytes.Length -eq 4) {
+        return $bytes[0] -eq 10 -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 168) -or ($bytes[0] -eq 169 -and $bytes[1] -eq 254)
+    }
+    return $bytes.Length -eq 16 -and (($bytes[0] -band 254) -eq 252 -or ($bytes[0] -eq 254 -and ($bytes[1] -band 192) -eq 128))
 }
 
 function Get-NormalizedDeviceName {
@@ -1973,7 +2050,17 @@ function Get-NormalizedRelayPeers {
     $endpointKeys = @{}
     for ($index = 0; $index -lt $sourcePeers.Count; $index++) {
         $sourcePeer = $sourcePeers[$index]
-        $address = Get-NormalizedPeerAddress -Value ([string](Get-PropertyValue -Object $sourcePeer -Name "address"))
+        $pairedOwner = [string](Get-PropertyValue -Object $sourcePeer -Name 'pairedOwner')
+        $transport = [string](Get-PropertyValue -Object $sourcePeer -Name 'transport')
+        if (-not $transport) { $transport = if ($pairedOwner) { 'paired' } else { 'legacy' } }
+        if ($transport -notin @('paired','legacy')) { throw '接收设备的连接方式无效。' }
+        if ($transport -eq 'paired') {
+            if ($pairedOwner -cnotmatch '^[0-9a-f]{64}$') { throw '配对设备身份无效，请重新选择已配对设备。' }
+            $address = ''
+        } else {
+            if ($pairedOwner) { throw '已配对设备不能自动改为旧版连接。' }
+            $address = Get-NormalizedPeerAddress -Value ([string](Get-PropertyValue -Object $sourcePeer -Name 'address'))
+        }
         $name = [string](Get-PropertyValue -Object $sourcePeer -Name "name")
         if ([string]::IsNullOrWhiteSpace($name)) {
             $name = "设备 $($index + 1)"
@@ -1999,6 +2086,8 @@ function Get-NormalizedRelayPeers {
         }
 
         $enabledValue = Get-PropertyValue -Object $sourcePeer -Name "enabled"
+        $legacyAllowedValue = Get-PropertyValue -Object $sourcePeer -Name 'legacyAllowed'
+        $legacyAllowed = $transport -eq 'legacy' -and $legacyAllowedValue -is [bool] -and $legacyAllowedValue
         $enabled = if ($null -eq $enabledValue) { $true } else { [bool]$enabledValue }
         $id = [string](Get-PropertyValue -Object $sourcePeer -Name "id")
         if ([string]::IsNullOrWhiteSpace($id)) {
@@ -2011,7 +2100,7 @@ function Get-NormalizedRelayPeers {
         $platform = $platform.Trim().ToLowerInvariant()
         if ($platform.Length -gt 24) { $platform = $platform.Substring(0, 24) }
 
-        $endpointKey = "$($address.ToLowerInvariant())`:$peerPort"
+        $endpointKey = if ($transport -eq 'paired') { "paired:$pairedOwner" } else { "$($address.ToLowerInvariant())`:$peerPort" }
         if ($endpointKeys.ContainsKey($endpointKey)) {
             throw "接收设备地址重复：$address`:$peerPort。"
         }
@@ -2026,6 +2115,9 @@ function Get-NormalizedRelayPeers {
             enabled     = $enabled
             requiresAuth = $requiresAuth
             platform    = $platform
+            transport   = $transport
+            pairedOwner = $pairedOwner
+            legacyAllowed = $legacyAllowed
         })
     }
 
@@ -2045,6 +2137,9 @@ function Copy-RelayPeers {
             enabled     = [bool](Get-PropertyValue -Object $_ -Name "enabled")
             requiresAuth = [bool](Get-PropertyValue -Object $_ -Name "requiresAuth")
             platform    = [string](Get-PropertyValue -Object $_ -Name "platform")
+            transport   = [string](Get-PropertyValue -Object $_ -Name 'transport')
+            pairedOwner = [string](Get-PropertyValue -Object $_ -Name 'pairedOwner')
+            legacyAllowed = ((Get-PropertyValue -Object $_ -Name 'legacyAllowed') -is [bool] -and (Get-PropertyValue -Object $_ -Name 'legacyAllowed'))
         }
     })
 }
@@ -2148,6 +2243,7 @@ function Merge-DiscoveredRelayDevices {
         $matchIndex = -1
         for ($index = 0; $index -lt $merged.Count; $index++) {
             $existing = $merged[$index]
+            if (Get-PropertyValue -Object $existing -Name 'pairedOwner') { continue }
             if ([string]::Equals([string]$existing.id, $deviceId, [StringComparison]::OrdinalIgnoreCase) -or
                 (-not $ExistingOnly -and
                     ([string]$existing.address).Equals($address, [StringComparison]::OrdinalIgnoreCase) -and
@@ -2216,6 +2312,9 @@ function Get-RelayPeerRouteSignature {
             address = [string](Get-PropertyValue -Object $_ -Name "address")
             port = [int](Get-PropertyValue -Object $_ -Name "port")
             accessToken = [string](Get-PropertyValue -Object $_ -Name "accessToken")
+            transport = [string](Get-PropertyValue -Object $_ -Name 'transport')
+            pairedOwner = [string](Get-PropertyValue -Object $_ -Name 'pairedOwner')
+            legacyAllowed = ((Get-PropertyValue -Object $_ -Name 'legacyAllowed') -is [bool] -and (Get-PropertyValue -Object $_ -Name 'legacyAllowed'))
         }
     })
     return ($route | ConvertTo-Json -Compress)
@@ -2303,6 +2402,7 @@ function Save-PeerConfiguration {
         [bool]$StartupEnabled = (Test-StartupRegistration),
         [object[]]$Peers = $null,
         [bool]$DiscoveryEnabled = $script:DiscoveryEnabled,
+        [Nullable[bool]]$LegacyReceiverEnabled = $null,
         [string]$DeviceName = $script:DeviceName
     )
 
@@ -2320,6 +2420,8 @@ function Save-PeerConfiguration {
         throw "访问密钥不能超过 128 个字符。"
     }
     $normalizedDeviceName = Get-NormalizedDeviceName -Value $DeviceName
+    $oldLegacyReceiver = Get-Variable -Name LegacyReceiverEnabled -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -eq $LegacyReceiverEnabled) { $LegacyReceiverEnabled = ($oldLegacyReceiver -is [bool] -and $oldLegacyReceiver) }
 
     if ($null -eq $Peers) {
         $Peers = @([PSCustomObject]@{
@@ -2347,7 +2449,7 @@ function Save-PeerConfiguration {
     $normalized = if ($null -ne $primaryPeer) { [string]$primaryPeer.address } else { "" }
 
     $portChanged = $ListenPort -ne $script:Port
-    $discoveryChanged = $DiscoveryEnabled -ne $script:DiscoveryEnabled -or
+    $discoveryChanged = [bool]$LegacyReceiverEnabled -ne [bool]$oldLegacyReceiver -or $DiscoveryEnabled -ne $script:DiscoveryEnabled -or
         $normalizedDeviceName -cne $script:DeviceName -or
         ([string]::IsNullOrWhiteSpace($script:AccessToken) -ne [string]::IsNullOrWhiteSpace($normalizedAccessToken))
     if ($portChanged) {
@@ -2364,19 +2466,21 @@ function Save-PeerConfiguration {
         deviceId      = $script:DeviceId
         deviceName    = $normalizedDeviceName
         discoveryEnabled = $DiscoveryEnabled
+        legacyReceiverEnabled = [bool]$LegacyReceiverEnabled
     }
     $configuration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:configPath -Encoding UTF8
 
     $script:Peer = $normalized
     $script:Peers = @(Copy-RelayPeers -Peers $normalizedPeers)
     $script:Port = $ListenPort
-    $script:pushUri = if ($null -ne $primaryPeer) {
+    $script:pushUri = if ($null -ne $primaryPeer -and -not (Get-PropertyValue -Object $primaryPeer -Name 'pairedOwner')) {
         (New-Object System.UriBuilder("http", $normalized, ([int]$primaryPeer.port), "push")).Uri
     } else { $null }
     $script:Notifications = $Notifications
     $script:AccessToken = $normalizedAccessToken
     $script:DeviceName = $normalizedDeviceName
     $script:DiscoveryEnabled = $DiscoveryEnabled
+    $script:LegacyReceiverEnabled = [bool]$LegacyReceiverEnabled
     if ($null -ne $script:peerMenuItem) {
         $script:peerMenuItem.Text = "发送设备: $($enabledPeers.Count) 台"
     }
@@ -2619,12 +2723,14 @@ function Invoke-ClipRelayPush {
         [Parameter(Mandatory = $true)]
         [string]$Text,
         [string]$AccessToken = "",
-        [switch]$Probe
+        [switch]$Probe,
+        [switch]$LegacyAllowed
     )
 
+    if (-not $LegacyAllowed) { throw '请明确开启旧版未加密发送，或改用配对加密连接。' }
     $normalized = Get-NormalizedPeerAddress -Value $Address
-    $targetAddress = Resolve-TargetAddress -Address $normalized
-    $targetUri = "http://$targetAddress`:$Port/push"
+    $targetAddress = [ClipRelay.LegacyLanPolicy]::Resolve($normalized, $TimeoutMilliseconds).ToString()
+    $targetUri = (New-Object System.UriBuilder('http', $targetAddress, $Port, 'push')).Uri
 
     $payload = [ordered]@{ text = $Text }
     if ($Probe) {
@@ -2634,6 +2740,7 @@ function Invoke-ClipRelayPush {
     $body = [System.Text.Encoding]::UTF8.GetBytes($json)
 
     $request = [System.Net.HttpWebRequest]::Create($targetUri)
+    $request.AllowAutoRedirect = $false
     $request.Method = "POST"
     if ($normalized -ne $targetAddress) {
         $request.Host = "$normalized`:$Port"
@@ -2683,17 +2790,20 @@ function Invoke-ClipRelayImagePush {
         [int]$TimeoutMilliseconds = 10000,
         [Parameter(Mandatory = $true)]
         [ClipRelay.ScreenshotFrame]$Frame,
-        [string]$AccessToken = ""
+        [string]$AccessToken = "",
+        [switch]$LegacyAllowed
     )
 
+    if (-not $LegacyAllowed) { throw '请明确开启旧版未加密发送，或改用配对加密连接。' }
     if ($Frame.Bytes.Length -lt 1 -or $Frame.Bytes.Length -gt 26214400) {
         throw "Screenshot payload is empty or exceeds 25 MiB."
     }
 
     $normalized = Get-NormalizedPeerAddress -Value $Address
-    $targetAddress = Resolve-TargetAddress -Address $normalized
+    $targetAddress = [ClipRelay.LegacyLanPolicy]::Resolve($normalized, $TimeoutMilliseconds).ToString()
     $uriBuilder = New-Object System.UriBuilder("http", $targetAddress, $Port, "push-image")
     $request = [System.Net.HttpWebRequest]::Create($uriBuilder.Uri)
+    $request.AllowAutoRedirect = $false
     $request.Method = "POST"
     if ($normalized -ne $targetAddress) {
         $request.Host = "$normalized`:$Port"
@@ -2742,10 +2852,11 @@ function Test-PeerConnectivity {
         [string]$Address,
         [int]$Port = 47632,
         [int]$TimeoutMilliseconds = 5000,
-        [string]$AccessToken = ""
+        [string]$AccessToken = "",
+        [switch]$LegacyAllowed
     )
 
-    Invoke-ClipRelayPush -Address $Address -Port $Port -TimeoutMilliseconds $TimeoutMilliseconds -Text "cliprelay-probe" -AccessToken $AccessToken -Probe
+    Invoke-ClipRelayPush -Address $Address -Port $Port -TimeoutMilliseconds $TimeoutMilliseconds -Text "cliprelay-probe" -AccessToken $AccessToken -Probe -LegacyAllowed:$LegacyAllowed
     return "发送检测成功：对方完整响应了 POST /push。"
 }
 
@@ -2805,6 +2916,9 @@ if ($script:DeviceId.Length -gt 128) {
 }
 $script:DeviceName = Get-NormalizedDeviceName -Value $configuredDeviceName
 $script:DiscoveryEnabled = if ($null -eq $configuredDiscoveryEnabled) { $true } else { [bool]$configuredDiscoveryEnabled }
+$configuredLegacyReceiver = Get-PropertyValue -Object $configuration -Name 'legacyReceiverEnabled'
+$script:LegacyReceiverEnabled = $configuredLegacyReceiver -is [bool] -and $configuredLegacyReceiver
+if ($configuredLegacyReceiver -isnot [bool]) { $configRequiresDiscoveryMigration = $true }
 
 $hasConfiguredPeers = $null -ne $configuration -and $null -ne $configuration.PSObject.Properties["peers"]
 if ($peerWasExplicitlyProvided -or -not $hasConfiguredPeers) {
@@ -2844,6 +2958,7 @@ if ($configRequiresDiscoveryMigration) {
         deviceId         = $script:DeviceId
         deviceName       = $script:DeviceName
         discoveryEnabled = $script:DiscoveryEnabled
+        legacyReceiverEnabled = $script:LegacyReceiverEnabled
     }
     $migratedConfiguration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
 }
@@ -2853,7 +2968,7 @@ if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne [System.Threadin
 }
 
 $pushUri = $null
-if ($enabledConfiguredPeers.Count -gt 0) {
+if ($enabledConfiguredPeers.Count -gt 0 -and -not (Get-PropertyValue -Object $enabledConfiguredPeers[0] -Name 'pairedOwner')) {
     Set-ActivePeerAddress -Value $Peer
     $script:pushUri = (New-Object System.UriBuilder("http", $Peer, ([int]$enabledConfiguredPeers[0].port), "push")).Uri
 }
@@ -3039,13 +3154,23 @@ function New-RelayBroadcastTargets {
     foreach ($peer in $enabledPeers) {
         $address = [string]$peer.address
         $peerPort = [int]$peer.port
-        $uriBuilder = New-Object System.UriBuilder("http", $address, $peerPort)
         $target = New-Object ClipRelay.RelayTarget
         $target.Name = [string]$peer.name
+        $owner = [string](Get-PropertyValue -Object $peer -Name 'pairedOwner')
+        if ((Get-PropertyValue -Object $peer -Name 'transport') -eq 'paired' -or $owner) {
+            if ($owner -cnotmatch '^[0-9a-f]{64}$') { throw '配对设备身份无效。' }
+            $target.PairedOwner = $owner
+            $target.Address = [string]$peer.name
+            $targets.Add($target)
+            continue
+        }
+        $uriBuilder = New-Object System.UriBuilder("http", $address, $peerPort)
         $target.Address = "$address`:$peerPort"
         $target.Uri = $uriBuilder.Uri.AbsoluteUri.TrimEnd("/")
         $target.HostHeader = ""
         $target.AccessToken = [string]$peer.accessToken
+        $allowed = Get-PropertyValue -Object $peer -Name 'legacyAllowed'
+        $target.LegacyAllowed = $allowed -is [bool] -and $allowed
         $targets.Add($target)
     }
     return $targets.ToArray()
@@ -4135,6 +4260,15 @@ function Handle-Client {
         return
     }
 
+    if ($request.Path -in @('/push','/push-image')) {
+        $legacyReceiver = Get-Variable -Name LegacyReceiverEnabled -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        $remote = ([Net.IPEndPoint]$Client.Client.RemoteEndPoint).Address
+        if (-not ($legacyReceiver -is [bool] -and $legacyReceiver) -or -not (Test-IsLegacyLanAddress $remote)) {
+            Send-HttpResponse -Stream $request.Stream -StatusCode 403 -Reason 'Forbidden' -Body 'legacy compatibility disabled or non-local peer'
+            return
+        }
+    }
+
     if ($request.Path -ne '/screen/message' -and -not [string]::IsNullOrWhiteSpace($script:AccessToken)) {
         $providedAccessToken = [string]$request.Headers["X-ClipRelay-Token"]
         if ($providedAccessToken -cne $script:AccessToken) {
@@ -4368,6 +4502,9 @@ function Show-RelayPeerEditor {
     $requiresAuthValue = Get-PropertyValue -Object $Peer -Name "requiresAuth"
     $peerRequiresAuth = if ($null -eq $requiresAuthValue) { $false } else { [bool]$requiresAuthValue }
     $peerPlatform = [string](Get-PropertyValue -Object $Peer -Name "platform")
+    $peerTransport = [string](Get-PropertyValue -Object $Peer -Name 'transport')
+    $peerPairedOwner = [string](Get-PropertyValue -Object $Peer -Name 'pairedOwner')
+    $peerLegacyAllowed = Get-PropertyValue -Object $Peer -Name 'legacyAllowed'
 
     $form = New-Object ClipRelay.RelayForm
     $form.Text = "ClipRelay 接收设备"
@@ -4404,9 +4541,27 @@ function Show-RelayPeerEditor {
     $enabledToggle.Checked = $peerEnabled
     $enabledToggle.OnColor = $colors.Blue
     $editorCard.Controls.Add($enabledToggle)
+    $legacyCheck = New-Object System.Windows.Forms.CheckBox
+    $legacyCheck.Text = '允许旧版未加密发送'
+    $legacyCheck.Location = New-Object Drawing.Point(210, 214)
+    $legacyCheck.Size = New-Object Drawing.Size(224, 22)
+    $legacyCheck.ForeColor = $colors.Warning
+    $legacyCheck.Checked = $peerLegacyAllowed -is [bool] -and $peerLegacyAllowed
+    $legacyCheck.Visible = -not [bool]$peerPairedOwner
+    $editorCard.Controls.Add($legacyCheck)
     $testState = & $newLabel $editorCard "保存前可先检测该设备" 18 248 266 22 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
     $testButton = & $newButton $editorCard "检测设备" 326 242 108 34 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
     $testButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
+    if ($peerPairedOwner) {
+        $headerBig.Text = '已配对接收设备'
+        $addressInput.TextBox.Text = '配对加密连接'
+        $addressInput.TextBox.Enabled = $false
+        $peerPortInput.TextBox.Enabled = $false
+        $peerTokenInput.TextBox.Enabled = $false
+        $showTokenButton.Enabled = $false
+        $testButton.Enabled = $false
+        $testState.Text = '配对连接请在主界面检测'
+    }
 
     $cancelButton = & $newButton $form "取消" 282 390 92 40 $colors.Surface $colors.Border $colors.Muted $colors.Border
     $cancelButton.Font = New-Object System.Drawing.Font($bodyFont, 9.0, [System.Drawing.FontStyle]::Bold)
@@ -4432,7 +4587,7 @@ function Show-RelayPeerEditor {
         $testButton.Text = "检测中"
         $form.Update()
         try {
-            $null = & $testPeerCommand -Address $addressInput.TextBox.Text.Trim() -Port $parsedPort -TimeoutMilliseconds 5000 -AccessToken $peerTokenInput.TextBox.Text
+            $null = & $testPeerCommand -Address $addressInput.TextBox.Text.Trim() -Port $parsedPort -TimeoutMilliseconds 5000 -AccessToken $peerTokenInput.TextBox.Text -LegacyAllowed:([bool]$legacyCheck.Checked)
             $testState.Text = "链路可用 · $(Get-Date -Format 'HH:mm:ss')"
             $testState.ForeColor = $colors.Success
         }
@@ -4460,6 +4615,9 @@ function Show-RelayPeerEditor {
                 enabled = [bool]$enabledToggle.Checked
                 requiresAuth = $peerRequiresAuth
                 platform = $peerPlatform
+                transport = $peerTransport
+                pairedOwner = $peerPairedOwner
+                legacyAllowed = [bool]$legacyCheck.Checked
             }
             $normalized = @(& $normalizePeersCommand -Peers @($candidate) -DefaultPort $DefaultPort -DefaultAccessToken $DefaultAccessToken)[0]
             $form.Tag = $normalized
@@ -5038,9 +5196,9 @@ function Show-RelayControlCenter {
         # Live Server Status Hero Card
         $statusHeroCard = & $newCard $sidebarPanel 16 68 204 136 $colors.SurfaceAlt $colors.Border 10
         $serviceDot = & $newLabel $statusHeroCard "●" 12 10 16 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Success $bodyFont
-        $serviceStatusTitle = if ($script:DiscoveryEnabled) { "接收中 · 可发现" } else { "本机接收中" }
+        $serviceStatusTitle = if ($script:LegacyReceiverEnabled) { "旧版接收已开启" } else { "旧版接收已关闭" }
         $serviceLabel = & $newLabel $statusHeroCard $serviceStatusTitle 28 9 164 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Success $bodyFont
-        $serviceSubText = if ($script:DiscoveryEnabled) { "端口 :$script:Port · 局域网可发现" } else { "端口 :$script:Port · 仅手动广播" }
+        $serviceSubText = if ($script:LegacyReceiverEnabled) { "未加密 · :$script:Port" } else { "配对连接独立运行" }
         $serviceSub = & $newLabel $statusHeroCard $serviceSubText 12 32 180 18 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
 
         $localAddressField = & $newCard $statusHeroCard 10 56 184 34 $colors.Field $colors.Border 6
@@ -5099,8 +5257,8 @@ function Show-RelayControlCenter {
         $sidebarStatsCard.Controls.Add($statDivider3)
 
         $null = & $newLabel $sidebarStatsCard "安全密钥" 12 122 76 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $sidebarAuthText = if ([string]::IsNullOrWhiteSpace($script:AccessToken)) { "未设置" } else { "已保护" }
-        $sidebarAuthColor = if ([string]::IsNullOrWhiteSpace($script:AccessToken)) { $colors.Subtle } else { $colors.Success }
+        $sidebarAuthText = if (-not $script:LegacyReceiverEnabled) { "兼容关闭" } elseif ([string]::IsNullOrWhiteSpace($script:AccessToken)) { "未设密钥" } else { "已设密钥" }
+        $sidebarAuthColor = if ($script:LegacyReceiverEnabled) { $colors.Warning } else { $colors.Subtle }
         $sidebarAuthLabel = & $newLabel $sidebarStatsCard $sidebarAuthText 90 122 102 18 8.0 ([System.Drawing.FontStyle]::Regular) $sidebarAuthColor $bodyFont
         $sidebarAuthLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
 
@@ -5306,7 +5464,7 @@ function Show-RelayControlCenter {
 
         # Row 3: mDNS Discovery
         $null = & $newLabel $preferencesCard "局域网自动发现 (mDNS)" 14 118 200 20 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
-        $null = & $newLabel $preferencesCard "开启后其他 ClipRelay 设备可在局域网内自动搜索到本机" 14 136 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $null = & $newLabel $preferencesCard "仅在旧版兼容开启时公布地址，配对连接不受影响" 14 136 370 16 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
         $discoveryToggle = New-Object ClipRelay.RelayToggle
         $discoveryToggle.Name = "DiscoveryToggle"
         $discoveryToggle.Location = New-Object System.Drawing.Point(426, 122)
@@ -5336,7 +5494,13 @@ function Show-RelayControlCenter {
         $showTokenButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
 
         # Row 6: Security Hint
-        $null = & $newLabel $preferencesCard "目标设备的地址与密钥可从左侧设备行的【··· → 编辑设备】中修改。" 14 282 460 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Subtle $bodyFont
+        $null = & $newLabel $preferencesCard "允许旧版未加密接收（仅局域网）" 14 282 400 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
+        $legacyReceiverToggle = New-Object ClipRelay.RelayToggle
+        $legacyReceiverToggle.Name = "LegacyReceiverToggle"
+        $legacyReceiverToggle.Location = New-Object System.Drawing.Point(426, 280)
+        $legacyReceiverToggle.Checked = $script:LegacyReceiverEnabled
+        $legacyReceiverToggle.OnColor = $colors.Blue
+        $preferencesCard.Controls.Add($legacyReceiverToggle)
 
         # Footer: settings commit as they are changed, so there is no second save step.
         $autoSaveLabel = & $newLabel $form "● 更改会自动保存" 256 658 202 34 7.8 ([System.Drawing.FontStyle]::Regular) $colors.Success $bodyFont
@@ -5406,6 +5570,7 @@ function Show-RelayControlCenter {
                     -StartupEnabled ([bool]$startupToggle.Checked) `
                     -Peers $peersToSave `
                     -DiscoveryEnabled ([bool]$discoveryToggle.Checked) `
+                    -LegacyReceiverEnabled ([bool]$legacyReceiverToggle.Checked) `
                     -DeviceName $deviceNameInput.TextBox.Text
 
                 & $setAutoSaveStatus "● 已自动保存 · $(Get-Date -Format 'HH:mm:ss')" $colors.Success
@@ -5805,6 +5970,7 @@ function Show-RelayControlCenter {
         $startupToggle.Add_CheckedChanged({
             $null = & $saveCurrentSettings
         }.GetNewClosure())
+        $legacyReceiverToggle.Add_CheckedChanged({ & $saveCurrentSettings $true }.GetNewClosure())
         $discoveryToggle.Add_CheckedChanged({
             $null = & $saveCurrentSettings
         }.GetNewClosure())
@@ -6058,6 +6224,7 @@ try {
                 deviceId      = $script:DeviceId
                 deviceName    = $script:DeviceName
                 discoveryEnabled = $script:DiscoveryEnabled
+                legacyReceiverEnabled = $script:LegacyReceiverEnabled
             }
             $cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:configPath -Encoding UTF8
         }
@@ -6123,7 +6290,7 @@ try {
     $listener.Start()
     Initialize-RelayRequestReaders
     $acceptTask = $listener.AcceptTcpClientAsync()
-    if ($script:DiscoveryEnabled) {
+    if ($script:DiscoveryEnabled -and $script:LegacyReceiverEnabled) {
         try {
             [ClipRelay.MdnsDiscovery]::Start(
                 $script:DeviceId,
@@ -6148,7 +6315,7 @@ try {
     }
 
     $startupPeerCount = @(Get-EnabledRelayPeers -Peers $script:Peers).Count
-    $discoveryState = if ($mdnsStarted) { "mDNS 可发现" } elseif ($script:DiscoveryEnabled) { "mDNS 启动失败" } else { "mDNS 已关闭" }
+    $discoveryState = if ($mdnsStarted) { "mDNS 可发现" } elseif (-not $script:LegacyReceiverEnabled) { "旧版兼容已关闭" } elseif ($script:DiscoveryEnabled) { "mDNS 启动失败" } else { "mDNS 已关闭" }
     Write-Host "ClipRelay Windows 端已启动: 监听端口 $Port, 广播设备 $startupPeerCount 台, $discoveryState"
     if (-not [string]::IsNullOrWhiteSpace($discoveryStartupError) -and $script:Notifications) {
         Show-ClipRelayNotification -Title "ClipRelay 自动发现不可用" -Message $discoveryStartupError -Icon Warning

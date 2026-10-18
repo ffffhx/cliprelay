@@ -28,7 +28,7 @@ public final class StreamRouteRecovery {
             probes.add(() -> {
                 if (EmbeddedNetwork.isAddress(address) && EmbeddedNetwork.provider != null) {
                     long deadline = android.os.SystemClock.uptimeMillis() + 8_000;
-                    while (!EmbeddedNetwork.provider.ready() && android.os.SystemClock.uptimeMillis() < deadline) {
+                    while (!EmbeddedNetwork.provider.ready(address.address) && android.os.SystemClock.uptimeMillis() < deadline) {
                         Thread.sleep(100);
                     }
                 }
@@ -40,11 +40,16 @@ public final class StreamRouteRecovery {
                 return result;
             });
         }
-        // Let the built-in channel's first handshake settle, without indefinite retries.
+        // Let the built-in channel's first handshake settle, with one total
+        // deadline even when every address remains unresponsive.
+        long expires = android.os.SystemClock.uptimeMillis() + 20_000;
         for (int attempt = 0; attempt < 3; attempt++) {
-            ComputerDetails result = ConnectionRouteSelector.select(probes, 400);
+            long remaining = expires - android.os.SystemClock.uptimeMillis();
+            if (remaining <= 0) return null;
+            ComputerDetails result = ConnectionRouteSelector.select(probes, 400, Math.min(12_000, remaining));
             if (result != null) return result;
-            if (attempt < 2) Thread.sleep(500);
+            remaining = expires - android.os.SystemClock.uptimeMillis();
+            if (attempt < 2 && remaining > 0) Thread.sleep(Math.min(500, remaining));
         }
         return null;
     }

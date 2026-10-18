@@ -1,0 +1,40 @@
+name: macOS Audio Environment
+on:
+  push:
+    branches: ['codex/desktop-client-input-*']
+    paths: ['scripts/test_macos_audio_environment.mm', '.github/workflows/macos-audio-environment.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile read-only audio prerequisite probe
+        run: clang++ -fobjc-arc -Wall -Wextra -Werror -mmacosx-version-min=14.2 scripts/test_macos_audio_environment.mm -framework Foundation -framework CoreAudio -o "$RUNNER_TEMP/cliprelay-audio-environment"
+      - name: Query audio environment without recording or playback
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          binary=pathlib.Path(os.environ['RUNNER_TEMP'])/'cliprelay-audio-environment'
+          result=subprocess.run([str(binary)],capture_output=True,timeout=15)
+          report=json.loads(result.stdout)
+          report['sourceSha256']=hashlib.sha256(pathlib.Path('scripts/test_macos_audio_environment.mm').read_bytes()).hexdigest()
+          report['binarySha256']=hashlib.sha256(binary.read_bytes()).hexdigest()
+          pathlib.Path('audio-environment.json').write_text(json.dumps(report,indent=2)+'\n')
+          assert result.returncode==0 and report['querySucceeded'] is True
+          assert all(report[key] is False for key in ['permissionQueried','permissionRequested','audioCaptured','audioPlayed','deviceSettingsChanged'])
+          print(json.dumps(report))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audio-environment-${{ matrix.runner }}
+          path: audio-environment.json
+          if-no-files-found: error

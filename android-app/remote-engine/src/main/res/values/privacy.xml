@@ -1,0 +1,34 @@
+<resources>
+    <string name="privacy_title">Privacy and locking</string>
+    <string name="privacy_loading">Checking this computer…</string>
+    <string name="privacy_screen_option">Cover computer displays</string>
+    <string name="privacy_option_on">On</string>
+    <string name="privacy_option_off">Off</string>
+    <string name="privacy_option_unavailable">Unavailable</string>
+    <string name="audio_mute_title">Mute computer speakers</string>
+    <string name="audio_mute_enable">Mute computer</string>
+    <string name="audio_mute_disable">Restore computer sound</string>
+    <string name="audio_mute_description">Keep sound on this phone while muting the computer’s speakers and headphones. Their previous mute settings return when you leave this screen or the connection ends. Volume and microphone settings stay as they are. Adjusting mute on the computer ends this setting.</string>
+    <string name="audio_mute_active">The computer’s speakers are muted for this session. Sound continues on this phone. Restoring preserves any outputs that were already muted.</string>
+    <string name="audio_mute_unsupported">Wait for audio and picture to be ready, and disconnect other remote sessions. This feature also requires a supported Windows computer and an updated ClipRelay host.</string>
+    <string name="audio_mute_recovering">The computer is still restoring its previous sound settings. Reconnect any disconnected audio devices and try again.</string>
+    <string name="audio_mute_enabled">Computer speakers muted</string>
+    <string name="audio_mute_restored">Computer mute ended. Previous sound settings are being restored.</string>
+    <string name="audio_mute_unavailable">Could not confirm computer mute. Previous sound settings are being restored; check the connection before trying again.</string>
+    <string name="privacy_description">Cover the computer’s displays during this session. On the computer, press Ctrl + Alt + Shift + P to restore them. Locking, display changes, leaving this screen, or connection problems end privacy mode. Only one remote session can use it.</string>
+    <string name="privacy_active">Privacy screen is on. The computer can restore its displays with Ctrl + Alt + Shift + P.</string>
+    <string name="privacy_enable">Enable</string>
+    <string name="privacy_disable">Restore displays</string>
+    <string name="privacy_enabled">Privacy screen enabled</string>
+    <string name="privacy_restored">Privacy screen ended. The computer’s displays are being restored.</string>
+    <string name="privacy_unavailable">Could not enable or confirm privacy mode. Check the connection and computer, then try again.</string>
+    <string name="privacy_unsupported">Privacy screen requires Windows 10 version 2004 or newer and an updated ClipRelay host.</string>
+    <string name="privacy_exclusive">Wait for the picture to become ready and disconnect other remote sessions first.</string>
+    <string name="session_lock_description">You can also lock the computer when this remote session ends. This applies to this session only. Brief network interruptions do not trigger locking.</string>
+    <string name="session_lock_armed">This computer will lock after this remote session ends. A new remote session, a local lock or unlock, or an unconfirmed computer state cancels this setting.</string>
+    <string name="session_lock_enable">Lock after session</string>
+    <string name="session_lock_disable">Cancel final lock</string>
+    <string name="session_lock_enabled">Lock after this session is enabled</string>
+    <string name="session_lock_disabled">Lock after this session is cancelled</string>
+    <string name="session_lock_unavailable">Could not confirm the lock setting. Check the connection and reopen this menu to check its status.</string>
+</resources>

@@ -11,6 +11,8 @@ class ClipRelayApplication : Application() {
         EmbeddedNetwork.provider = object : EmbeddedNetwork.Provider {
             override fun restore(context: Context) = NetworkConnectionService.restore(context)
             override fun ready() = NetworkConnectionService.state.value.ready
+            override fun readyAddresses() = NetworkConnectionService.connections.value
+                .filter { it.ready }.map { it.address }.toTypedArray()
         }
     }
 }
