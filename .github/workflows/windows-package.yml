@@ -25,7 +25,7 @@ jobs:
       - name: Validate installation and feature protocols
         run: |
           New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
-          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','host-pairing','host-clients','engine-admin','remote-lan-pair-ui','authentication-protocol','image-protocol','multi-peer-broadcast')) {
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','service-process-access','host-pairing','host-clients','engine-admin','remote-lan-pair-ui','authentication-protocol','image-protocol','multi-peer-broadcast')) {
             $testOptions = @()
             if ($test -eq 'multi-peer-broadcast') { $testOptions = @('-Clipboard') }
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1" @testOptions
@@ -71,6 +71,7 @@ jobs:
         run: |
           & scripts/resolve_windows_components.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'cliprelay-components')
           & scripts/package_windows.ps1 -OutputDirectory dist
+          Copy-Item .tools/uu-parity/service-process-access-report.json dist/service-process-access-report.json
           $package = Get-ChildItem dist/ClipRelay-Windows-*.zip | Select-Object -First 1
           python windows/tests/package_archive.py $package.FullName --output (Join-Path $env:RUNNER_TEMP 'cliprelay-install') --report dist/archive-report.json
           if ($LASTEXITCODE -ne 0) { throw 'Archive preflight acceptance failed' }

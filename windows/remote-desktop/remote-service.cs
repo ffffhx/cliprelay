@@ -52,6 +52,7 @@ namespace ClipRelay.Remote {
         }
         protected override void OnStart(string[] args) {
             settings = Json().Deserialize<Dictionary<string, object>>(File.ReadAllText(SettingsPath));
+            ServiceProcessAccess.AllowOperatorReadHandle(Text(settings, "operatorSid"));
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             EnsureEngineConfiguration();
             new Thread(Serve) { IsBackground = true, Name = "ClipRelay remote control" }.Start();
