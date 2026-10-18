@@ -87,6 +87,7 @@ jobs:
             -DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/ffffhx/cliprelay/issues
           cmake --build sunshine-build --parallel 2
           ./sunshine-build/tests/test_sunshine.exe --gtest_filter='ClipRelayInputTest.*'
+          ./sunshine-build/tests/test_sunshine.exe --gtest_filter='ClipRelayDisplayEncoderTest.*'
           ./sunshine-build/tests/test_sunshine.exe --gtest_filter='PairingSessionRegistryTest.*:ClipRelayManagedPairingTest.*:PairingHttpHandlerTest.ClipRelayManaged*:ConfigHttpTest.ClipRelayManaged*'
           cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component application
           cmake --install sunshine-build --prefix "$PWD/engine-artifact" --component assets
