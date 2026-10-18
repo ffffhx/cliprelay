@@ -331,3 +331,29 @@ TEST_F(ClipRelayInputTest, TouchAndPenAreCanceledBeforeAcknowledgment) {
   EXPECT_EQ(client.touch->submit_count(),paused_touch_count);
   EXPECT_EQ(client.pen->submit_count(),paused_pen_count);
 }
+
+TEST_F(ClipRelayInputTest, DisconnectCancelsRetainedTouchAndPenWithoutClientUpPackets) {
+  config::input.mouse = true;
+  auto &client = platf::virtualhid::get_client_context(input::testing::client_input(input));
+  ASSERT_TRUE(client.touch); ASSERT_TRUE(client.pen);
+  send(touch(7)); send(touch(19)); send(pen()); drain();
+  ASSERT_EQ(client.active_touches.size(),2);
+  ASSERT_EQ(client.pressed_pen_buttons.size(),2);
+  const auto touch_count = client.touch->submit_count();
+
+  // This is the real stream disconnect entry point, not the pause protocol.
+  // The input object remains alive just as it does in the reconnect cache.
+  input::reset(input); drain();
+  EXPECT_TRUE(client.active_touches.empty());
+  EXPECT_TRUE(client.pressed_pen_buttons.empty());
+  EXPECT_EQ(client.touch->submit_count(),touch_count+2);
+  EXPECT_EQ(client.pen->last_submitted_tool().transition,lvh::PointerTransition::cancel);
+
+  input::reset(input); drain();
+  EXPECT_TRUE(client.active_touches.empty());
+  EXPECT_EQ(client.touch->submit_count(),touch_count+2);
+  send(touch(7)); drain();
+  EXPECT_EQ(client.active_touches.size(),1);
+  EXPECT_TRUE(client.active_touches.contains(7));
+  EXPECT_EQ(client.touch->submit_count(),touch_count+3);
+}

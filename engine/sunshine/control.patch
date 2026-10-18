@@ -229,7 +229,7 @@ index 7861538..2f416ec 100644
  
    /**
 diff --git a/src/input.cpp b/src/input.cpp
-index a12514d..df82f98 100644
+index a12514d..bd96f4b 100644
 --- a/src/input.cpp
 +++ b/src/input.cpp
 @@ -29,6 +29,7 @@ extern "C" {
@@ -382,7 +382,7 @@ index a12514d..df82f98 100644
      }
      task_pool.push(passthrough_next_message, input);
    }
-@@ -2200,6 +2239,7 @@ namespace input {
+@@ -2200,7 +2239,17 @@ namespace input {
     * @param input Retained stream input state to reset.
     */
    void reset_input_state(const std::shared_ptr<input_t> &input) {
@@ -390,7 +390,17 @@ index a12514d..df82f98 100644
      reset_mouse_buttons();
      reset_keyboard_keys();
      reset_gamepads(input);
-@@ -2208,6 +2248,43 @@ namespace input {
++    // A disconnected stream can retain its client context for reconnection.
++    // Release native contacts now; waiting for context destruction leaves them
++    // pressed on the host after an abrupt client exit or network loss.
++    platf::touch_input_t touch {};
++    touch.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
++    platf::touch_update(input->client_context.get(), input->touch_port, touch);
++    platf::pen_input_t pen {};
++    pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
++    platf::pen_update(input->client_context.get(), input->touch_port, pen);
+   }
+@@ -2208,6 +2257,37 @@ namespace input {
    /**
     * @brief Reset the object to its initial empty state.
     */
@@ -417,12 +427,6 @@ index a12514d..df82f98 100644
 +        key_press_repeat_id = nullptr;
 +        reset_input_state(input);
 +        input->mouse_left_button_timeout = nullptr;
-+        platf::touch_input_t touch {};
-+        touch.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
-+        platf::touch_update(input->client_context.get(), input->touch_port, touch);
-+        platf::pen_input_t pen {};
-+        pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
-+        platf::pen_update(input->client_context.get(), input->touch_port, pen);
 +        input->shift_keys = {}; input->control_keys = {}; input->alt_keys = {};
 +        input->shortcutFlags = 0;
 +        input->accumulated_vscroll_delta = input->accumulated_hscroll_delta = 0;
@@ -434,7 +438,7 @@ index a12514d..df82f98 100644
    void reset(std::shared_ptr<input_t> &input) {
      task_pool.cancel(key_press_repeat_id);
      task_pool.cancel(input->mouse_left_button_timeout);
-@@ -2331,8 +2408,9 @@ namespace input {
+@@ -2331,8 +2411,9 @@ namespace input {
        });
      }
  
@@ -445,7 +449,7 @@ index a12514d..df82f98 100644
        platf::move_mouse(platf_input, 1, 1);
        platf::move_mouse(platf_input, -1, -1);
      },
-@@ -2343,6 +2421,10 @@ namespace input {
+@@ -2343,6 +2424,10 @@ namespace input {
  
  #ifdef SUNSHINE_TESTS
    namespace testing {
