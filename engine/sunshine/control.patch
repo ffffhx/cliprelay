@@ -382,7 +382,7 @@ index a12514d..bd96f4b 100644
      }
      task_pool.push(passthrough_next_message, input);
    }
-@@ -2200,7 +2239,17 @@ namespace input {
+@@ -2200,14 +2239,55 @@ namespace input {
     * @param input Retained stream input state to reset.
     */
    void reset_input_state(const std::shared_ptr<input_t> &input) {
@@ -400,7 +400,7 @@ index a12514d..bd96f4b 100644
 +    pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
 +    platf::pen_update(input->client_context.get(), input->touch_port, pen);
    }
-@@ -2208,6 +2257,37 @@ namespace input {
+ 
    /**
     * @brief Reset the object to its initial empty state.
     */
@@ -496,7 +496,7 @@ index d383e42..80ffbf2 100644
       * @brief Replace the global platform input backend for a unit test.
       *
 diff --git a/src/platform/common.h b/src/platform/common.h
-index 325f913..f9e144e 100644
+index 325f913..08d33b1 100644
 --- a/src/platform/common.h
 +++ b/src/platform/common.h
 @@ -780,6 +780,11 @@ namespace platf {
@@ -527,6 +527,16 @@ index 325f913..f9e144e 100644
  
      /**
       * @brief Check if the audio sink is available in the system.
+@@ -926,6 +933,9 @@ namespace platf {
+    * @return Display names accepted by the selected capture backend.
+    */
+   std::vector<std::string> display_names(mem_type_e hwdevice_type);
++#ifdef _WIN32
++  std::vector<std::string> attached_display_names();
++#endif
+ 
+   /**
+    * @brief Check if GPUs/drivers have changed since the last call to this function.
 diff --git a/src/platform/windows/audio.cpp b/src/platform/windows/audio.cpp
 index 9ace2a6..b5eff15 100644
 --- a/src/platform/windows/audio.cpp
@@ -601,7 +611,7 @@ index 9ace2a6..b5eff15 100644
      }
  
 diff --git a/src/platform/windows/display_base.cpp b/src/platform/windows/display_base.cpp
-index 151b8a6..68d5802 100644
+index 151b8a6..331316b 100644
 --- a/src/platform/windows/display_base.cpp
 +++ b/src/platform/windows/display_base.cpp
 @@ -514,6 +514,9 @@ namespace platf::dxgi {
@@ -614,8 +624,44 @@ index 151b8a6..68d5802 100644
              offset_x = desc.DesktopCoordinates.left;
              offset_y = desc.DesktopCoordinates.top;
              width = desc.DesktopCoordinates.right - offset_x;
+@@ -1050,7 +1053,7 @@ namespace platf {
+     return nullptr;
+   }
+ 
+-  std::vector<std::string> display_names(mem_type_e) {
++  static std::vector<std::string> enumerate_display_names(bool probe_capture) {
+     std::vector<std::string> display_names;
+ 
+     HRESULT status;
+@@ -1108,7 +1111,7 @@ namespace platf {
+           << std::endl;
+ 
+         // Don't include the display in the list if we can't actually capture it
+-        if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output, true)) {
++        if (desc.AttachedToDesktop && (!probe_capture || dxgi::test_dxgi_duplication(adapter, output, true))) {
+           display_names.emplace_back(std::move(device_name));
+         }
+       }
+@@ -1117,6 +1120,17 @@ namespace platf {
+     return display_names;
+   }
+ 
++  std::vector<std::string> display_names(mem_type_e) {
++    return enumerate_display_names(true);
++  }
++
++  std::vector<std::string> attached_display_names() {
++    // DuplicateOutput fails with E_INVALIDARG when this process already owns
++    // the output. Inventory refresh must not probe a second live capture.
++    // The capture thread still validates the selected output before use.
++    return enumerate_display_names(false);
++  }
++
+   /**
+    * @brief Check whether DXGI reports that adapter or driver enumeration is stale.
+    *
 diff --git a/src/video.cpp b/src/video.cpp
-index 843a19a..f6b081e 100644
+index 843a19a..c349775 100644
 --- a/src/video.cpp
 +++ b/src/video.cpp
 @@ -27,6 +27,7 @@ extern "C" {
@@ -698,7 +744,55 @@ index 843a19a..f6b081e 100644
    };
  
    /**
-@@ -1481,6 +1547,17 @@ namespace video {
+@@ -1468,6 +1534,47 @@ namespace video {
+   };
+ 
+   static encoder_t *chosen_encoder;
++#ifdef _WIN32
++  std::unique_ptr<encoder_t> cliprelay_capture_encoder(platf::display_t &display, const encoder_t &preferred, const config_t &config) {
++    const encoder_t *selected = nullptr;
++    if (display.is_codec_supported(preferred.codec_from_config(config).name, config)) {
++      selected = &preferred;
++    } else {
++      for (const auto *candidate : encoders) {
++        if (candidate->platform_formats->dev_type != preferred.platform_formats->dev_type ||
++            !(candidate->flags & PARALLEL_ENCODING) ||
++            (config.videoFormat != 0 && (candidate->flags & H264_ONLY))) continue;
++        if (display.is_codec_supported(candidate->codec_from_config(config).name, config)) {
++          selected = candidate;
++          break;
++        }
++      }
++    }
++    if (!selected) return {};
++    std::unique_ptr<const encoder_platform_formats_t> formats;
++    if (auto value = dynamic_cast<const encoder_platform_formats_avcodec *>(selected->platform_formats.get())) {
++      formats = std::make_unique<encoder_platform_formats_avcodec>(*value);
++    } else if (auto value = dynamic_cast<const encoder_platform_formats_nvenc *>(selected->platform_formats.get())) {
++      formats = std::make_unique<encoder_platform_formats_nvenc>(*value);
++    } else return {};
++    auto result = std::unique_ptr<encoder_t>(new encoder_t {
++      selected->name, std::move(formats), selected->av1, selected->hevc, selected->h264, selected->flags
++    });
++    if (selected != &preferred) {
++      // The startup probe concerns the original GPU, not this display's GPU.
++      // Try the already-negotiated mode on this capture only. Actual driver
++      // initialization and encoding must succeed before any frame is accepted.
++      // Do not downgrade codec/chroma/HDR or mutate the global descriptors.
++      for (auto *codec : {&result->av1, &result->hevc, &result->h264}) {
++        codec->capabilities.set();
++        // Conservatively generate VUI for an unprobed FFmpeg backend.
++        (*codec)[encoder_t::VUI_PARAMETERS] = false;
++      }
++      BOOST_LOG(info) << "ClipRelay display encoder: " << preferred.name << " -> " << selected->name;
++    }
++    return result;
++  }
++#endif
+   int active_hevc_mode;  ///< HEVC mode selected by the most recent encoder probe.
+   int active_av1_mode;  ///< AV1 mode selected by the most recent encoder probe.
+   bool last_encoder_probe_supported_ref_frames_invalidation = false;  ///< Whether the last probe found reference-frame invalidation support.
+@@ -1481,6 +1588,17 @@ namespace video {
     * @param display_name Display name.
     * @param config Configuration values to apply.
     */
@@ -716,7 +810,7 @@ index 843a19a..f6b081e 100644
    void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
      // We try this twice, in case we still get an error on reinitialization
      for (int x = 0; x < 2; ++x) {
-@@ -1515,6 +1592,7 @@ namespace video {
+@@ -1515,6 +1633,7 @@ namespace video {
      // Refresh the display names
      auto old_display_names = std::move(display_names);
      display_names = platf::display_names(dev_type);
@@ -724,7 +818,7 @@ index 843a19a..f6b081e 100644
  
      // If we now have no displays, let's put the old display array back and fail
      if (display_names.empty() && !old_display_names.empty()) {
-@@ -1566,6 +1644,7 @@ namespace video {
+@@ -1566,6 +1685,7 @@ namespace video {
      std::vector<capture_ctx_t> capture_ctxs;
  
      auto fg = util::fail_guard([&]() {
@@ -732,7 +826,7 @@ index 843a19a..f6b081e 100644
        capture_ctx_queue->stop();
  
        // Stop all sessions listening to this thread
-@@ -1595,6 +1674,7 @@ namespace video {
+@@ -1595,6 +1715,7 @@ namespace video {
      if (!disp) {
        return;
      }
@@ -740,7 +834,7 @@ index 843a19a..f6b081e 100644
      display_wp = disp;
  
      constexpr auto capture_buffer_size = 12;
-@@ -1724,7 +1804,7 @@ namespace video {
+@@ -1724,7 +1845,7 @@ namespace video {
            capture_ctxs.emplace_back(std::move(*capture_ctx_queue->pop()));
          }
  
@@ -749,7 +843,7 @@ index 843a19a..f6b081e 100644
            artificial_reinit = true;
            return false;
          }
-@@ -1743,6 +1823,7 @@ namespace video {
+@@ -1743,6 +1864,7 @@ namespace video {
        switch (status) {
          case platf::capture_e::reinit:
            {
@@ -757,7 +851,7 @@ index 843a19a..f6b081e 100644
              reinit_event.raise(true);
  
              // Some classes of images contain references to the display --> display won't delete unless img is deleted
-@@ -1786,8 +1867,17 @@ namespace video {
+@@ -1786,8 +1908,17 @@ namespace video {
                  display_p = std::clamp(*switch_display_event->pop(), 0, static_cast<int>(display_names.size()) - 1);
                }
  
@@ -775,7 +869,7 @@ index 843a19a..f6b081e 100644
                if (disp) {
                  break;
                }
-@@ -1796,6 +1886,7 @@ namespace video {
+@@ -1796,6 +1927,7 @@ namespace video {
                return;
              }
  
@@ -783,7 +877,7 @@ index 843a19a..f6b081e 100644
              display_wp = disp;
  
              reinit_event.reset();
-@@ -1824,6 +1915,7 @@ namespace video {
+@@ -1824,6 +1956,7 @@ namespace video {
     * @return 0 when packets are queued; nonzero when encoding or packetization fails.
     */
    int encode_avcodec(int64_t frame_nr, avcodec_encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
@@ -791,7 +885,7 @@ index 843a19a..f6b081e 100644
      auto &frame = session.device->frame;
      frame->pts = frame_nr;
  
-@@ -1889,8 +1981,14 @@ namespace video {
+@@ -1889,8 +2022,14 @@ namespace video {
          packet->frame_timestamp = frame_timestamp;
        }
  
@@ -807,7 +901,7 @@ index 843a19a..f6b081e 100644
        packets->raise(std::move(packet));
      }
  
-@@ -1922,6 +2020,7 @@ namespace video {
+@@ -1922,6 +2061,7 @@ namespace video {
      packet->channel_data = channel_data;
      packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
      packet->frame_timestamp = frame_timestamp;
@@ -815,7 +909,7 @@ index 843a19a..f6b081e 100644
      packets->raise(std::move(packet));
  
      return 0;
-@@ -1939,7 +2038,12 @@ namespace video {
+@@ -1939,7 +2079,12 @@ namespace video {
     */
    int encode(int64_t frame_nr, encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
      if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
@@ -829,11 +923,15 @@ index 843a19a..f6b081e 100644
      } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
        return encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp);
      }
-@@ -2408,11 +2512,16 @@ namespace video {
+@@ -2408,11 +2553,20 @@ namespace video {
      const encoder_t &encoder,
      void *channel_data
    ) {
 +    if (auto rate = cliprelay::bitrates.begin_encoder(channel_data); rate > 0) config.bitrate = rate;
++    auto failed = util::fail_guard([&] {
++      cliprelay::displays.selection_failed();
++      mail->event<bool>(mail::shutdown)->raise(true);
++    });
      auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
      if (!session) {
        return;
@@ -846,7 +944,7 @@ index 843a19a..f6b081e 100644
      // As a workaround for NVENC hangs and to generally speed up encoder reinit,
      // we will complete the encoder teardown in a separate thread if supported.
      // This will move expensive processing off the encoder thread to allow us
-@@ -2479,6 +2588,7 @@ namespace video {
+@@ -2479,6 +2633,7 @@ namespace video {
              BOOST_LOG(error) << "Could not convert image"sv;
              return;
            }
@@ -854,7 +952,15 @@ index 843a19a..f6b081e 100644
          } else if (!images->running()) {
            break;
          }
-@@ -2638,6 +2748,8 @@ namespace video {
+@@ -2509,6 +2664,7 @@ namespace video {
+       // This is useful for KVM switch scenarios where mouse may disappear during streaming
+       platf::enable_mouse_keys();
+     }
++    failed.disable();
+   }
+ 
+   /**
+@@ -2638,6 +2794,8 @@ namespace video {
  
      encode_session.ctx = &ctx;
  
@@ -863,7 +969,7 @@ index 843a19a..f6b081e 100644
      auto encode_device = make_encode_device(*disp, encoder, ctx.config);
      if (!encode_device) {
        return std::nullopt;
-@@ -2657,6 +2769,7 @@ namespace video {
+@@ -2657,6 +2815,7 @@ namespace video {
      }
      ctx.hdr_events->raise(std::move(hdr_info));
  
@@ -871,7 +977,7 @@ index 843a19a..f6b081e 100644
      auto session = make_encode_session(disp, encoder, ctx.config, img.width, img.height, std::move(encode_device));
      if (!session) {
        return std::nullopt;
-@@ -2669,6 +2782,8 @@ namespace video {
+@@ -2669,6 +2828,8 @@ namespace video {
      }
  
      encode_session.session = std::move(session);
@@ -880,7 +986,7 @@ index 843a19a..f6b081e 100644
  
      return encode_session;
    }
-@@ -2712,8 +2827,17 @@ namespace video {
+@@ -2712,8 +2873,17 @@ namespace video {
          display_p = std::clamp(*switch_display_event->pop(), 0, static_cast<int>(display_names.size()) - 1);
        }
  
@@ -898,7 +1004,7 @@ index 843a19a..f6b081e 100644
        if (disp) {
          break;
        }
-@@ -2728,6 +2852,8 @@ namespace video {
+@@ -2728,6 +2898,8 @@ namespace video {
        return encode_e::error;
      }
  
@@ -907,7 +1013,7 @@ index 843a19a..f6b081e 100644
      std::vector<sync_session_t> synced_sessions;
      for (auto &ctx : synced_session_ctxs) {
        auto synced_session = make_synced_session(disp.get(), encoder, *img, *ctx);
-@@ -2793,6 +2919,9 @@ namespace video {
+@@ -2793,6 +2965,9 @@ namespace video {
              frame_timestamp = img->frame_timestamp;
            }
  
@@ -917,7 +1023,7 @@ index 843a19a..f6b081e 100644
            if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp)) {
              BOOST_LOG(error) << "Could not encode video packet"sv;
              ctx->shutdown_event->raise(true);
-@@ -2805,7 +2934,7 @@ namespace video {
+@@ -2805,7 +2980,7 @@ namespace video {
            ++pos;
          })
  
@@ -926,8 +1032,38 @@ index 843a19a..f6b081e 100644
            ec = platf::capture_e::reinit;
            return false;
          }
+@@ -2921,7 +3096,19 @@ namespace video {
+         display = ref->display_wp->lock();
+       }
+ 
+-      auto &encoder = *chosen_encoder;
++      const encoder_t *capture_encoder = chosen_encoder;
++#ifdef _WIN32
++      std::unique_ptr<encoder_t> local_encoder;
++      if (chosen_encoder->platform_formats->dev_type == platf::mem_type_e::dxgi) {
++        local_encoder = cliprelay_capture_encoder(*display, *chosen_encoder, config);
++        if (!local_encoder) {
++          cliprelay::displays.selection_failed();
++          return;
++        }
++        capture_encoder = local_encoder.get();
++      }
++#endif
++      const auto &encoder = *capture_encoder;
+ 
+       auto encode_device = make_encode_device(*display, encoder, config);
+       if (!encode_device) {
+@@ -2950,7 +3137,7 @@ namespace video {
+         display,
+         std::move(encode_device),
+         ref->reinit_event,
+-        *ref->encoder_p,
++        encoder,
+         channel_data
+       );
+     }
 diff --git a/src/video.h b/src/video.h
-index 63f3cf5..2b283e2 100644
+index 63f3cf5..14c59b7 100644
 --- a/src/video.h
 +++ b/src/video.h
 @@ -39,6 +39,7 @@ namespace video {
@@ -938,7 +1074,20 @@ index 63f3cf5..2b283e2 100644
    };
  
    namespace amf {
-@@ -527,7 +528,10 @@ namespace video {
+@@ -418,6 +419,12 @@ namespace video {
+     uint32_t flags;  ///< Encoder flags advertised to clients through GameStream capability responses.
+   };
+ 
++#ifdef _WIN32
++  // Capture-local encoder choice; never changes capabilities negotiated by
++  // another stream or the process-wide initial encoder probe.
++  std::unique_ptr<encoder_t> cliprelay_capture_encoder(platf::display_t &display, const encoder_t &preferred, const config_t &config);
++#endif
++
+   /**
+    * @brief Encoder session state shared by capture and encoding threads.
+    */
+@@ -527,7 +534,10 @@ namespace video {
        }
      };
  
@@ -1194,7 +1343,7 @@ index c0b0f96..032871c 100644
       * @brief Wait for worker threads owned by the session to exit.
       *
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index 1b47397..eb98ab5 100644
+index 1b47397..81b90b7 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -37,6 +37,8 @@
@@ -1283,10 +1432,10 @@ index 1b47397..eb98ab5 100644
 +  void cliprelayDisplays(const resp_https_t &response, const req_https_t &request) {
 +    if (!authenticate(response, request)) return;
 +#ifdef _WIN32
-+    // EnumOutputs filters detached/non-capturable devices in the same way as
-+    // the capture thread. Revalidate by ID there before applying a selection.
++    // Inventory must not create a second duplication of the current output.
++    // The capture thread revalidates the selected ID and actual capture.
 +    if (request->query_string == "refresh=1") {
-+      cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::dxgi));
++      cliprelay::displays.catalog(platf::attached_display_names());
 +    } else if (!request->query_string.empty()) {
 +      bad_request(response, request, "Invalid display query"); return;
 +    }
@@ -1979,3 +2128,83 @@ index 353180d..e84ce24 100644
 +  ASSERT_EQ(pending.size(), 1);
 +  EXPECT_EQ(pending.front().id, live_id);
 +}
+diff --git a/tests/unit/test_video.cpp b/tests/unit/test_video.cpp
+index a7f0426..d9bcccd 100644
+--- a/tests/unit/test_video.cpp
++++ b/tests/unit/test_video.cpp
+@@ -26,6 +26,75 @@ extern "C" {
+ 
+ using namespace std::literals;
+ 
++#ifdef _WIN32
++namespace {
++  class ClipRelayDisplayStub: public platf::display_t {
++  public:
++    std::string suffix;
++    int expected_format = 1;
++    bool expected_hdr = false;
++    bool expected_444 = false;
++    platf::capture_e capture(const push_captured_image_cb_t &, const pull_free_image_cb_t &, bool *) override { return platf::capture_e::error; }
++    std::shared_ptr<platf::img_t> alloc_img() override { return {}; }
++    int dummy_img(platf::img_t *) override { return -1; }
++    bool is_codec_supported(std::string_view name, const video::config_t &config) override {
++      EXPECT_EQ(config.videoFormat, expected_format);
++      EXPECT_EQ(bool(config.dynamicRange), expected_hdr);
++      EXPECT_EQ(bool(config.chromaSamplingType), expected_444);
++      return !suffix.empty() && name.ends_with(suffix);
++    }
++  };
++}
++
++TEST(ClipRelayDisplayEncoderTest, KeepsOriginalGpuCapabilitiesLocal) {
++  ClipRelayDisplayStub display; display.suffix = "_qsv";
++  video::config_t config {}; config.videoFormat = 1;
++  const auto before = video::quicksync.hevc.capabilities;
++  auto selected = video::cliprelay_capture_encoder(display, video::quicksync, config);
++  ASSERT_NE(selected, nullptr);
++  EXPECT_EQ(selected->name, "quicksync");
++  EXPECT_EQ(selected->hevc.capabilities, before);
++  EXPECT_NE(selected->platform_formats.get(), video::quicksync.platform_formats.get());
++  selected->hevc.capabilities.flip();
++  EXPECT_EQ(video::quicksync.hevc.capabilities, before);
++}
++
++TEST(ClipRelayDisplayEncoderTest, CrossesIntelNvidiaAndBackWithoutChangingGlobalProbe) {
++  ClipRelayDisplayStub display; display.suffix = "_nvenc";
++  video::config_t config {}; config.videoFormat = 1;
++  const auto before_qsv = video::quicksync.hevc.capabilities;
++  const auto before_nv = video::nvenc.hevc.capabilities;
++  auto external = video::cliprelay_capture_encoder(display, video::quicksync, config);
++  ASSERT_NE(external, nullptr);
++  EXPECT_EQ(external->name, "nvenc");
++  EXPECT_EQ(external->hevc.name, "hevc_nvenc");
++  display.suffix = "_qsv";
++  auto internal = video::cliprelay_capture_encoder(display, *external, config);
++  ASSERT_NE(internal, nullptr);
++  EXPECT_EQ(internal->name, "quicksync");
++  EXPECT_EQ(internal->hevc.name, "hevc_qsv");
++  EXPECT_EQ(video::quicksync.hevc.capabilities, before_qsv);
++  EXPECT_EQ(video::nvenc.hevc.capabilities, before_nv);
++}
++
++TEST(ClipRelayDisplayEncoderTest, DoesNotDowngradeNegotiatedHdrOrChroma) {
++  ClipRelayDisplayStub display; display.suffix = "_nvenc";
++  display.expected_hdr = display.expected_444 = true;
++  video::config_t config {}; config.videoFormat = 1; config.dynamicRange = 1; config.chromaSamplingType = 1;
++  auto selected = video::cliprelay_capture_encoder(display, video::quicksync, config);
++  ASSERT_NE(selected, nullptr);
++  EXPECT_EQ(selected->name, "nvenc");
++  // The real driver must still initialize this exact mode; selection does not
++  // claim that another GPU's negotiated mode is supported by the new device.
++}
++
++TEST(ClipRelayDisplayEncoderTest, RejectsCaptureWithNoCompatibleHardwareBackend) {
++  ClipRelayDisplayStub display;
++  video::config_t config {}; config.videoFormat = 1;
++  EXPECT_EQ(video::cliprelay_capture_encoder(display, video::quicksync, config), nullptr);
++}
++#endif
++
+ struct EncoderTest: PlatformTestSuite, testing::WithParamInterface<video::encoder_t *> {
+   void SetUp() override {
+     BaseTest::SetUp();

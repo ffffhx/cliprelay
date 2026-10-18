@@ -1,8 +1,8 @@
 {
   "repository": "ffffhx/cliprelay",
   "engine": {
-    "run": 39108423357,
-    "commit": "af083f78c2d980882169273939560883d7495513",
+    "run": 39116896029,
+    "commit": "2521a2887833995009e8d31ed40be0468209b3c7",
     "artifact": "sunshine-cliprelay-control-windows-amd64"
   },
   "viewer": {

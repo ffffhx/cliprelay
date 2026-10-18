@@ -7,6 +7,18 @@ that archived revision can precede the current development patch. Acceptance
 records identify the exact native and application builds tested. Physical
 multi-display transitions and Android presentation still require device evidence.
 
+Multi-display acceptance found two Windows defects on an Intel/NVIDIA laptop:
+refreshing the picker reprobed the live desktop duplication and omitted its
+output, and switching to the other GPU kept the first GPU's encoder. Inventory
+refresh now enumerates attached outputs without opening another duplication.
+For DXGI capture, each encoding thread selects a compatible encoder for the
+actual capture while preserving the negotiated codec, chroma and dynamic range.
+The startup capability probe and other streams remain unchanged. Driver setup
+must still succeed; encoding failure terminates the stream instead of spinning
+on initialization. `ClipRelayDisplayEncoderTest.*` covers local selection,
+Intel/NVIDIA transitions, preserved modes and unsupported-device rejection.
+Actual hardware retesting of this revision remains required.
+
 Apply to a clean checkout using:
 
 ```

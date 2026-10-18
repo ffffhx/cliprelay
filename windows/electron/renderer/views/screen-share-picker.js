@@ -34,6 +34,9 @@ export async function mount({root,api,title,status,setStatus,button,close}){
     try{await api.request('share',{peer:peers[selected]});close();}
     finally{start.disabled=false;start.textContent='开始共享 →';}
   },true);start.disabled=!peers.length;
-  root.addEventListener('keydown',event=>{if(event.key==='Enter')start.click();});
+  root.addEventListener('keydown',event=>{
+    if(event.key!=='Enter' || event.defaultPrevented || event.target.closest('button'))return;
+    event.preventDefault();start.click();
+  });
   return {error:error=>setStatus(error.message,true)};
 }
