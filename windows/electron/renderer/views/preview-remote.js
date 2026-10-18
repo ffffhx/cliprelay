@@ -6,7 +6,7 @@ export async function mount({root,api,title,status,setStatus,button}){
   element(root,'div','电脑遥控，页码与手机同步',24,77,410,22,'color:#94a3b8');
   const {config}=await api.request('snapshot');const devices=config.peers.filter(peer=>!['windows','mac','macos'].includes(peer.platform));
   const picker=element(root,'select','',24,112,432,30,'background:#202534;color:#f1f5f9;border:0;font:13.33px "Microsoft YaHei UI"');picker.ariaLabel='选择手机';
-  for(const [index,device] of devices.entries()){const option=document.createElement('option');option.value=index;option.textContent=`${device.name} · ${device.address}`;picker.append(option);}
+  for(const [index,device] of devices.entries()){const option=document.createElement('option');option.value=index;option.textContent=`${device.name} · ${device.pairedOwner?'加密配对':device.address}`;picker.append(option);}
   if(!devices.length){const option=document.createElement('option');option.textContent='尚未添加手机';picker.append(option);picker.disabled=true;}
   const card=element(root,'div','',24,154,432,96,'border:1px solid #262c3c;border-radius:10px;background:#171a24');
   const phase=element(card,'div','正在连接手机',14,6,404,24,'text-align:center;color:#94a3b8');
@@ -32,6 +32,7 @@ export async function mount({root,api,title,status,setStatus,button}){
   }
   async function poll(){
     if(!alive || polling || command || !devices.length || document.hidden || Date.now()<nextPoll)return;
+    if(devices[Number(picker.value)].pairedOwner){clear('暂不支持加密设备翻页','这台设备使用加密配对接收。当前请在设备上翻页。');nextPoll=Date.now()+2000;return;}
     polling=true;const version=generation;
     try{
       const result=await api.request('preview-state',{peer:devices[Number(picker.value)]});if(!alive || version!==generation)return;
