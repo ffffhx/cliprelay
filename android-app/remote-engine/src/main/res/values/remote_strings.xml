@@ -31,6 +31,6 @@
     <string name="remote_desktop_title">Remote desktop</string><string name="remote_desktop_name">Computer desktop</string>
     <string name="remote_desktop_body">View the screen, move the pointer and type from your phone.</string>
     <string name="remote_desktop_open">Open desktop</string><string name="remote_desktop_controls">Touch &amp; keyboard</string>
-    <string name="remote_desktop_hint">In landscape, controls stay in the side borders. Swipe up or down for more. If space is limited, tap the edge button to open the toolbar.</string>
+    <string name="remote_desktop_hint">In landscape, controls stay in the side borders. Swipe up or down for more. When the bottom border has enough room, the toolbar stays open. If space is limited, tap the edge button to open it.</string>
     <string name="remote_app_body">Open this app on your computer.</string><string name="remote_app_open">Open app</string>
 </resources>

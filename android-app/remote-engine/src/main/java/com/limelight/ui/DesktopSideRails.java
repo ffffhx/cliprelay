@@ -12,7 +12,7 @@ import android.widget.ScrollView;
 
 import com.limelight.R;
 
-/** Places desktop controls only in the unused space beside the actual video view. */
+/** Finds safe unused space beside or below the actual video view. */
 final class DesktopSideRails {
     private final Activity activity;
     private final FrameLayout root;
@@ -22,6 +22,7 @@ final class DesktopSideRails {
     private final LinearLayout leftButtons, rightButtons;
     private final Rect leftBounds = new Rect(), rightBounds = new Rect();
     private boolean available;
+    private Rect bottomBounds;
 
     DesktopSideRails(Activity activity, FrameLayout root, Runnable changed) {
         this.activity = activity;
@@ -63,6 +64,7 @@ final class DesktopSideRails {
     }
 
     boolean isAvailable() { return available; }
+    Rect bottomBounds() { return bottomBounds; }
     LinearLayout leftButtons() { return leftButtons; }
     LinearLayout rightButtons() { return rightButtons; }
 
@@ -80,7 +82,8 @@ final class DesktopSideRails {
     }
 
     private void refresh() {
-        boolean fits = video != null && video.getParent() == root && root.getWidth() > root.getHeight()
+        Rect nextBottom = null;
+        boolean fits = video != null && video.getParent() == root
                 && video.getWidth() > 0 && video.getHeight() > 0;
         if (fits) {
             int[] location = new int[2];
@@ -99,14 +102,25 @@ final class DesktopSideRails {
                     insetTop = Math.max(insetTop, insets.getDisplayCutout().getSafeInsetTop());
                     insetBottom = Math.max(insetBottom, insets.getDisplayCutout().getSafeInsetBottom());
                 }
-                if (Build.VERSION.SDK_INT >= 30) insetBottom = Math.max(insetBottom,
-                        insets.getInsets(WindowInsets.Type.ime()).bottom);
+                if (Build.VERSION.SDK_INT >= 30) {
+                    // Legacy system-window insets can reserve hidden bars with LAYOUT_STABLE.
+                    // Only visible system bars, cutouts and the IME consume the free border.
+                    android.graphics.Insets visible = insets.getInsets(WindowInsets.Type.systemBars()
+                            | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+                    insetLeft = visible.left; insetRight = visible.right;
+                    insetTop = visible.top; insetBottom = visible.bottom;
+                }
             }
             // Insets are window coordinates. Do not subtract them twice if the root already fits them.
             int safeLeft = Math.max(root.getPaddingLeft(), insetLeft - location[0]);
             int safeRight = Math.min(root.getWidth() - root.getPaddingRight(), windowWidth - insetRight - location[0]);
             int top = Math.max(root.getPaddingTop(), insetTop - location[1]);
             int bottom = Math.min(root.getHeight() - root.getPaddingBottom(), windowHeight - insetBottom - location[1]);
+            DesktopRailGeometry.BottomLayout bottomLayout = DesktopRailGeometry.fitBottom(root.getWidth(), root.getHeight(),
+                    video.getBottom(), safeLeft, top, safeRight, bottom,
+                    activity.getResources().getDisplayMetrics().density);
+            if (bottomLayout != null) nextBottom = new Rect(bottomLayout.left, bottomLayout.top,
+                    bottomLayout.left + bottomLayout.width, bottomLayout.top + bottomLayout.height);
             DesktopRailGeometry.Layout layout = DesktopRailGeometry.fit(root.getWidth(), root.getHeight(),
                     video.getLeft(), video.getRight(), safeLeft, top, safeRight, bottom,
                     activity.getResources().getDisplayMetrics().density);
@@ -116,8 +130,9 @@ final class DesktopSideRails {
                 place(right, rightBounds, new Rect(layout.right, layout.top, layout.right + layout.width, layout.top + layout.height));
             }
         }
-        if (available != fits) {
+        if (available != fits || !java.util.Objects.equals(bottomBounds, nextBottom)) {
             available = fits;
+            bottomBounds = nextBottom;
             changed.run();
         }
     }

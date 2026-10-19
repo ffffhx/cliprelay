@@ -3,6 +3,7 @@ package com.limelight.ui;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.GradientDrawable;
@@ -55,6 +56,7 @@ public final class DesktopToolbar {
     public static final class Controller {
         private GameControlsView game;
         private View desktop;
+        private Button collapseButton;
         private EdgeHandle handle;
         private Actions actions;
         private Button voiceButton;
@@ -179,8 +181,25 @@ public final class DesktopToolbar {
             game.setVisibility(gameMode && !pip && !keyboardOpen ? View.VISIBLE : View.GONE);
             boolean desktopVisible = !gameMode && !pip && !keyboardOpen;
             sideRails.setVisible(desktopVisible);
-            desktop.setVisibility(desktopVisible && !isSideRailsActive() && expanded ? View.VISIBLE : View.GONE);
-            handle.setVisibility(desktopVisible && !isSideRailsActive() && !expanded ? View.VISIBLE : View.GONE);
+            Rect bottom = sideRails.bottomBounds();
+            boolean docked = bottom != null && !isSideRailsActive();
+            boolean showExpanded = expanded || docked;
+            collapseButton.setVisibility(docked ? View.GONE : View.VISIBLE);
+            // Keep the toolbar in existing letterboxing, outside system bars and the IME.
+            FrameLayout root = (FrameLayout) desktop.getParent();
+            FrameLayout.LayoutParams placement = (FrameLayout.LayoutParams) desktop.getLayoutParams();
+            int left = docked ? bottom.left - root.getPaddingLeft() : 0;
+            int right = docked ? root.getWidth() - root.getPaddingRight() - bottom.right : 0;
+            int below = docked ? root.getHeight() - root.getPaddingBottom() - bottom.bottom : 0;
+            int height = docked ? bottom.height() : Math.round(44 * root.getResources().getDisplayMetrics().density);
+            if (placement.leftMargin != left || placement.rightMargin != right || placement.bottomMargin != below
+                    || placement.height != height) {
+                placement.leftMargin = left; placement.rightMargin = right; placement.bottomMargin = below;
+                placement.height = height;
+                desktop.setLayoutParams(placement);
+            }
+            desktop.setVisibility(desktopVisible && !isSideRailsActive() && showExpanded ? View.VISIBLE : View.GONE);
+            handle.setVisibility(desktopVisible && !isSideRailsActive() && !showExpanded ? View.VISIBLE : View.GONE);
             if (!focused || paused || pip || gameMode) handle.cancelGesture();
         }
     }
@@ -252,6 +271,7 @@ public final class DesktopToolbar {
         LinearLayout tools = new LinearLayout(activity);
         tools.setOrientation(LinearLayout.HORIZONTAL);
         Button toggle = button(activity, bar, activity.getString(R.string.desktop_controls_collapse));
+        controller.collapseButton = toggle;
         toggle.setId(R.id.desktopCollapseButton);
         bar.addView(tools);
         toggle.setOnClickListener(v -> controller.setExpanded(false));

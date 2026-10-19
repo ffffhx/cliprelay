@@ -31,6 +31,6 @@
     <string name="remote_desktop_title">远程桌面</string><string name="remote_desktop_name">电脑桌面</string>
     <string name="remote_desktop_body">实时查看桌面，支持触控与键盘输入。</string>
     <string name="remote_desktop_open">进入桌面</string><string name="remote_desktop_controls">触控 · 键盘</string>
-    <string name="remote_desktop_hint">横屏时，操作按钮会常驻两侧黑边，可上下滑动。黑边空间不足时，点边缘的小圆点展开工具栏。</string>
+    <string name="remote_desktop_hint">横屏时，操作按钮会常驻两侧黑边，可上下滑动。底部黑边能容纳工具栏时，工具栏保持展开。空间不足时，点边缘的小圆点展开工具栏。</string>
     <string name="remote_app_body">在电脑上打开这个应用。</string><string name="remote_app_open">打开应用</string>
 </resources>
