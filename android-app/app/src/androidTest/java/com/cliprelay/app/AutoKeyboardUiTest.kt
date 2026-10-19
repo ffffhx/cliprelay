@@ -64,9 +64,16 @@ class AutoKeyboardUiTest {
                     if (event.action == KeyEvent.ACTION_DOWN) keys += key
                     true
                 }
-                val connection = stream.onCreateInputConnection(EditorInfo())!!
+                val info = EditorInfo()
+                val connection = stream.onCreateInputConnection(info)!!
+                assertEquals(0, info.initialSelStart)
+                assertEquals(0, info.initialSelEnd)
+                assertTrue(connection.beginBatchEdit())
+                assertTrue(connection.beginBatchEdit())
                 connection.setComposingText("ab", 1)
                 connection.deleteSurroundingText(1, 0)
+                assertTrue(connection.endBatchEdit())
+                assertTrue(!connection.endBatchEdit())
                 assertTrue("Composition deletion reached remote host", keys.isEmpty())
                 connection.commitText("中文", 1)
                 connection.deleteSurroundingText(1, 0)
@@ -112,6 +119,27 @@ class AutoKeyboardUiTest {
             }
             instrument.waitForIdleSync()
             assertEquals(listOf("我在谷歌。", "你好", "你好", "语音结束🙂"), committed)
+
+            committed.clear()
+            lateinit var english: android.view.inputmethod.InputConnection
+            instrument.runOnMainSync {
+                english = stream.onCreateInputConnection(EditorInfo())!!
+                for (length in 1.."cloudflare".length) {
+                    english.setComposingText("cloudflare".take(length), 1)
+                    english.setComposingRegion(0, length)
+                }
+            }
+            instrument.waitForIdleSync()
+            assertTrue("English candidate prefixes reached the computer", committed.isEmpty())
+            instrument.runOnMainSync {
+                // Sogou finalizes with finish + space; other IMEs commit the word.
+                english.setComposingText("cloudflare", 1)
+                english.finishComposingText()
+                english.commitText("cloudflare", 1)
+                english.finishComposingText()
+            }
+            instrument.waitForIdleSync()
+            assertEquals(listOf("cloudflare", "cloudflare"), committed)
 
             fun visible(): Boolean {
                 var result = false

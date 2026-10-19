@@ -6,9 +6,12 @@ import android.util.AttributeSet;
 import android.view.KeyEvent;
 import android.view.SurfaceView;
 import android.text.InputType;
+import android.text.Editable;
+import android.text.Selection;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 
 public class StreamView extends SurfaceView {
     private double desiredAspectRatio;
@@ -96,6 +99,7 @@ public class StreamView extends SurfaceView {
         info.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
         info.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN
                 | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
+        info.initialSelStart = info.initialSelEnd = 0;
         // Keep composing spans in a real local editor. BaseInputConnection's
         // fallback mode also sends and clears text from setComposingRegion(),
         // turning successive speech revisions into repeated remote prefixes.
@@ -103,6 +107,34 @@ public class StreamView extends SurfaceView {
         // Game.onKeyMultiple() transport, including single-character key events.
         BaseInputConnection committedKeys = new BaseInputConnection(this, false);
         return new BaseInputConnection(this, true) {
+            // BaseInputConnection edits its buffer but does not notify the IME.
+            // Without cursor/composition updates, Doubao ends every English
+            // prefix before replacing it, causing repeated remote commits.
+            // Report only after the outer batch, including our buffer clear.
+            private int batchDepth;
+
+            private void reportSelection() {
+                if (batchDepth != 0) return;
+                Editable text = getEditable();
+                InputMethodManager manager = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                manager.updateSelection(StreamView.this, Selection.getSelectionStart(text),
+                        Selection.getSelectionEnd(text), getComposingSpanStart(text), getComposingSpanEnd(text));
+            }
+
+            @Override public boolean beginBatchEdit() { batchDepth++; return true; }
+            @Override public boolean endBatchEdit() {
+                if (batchDepth == 0) return false;
+                batchDepth--;
+                reportSelection();
+                return batchDepth > 0;
+            }
+
+            @Override public boolean setSelection(int start, int end) {
+                boolean result = super.setSelection(start, end);
+                reportSelection();
+                return result;
+            }
+
             private void forwardCommittedText() {
                 if (getEditable().length() == 0) return;
                 String text = getEditable().toString();
@@ -111,15 +143,21 @@ public class StreamView extends SurfaceView {
             }
 
             @Override public boolean commitText(CharSequence text, int newCursorPosition) {
-                boolean result = super.commitText(text, newCursorPosition);
-                forwardCommittedText();
-                return result;
+                beginBatchEdit();
+                try {
+                    boolean result = super.commitText(text, newCursorPosition);
+                    forwardCommittedText();
+                    return result;
+                } finally { endBatchEdit(); }
             }
 
             @Override public boolean finishComposingText() {
-                boolean result = super.finishComposingText();
-                forwardCommittedText();
-                return result;
+                beginBatchEdit();
+                try {
+                    boolean result = super.finishComposingText();
+                    forwardCommittedText();
+                    return result;
+                } finally { endBatchEdit(); }
             }
 
             @Override public boolean deleteSurroundingText(int before, int after) {
