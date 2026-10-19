@@ -215,7 +215,7 @@ namespace ClipRelay.Remote {
         }
     }
 
-    // Doubao 0.9.1.22 deliberately ignores injected keyboard shortcuts. Its installed
+    // Doubao deliberately ignores injected keyboard shortcuts. Its installed
     // local RPC library exposes the same start/show/stop/cancel commands used by its UI.
     // This is NOT a public SDK: fail closed on other versions, never guess command IDs.
     // Load only the installed Program Files binaries; none are bundled with ClipRelay.
@@ -246,7 +246,10 @@ namespace ClipRelay.Remote {
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int length);
-        public static bool SupportedVersion(string value) { return value.Trim() == "0.9.1.22"; }
+        public static bool SupportedVersion(string value) {
+            string version = (value ?? "").Trim();
+            return version == "0.9.1.22" || version == "0.9.2.7";
+        }
         public DoubaoVoice() {
             string trusted = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "DoubaoIME", "versions") + Path.DirectorySeparatorChar;
             foreach (var process in Process.GetProcessesByName("ImeService")) using (process) {

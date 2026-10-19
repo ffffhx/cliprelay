@@ -21,5 +21,5 @@
     <string name="voice_mic_failed">Could not start the phone microphone. Check microphone access and other recording apps.</string>
     <string name="voice_backlog">The connection is too slow for voice input. Recording has stopped.</string>
     <string name="voice_failed">Voice input ended or could not connect. Check the computer and connection, then try again.</string>
-    <string name="voice_version_unsupported">This Doubao version has not been verified. Update ClipRelay to support it. Currently supported: Windows Doubao 0.9.1.22.</string>
+    <string name="voice_version_unsupported">The Doubao version on your PC is not supported by the ClipRelay desktop host. Verified versions: 0.9.1.22 and 0.9.2.7.</string>
 </resources>

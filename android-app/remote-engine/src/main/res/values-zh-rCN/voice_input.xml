@@ -19,5 +19,5 @@
     <string name="voice_mic_failed">无法打开手机麦克风，请检查麦克风权限或其他录音应用。</string>
     <string name="voice_backlog">当前网络传输过慢，语音输入已停止，请连接稳定后重试。</string>
     <string name="voice_failed">语音已结束或连接失败，请检查电脑与网络后重试。</string>
-    <string name="voice_version_unsupported">当前豆包版本尚未验证，请更新 ClipRelay 以适配。目前支持 Windows 豆包输入法 0.9.1.22。</string>
+    <string name="voice_version_unsupported">电脑上的豆包输入法版本暂不受支持，需要 ClipRelay 电脑端适配。已验证版本：0.9.1.22、0.9.2.7。</string>
 </resources>

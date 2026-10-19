@@ -34,8 +34,10 @@ public static class VoiceInputTest {
             Environment.Exit(0); // Deliberately bypass Dispose, like a killed worker.
         }
         TestMicrophoneRecovery();
-        Check(DoubaoVoice.SupportedVersion("0.9.1.22\r\n"),"Known provider version rejected");
-        Check(!DoubaoVoice.SupportedVersion("0.9.2.0"),"Unknown provider version accepted");
+        foreach(string version in new[]{"0.9.1.22\r\n", "0.9.2.7", " 0.9.2.7\r\n"})
+            Check(DoubaoVoice.SupportedVersion(version),"Known provider version rejected");
+        foreach(string version in new[]{null, "", "0.9.2.0", "0.9.2.8", "0.9.2.70", "0.9.2.7-preview"})
+            Check(!DoubaoVoice.SupportedVersion(version),"Unknown provider version accepted");
         Console.WriteLine("Provider version gate passed.");
         if(args.Length==0) return 0;
         uint device=uint.MaxValue;

@@ -22,6 +22,19 @@ public static class DoubaoVoiceLiveTest {
         var reply=Json.Deserialize<Dictionary<string,object>>(Json.Serialize(response));
         if(!Convert.ToBoolean(reply["ok"])) throw new Exception(Convert.ToString(reply["code"]));
     }
+    static void SendPcm(byte[] pcm) {
+        for(int offset=0;offset<pcm.Length;offset+=6400){
+            byte[] chunk=new byte[Math.Min(6400,pcm.Length-offset)];Array.Copy(pcm,offset,chunk,0,chunk.Length);
+            CheckReply(VoiceInput.Handle("voice-audio:"+Convert.ToBase64String(chunk)));
+            Thread.Sleep(chunk.Length*1000/32000);
+        }
+    }
+    static void CheckEnded() {
+        var ended=Json.Deserialize<Dictionary<string,object>>(Json.Serialize(VoiceInput.Handle("voice-audio:AAA=")));
+        if(Convert.ToBoolean(ended["ok"]) || Convert.ToString(ended["code"])!="VOICE_ENDED")
+            throw new Exception("Ended session still accepts audio");
+        using(var provider=new DoubaoVoice())provider.CheckAvailable();
+    }
     [STAThread] public static int Main(string[] args) {
         if(args.Length<1 || args.Length>3) return 2;
         using(var identity=WindowsIdentity.GetCurrent()) if(new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
@@ -79,11 +92,7 @@ public static class DoubaoVoiceLiveTest {
                                     screenshot.Save(args[1],System.Drawing.Imaging.ImageFormat.Png);
                                 }
                             }
-                            for(int offset=0;offset<pcm.Length;offset+=6400){
-                                byte[] chunk=new byte[Math.Min(6400,pcm.Length-offset)];Array.Copy(pcm,offset,chunk,0,chunk.Length);
-                                CheckReply(VoiceInput.Handle("voice-audio:"+Convert.ToBase64String(chunk)));
-                                Thread.Sleep(chunk.Length*1000/32000);
-                            }
+                            SendPcm(pcm);
                             CheckReply(VoiceInput.Handle("voice-stop"));
                             Thread.Sleep(4000);
                             form.Invoke((Action)(()=>{
@@ -93,10 +102,25 @@ public static class DoubaoVoiceLiveTest {
                             }));
                             if(result==0) {
                                 CheckReply(VoiceInput.Handle("voice-start"));
+                                SendPcm(pcm);
+                                // Doubao can insert live text before stop/cancel. Cancellation
+                                // must stop further input, not delete text the IME already entered.
+                                string beforeCancel=(string)form.Invoke((Func<string>)(()=>edit.Text));
+                                Console.WriteLine("Before cancellation test text: "+beforeCancel);
+                                CheckReply(VoiceInput.Handle("voice-cancel"));
+                                Thread.Sleep(1000);CheckEnded();
+                                string cancelled=(string)form.Invoke((Func<string>)(()=>edit.Text));
+                                Console.WriteLine("After cancellation test text: "+cancelled);
+                                if(cancelled!=beforeCancel)
+                                    throw new Exception("Cancellation appended additional text");
+                                Console.WriteLine("Explicit cancellation stopped further input and closed recording.");
+                                CheckReply(VoiceInput.Handle("voice-start"));
                                 Thread.Sleep(7200);
-                                var ended=Json.Deserialize<Dictionary<string,object>>(Json.Serialize(VoiceInput.Handle("voice-audio:AAA=")));
-                                if(Convert.ToBoolean(ended["ok"]))throw new Exception("Idle watchdog left recording active");
+                                CheckEnded();
                                 Console.WriteLine("Idle watchdog cancelled recording.");
+                                CheckReply(VoiceInput.Handle("voice-start"));
+                                VoiceInput.Close();Thread.Sleep(500);CheckEnded();
+                                Console.WriteLine("Worker shutdown cancelled recording.");
                             }
                         } catch(Exception error){result=1;Console.WriteLine("FAIL: "+error.GetBaseException().Message);}
                         finally{VoiceInput.Close();if(!form.IsDisposed)form.BeginInvoke((Action)form.Close);}
