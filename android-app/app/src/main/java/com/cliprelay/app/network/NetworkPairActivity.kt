@@ -94,7 +94,9 @@ internal fun NetworkPairScreen(
             HorizontalDivider()
             Text(if (computers.isEmpty()) "配对电脑" else "添加另一台电脑", style = MaterialTheme.typography.titleLarge)
             Text("在电脑 ClipRelay 的“手机远控 → 外网配对”中生成配对码。添加新电脑不影响已有连接。")
-            pairing?.let { status ->
+            // Saved computers have their own live status above; the pairing
+            // completion message would become stale after pause or removal.
+            pairing?.takeUnless { it.phase == "saved" }?.let { status ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (status.computer.isNotEmpty()) Text(status.computer, style = MaterialTheme.typography.titleMedium)
