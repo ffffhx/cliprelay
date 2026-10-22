@@ -26,13 +26,14 @@ internal class PairedRelayReceiver(
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
     private val workers = mutableMapOf<String, Worker>()
     private val applyGate = Any()
+    private val databaseGate = Any()
+    private val database = ComputerDatabaseManager(app)
     @Volatile private var closed = false
 
     init { scheduler.scheduleWithFixedDelay({ runCatching { reconcile() } }, 0, 5, TimeUnit.SECONDS) }
 
-    private fun computers(): List<ComputerDetails> {
-        val database = ComputerDatabaseManager(app)
-        return try { database.allComputers } finally { database.close() }
+    private fun computers(): List<ComputerDetails> = synchronized(databaseGate) {
+        if (closed) emptyList() else database.allComputers
     }
 
     @Synchronized private fun reconcile() {
@@ -48,9 +49,10 @@ internal class PairedRelayReceiver(
     }
 
     override fun close() {
-        synchronized(applyGate) { closed = true }
+        synchronized(applyGate) { if (closed) return; closed = true }
         scheduler.shutdownNow()
         synchronized(this) { workers.values.forEach { it.close() }; workers.clear() }
+        synchronized(databaseGate) { database.close() }
     }
 
     private inner class Worker(val computer: ComputerDetails) : Thread("ClipRelay paired receiver"), Closeable {
@@ -60,12 +62,24 @@ internal class PairedRelayReceiver(
 
         private fun authorized(): Boolean {
             if (closed || stopped || isInterrupted) return false
-            val database = ComputerDatabaseManager(app)
-            return try { database.getComputerByUUID(computer.uuid)?.serverCert == computer.serverCert }
-            finally { database.close() }
+            // Keep reading the current certificate (revocation is never cached), but
+            // reuse the database handle rather than re-running schema/migration work.
+            return synchronized(databaseGate) {
+                !closed && !stopped && !isInterrupted &&
+                    database.getComputerByUUID(computer.uuid)?.serverCert == computer.serverCert
+            }
         }
 
-        override fun close() { stopped = true; http?.closeRelayRequests(); interrupt() }
+        override fun close() {
+            stopped = true
+            interrupt()
+            // TLS shutdown can write a close_notify record. Service.onDestroy runs
+            // on the main thread, where Android forbids even this network write.
+            // Revoke delivery immediately, then cancel blocked I/O off the UI thread.
+            http?.let { pending ->
+                Thread({ runCatching { pending.closeRelayRequests() } }, "ClipRelay receiver cleanup").start()
+            }
+        }
 
         override fun run() {
             var retrySeconds = 2L

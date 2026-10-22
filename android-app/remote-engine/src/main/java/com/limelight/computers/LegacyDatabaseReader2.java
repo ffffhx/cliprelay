@@ -68,6 +68,7 @@ public class LegacyDatabaseReader2 {
     }
 
     public static List<ComputerDetails> migrateAllComputers(Context c) {
+        if (!c.getDatabasePath(COMPUTER_DB_NAME).isFile()) return new LinkedList<>();
         try (final SQLiteDatabase computerDb = SQLiteDatabase.openDatabase(
                 c.getDatabasePath(COMPUTER_DB_NAME).getPath(),
                 null, SQLiteDatabase.OPEN_READONLY)

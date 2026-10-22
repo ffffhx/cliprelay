@@ -94,6 +94,7 @@ public class DiscoveryService extends Service {
     }
 
     @Override public void onDestroy() {
+        discoveryAgent.stopDiscovery();
         clipRelayAgent.close();
         super.onDestroy();
     }

@@ -1,269 +1,159 @@
 package com.limelight.nvstream.mdns;
 
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.wifi.WifiManager;
 
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.util.ArrayList;
-import java.util.HashSet;
-
-import javax.jmdns.JmmDNS;
-import javax.jmdns.NetworkTopologyDiscovery;
-import javax.jmdns.ServiceEvent;
-import javax.jmdns.ServiceInfo;
-import javax.jmdns.ServiceListener;
-import javax.jmdns.impl.NetworkTopologyDiscoveryImpl;
-
 import com.limelight.LimeLog;
+import java.io.Closeable;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import javax.jmdns.JmDNS;
+import javax.jmdns.ServiceEvent;
+import javax.jmdns.ServiceListener;
 
-public class JmDNSDiscoveryAgent extends MdnsDiscoveryAgent implements ServiceListener {
+/** Android 13 and earlier: each scan owns its LAN resolvers, including their timers. */
+public class JmDNSDiscoveryAgent extends MdnsDiscoveryAgent {
     private static final String SERVICE_TYPE = "_nvstream._tcp.local.";
-    private WifiManager.MulticastLock multicastLock;
-    private Thread discoveryThread;
-    private HashSet<String> pendingResolution = new HashSet<>();
-    
-    // The resolver factory's instance member has a static lifetime which
-    // means our ref count and listener must be static also.
-    private static int resolverRefCount = 0;
-    private static HashSet<ServiceListener> listeners = new HashSet<>();
-    private static ServiceListener nvstreamListener = new ServiceListener() {
-        @Override
-        public void serviceAdded(ServiceEvent event) {
-            HashSet<ServiceListener> localListeners;
-            
-            // Copy the listener set into a new set so we can invoke
-            // the callbacks without holding the listeners monitor the
-            // whole time.
-            synchronized (listeners) {
-                localListeners = new HashSet<ServiceListener>(listeners);
-            }
-            
-            for (ServiceListener listener : localListeners) {
-                listener.serviceAdded(event);
-            }
-        }
-
-        @Override
-        public void serviceRemoved(ServiceEvent event) {
-            HashSet<ServiceListener> localListeners;
-            
-            // Copy the listener set into a new set so we can invoke
-            // the callbacks without holding the listeners monitor the
-            // whole time.
-            synchronized (listeners) {
-                localListeners = new HashSet<ServiceListener>(listeners);
-            }
-            
-            for (ServiceListener listener : localListeners) {
-                listener.serviceRemoved(event);
-            }
-        }
-
-        @Override
-        public void serviceResolved(ServiceEvent event) {
-            HashSet<ServiceListener> localListeners;
-            
-            // Copy the listener set into a new set so we can invoke
-            // the callbacks without holding the listeners monitor the
-            // whole time.
-            synchronized (listeners) {
-                localListeners = new HashSet<ServiceListener>(listeners);
-            }
-            
-            for (ServiceListener listener : localListeners) {
-                listener.serviceResolved(event);
-            }
-        }
-    };
-
-    public static class MyNetworkTopologyDiscovery extends NetworkTopologyDiscoveryImpl {
-        @Override
-        public boolean useInetAddress(NetworkInterface networkInterface, InetAddress interfaceAddress) {
-            // This is an copy of jmDNS's implementation, except we omit the multicast check, since
-            // it seems at least some devices lie about interfaces not supporting multicast when they really do.
-            try {
-                if (!networkInterface.isUp()) {
-                    return false;
-                }
-
-                /*
-                if (!networkInterface.supportsMulticast()) {
-                    return false;
-                }
-                */
-
-                if (networkInterface.isLoopback()) {
-                    return false;
-                }
-
-                return true;
-            } catch (Exception exception) {
-                return false;
-            }
-        }
+    interface Resolver extends Closeable { void listen(ServiceListener listener); }
+    interface Environment {
+        Set<InetAddress> addresses();
+        Resolver open(InetAddress address) throws IOException;
+        void acquire();
+        void release();
     }
+    private final Environment environment;
+    private volatile Scan scan;
 
-    static {
-        // Override jmDNS's default topology discovery class with ours
-        NetworkTopologyDiscovery.Factory.setClassDelegate(new NetworkTopologyDiscovery.Factory.ClassDelegate() {
-            @Override
-            public NetworkTopologyDiscovery newNetworkTopologyDiscovery() {
-                return new MyNetworkTopologyDiscovery();
+    public JmDNSDiscoveryAgent(Context context, MdnsDiscoveryListener listener) {
+        this(listener, new Environment() {
+            final ConnectivityManager networks = context.getSystemService(ConnectivityManager.class);
+            final WifiManager.MulticastLock lock = context.getSystemService(WifiManager.class)
+                    .createMulticastLock("ClipRelay LAN discovery");
+            @Override public Set<InetAddress> addresses() {
+                Set<InetAddress> result = new HashSet<>();
+                for (Network network : networks.getAllNetworks()) {
+                    NetworkCapabilities caps = networks.getNetworkCapabilities(network);
+                    if (caps == null || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                            !(caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                              caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))) continue;
+                    LinkProperties links = networks.getLinkProperties(network);
+                    if (links == null) continue;
+                    for (android.net.LinkAddress link : links.getLinkAddresses()) {
+                        InetAddress address = link.getAddress();
+                        if (!address.isLoopbackAddress() && !address.isAnyLocalAddress() &&
+                                !address.isMulticastAddress()) result.add(address);
+                    }
+                }
+                return result;
             }
+            @Override public Resolver open(InetAddress address) throws IOException {
+                JmDNS dns = JmDNS.create(address);
+                return new Resolver() {
+                    @Override public void listen(ServiceListener callback) { dns.addServiceListener(SERVICE_TYPE, callback); }
+                    @Override public void close() throws IOException { dns.close(); }
+                };
+            }
+            // Reference counting covers a new scan starting while the previous one is closing.
+            @Override public void acquire() { lock.acquire(); }
+            @Override public void release() { lock.release(); }
         });
     }
 
-    private static JmmDNS referenceResolver() {
-        synchronized (JmDNSDiscoveryAgent.class) {
-            JmmDNS instance = JmmDNS.Factory.getInstance();
-            if (++resolverRefCount == 1) {
-                // This will cause the listener to be invoked for known hosts immediately.
-                // JmDNS only supports one listener per service, so we have to do this here
-                // with a static listener.
-                instance.addServiceListener(SERVICE_TYPE, nvstreamListener);
-            }
-            return instance;
-        }
-    }
-
-    private static void dereferenceResolver() {
-        synchronized (JmDNSDiscoveryAgent.class) {
-            if (--resolverRefCount == 0) {
-                try {
-                    JmmDNS.Factory.close();
-                } catch (IOException e) {}
-            }
-        }
-    }
-
-    public JmDNSDiscoveryAgent(Context context, MdnsDiscoveryListener listener) {
+    JmDNSDiscoveryAgent(MdnsDiscoveryListener listener, Environment environment) {
         super(listener);
-
-        // Create the multicast lock required to receive mDNS traffic
-        WifiManager wifiMgr = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
-        multicastLock = wifiMgr.createMulticastLock("Limelight mDNS");
-        multicastLock.setReferenceCounted(false);
+        this.environment = environment;
     }
 
-    private void handleResolvedServiceInfo(ServiceInfo info) {
-        synchronized (pendingResolution) {
-            pendingResolution.remove(info.getName());
-        }
-
-        try {
-            handleServiceInfo(info);
-        } catch (UnsupportedEncodingException e) {
-            // Invalid DNS response
-            LimeLog.info("mDNS: Invalid response for machine: "+info.getName());
-            return;
-        }
-    }
-
-    private void handleServiceInfo(ServiceInfo info) throws UnsupportedEncodingException {
-        reportNewComputer(info.getName(), info.getPort(), info.getInet4Addresses(), info.getInet6Addresses());
-    }
-    
-    public void startDiscovery(final int discoveryIntervalMs) {
-        // Kill any existing discovery before starting a new one
+    @Override public synchronized void startDiscovery(int discoveryIntervalMs) {
         stopDiscovery();
+        Scan next = new Scan(Math.max(1000, discoveryIntervalMs));
+        scan = next;
+        next.start();
+    }
 
-        // Acquire the multicast lock to start receiving mDNS traffic
-        multicastLock.acquire();
-        
-        // Add our listener to the set
-        synchronized (listeners) {
-            listeners.add(JmDNSDiscoveryAgent.this);
+    @Override public synchronized void stopDiscovery() {
+        Scan previous = scan;
+        scan = null;
+        if (previous != null) {
+            previous.cancelled = true;
+            previous.interrupt();
         }
-        
-        discoveryThread = new Thread() {
-            @Override
-            public void run() {
-                // This may result in listener callbacks so we must register
-                // our listener first.
-                JmmDNS resolver = referenceResolver();
-                
-                try {
-                    while (!Thread.interrupted()) {
-                        // Start an mDNS request
-                        resolver.requestServiceInfo(SERVICE_TYPE, null, discoveryIntervalMs);
-                        
-                        // Run service resolution again for pending machines
-                        ArrayList<String> pendingNames;
-                        synchronized (pendingResolution) {
-                            pendingNames = new ArrayList<String>(pendingResolution);
-                        }
-                        for (String name : pendingNames) {
-                            LimeLog.info("mDNS: Retrying service resolution for machine: "+name);
-                            ServiceInfo[] infos = resolver.getServiceInfos(SERVICE_TYPE, name, 500);
-                            if (infos != null && infos.length != 0) {
-                                LimeLog.info("mDNS: Resolved (retry) with "+infos.length+" service entries");
-                                for (ServiceInfo svcinfo : infos) {
-                                    handleResolvedServiceInfo(svcinfo);
-                                }
-                            }
-                        }
-                        
-                        // Wait for the next polling interval
+    }
+
+    private final class Scan extends Thread implements ServiceListener {
+        private final Map<InetAddress, Resolver> resolvers = new HashMap<>();
+        private final int interval;
+        private volatile boolean cancelled;
+        Scan(int interval) { super("ClipRelay LAN discovery"); this.interval = interval; }
+        private boolean active() { return !cancelled && scan == this; }
+
+        @Override public void run() {
+            boolean locked = false;
+            try {
+                if (!active()) return;
+                while (active()) {
+                    Set<InetAddress> addresses = environment.addresses();
+                    for (InetAddress address : new ArrayList<>(resolvers.keySet())) {
+                        if (!addresses.contains(address)) close(resolvers.remove(address));
+                    }
+                    if (addresses.isEmpty() && locked) {
+                        environment.release();
+                        locked = false;
+                    } else if (!addresses.isEmpty() && !locked) {
+                        environment.acquire();
+                        locked = true;
+                    }
+                    for (InetAddress address : addresses) {
+                        if (!active()) break;
+                        if (resolvers.containsKey(address)) continue;
                         try {
-                            Thread.sleep(discoveryIntervalMs);
-                        } catch (InterruptedException e) {
-                            break;
+                            Resolver resolver = environment.open(address);
+                            // Retain before checking cancellation: even a late create must be closed.
+                            resolvers.put(address, resolver);
+                            if (active()) resolver.listen(this);
+                        } catch (IOException e) {
+                            if (active()) listener.notifyDiscoveryFailure(e);
                         }
                     }
+                    // JmDNS owns DNS retries and service announcements. This loop only
+                    // reconciles LAN changes while the computer list is visible.
+                    if (active()) Thread.sleep(interval);
                 }
-                finally {
-                    // Dereference the resolver
-                    dereferenceResolver();
-                }
+            } catch (InterruptedException ignored) {
+            } catch (RuntimeException e) {
+                if (active()) listener.notifyDiscoveryFailure(e);
+            } finally {
+                // Library waits may swallow interrupts. Cancellation remains authoritative.
+                Thread.interrupted();
+                for (Resolver resolver : resolvers.values()) close(resolver);
+                resolvers.clear();
+                if (locked) environment.release();
             }
-        };
-        discoveryThread.setName("mDNS Discovery Thread");
-        discoveryThread.start();
-    }
-    
-    public void stopDiscovery() {
-        // Release the multicast lock to stop receiving mDNS traffic
-        multicastLock.release();
-
-        // Remove our listener from the set
-        synchronized (listeners) {
-            listeners.remove(JmDNSDiscoveryAgent.this);
         }
-        
-        // If there's already a running thread, interrupt it
-        if (discoveryThread != null) {
-            discoveryThread.interrupt();
-            discoveryThread = null;
+
+        private void close(Resolver resolver) {
+            try { resolver.close(); }
+            catch (Exception e) { LimeLog.warning("Could not close LAN discovery: " + e.getMessage()); }
         }
-    }
-
-    @Override
-    public void serviceAdded(ServiceEvent event) {
-        LimeLog.info("mDNS: Machine appeared: "+event.getInfo().getName());
-
-        ServiceInfo info = event.getDNS().getServiceInfo(SERVICE_TYPE, event.getInfo().getName(), 500);
-        if (info == null) {
-            // This machine is pending resolution
-            synchronized (pendingResolution) {
-                pendingResolution.add(event.getInfo().getName());
+        @Override public void serviceAdded(ServiceEvent event) {
+            // JmDNS resolves added services and emits serviceResolved automatically.
+        }
+        @Override public void serviceRemoved(ServiceEvent event) { }
+        @Override public void serviceResolved(ServiceEvent event) {
+            synchronized (JmDNSDiscoveryAgent.this) {
+                if (!active()) return;
+                reportNewComputer(event.getInfo().getName(), event.getInfo().getPort(),
+                        event.getInfo().getInet4Addresses(), event.getInfo().getInet6Addresses());
             }
-            return;
         }
-        
-        LimeLog.info("mDNS: Resolved (blocking)");
-        handleResolvedServiceInfo(info);
-    }
-
-    @Override
-    public void serviceRemoved(ServiceEvent event) {
-        LimeLog.info("mDNS: Machine disappeared: "+event.getInfo().getName());
-    }
-
-    @Override
-    public void serviceResolved(ServiceEvent event) {
-        // We handle this synchronously
     }
 }

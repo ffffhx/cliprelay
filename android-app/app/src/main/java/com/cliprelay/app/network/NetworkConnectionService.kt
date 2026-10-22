@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.cliprelay.app.R
+import com.cliprelay.app.ClipRelayApplication
 import com.cliprelay.app.data.AppPreferences
 import com.cliprelay.network.mobile.Mobile
 import com.cliprelay.network.mobile.Node
@@ -27,6 +28,7 @@ import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.channels.Channel
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -48,16 +50,18 @@ class NetworkConnectionService : Service() {
     private var pairingJob: Job? = null
     private var pairingToken: Any? = null
     private var stopping = false
+    private var lastNotificationText: String? = null
     private lateinit var identity: NetworkIdentity
     private lateinit var connectivity: ConnectivityManager
     private class Connection(val record: SavedNetworkPairing) {
         lateinit var job: Job
         @Volatile var node: Node? = null
+        val pollSignal = Channel<Unit>(Channel.CONFLATED)
     }
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = updateInterfaces()
-        override fun onLost(network: Network) = updateInterfaces()
-        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = updateInterfaces()
+        override fun onAvailable(network: Network) = networkChanged()
+        override fun onLost(network: Network) = networkChanged()
+        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = networkChanged()
     }
 
     override fun onCreate() {
@@ -71,6 +75,9 @@ class NetworkConnectionService : Service() {
         ServiceCompat.startForeground(this, NOTIFICATION, notification("正在连接电脑"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         synchronized(publicationLock) { refresh() }
         updateInterfaces()
+        scope.launch {
+            ClipRelayApplication.foreground.collect { visible -> if (visible) wakePolls() }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -170,7 +177,10 @@ class NetworkConnectionService : Service() {
 
     private fun startConnection(record: SavedNetworkPairing, replace: Boolean = false) {
         val previous = sessions[record.id]
-        if (previous?.job?.isActive == true && !replace) return
+        if (previous?.job?.isActive == true && !replace) {
+            previous.pollSignal.trySend(Unit)
+            return
+        }
         previous?.job?.cancel()
         previous?.node?.let(::closeNode)
         val session = Connection(record)
@@ -206,6 +216,7 @@ class NetworkConnectionService : Service() {
         val client = Mobile.newPairingClient(ENDPOINT, credential)
         val stateName = MessageDigest.getInstance("SHA-256").digest(credential.toByteArray()).joinToString("") { "%02x".format(it) }.take(24)
         val directory = File(filesDir, "embedded-network/$stateName").apply { mkdirs() }
+        val reconnectSchedule = ConnectionPollSchedule()
         while (coroutineContext.isActive) {
             var current: Node? = null
             try {
@@ -218,16 +229,19 @@ class NetworkConnectionService : Service() {
                 session.node = current
                 coroutineContext.ensureActive()
                 current.start()
+                reconnectSchedule.reset()
                 coroutineContext.ensureActive()
                 var forwarded = false
                 var selectedIP = ""
                 var lastBridgeDiagnostic = ""
+                var lastDescription: Pair<String, String>? = null
+                val pollSchedule = ConnectionPollSchedule()
                 while (coroutineContext.isActive) {
                     val status = try { JSONObject(client.request("status", "{}")) }
                     catch (e: Exception) {
                         if (expired(e)) throw e
                         // Coordinator outages must not interrupt a working direct stream.
-                        delay(3000)
+                        waitForPoll(session, pollSchedule, "status-unavailable")
                         continue
                     }
                     coroutineContext.ensureActive()
@@ -237,7 +251,12 @@ class NetworkConnectionService : Service() {
                     val addresses = peer?.optJSONArray("addresses") ?: JSONArray()
                     val ip = (0 until addresses.length()).map { addresses.getString(it) }.firstOrNull { !it.contains(':') }
                     if (peer != null) synchronized(publicationLock) {
-                        if (sessions[record.id] === session && !stopping) identity.describe(record.id, peer.optString("name"), peer.optString("id"))
+                        val description = peer.optString("name") to peer.optString("id")
+                        if (sessions[record.id] === session && !stopping && description != lastDescription) {
+                            identity.describe(record.id, description.first, description.second)
+                            lastDescription = description
+                            refresh()
+                        }
                     }
                     if (ip != null && !forwarded) {
                         current.setPeers(JSONArray().put(ip).toString())
@@ -252,12 +271,13 @@ class NetworkConnectionService : Service() {
                         android.util.Log.w("ClipRelayNetwork", diagnostic)
                         lastBridgeDiagnostic = diagnostic
                     }
-                    publish(session, when {
+                    val connectionState = when {
                         forwarded && online && current.bridgesReady() -> ExternalConnectionState("ready", "已连接，返回电脑列表即可远控。")
                         forwarded && online -> ExternalConnectionState("connecting", "正在恢复串流通道…")
                         else -> ExternalConnectionState("connecting", "等待电脑上线，将自动恢复连接。")
-                    })
-                    delay(3000)
+                    }
+                    publish(session, connectionState)
+                    waitForPoll(session, pollSchedule, "${connectionState.phase}:$ip")
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -268,7 +288,7 @@ class NetworkConnectionService : Service() {
                 session.node = null
                 runCatching { current?.close() }
             }
-            delay(5000)
+            waitForPoll(session, reconnectSchedule, "reconnect")
         }
     }
 
@@ -276,6 +296,14 @@ class NetworkConnectionService : Service() {
         sessions[id]?.let { session -> session.job.cancel(); session.node?.let(::closeNode) }
         // Keep the cancelled job registered until cleanup, so resume can join it.
     }
+    private suspend fun waitForPoll(session: Connection, schedule: ConnectionPollSchedule, state: String) {
+        val delayMs = schedule.next(state, ClipRelayApplication.foreground.value)
+        if (withTimeoutOrNull(delayMs) { session.pollSignal.receive(); true } == true) schedule.reset()
+    }
+    private fun wakePolls() = synchronized(publicationLock) {
+        if (!stopping) sessions.values.forEach { it.pollSignal.trySend(Unit) }
+    }
+    private fun networkChanged() { updateInterfaces(); wakePolls() }
     private fun closeNode(node: Node) {
         Thread({ runCatching { node.close() } }, "ClipRelay channel cleanup").start()
     }
@@ -306,6 +334,7 @@ class NetworkConnectionService : Service() {
 
     private fun publish(session: Connection, value: ExternalConnectionState) = synchronized(publicationLock) {
         if (stopping || sessions[session.record.id] !== session || !session.job.isActive) return@synchronized
+        if (statuses[session.record.id] == value) return@synchronized
         statuses[session.record.id] = value
         refresh()
     }
@@ -320,8 +349,11 @@ class NetworkConnectionService : Service() {
         state.value = current.firstOrNull { it.ready } ?: pairing.value ?: current.firstOrNull { it.enabled }
             ?: current.firstOrNull() ?: ExternalConnectionState()
         val readyCount = current.count { it.ready }
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION,
-            notification(if (readyCount > 0) "已连接 $readyCount 台电脑" else state.value.message))
+        val text = if (readyCount > 0) "已连接 $readyCount 台电脑" else state.value.message
+        if (text != lastNotificationText) {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(text))
+            lastNotificationText = text
+        }
     }
     private fun stopIfIdle() {
         if (!stopping && sessions.isEmpty() && pairingJob == null && identity.list().none { it.enabled }) stopSelf()

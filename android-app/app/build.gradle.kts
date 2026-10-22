@@ -36,8 +36,8 @@ android {
         applicationId = "com.cliprelay.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 63
-        versionName = "0.10.33"
+        versionCode = 65
+        versionName = "0.10.35"
 
         val updateManifestUrl = providers.gradleProperty("cliprelayUpdateManifestUrl")
             .orElse("https://124-221-36-36.anyip.dev:8443/cliprelay/update.json")
@@ -140,6 +140,7 @@ dependencies {
     testImplementation("org.json:json:20260814")
     // JVM pairing tests exercise the real XML parser instead of android.jar stubs.
     testImplementation("net.sf.kxml:kxml2:2.3.0")
+    testImplementation("org.jmdns:jmdns:3.6.3")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
