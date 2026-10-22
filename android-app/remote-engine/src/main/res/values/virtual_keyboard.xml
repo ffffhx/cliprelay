@@ -1,10 +1,16 @@
 <resources>
     <string name="virtual_keyboard">Virtual keyboard</string>
+    <string name="virtual_keyboard_drag">⠿ Drag</string>
+    <string name="virtual_keyboard_drag_description">Drag to move the virtual keyboard</string>
+    <string name="virtual_keyboard_phone_short">IME</string>
+    <string name="virtual_keyboard_functions_short">Fn / #</string>
+    <string name="virtual_keyboard_letters_short">ABC</string>
     <string name="virtual_keyboard_phone">Phone keyboard</string>
     <string name="virtual_keyboard_functions">Fn / symbols</string>
     <string name="virtual_keyboard_letters">ABC / 123</string>
-    <string name="virtual_keyboard_hint">Tap Ctrl / Alt / Shift / Win, then a key. Modifiers clear after each shortcut.</string>
+    <string name="virtual_keyboard_hint">Select Ctrl or another modifier, then a key or the desktop (left click). Releases after use.</string>
     <item name="virtualKeyboardPanel" type="id" />
+    <item name="virtualKeyboardDragHandle" type="id" />
     <item name="virtualKeyboardButton" type="id" />
     <item name="virtualKeyboardPage" type="id" />
     <item name="virtualKeyboardClose" type="id" />

@@ -373,6 +373,104 @@ class ApplicationControlsUiTest {
         assertTrue(held.isEmpty())
     }
 
+    @Test fun floatingKeyboardDragsRemembersPositionAndLeavesDesktopInteractive() {
+        clickId(R.id.virtualKeyboardButton)
+        val panel = root.findViewById<VirtualKeyboardView>(R.id.virtualKeyboardPanel)
+        instrument.waitForIdleSync()
+        val originalX = panel.x
+        val originalY = panel.y
+        assertTrue("Keyboard still spans the screen", panel.width < root.width * .8f)
+        val before = desktopTouches
+        val start = keyboardHandleCenter(panel)
+        val dx = -root.width * .12f
+        val dy = -root.height * .12f
+        touch(root, MotionEvent.ACTION_DOWN, start.first, start.second)
+        touch(root, MotionEvent.ACTION_MOVE, start.first + dx, start.second + dy)
+        touch(root, MotionEvent.ACTION_UP, start.first + dx, start.second + dy)
+        assertEquals(originalX + dx, panel.x, 2f)
+        assertEquals(originalY + dy, panel.y, 2f)
+        assertEquals("Dragging reached the desktop", before, desktopTouches)
+        assertTrue(events.isEmpty())
+        screenshot("floating-keyboard-dragged-qa.png")
+        val movedX = panel.x
+        val movedY = panel.y
+        clickId(R.id.virtualKeyboardClose)
+        ui { toolbar.showVirtualKeyboard() }
+        instrument.waitForIdleSync()
+        assertEquals(movedX, panel.x, 1f)
+        assertEquals(movedY, panel.y, 1f)
+        // A fresh view loads the saved placement, as on a new stream/activity.
+        lateinit var fresh: VirtualKeyboardView
+        ui {
+            toolbar.hideVirtualKeyboard()
+            fresh = VirtualKeyboardView(screen, { _, _, _ -> fail("Unexpected input") }, {}, {})
+            fresh.attachTo(root)
+            fresh.setAvailable(true)
+        }
+        instrument.waitForIdleSync()
+        assertEquals(movedX, fresh.x, 1f)
+        assertEquals(movedY, fresh.y, 1f)
+        ui { root.removeView(fresh); toolbar.showVirtualKeyboard() }
+        instrument.waitForIdleSync()
+        // Actual hit testing at the translated button must still send one key pair.
+        val key = viewCenterInRoot(panel.findViewWithTag("vk:65"))
+        touch(root, MotionEvent.ACTION_DOWN, key.first, key.second)
+        touch(root, MotionEvent.ACTION_UP, key.first, key.second)
+        instrument.waitForIdleSync()
+        assertEquals(listOf("65:true:0", "65:false:0"), events)
+        assertEquals(before, desktopTouches)
+        assertTrue(panel.x > 0 && panel.y > 0)
+        touch(root, MotionEvent.ACTION_DOWN, panel.x / 2f, panel.y / 2f)
+        touch(root, MotionEvent.ACTION_UP, panel.x / 2f, panel.y / 2f)
+        assertEquals(before + 2, desktopTouches)
+        assertTrue(held.isEmpty())
+    }
+
+    @Test fun floatingKeyboardCancelsInterruptedDragAndStaysInsideChangedSafeArea() {
+        clickId(R.id.virtualKeyboardButton)
+        val panel = root.findViewById<VirtualKeyboardView>(R.id.virtualKeyboardPanel)
+        instrument.waitForIdleSync()
+        val x = panel.x
+        val y = panel.y
+        val start = keyboardHandleCenter(panel)
+        touch(root, MotionEvent.ACTION_DOWN, start.first, start.second)
+        touch(root, MotionEvent.ACTION_MOVE, start.first - 100, start.second - 100)
+        assertTrue(panel.x < x && panel.y < y)
+        touch(root, MotionEvent.ACTION_CANCEL, start.first - 100, start.second - 100)
+        assertEquals(x, panel.x, 1f)
+        assertEquals(y, panel.y, 1f)
+        val prefs = instrument.targetContext.getSharedPreferences("cliprelay_desktop_controls", 0)
+        assertFalse(prefs.contains("keyboard_x"))
+        // Losing focus also cancels an unfinished gesture without saving its intermediate location.
+        touch(root, MotionEvent.ACTION_DOWN, start.first, start.second)
+        touch(root, MotionEvent.ACTION_MOVE, start.first - 100, start.second - 100)
+        ui { toolbar.setFocused(false); toolbar.setFocused(true); toolbar.showVirtualKeyboard() }
+        instrument.waitForIdleSync()
+        assertEquals(x, panel.x, 1f)
+        assertEquals(y, panel.y, 1f)
+        touch(root, MotionEvent.ACTION_CANCEL, start.first - 100, start.second - 100)
+        // Safe-area changes simulate a visible system bar / smaller multi-window content area.
+        val inset = (root.height * .15f).toInt()
+        ui { root.setPadding(inset, inset, inset, inset) }
+        instrument.waitForIdleSync()
+        assertTrue(panel.x >= inset && panel.y >= inset)
+        assertTrue(panel.x + panel.width <= root.width - inset + 1)
+        assertTrue(panel.y + panel.height <= root.height - inset + 1)
+        assertTrue(events.isEmpty())
+        assertEquals(0, desktopTouches)
+        screenshot("floating-keyboard-insets-qa.png")
+    }
+
+    private fun keyboardHandleCenter(panel: VirtualKeyboardView) =
+        viewCenterInRoot(panel.findViewById(R.id.virtualKeyboardDragHandle))
+
+    private fun viewCenterInRoot(view: View): Pair<Float, Float> {
+        val child = IntArray(2)
+        val parent = IntArray(2)
+        ui { view.getLocationOnScreen(child); root.getLocationOnScreen(parent) }
+        return child[0] - parent[0] + view.width / 2f to child[1] - parent[1] + view.height / 2f
+    }
+
     @Test fun virtualKeyboardCombosPagesAndLifecycleDoNotLeakKeysOrTouches() {
         clickId(R.id.virtualKeyboardButton)
         val panel = root.findViewById<VirtualKeyboardView>(R.id.virtualKeyboardPanel)

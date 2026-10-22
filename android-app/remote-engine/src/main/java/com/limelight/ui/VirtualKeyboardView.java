@@ -1,15 +1,23 @@
 package com.limelight.ui;
 
 import android.app.Activity;
+import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.os.Build;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
+import android.view.ViewTreeObserver;
+import android.view.WindowInsets;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -23,12 +31,32 @@ public final class VirtualKeyboardView extends LinearLayout {
     private final LinearLayout body;
     private final Map<Button, Integer> keys = new LinkedHashMap<>();
     private final Button page;
+    private final LinearLayout header;
+    private final TextView hint;
+    private final SharedPreferences preferences;
+    private final int touchSlop;
+    private final ViewTreeObserver.OnGlobalLayoutListener relayout = this::placeInWindow;
+    private FrameLayout root;
+    private FloatingKeyboardGeometry geometry;
+    private final Rect safeArea = new Rect();
+    private float fractionX, fractionY, startX, startY, downX, downY;
+    private boolean tracking, dragging;
     private boolean functions, available;
     private int rowHeight;
 
     public VirtualKeyboardView(Activity activity, GameInputState.KeySink sink, Runnable close, Runnable phoneKeyboard) {
         super(activity);
-        state = new VirtualKeyboardState(sink);
+        preferences = activity.getSharedPreferences("cliprelay_desktop_controls", 0);
+        fractionX = FloatingKeyboardGeometry.fraction(preferences.getFloat("keyboard_x", 1));
+        fractionY = FloatingKeyboardGeometry.fraction(preferences.getFloat("keyboard_y", 1));
+        touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
+        state = new VirtualKeyboardState(sink, release -> {
+            // Sunshine delays absolute left-button UP by 10 ms for right-click
+            // emulation. Match the mouse adapter's 100 ms settling window so
+            // Windows receives mouse UP while the selected modifiers are held.
+            // clear()/setAvailable(false) still release immediately on interruption.
+            postDelayed(() -> { release.run(); refresh(); }, 100);
+        });
         setId(R.id.virtualKeyboardPanel);
         setOrientation(VERTICAL);
         setClickable(true);
@@ -37,22 +65,32 @@ public final class VirtualKeyboardView extends LinearLayout {
         setBackground(surface(0xFA142033, 16));
         setElevation(dp(10));
         rowHeight = dp(activity.getResources().getConfiguration().screenHeightDp < 500 ? 36 : 42);
-        LinearLayout header = row();
+        header = row();
+        header.getLayoutParams().height = dp(32);
         TextView title = new TextView(activity);
-        title.setText(R.string.virtual_keyboard);
+        title.setId(R.id.virtualKeyboardDragHandle);
+        title.setText(R.string.virtual_keyboard_drag);
+        title.setContentDescription(activity.getString(R.string.virtual_keyboard_drag_description));
+        title.setClickable(true);
+        title.setOnTouchListener(this::drag);
+        title.setPadding(dp(6), 0, dp(4), 0);
+        title.setSingleLine(true);
         title.setTextColor(Color.WHITE); title.setTextSize(13);
         title.setGravity(Gravity.CENTER_VERTICAL);
         header.addView(title, new LayoutParams(0, -1, 1));
         page = action(header, activity.getString(R.string.virtual_keyboard_functions), 0);
         page.setId(R.id.virtualKeyboardPage);
         page.setOnClickListener(v -> { functions = !functions; rebuild(); });
-        Button ime = action(header, activity.getString(R.string.virtual_keyboard_phone), 0);
+        Button ime = action(header, activity.getString(R.string.virtual_keyboard_phone_short), 0);
+        ime.setContentDescription(activity.getString(R.string.virtual_keyboard_phone));
         ime.setOnClickListener(v -> phoneKeyboard.run());
-        Button hide = action(header, activity.getString(R.string.desktop_controls_collapse), 0);
+        Button hide = action(header, "×", 0);
+        hide.setMinWidth(dp(32));
+        hide.setContentDescription(activity.getString(R.string.desktop_controls_collapse));
         hide.setId(R.id.virtualKeyboardClose);
         hide.setOnClickListener(v -> close.run());
 
-        TextView hint = new TextView(activity);
+        hint = new TextView(activity);
         hint.setText(R.string.virtual_keyboard_hint);
         hint.setTextColor(0xFF9EB4CE); hint.setTextSize(10);
         hint.setSingleLine(true);
@@ -123,7 +161,8 @@ public final class VirtualKeyboardView extends LinearLayout {
         keys.entrySet().removeIf(e -> e.getKey().getParent() instanceof View
                 && ((View)e.getKey().getParent()).getParent() == body);
         body.removeAllViews();
-        page.setText(functions ? R.string.virtual_keyboard_letters : R.string.virtual_keyboard_functions);
+        page.setText(functions ? R.string.virtual_keyboard_letters_short : R.string.virtual_keyboard_functions_short);
+        page.setContentDescription(getContext().getString(functions ? R.string.virtual_keyboard_letters : R.string.virtual_keyboard_functions));
         if (!functions) {
             LinearLayout first = row(body); letters(first, "1234567890"); key(first, "⌫", 0x08, 1.3f);
             LinearLayout second = row(body); key(second, "Tab", 0x09, 1.2f); letters(second, "QWERTYUIOP");
@@ -146,30 +185,33 @@ public final class VirtualKeyboardView extends LinearLayout {
         }
         refresh();
     }
-    public void setAvailable(boolean value) { available = value; state.setEnabled(value); refresh(); }
-    public void clearModifiers() { state.clear(); refresh(); }
+    public void setAvailable(boolean value) { if (!value) cancelDrag(); available = value; state.setEnabled(value); refresh(); }
+    public void clearModifiers() { cancelDrag(); state.clear(); refresh(); }
+    public boolean hasModifiers() { return available && state.hasModifiers(); }
+    public void clickWithModifiers(Runnable click) {
+        try { state.clickWithModifiers(click); }
+        finally { refresh(); }
+    }
     private void refresh() {
         for (Map.Entry<Button, Integer> entry : keys.entrySet()) {
             Button button = entry.getKey();
             boolean selected = state.isSelected(entry.getValue());
             button.setSelected(selected);
-            button.setEnabled(available);
+            button.setEnabled(available && !state.isClickPending());
             button.setAlpha(available ? 1 : .45f);
             // Keep the drawable so a quick tap's ripple survives the input-state refresh.
         }
     }
-    public int preferredHeight(int availableHeight) {
-        boolean compact = availableHeight / getResources().getDisplayMetrics().density < 500;
-        int height = Math.min(dp(compact ? 242 : 282), Math.round(availableHeight * .62f));
-        height = Math.min(availableHeight, Math.max(dp(194), height));
-        // Header + four key rows + modifiers should all fit on a landscape phone.
-        // Retain scrolling only for exceptionally short windows or large font settings.
-        int nextHeight = Math.max(dp(28), Math.min(dp(compact ? 36 : 42), (height - dp(26)) / 6));
+    private void fitRows(int height) {
+        boolean compact = height < dp(224);
+        int visibility = compact ? GONE : VISIBLE;
+        if (hint.getVisibility() != visibility) hint.setVisibility(visibility);
+        int nextHeight = Math.max(dp(28), Math.min(dp(42), (height - dp(compact ? 40 : 58)) / 5));
         if (nextHeight != rowHeight) {
             rowHeight = nextHeight;
             for (int i = 0; i < getChildCount(); i++) {
                 View child = getChildAt(i);
-                if (child instanceof LinearLayout) {
+                if (child instanceof LinearLayout && child != header) {
                     child.getLayoutParams().height = rowHeight;
                     child.requestLayout();
                 }
@@ -179,9 +221,112 @@ public final class VirtualKeyboardView extends LinearLayout {
                 body.getChildAt(i).requestLayout();
             }
         }
-        return height;
     }
-    @Override protected void onDetachedFromWindow() { state.setEnabled(false); super.onDetachedFromWindow(); }
+
+    public void attachTo(FrameLayout parent) {
+        root = parent;
+        root.addView(this, new FrameLayout.LayoutParams(dp(320), dp(180), Gravity.TOP | Gravity.LEFT));
+        root.post(this::placeInWindow);
+    }
+
+    private void placeInWindow() {
+        if (root == null || root.getWidth() == 0 || root.getHeight() == 0) return;
+        int[] origin = new int[2];
+        root.getLocationInWindow(origin);
+        int left = 0, top = 0, right = 0, bottom = 0;
+        WindowInsets insets = root.getRootWindowInsets();
+        if (insets != null) {
+            left = insets.getSystemWindowInsetLeft(); top = insets.getSystemWindowInsetTop();
+            right = insets.getSystemWindowInsetRight(); bottom = insets.getSystemWindowInsetBottom();
+            if (Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
+                left = Math.max(left, insets.getDisplayCutout().getSafeInsetLeft());
+                top = Math.max(top, insets.getDisplayCutout().getSafeInsetTop());
+                right = Math.max(right, insets.getDisplayCutout().getSafeInsetRight());
+                bottom = Math.max(bottom, insets.getDisplayCutout().getSafeInsetBottom());
+            }
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets visible = insets.getInsets(WindowInsets.Type.systemBars()
+                        | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+                left = visible.left; top = visible.top; right = visible.right; bottom = visible.bottom;
+            }
+        }
+        Rect next = new Rect(Math.max(root.getPaddingLeft(), left - origin[0]),
+                Math.max(root.getPaddingTop(), top - origin[1]),
+                Math.min(root.getWidth() - root.getPaddingRight(), root.getRootView().getWidth() - right - origin[0]),
+                Math.min(root.getHeight() - root.getPaddingBottom(), root.getRootView().getHeight() - bottom - origin[1]));
+        if (!safeArea.equals(next)) cancelDrag();
+        safeArea.set(next);
+        geometry = FloatingKeyboardGeometry.fit(next.left, next.top, next.right, next.bottom,
+                getResources().getDisplayMetrics().density, getResources().getConfiguration().smallestScreenWidthDp >= 600);
+        if (geometry == null) return;
+        FrameLayout.LayoutParams placement = (FrameLayout.LayoutParams)getLayoutParams();
+        if (placement.width != geometry.width || placement.height != geometry.height) {
+            placement.width = geometry.width; placement.height = geometry.height;
+            setLayoutParams(placement);
+        }
+        fitRows(geometry.height);
+        movePanel();
+    }
+
+    private void movePanel() {
+        if (geometry == null) return;
+        setTranslationX(geometry.x(fractionX) - root.getPaddingLeft());
+        setTranslationY(geometry.y(fractionY) - root.getPaddingTop());
+    }
+
+    private boolean drag(View handle, MotionEvent event) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                if (geometry == null) return true;
+                tracking = true; dragging = false;
+                startX = fractionX; startY = fractionY;
+                downX = event.getRawX(); downY = event.getRawY();
+                handle.setPressed(true);
+                root.requestDisallowInterceptTouchEvent(true);
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                if (!tracking) return true;
+                float dx = event.getRawX() - downX, dy = event.getRawY() - downY;
+                if (Math.hypot(dx, dy) > touchSlop) dragging = true;
+                if (dragging) {
+                    fractionX = geometry.movedX(startX, dx); fractionY = geometry.movedY(startY, dy);
+                    movePanel();
+                }
+                return true;
+            case MotionEvent.ACTION_UP:
+                if (Build.VERSION.SDK_INT >= 33 && (event.getFlags() & MotionEvent.FLAG_CANCELED) != 0) {
+                    cancelDrag(); return true;
+                }
+                if (tracking && dragging) preferences.edit().putFloat("keyboard_x", fractionX).putFloat("keyboard_y", fractionY).apply();
+                else if (tracking) handle.performClick();
+                tracking = dragging = false;
+                handle.setPressed(false);
+                root.requestDisallowInterceptTouchEvent(false);
+                return true;
+            case MotionEvent.ACTION_POINTER_DOWN:
+            case MotionEvent.ACTION_CANCEL:
+                cancelDrag(); return true;
+            default: return true;
+        }
+    }
+
+    private void cancelDrag() {
+        if (tracking) { fractionX = startX; fractionY = startY; movePanel(); }
+        tracking = dragging = false;
+        View handle = findViewById(R.id.virtualKeyboardDragHandle);
+        if (handle != null) handle.setPressed(false);
+        if (root != null) root.requestDisallowInterceptTouchEvent(false);
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (root != null) root.getViewTreeObserver().addOnGlobalLayoutListener(relayout);
+    }
+    @Override protected void onDetachedFromWindow() {
+        cancelDrag(); state.setEnabled(false);
+        if (root != null && root.getViewTreeObserver().isAlive()) root.getViewTreeObserver().removeOnGlobalLayoutListener(relayout);
+        super.onDetachedFromWindow();
+    }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private RippleDrawable keyBackground() {
         StateListDrawable colors = new StateListDrawable();

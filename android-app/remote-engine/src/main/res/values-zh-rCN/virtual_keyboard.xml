@@ -1,7 +1,12 @@
 <resources>
     <string name="virtual_keyboard">虚拟键盘</string>
+    <string name="virtual_keyboard_drag">⠿ 拖动</string>
+    <string name="virtual_keyboard_drag_description">拖动以移动虚拟键盘</string>
+    <string name="virtual_keyboard_phone_short">输入法</string>
+    <string name="virtual_keyboard_functions_short">功能</string>
+    <string name="virtual_keyboard_letters_short">字母</string>
     <string name="virtual_keyboard_phone">手机键盘</string>
     <string name="virtual_keyboard_functions">功能 / 符号</string>
     <string name="virtual_keyboard_letters">字母 / 数字</string>
-    <string name="virtual_keyboard_hint">先点亮 Ctrl / Alt / Shift / Win，再点其他键；组合键用完自动松开</string>
+    <string name="virtual_keyboard_hint">点亮 Ctrl 等修饰键，再点字母或画面（鼠标左键）；用完自动松开</string>
 </resources>

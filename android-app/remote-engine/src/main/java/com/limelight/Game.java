@@ -100,6 +100,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     // Mouse emulation uses two fingers; phone touch tracks all contacts separately.
     private final TouchContext[] touchContextMap = new TouchContext[2];
     private PhoneTouchContext phoneTouch;
+    private com.limelight.binding.input.touch.ModifierClickState modifierClick;
     private TouchMode touchMode;
     private TouchMode touchModeBeforeGamePointer;
     private com.limelight.binding.input.AutoKeyboardMonitor autoKeyboard;
@@ -532,6 +533,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // of gamepads removed and replugged at runtime.
             gamepadMask = 1;
         }
+        modifierClick = new com.limelight.binding.input.touch.ModifierClickState(
+                new com.limelight.binding.input.touch.ModifierClickState.Sink() {
+                    public boolean hasModifiers() { return desktopToolbar.hasClickModifiers(); }
+                    public void click(float x, float y) {
+                        if (!connected || !hasWindowFocus()) return;
+                        // Trackpad taps use the current cursor; direct/phone taps use the touched pixel.
+                        if (touchMode != TouchMode.TRACKPAD) conn.sendMousePosition((short)x, (short)y,
+                                (short)streamView.getWidth(), (short)streamView.getHeight());
+                        desktopToolbar.clickWithModifiers(() -> {
+                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                        });
+                    }
+                }, android.view.ViewConfiguration.get(this).getScaledTouchSlop(),
+                android.view.ViewConfiguration.getLongPressTimeout());
+
         if (prefConfig.onscreenController) {
             // If we're using OSC, always set at least gamepad 1.
             gamepadMask |= 1;
@@ -2447,6 +2464,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // This case is for fingers
             else
             {
+                if (handleModifierClick(view, event)) return true;
                 if (touchMode == TouchMode.PHONE) {
                     if (event.getActionMasked() == MotionEvent.ACTION_DOWN && autoKeyboard != null) autoKeyboard.cancel();
                     // Native touch does not reinterpret a third finger as a keyboard shortcut.
@@ -2948,7 +2966,41 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
+    private boolean handleModifierClick(View source, MotionEvent event) {
+        if (modifierClick == null) return false;
+        float x = event.getX(), y = event.getY();
+        if (source != streamView) { x -= streamView.getX(); y -= streamView.getY(); }
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            boolean inside = x >= 0 && y >= 0 && x < streamView.getWidth() && y < streamView.getHeight();
+            if (!connected || !hasWindowFocus() || !modifierClick.down(event.getPointerId(0), x, y,
+                    event.getEventTime(), inside)) return false;
+            if (autoKeyboard != null) autoKeyboard.cancel();
+            return true;
+        }
+        if (!modifierClick.isCaptured()) return false;
+        if (!connected || !hasWindowFocus() || action == MotionEvent.ACTION_CANCEL
+                || action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_POINTER_UP) {
+            modifierClick.cancel();
+        }
+        if (action == MotionEvent.ACTION_MOVE) {
+            // An out-and-back movement is a drag, even when delivered in a batched event.
+            for (int i = 0; i < event.getHistorySize(); i++) {
+                modifierClick.move(event.getPointerId(0), x + event.getHistoricalX(0, i) - event.getX(),
+                        y + event.getHistoricalY(0, i) - event.getY());
+            }
+            modifierClick.move(event.getPointerId(0), x, y);
+        }
+        if (action == MotionEvent.ACTION_UP) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && (event.getFlags() & MotionEvent.FLAG_CANCELED) != 0) modifierClick.cancel();
+            modifierClick.up(event.getPointerId(0), x, y, event.getEventTime());
+        }
+        return true;
+    }
+
     private void cancelDesktopTouches() {
+        if (modifierClick != null) modifierClick.cancel();
         if (phoneTouch != null) phoneTouch.cancel();
         for (TouchContext touch : touchContextMap) if (touch != null) touch.cancelTouch();
     }

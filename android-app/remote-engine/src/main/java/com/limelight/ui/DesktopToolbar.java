@@ -55,7 +55,7 @@ public final class DesktopToolbar {
 
     public static final class Controller {
         private GameControlsView game;
-        private View desktop;
+        private HorizontalScrollView desktop;
         private Button collapseButton;
         private EdgeHandle handle;
         private Actions actions;
@@ -70,6 +70,9 @@ public final class DesktopToolbar {
         private CustomShortcutPanel shortcuts;
 
         public boolean isSideRailsActive() { return sideRails != null && sideRails.isAvailable(); }
+        private boolean isBottomDocked() {
+            return sideRails != null && sideRails.bottomBounds() != null && !isSideRailsActive();
+        }
 
         public void setVoiceState(RemoteVoiceInput.State state) {
             voiceState = state;
@@ -111,6 +114,12 @@ public final class DesktopToolbar {
         }
 
         public boolean isVirtualKeyboardOpen() { return keyboardOpen; }
+        public boolean hasClickModifiers() {
+            return canSend() && focused && keyboardOpen && virtualKeyboard.hasModifiers();
+        }
+        public void clickWithModifiers(Runnable click) {
+            if (hasClickModifiers()) virtualKeyboard.clickWithModifiers(click);
+        }
         public void showVirtualKeyboard() {
             if (!canSend()) return;
             releaseTouches();
@@ -182,9 +191,10 @@ public final class DesktopToolbar {
             boolean desktopVisible = !gameMode && !pip && !keyboardOpen;
             sideRails.setVisible(desktopVisible);
             Rect bottom = sideRails.bottomBounds();
-            boolean docked = bottom != null && !isSideRailsActive();
+            boolean docked = isBottomDocked();
             boolean showExpanded = expanded || docked;
             collapseButton.setVisibility(docked ? View.GONE : View.VISIBLE);
+            desktop.setFillViewport(docked);
             // Keep the toolbar in existing letterboxing, outside system bars and the IME.
             FrameLayout root = (FrameLayout) desktop.getParent();
             FrameLayout.LayoutParams placement = (FrameLayout.LayoutParams) desktop.getLayoutParams();
@@ -192,10 +202,11 @@ public final class DesktopToolbar {
             int right = docked ? root.getWidth() - root.getPaddingRight() - bottom.right : 0;
             int below = docked ? root.getHeight() - root.getPaddingBottom() - bottom.bottom : 0;
             int height = docked ? bottom.height() : Math.round(44 * root.getResources().getDisplayMetrics().density);
+            int width = docked ? FrameLayout.LayoutParams.MATCH_PARENT : FrameLayout.LayoutParams.WRAP_CONTENT;
             if (placement.leftMargin != left || placement.rightMargin != right || placement.bottomMargin != below
-                    || placement.height != height) {
+                    || placement.height != height || placement.width != width) {
                 placement.leftMargin = left; placement.rightMargin = right; placement.bottomMargin = below;
-                placement.height = height;
+                placement.height = height; placement.width = width;
                 desktop.setLayoutParams(placement);
             }
             desktop.setVisibility(desktopVisible && !isSideRailsActive() && showExpanded ? View.VISIBLE : View.GONE);
@@ -257,23 +268,20 @@ public final class DesktopToolbar {
         controller.virtualKeyboard = new VirtualKeyboardView(activity, sink, controller::hideVirtualKeyboard,
                 () -> { controller.hideVirtualKeyboard(); actions.keyboard(); });
         controller.virtualKeyboard.setVisibility(View.GONE);
-        FrameLayout.LayoutParams keyboardPlacement = new FrameLayout.LayoutParams(-1,
-                Math.round(282 * activity.getResources().getDisplayMetrics().density), Gravity.BOTTOM);
-        root.addView(controller.virtualKeyboard, keyboardPlacement);
-        root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            int height = controller.virtualKeyboard.preferredHeight(b - t);
-            if (height > 0 && keyboardPlacement.height != height) {
-                keyboardPlacement.height = height;
-                controller.virtualKeyboard.setLayoutParams(keyboardPlacement);
-            }
-        });
+        controller.virtualKeyboard.attachTo(root);
 
         LinearLayout tools = new LinearLayout(activity);
         tools.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout endTools = new LinearLayout(activity);
+        endTools.setOrientation(LinearLayout.HORIZONTAL);
         Button toggle = button(activity, bar, activity.getString(R.string.desktop_controls_collapse));
         controller.collapseButton = toggle;
         toggle.setId(R.id.desktopCollapseButton);
         bar.addView(tools);
+        // Fill the free bottom border with two edge-aligned groups. On narrow
+        // layouts the gap becomes zero and the existing scroll fallback remains.
+        bar.addView(new View(activity), new LinearLayout.LayoutParams(0, 0, 1));
+        bar.addView(endTools);
         toggle.setOnClickListener(v -> controller.setExpanded(false));
         controller.sideRails = new DesktopSideRails(activity, root, () -> {
             controller.rebuild.run();
@@ -281,9 +289,11 @@ public final class DesktopToolbar {
         });
         controller.rebuild = () -> {
             tools.removeAllViews();
+            endTools.removeAllViews();
             controller.sideRails.clear();
             LinearLayout primary = controller.isSideRailsActive() ? controller.sideRails.leftButtons() : tools;
-            LinearLayout secondary = controller.isSideRailsActive() ? controller.sideRails.rightButtons() : tools;
+            LinearLayout secondary = controller.isSideRailsActive() ? controller.sideRails.rightButtons()
+                    : controller.isBottomDocked() ? endTools : tools;
             Button home = button(activity, secondary, activity.getString(R.string.desktop_home));
             home.setId(R.id.desktopHomeButton);
             if (controller.isSideRailsActive()) home.setText(R.string.desktop_rail_home);
