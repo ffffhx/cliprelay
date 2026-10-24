@@ -99,4 +99,48 @@ class AutoKeyboardMonitorTest {
             ui { assertEquals(1, actions.size) }
         } finally { ui { monitor.close() } }
     }
+
+    @Test fun slowEditorIsStillObservedAfterHide() {
+        val hidden = CountDownLatch(1)
+        val shown = CountDownLatch(1)
+        val ready = java.util.concurrent.atomic.AtomicBoolean()
+        val actions = mutableListOf<Int>()
+        lateinit var monitor: AutoKeyboardMonitor
+        ui {
+            monitor = AutoKeyboardMonitor(AutoKeyboardMonitor.FocusSource { _, _ ->
+                editable("slow-editor").put("editable", ready.get())
+            }) { action ->
+                actions += action
+                if (action == AutoKeyboardPolicy.HIDE) hidden.countDown()
+                if (action == AutoKeyboardPolicy.SHOW) shown.countDown()
+            }
+            monitor.tap(.3f, .7f)
+        }
+        try {
+            assertTrue(hidden.await(2, TimeUnit.SECONDS))
+            ready.set(true)
+            assertTrue("Focus polling stopped at the first non-editor result", shown.await(2, TimeUnit.SECONDS))
+            ui { assertEquals(listOf(AutoKeyboardPolicy.HIDE, AutoKeyboardPolicy.SHOW), actions) }
+        } finally { ui { monitor.close() } }
+    }
+
+    @Test fun dismissAfterHideCancelsSlowEditor() {
+        val hidden = CountDownLatch(1)
+        val actions = mutableListOf<Int>()
+        val ready = java.util.concurrent.atomic.AtomicBoolean()
+        lateinit var monitor: AutoKeyboardMonitor
+        ui {
+            monitor = AutoKeyboardMonitor(AutoKeyboardMonitor.FocusSource { _, _ ->
+                editable("slow-editor").put("editable", ready.get())
+            }) { action -> actions += action; hidden.countDown() }
+            monitor.tap(.3f, .7f)
+        }
+        try {
+            assertTrue(hidden.await(2, TimeUnit.SECONDS))
+            ui { monitor.cancel(); monitor.foregroundChanged() }
+            ready.set(true)
+            SystemClock.sleep(600)
+            ui { assertEquals(listOf(AutoKeyboardPolicy.HIDE), actions) }
+        } finally { ui { monitor.close() } }
+    }
 }

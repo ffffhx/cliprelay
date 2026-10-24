@@ -29,6 +29,19 @@ public class DisplayStateTest {
         assertFalse(new DisplayState(noFrame).ready(200));
     }
 
+    @Test public void gestureCyclesDisplaysButNeverGuessesAnUnreadyOrMissingCapture() throws Exception {
+        JSONObject json = snapshot().put("displays", new JSONArray().put("left").put("right").put("third"));
+        DisplayState value = new DisplayState(json);
+        assertEquals("right", value.relativeDisplay(1,150));
+        assertEquals("third", value.relativeDisplay(-1,150));
+        assertEquals("left",new DisplayState(new JSONObject(json.toString()).put("capture",new JSONObject().put("id","third"))).relativeDisplay(1,150));
+        assertNull(value.relativeDisplay(1,149));
+        assertNull(value.relativeDisplay(0,150));
+        assertNull(new DisplayState(snapshot().put("phase","switching")).relativeDisplay(1,200));
+        assertNull(new DisplayState(snapshot().put("displays",new JSONArray().put("left"))).relativeDisplay(1,200));
+        assertNull(new DisplayState(snapshot().put("capture",new JSONObject().put("id","unplugged"))).relativeDisplay(1,200));
+    }
+
     @Test public void preservesRequestIdentityAndRejectsAmbiguousStreams() throws Exception {
         DisplayState state = new DisplayState(snapshot());
         JSONObject selection = state.selection("right");

@@ -43,7 +43,8 @@ public final class DesktopRailGeometry {
         int leftSpace = videoLeft - safeLeft - 2 * gap;
         int rightSpace = safeRight - videoRight - 2 * gap;
         int railWidth = Math.min(Math.round(64 * density), Math.min(leftSpace, rightSpace));
-        if (railWidth < Math.round(48 * density) || bottom - top < Math.round(96 * density)) return null;
+        // Leave room for one full scrolling action, the pinned More button, and padding.
+        if (railWidth < Math.round(48 * density) || bottom - top < Math.round(120 * density)) return null;
         return new Layout(safeLeft + gap + (leftSpace - railWidth) / 2,
                 videoRight + gap + (rightSpace - railWidth) / 2, top, railWidth, bottom - top);
     }

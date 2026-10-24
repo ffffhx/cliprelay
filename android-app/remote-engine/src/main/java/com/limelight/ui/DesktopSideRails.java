@@ -18,8 +18,8 @@ final class DesktopSideRails {
     private final FrameLayout root;
     private final View video;
     private final Runnable changed;
-    private final ScrollView left, right;
-    private final LinearLayout leftButtons, rightButtons;
+    private final ScrollView left, rightScroll;
+    private final LinearLayout right, leftButtons, rightButtons, rightFooter;
     private final Rect leftBounds = new Rect(), rightBounds = new Rect();
     private boolean available;
     private Rect bottomBounds;
@@ -30,9 +30,25 @@ final class DesktopSideRails {
         this.changed = changed;
         video = root.findViewById(R.id.surfaceView);
         left = rail(R.id.desktopLeftRail);
-        right = rail(R.id.desktopRightRail);
         leftButtons = buttons(left);
-        rightButtons = buttons(right);
+        left.setFillViewport(true);
+        leftButtons.setGravity(Gravity.CENTER);
+        right = new LinearLayout(activity);
+        right.setId(R.id.desktopRightRail);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setBackgroundColor(0xFF000000);
+        right.setPadding(dp(2), dp(4), dp(2), dp(4));
+        right.setClickable(true);
+        right.setVisibility(View.GONE);
+        root.addView(right, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.LEFT));
+        rightScroll = new ScrollView(activity);
+        rightScroll.setVerticalScrollBarEnabled(true);
+        rightScroll.setClickable(true);
+        right.addView(rightScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        rightButtons = buttons(rightScroll);
+        rightFooter = new LinearLayout(activity);
+        rightFooter.setOrientation(LinearLayout.VERTICAL);
+        right.addView(rightFooter, new LinearLayout.LayoutParams(-1, -2));
         // Global layout also catches IME/inset changes when the video dimensions stay the same.
         root.getViewTreeObserver().addOnGlobalLayoutListener(this::refresh);
         root.post(this::refresh);
@@ -67,12 +83,14 @@ final class DesktopSideRails {
     Rect bottomBounds() { return bottomBounds; }
     LinearLayout leftButtons() { return leftButtons; }
     LinearLayout rightButtons() { return rightButtons; }
+    LinearLayout rightFooter() { return rightFooter; }
 
     void clear() {
         leftButtons.removeAllViews();
         rightButtons.removeAllViews();
+        rightFooter.removeAllViews();
         left.scrollTo(0, 0);
-        right.scrollTo(0, 0);
+        rightScroll.scrollTo(0, 0);
     }
 
     void setVisible(boolean visible) {

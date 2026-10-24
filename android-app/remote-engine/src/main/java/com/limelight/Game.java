@@ -100,6 +100,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     // Mouse emulation uses two fingers; phone touch tracks all contacts separately.
     private final TouchContext[] touchContextMap = new TouchContext[2];
     private PhoneTouchContext phoneTouch;
+    private com.limelight.binding.input.touch.DesktopNavigationTouch desktopNavigationTouch;
+    private com.limelight.ui.RemoteDesktops remoteDesktops;
     private com.limelight.binding.input.touch.ModifierClickState modifierClick;
     private TouchMode touchMode;
     private TouchMode touchModeBeforeGamePointer;
@@ -658,6 +660,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 public void disconnect() { finish(); }
             });
             remoteClipboard = new com.limelight.ui.RemoteClipboard(this, controlHttp);
+            remoteDesktops = new com.limelight.ui.RemoteDesktops(this, controlHttp, this::canNavigateDesktop,
+                    (key, down, modifiers) -> conn.sendKeyboardInput((short)(0x8000 | key),
+                            down ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP, (byte)modifiers, (byte)0));
             remotePrivacy = new com.limelight.ui.RemotePrivacy(this, controlHttp, remoteDisplays::currentState);
             remoteBitrate = new com.limelight.ui.RemoteBitrate(controlHttp, remoteDisplays::currentState,
                     decoderRenderer::getLastRenderedFrameNumber);
@@ -682,6 +687,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             Toast.makeText(this, R.string.touch_mode_unsupported, Toast.LENGTH_LONG).show();
         }, (x, y) -> { if (autoKeyboard != null && canAutoKeyboard()) autoKeyboard.tap(x, y); });
         phoneTouch.setScrollFeedback(new com.limelight.binding.input.touch.PhoneTouchFeedback(streamView));
+        desktopNavigationTouch = new com.limelight.binding.input.touch.DesktopNavigationTouch(
+                getResources().getDisplayMetrics().density, () -> {
+                    cancelRemoteTouches(); keyboardDismissed(); threeFingerDownTime = 0;
+                    if (desktopToolbar != null) desktopToolbar.releaseTouches();
+                }, this::navigateDesktop);
         phoneTouch.setScrollSink(new com.limelight.binding.input.touch.PhoneScrollState.Sink() {
             public void position(float x, float y) {
                 conn.sendMousePosition((short)Math.max(0, Math.min(streamView.getWidth(), x)),
@@ -735,7 +745,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void displays() { if (remoteDisplays != null) remoteDisplays.showPicker(); }
                     @Override public void privacy() { if (remotePrivacy != null) remotePrivacy.show(); }
                     @Override public void clipboard() { if (remoteClipboard != null) remoteClipboard.show(); }
+                    @Override public void pasteLocal(Runnable paste) {
+                        if (remoteClipboard != null) remoteClipboard.pasteFromDevice(paste);
+                        else Toast.makeText(Game.this, R.string.clipboard_failed, Toast.LENGTH_LONG).show();
+                    }
                     @Override public void voiceSettings() { if (voiceInput != null) voiceInput.showOptions(); }
+                    @Override public int voiceLabel() { return voiceInput != null ? voiceInput.buttonLabel() : R.string.voice_input; }
                     @Override public void voice() {
                         if (voiceInput != null && connected && activityResumed && !isInPictureInPictureMode()) voiceInput.toggle();
                         else Toast.makeText(Game.this, R.string.voice_failed, Toast.LENGTH_LONG).show();
@@ -1394,6 +1409,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (applicationMonitor != null) applicationMonitor.close();
         if (autoKeyboard != null) autoKeyboard.close();
         if (remoteDisplays != null) remoteDisplays.close();
+        if (remoteDesktops != null) remoteDesktops.close();
         if (remoteBitrate != null) remoteBitrate.close();
         if (remoteClipboard != null) remoteClipboard.close();
         if (remotePrivacy != null) remotePrivacy.close();
@@ -2004,6 +2020,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if (applicationMonitor != null) applicationMonitor.setActive(connected && activityResumed
                 && hasWindowFocus() && !isFinishing() && !isInPictureInPictureMode());
+        if (remoteDesktops != null) remoteDesktops.prepare();
     }
 
     @Override public void keyboardDismissed() {
@@ -2464,6 +2481,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // This case is for fingers
             else
             {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN && remoteDesktops != null) remoteDesktops.cancel();
+                if (desktopNavigationTouch != null && desktopNavigationTouch.onTouch(event, canNavigateDesktop())) return true;
                 if (handleModifierClick(view, event)) return true;
                 if (touchMode == TouchMode.PHONE) {
                     if (event.getActionMasked() == MotionEvent.ACTION_DOWN && autoKeyboard != null) autoKeyboard.cancel();
@@ -2925,6 +2944,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void stopConnection() { stopConnection(null); }
 
     private void stopConnection(Runnable afterStop) {
+        if (remoteDesktops != null) remoteDesktops.close();
         if (remoteClipboard != null) remoteClipboard.close();
         if (remotePrivacy != null) remotePrivacy.close();
         continuityWatching = false;
@@ -3000,9 +3020,41 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void cancelDesktopTouches() {
+        if (desktopNavigationTouch != null) desktopNavigationTouch.cancel();
+        if (remoteDesktops != null) remoteDesktops.cancel();
+        cancelRemoteTouches();
+    }
+
+    private void cancelRemoteTouches() {
         if (modifierClick != null) modifierClick.cancel();
         if (phoneTouch != null) phoneTouch.cancel();
         for (TouchContext touch : touchContextMap) if (touch != null) touch.cancelTouch();
+    }
+
+    private boolean canNavigateDesktop() {
+        return connected && activityResumed && grabbedInput && hasWindowFocus() && !networkInputPaused
+                && !bitrateRestarting && !imageTransfer && !isFinishing() && !isDestroyed() && !isInPictureInPictureMode()
+                && desktopToolbar != null && !desktopToolbar.isGameMode() && !desktopToolbar.hasClickModifiers()
+                && (remoteDisplays == null || !remoteDisplays.isSwitching());
+    }
+
+    private void navigateDesktop(int action) {
+        if (!canNavigateDesktop()) return;
+        switch (action) {
+            case com.limelight.binding.input.touch.DesktopNavigationGesture.DESKTOP_PREVIOUS:
+            case com.limelight.binding.input.touch.DesktopNavigationGesture.DESKTOP_NEXT:
+                if (remoteDesktops != null) remoteDesktops.switchRelative(
+                        action == com.limelight.binding.input.touch.DesktopNavigationGesture.DESKTOP_NEXT ? 1 : -1);
+                break;
+            case com.limelight.binding.input.touch.DesktopNavigationGesture.DISPLAY_PREVIOUS:
+            case com.limelight.binding.input.touch.DesktopNavigationGesture.DISPLAY_NEXT:
+                if (remoteDisplays != null) remoteDisplays.switchRelative(
+                        action == com.limelight.binding.input.touch.DesktopNavigationGesture.DISPLAY_NEXT ? 1 : -1);
+                break;
+            case com.limelight.binding.input.touch.DesktopNavigationGesture.KEYBOARD_TAP:
+                if (touchMode != TouchMode.PHONE) toggleKeyboard();
+                break;
+        }
     }
 
     private void setTouchMode(TouchMode mode, boolean persist) {

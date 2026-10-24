@@ -52,6 +52,23 @@ public final class RemoteDisplays implements AutoCloseable {
     public void setActive(boolean value) { active = value; }
     public void setMonitoring(boolean value) { monitoring = value; }
     public DisplayState currentState() { return state; }
+    public boolean isSwitching() { return waiting; }
+
+    public void switchRelative(int direction) {
+        if (!usable() || !active || waiting || (direction != -1 && direction != 1)) return;
+        if (legacy) { toast(R.string.displays_update_host); return; }
+        PollState poll = lastPoll;
+        long frame = renderedFrame.getAsLong();
+        if (poll == null || SystemClock.uptimeMillis() - poll.requestedAt > 3000
+                || !poll.value.sameBinding(lastReady) || !poll.value.ready(frame)) {
+            toast(R.string.displays_not_ready); return;
+        }
+        DisplayState before = poll.value;
+        if (before.displays.size() < 2) { toast(R.string.displays_only_one); return; }
+        String next = before.relativeDisplay(direction, frame);
+        if (next == null) { toast(R.string.displays_not_ready); return; }
+        beginSwitch(before, next);
+    }
 
     public boolean readyAfterNetworkPause(long pausedAt, long presentedFrame) {
         if (legacy) return true; // older hosts have no display-generation API

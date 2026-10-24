@@ -6,4 +6,17 @@
     <string name="desktop_home">返回电脑列表</string>
     <string name="desktop_rail_home">返回电脑列表</string>
     <string name="desktop_rail_profile">模式 ▾</string>
+    <string name="desktop_mode">模式</string>
+    <string name="desktop_win_key">Win 键</string>
+    <string name="tablet_phone_input">本机输入法</string>
+    <string name="phone_device_input">本机输入</string>
+    <string name="phone_computer_list">电脑列表</string>
+    <string name="tablet_computer_keyboard">电脑键盘</string>
+    <string name="tablet_voice_doubao">豆包语音</string>
+    <string name="tablet_voice_local">本机语音</string>
+    <string name="tablet_voice_system">系统语音</string>
+    <string name="tablet_voice_stop">停止录音</string>
+    <string name="tablet_voice_starting">连接中…</string>
+    <string name="tablet_voice_stopping">结束中…</string>
+    <string name="tablet_more">更多</string>
 </resources>

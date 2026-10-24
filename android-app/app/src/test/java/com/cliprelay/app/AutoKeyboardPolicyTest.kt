@@ -40,6 +40,27 @@ class AutoKeyboardPolicyTest {
         assertEquals(1, policy.observe(true, true, true, "b", 620))
     }
 
+    @Test fun slowEditorCanOpenAfterInitialNonEditableDecision() {
+        val policy = AutoKeyboardPolicy()
+        assertEquals(0, policy.observe(true, true, false, "", 180))
+        assertEquals(2, policy.observe(true, true, false, "", 700))
+        assertEquals(0, policy.observe(true, true, false, "", 900))
+        assertEquals(0, policy.observe(true, true, true, "rename-editor", 1200))
+        assertEquals(1, policy.observe(true, true, true, "rename-editor", 1400))
+        assertEquals(0, policy.observe(true, true, true, "rename-editor", 1600))
+    }
+
+    @Test fun slowEditorStillRequiresStableTargetedFocus() {
+        val policy = AutoKeyboardPolicy()
+        assertEquals(0, policy.observe(true, true, false, "", 180))
+        assertEquals(2, policy.observe(true, true, false, "", 700))
+        assertEquals(0, policy.observe(true, false, true, "old-editor", 900))
+        assertEquals(0, policy.observe(true, true, true, "new-editor", 1200))
+        assertEquals(0, policy.observe(false, true, false, "", 1400))
+        assertEquals(0, policy.observe(true, true, true, "new-editor", 1600))
+        assertEquals(1, policy.observe(true, true, true, "new-editor", 1800))
+    }
+
     @Test fun legacyFocusWithoutHitTestNeverOpensKeyboard() {
         val policy = AutoKeyboardPolicy()
         for (time in listOf(180L, 400L, 700L, 1100L, 2000L)) {

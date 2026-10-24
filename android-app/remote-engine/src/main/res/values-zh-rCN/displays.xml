@@ -1,5 +1,9 @@
 <resources>
     <string name="displays_title">显示器</string>
+    <string name="displays_only_one">这台电脑目前只有一块可用显示器。</string>
+    <string name="desktop_gesture_retry">桌面切换已就绪，请再滑动一次。</string>
+    <string name="desktop_gesture_host_unavailable">暂时无法识别这台电脑的桌面快捷键，请检查连接并更新 ClipRelay 被控端。</string>
+    <string name="desktop_navigation_help">桌面导航：三指左右滑切换虚拟桌面，四指左右滑切换显示器。左滑到下一个，右滑到上一个，全部抬手后执行。显示器按列表顺序循环；切桌面需要电脑已有多个桌面，并使用系统默认快捷键（Windows 或 macOS）。游戏模式下不启用这些手势。若被安卓的三指截屏拦截，请在设备系统设置中关闭该快捷手势。</string>
     <string name="displays_shared_title">显示器 · 切换也会影响其他已连接设备</string>
     <string name="displays_name">显示器 %1$s</string>
     <string name="displays_current"> · 当前</string>

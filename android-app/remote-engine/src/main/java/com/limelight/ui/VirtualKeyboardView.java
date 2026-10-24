@@ -43,6 +43,7 @@ public final class VirtualKeyboardView extends LinearLayout {
     private boolean tracking, dragging;
     private boolean functions, available;
     private int rowHeight;
+    private int reservedBottom;
 
     public VirtualKeyboardView(Activity activity, GameInputState.KeySink sink, Runnable close, Runnable phoneKeyboard) {
         super(activity);
@@ -229,6 +230,13 @@ public final class VirtualKeyboardView extends LinearLayout {
         root.post(this::placeInWindow);
     }
 
+    void setReservedBottom(int pixels) {
+        int next = Math.max(0, pixels);
+        if (reservedBottom == next) return;
+        reservedBottom = next;
+        placeInWindow();
+    }
+
     private void placeInWindow() {
         if (root == null || root.getWidth() == 0 || root.getHeight() == 0) return;
         int[] origin = new int[2];
@@ -254,6 +262,7 @@ public final class VirtualKeyboardView extends LinearLayout {
                 Math.max(root.getPaddingTop(), top - origin[1]),
                 Math.min(root.getWidth() - root.getPaddingRight(), root.getRootView().getWidth() - right - origin[0]),
                 Math.min(root.getHeight() - root.getPaddingBottom(), root.getRootView().getHeight() - bottom - origin[1]));
+        next.bottom = Math.min(next.bottom, root.getHeight() - reservedBottom);
         if (!safeArea.equals(next)) cancelDrag();
         safeArea.set(next);
         geometry = FloatingKeyboardGeometry.fit(next.left, next.top, next.right, next.bottom,

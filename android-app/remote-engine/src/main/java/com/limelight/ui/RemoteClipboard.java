@@ -47,9 +47,11 @@ public final class RemoteClipboard implements AutoCloseable {
         dismiss();
         dialog=new AlertDialog.Builder(activity).setTitle(R.string.clipboard_title)
                 .setItems(new String[]{activity.getString(R.string.clipboard_send),activity.getString(R.string.clipboard_receive)},
-                        (d,which)->start(which==0)).setNegativeButton(android.R.string.cancel,null).show();
+                        (d,which)->start(which==0,null)).setNegativeButton(android.R.string.cancel,null).show();
     }
-    private void start(boolean send) {
+    /** Capture the current local clip now; paste only after the host acknowledges the write. */
+    public void pasteFromDevice(Runnable paste) { start(true,java.util.Objects.requireNonNull(paste)); }
+    private void start(boolean send,Runnable paste) {
         if (!usable() || busy) return;
         ClipboardManager manager=activity.getSystemService(ClipboardManager.class);
         String text=null; Uri uri=null;
@@ -60,13 +62,16 @@ public final class RemoteClipboard implements AutoCloseable {
                 ClipData.Item item=current.getItemAt(0);
                 if (item.getText()!=null) text=item.getText().toString();
                 else uri=item.getUri();
+                if (text==null && uri!=null && ("https".equals(uri.getScheme()) || "http".equals(uri.getScheme()))) {
+                    text=uri.toString(); uri=null;
+                }
                 if (text==null && (uri==null || !"content".equals(uri.getScheme()))) { toast(R.string.clipboard_empty); return; }
             } catch (RuntimeException error) { toast(R.string.clipboard_failed); return; }
         }
         final String captured=text; final Uri image=uri;
         int request=++token; busy=true; dismiss();
-        dialog=new AlertDialog.Builder(activity).setTitle(R.string.clipboard_title)
-                .setMessage(R.string.clipboard_working).setCancelable(false)
+        dialog=new AlertDialog.Builder(activity).setTitle(paste!=null?R.string.desktop_paste_local:R.string.clipboard_title)
+                .setMessage(paste!=null?R.string.clipboard_paste_working:R.string.clipboard_working).setCancelable(false)
                 .setNegativeButton(android.R.string.cancel,(d,w)->cancel()).show();
         main.postDelayed(timeout,45000);
         worker.execute(()->{
@@ -103,6 +108,13 @@ public final class RemoteClipboard implements AutoCloseable {
                                 File[] old=file.getParentFile().listFiles((dir,name)->name.startsWith("paired-") && name.endsWith(".png"));
                                 if (old!=null) for(File prior:old) if(!prior.equals(file)) prior.delete();
                             }
+                        }
+                        // Never fall back to Ctrl+V on failure: the host may still hold an old image.
+                        // The token/usable checks above also discard late replies after cancellation.
+                        if (paste!=null) {
+                            finish();
+                            paste.run();
+                            return;
                         }
                         toast(send?R.string.clipboard_sent:R.string.clipboard_received);
                     } catch (RuntimeException error) { if(file!=null)file.delete(); toast(R.string.clipboard_failed); }

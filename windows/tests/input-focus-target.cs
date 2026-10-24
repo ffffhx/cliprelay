@@ -35,12 +35,16 @@ public static class InputFocusTargetTest {
         }
         Application.EnableVisualStyles();
         Exception failure = null;
-        using (var form = new Form { Text = "ClipRelay input target regression", StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(600, 250) }) {
+        using (var form = new Form { Text = "ClipRelay input target regression", StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(600, 390) }) {
             var input = new TextBox { Bounds = new Rectangle(200, 30, 350, 40) };
             var session = new Label { Text = "Session switch", Bounds = new Rectangle(10, 30, 160, 60) };
             var readOnly = new TextBox { ReadOnly = true, Bounds = new Rectangle(200, 110, 350, 40) };
             var blank = new Panel { Bounds = new Rectangle(200, 180, 350, 40) };
-            form.Controls.AddRange(new Control[] { input, session, readOnly, blank });
+            var files = new ListView { Bounds = new Rectangle(10, 250, 170, 120), LabelEdit = true, View = View.List };
+            files.Items.Add("Renameable file");
+            var slide = new SelectionObject { Bounds = new Rectangle(200, 250, 150, 40) };
+            var rich = new RichTextBox { Bounds = new Rectangle(370, 250, 180, 100) };
+            form.Controls.AddRange(new Control[] { input, session, readOnly, blank, files, slide, rich });
             bool lostFocus = false, finished = false;
             form.Deactivate += delegate { if (!finished) { lostFocus = true; form.Close(); } };
             Action<Action> ui = action => form.Invoke(action);
@@ -73,6 +77,28 @@ public static class InputFocusTargetTest {
                         expect(session, false, "Session sidebar plus sticky editor focus must not open keyboard");
                         expect(readOnly, false, "Read-only region plus sticky editor focus must not open keyboard");
                         expect(blank, false, "Blank area plus sticky editor focus must not open keyboard");
+                        ui(() => { files.Focus(); files.Items[0].Selected = files.Items[0].Focused = true; });
+                        Thread.Sleep(150);
+                        var file = System.Windows.Automation.AutomationElement.FocusedElement;
+                        Check(file.Current.ControlType == System.Windows.Automation.ControlType.ListItem, "File item fixture did not receive focus");
+                        Check(!InputFocus.IsEditable(file), "Selecting a renameable file must not open keyboard");
+                        ui(() => slide.Focus());
+                        Thread.Sleep(150);
+                        var selectedObject = System.Windows.Automation.AutomationElement.FocusedElement;
+                        object writableValue;
+                        Check(selectedObject.Current.ControlType != System.Windows.Automation.ControlType.Edit &&
+                            selectedObject.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern, out writableValue) &&
+                            !((System.Windows.Automation.ValuePattern)writableValue).Current.IsReadOnly,
+                            "Selection fixture must expose a writable value without being an editor: " + selectedObject.Current.ControlType.ProgrammaticName + " " + selectedObject.Current.ClassName);
+                        expect(slide, false, "Selecting an object with a writable value must not open keyboard");
+                        ui(() => rich.Focus());
+                        Thread.Sleep(150);
+                        expect(rich, true, "Rich text insertion must open keyboard");
+                        ui(() => { rich.ReadOnly = true; });
+                        expect(rich, false, "Readonly rich text must not open keyboard");
+                        ui(() => { input.UseSystemPasswordChar = true; input.Focus(); });
+                        Thread.Sleep(150);
+                        expect(input, true, "Password input must open keyboard");
                         ui(() => { input.Dispose(); input = new TextBox { Bounds = new Rectangle(200, 30, 350, 40) }; form.Controls.Add(input); input.Focus(); });
                         Thread.Sleep(150);
                         expect(session, false, "New session autofocus must not open keyboard");
@@ -94,7 +120,19 @@ public static class InputFocusTargetTest {
             if (lostFocus && failure == null) failure = new Exception("Test cancelled after losing foreground focus");
         }
         if (failure != null) { Console.Error.WriteLine(failure); return 1; }
-        Console.WriteLine("PASS: absolute/legacy mapping, " + Screen.AllScreens.Length + " display(s), sticky focus, session autofocus, readonly and occluded input");
+        Console.WriteLine("PASS: absolute/legacy mapping, " + Screen.AllScreens.Length + " display(s), file/object selection, rich/password input, sticky focus, session autofocus, readonly and occluded input");
         return 0;
+    }
+
+    // MSAA/UIA exposes object labels as writable values too. Deliberately keep
+    // that capability while reporting a selectable, non-text role.
+    sealed class SelectionObject : Control {
+        public SelectionObject() { SetStyle(ControlStyles.Selectable, true); TabStop = true; }
+        protected override AccessibleObject CreateAccessibilityInstance() { return new SelectionAccessibility(this); }
+        sealed class SelectionAccessibility : ControlAccessibleObject {
+            public SelectionAccessibility(Control owner) : base(owner) {}
+            public override AccessibleRole Role { get { return AccessibleRole.ListItem; } }
+            public override string Value { get { return "Object label"; } set {} }
+        }
     }
 }

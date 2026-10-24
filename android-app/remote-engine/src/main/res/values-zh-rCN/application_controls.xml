@@ -5,7 +5,8 @@
     <string name="desktop_more">更多操作</string>
     <string name="desktop_more_button">更多 ⋯</string>
     <string name="desktop_keyboard">键盘</string>
-    <string name="desktop_paste">粘贴</string>
+    <string name="desktop_paste">粘贴：电脑</string>
+    <string name="desktop_paste_local">粘贴：手机</string>
     <string name="desktop_copy">复制</string>
     <string name="desktop_select_all">全选</string>
     <string name="desktop_undo">撤销</string>

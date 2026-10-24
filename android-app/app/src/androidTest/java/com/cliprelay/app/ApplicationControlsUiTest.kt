@@ -8,12 +8,13 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
-import android.widget.ImageButton
+import android.widget.Button
 import android.widget.TextView
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.Espresso.onData
 import androidx.test.espresso.action.ViewActions.*
 import androidx.test.espresso.matcher.RootMatchers.isDialog
+import androidx.test.espresso.matcher.RootMatchers.isPlatformPopup
 import androidx.test.espresso.matcher.ViewMatchers.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -119,7 +120,11 @@ class ApplicationControlsUiTest {
     private fun clickId(id: Int) { ui { root.findViewById<View>(id).performClick() }; instrument.waitForIdleSync() }
     private fun clickMore(label: Int) {
         clickId(R.id.desktopMoreButton)
-        onData(org.hamcrest.Matchers.equalTo(screen.getString(label))).inRoot(isDialog()).perform(click())
+        if (toolbar.isSideRailsActive) {
+            onView(withText(label)).inRoot(isPlatformPopup()).perform(scrollTo(), click())
+        } else {
+            onData(org.hamcrest.Matchers.equalTo(screen.getString(label))).inRoot(isDialog()).perform(click())
+        }
     }
     private fun screenshot(name: String) {
         instrument.waitForIdleSync()
@@ -197,9 +202,13 @@ class ApplicationControlsUiTest {
         for (label in listOf(R.string.desktop_copy, R.string.desktop_paste, R.string.desktop_select_all)) {
             onView(withText(label)).check(androidx.test.espresso.assertion.ViewAssertions.doesNotExist())
         }
-        val backspace = root.findViewById<ImageButton>(R.id.desktopBackspaceButton)
-        assertNotNull(backspace.drawable)
+        val backspace = root.findViewById<Button>(R.id.desktopBackspaceButton)
+        assertNotNull(backspace.compoundDrawablesRelative[1])
         assertEquals(screen.getString(R.string.desktop_backspace), backspace.contentDescription)
+        assertNull(root.findViewById<View>(R.id.desktopProfileButton))
+        val more = root.findViewById<View>(R.id.desktopMoreButton)
+        assertTrue("More must be pinned outside the scrolling actions",
+            (more.parent as View).parent === right)
         clickId(R.id.desktopBackspaceButton)
         assertEquals(listOf("8:true:0", "8:false:0"), events)
         events.clear()
@@ -248,11 +257,11 @@ class ApplicationControlsUiTest {
         assertTrue(toolbar.isSideRailsActive)
         assertNull("Game mode still has a separate toolbar button", root.findViewById<View>(R.id.gameModeButton))
         fun chooseGame() {
-            clickId(R.id.desktopProfileButton)
+            clickMore(R.string.desktop_mode)
             onData(org.hamcrest.Matchers.equalTo(screen.getString(R.string.game_mode)))
                 .inRoot(isDialog()).perform(click())
         }
-        clickId(R.id.desktopProfileButton)
+        clickMore(R.string.desktop_mode)
         onView(isAssignableFrom(android.widget.ListView::class.java))
             .inRoot(isDialog()).check { view, error ->
                 if (error != null) throw error

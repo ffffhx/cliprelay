@@ -4,6 +4,7 @@
     <string name="clipboard_send">发送本机剪贴板</string>
     <string name="clipboard_receive">取回电脑剪贴板</string>
     <string name="clipboard_working">正在传输文字或图片…</string>
+    <string name="clipboard_paste_working">正在将本机剪贴板传到电脑，完成后自动粘贴…</string>
     <string name="clipboard_sent">已发送到电脑，可以粘贴了。</string>
     <string name="clipboard_received">已复制到本机剪贴板。</string>
     <string name="clipboard_empty">剪贴板中没有支持的文字或图片。</string>

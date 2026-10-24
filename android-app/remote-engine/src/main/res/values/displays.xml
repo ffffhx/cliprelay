@@ -1,5 +1,9 @@
 <resources>
     <string name="displays_title">Displays</string>
+    <string name="displays_only_one">This computer currently has only one available display.</string>
+    <string name="desktop_gesture_retry">Desktop switching is ready. Please swipe again.</string>
+    <string name="desktop_gesture_host_unavailable">Unable to identify this computer’s desktop shortcuts. Check the connection and update the ClipRelay host.</string>
+    <string name="desktop_navigation_help">Desktop navigation: swipe left / right with three fingers to switch virtual desktops, or four fingers to switch displays. Left goes to the next one; right goes to the previous one. Lift all fingers to finish. Displays cycle in list order; desktop switching requires existing desktops and the system’s default shortcuts (Windows or macOS). These gestures are disabled in game mode. If Android intercepts a three-finger screenshot gesture, turn that shortcut off in the device settings.</string>
     <string name="displays_shared_title">Displays · also changes other connected viewers</string>
     <string name="displays_name">Display %1$s</string>
     <string name="displays_current"> · current</string>

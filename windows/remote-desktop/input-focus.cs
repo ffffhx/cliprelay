@@ -23,16 +23,34 @@ namespace ClipRelay.Remote {
         [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
 
         public static bool IsEditable(AutomationElement element) {
-            if (element == null || !element.Current.IsEnabled || !element.Current.HasKeyboardFocus) return false;
+            if (element == null) return false;
+            var current = element.Current;
+            if (!current.IsEnabled || !current.HasKeyboardFocus || current.IsOffscreen) return false;
+            // ValuePattern is also exposed by renameable file/slide items and
+            // other selectable objects. Being able to SetValue is not evidence
+            // that typing currently edits text. Rename mode exposes an Edit.
+            bool edit = current.ControlType == ControlType.Edit;
+            if (!edit && current.ControlType != ControlType.Document && current.ControlType != ControlType.Custom)
+                return false;
             object pattern;
-            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
-                return !((ValuePattern)pattern).Current.IsReadOnly;
             if (element.TryGetCurrentPattern(TextPattern.Pattern, out pattern)) {
-                object readOnly = ((TextPattern)pattern).DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute);
-                return readOnly is bool && !(bool)readOnly;
+                var text = (TextPattern)pattern;
+                object readOnly = text.DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute);
+                if (readOnly is bool) {
+                    if ((bool)readOnly) return false;
+                    if (edit) return true;
+                    // A canvas/document can expose writable text even while an
+                    // object or page is selected. Require an actual text
+                    // selection or insertion range, without reading its text.
+                    return text.SupportedTextSelection != SupportedTextSelection.None && text.GetSelection().Length > 0;
+                }
             }
+            // Rich editors may have a read-only ValuePattern while their
+            // TextPattern is writable, so inspect text before the value API.
+            if (edit && element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
+                return !((ValuePattern)pattern).Current.IsReadOnly;
             // Standard password edits deliberately expose no ValuePattern.
-            return element.Current.ControlType == ControlType.Edit && element.Current.IsPassword;
+            return edit && current.IsPassword;
         }
 
         public static bool IsInteractiveDesktop() {

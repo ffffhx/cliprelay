@@ -7,6 +7,19 @@
     <item name="desktopHomeButton" type="id" />
     <string name="desktop_rail_home">Computers</string>
     <string name="desktop_rail_profile">Mode ▾</string>
+    <string name="desktop_mode">Mode</string>
+    <string name="desktop_win_key">Win key</string>
+    <string name="tablet_phone_input">Device input</string>
+    <string name="phone_device_input">Device input</string>
+    <string name="phone_computer_list">Computers</string>
+    <string name="tablet_computer_keyboard">PC keyboard</string>
+    <string name="tablet_voice_doubao">Doubao voice</string>
+    <string name="tablet_voice_local">On-device voice</string>
+    <string name="tablet_voice_system">System voice</string>
+    <string name="tablet_voice_stop">Stop recording</string>
+    <string name="tablet_voice_starting">Connecting…</string>
+    <string name="tablet_voice_stopping">Finishing…</string>
+    <string name="tablet_more">More</string>
     <item name="desktopLeftRail" type="id" />
     <item name="desktopRightRail" type="id" />
     <item name="gameHomeButton" type="id" />

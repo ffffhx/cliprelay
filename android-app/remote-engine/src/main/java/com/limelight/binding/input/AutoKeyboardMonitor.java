@@ -23,6 +23,7 @@ public final class AutoKeyboardMonitor implements AutoCloseable {
     // must not erase the tap that requested it. Back/pause/disconnect do erase it.
     private long tapStartedAt = -1;
     private float tapX, tapY;
+    private boolean tapHidden;
 
     public AutoKeyboardMonitor(NvHTTP http, Listener listener) {
         this(http::getInputFocus, listener);
@@ -35,6 +36,7 @@ public final class AutoKeyboardMonitor implements AutoCloseable {
 
     public void cancel() {
         tapStartedAt = -1;
+        tapHidden = false;
         generation.incrementAndGet();
         worker.getQueue().clear();
         main.removeCallbacksAndMessages(null);
@@ -51,9 +53,11 @@ public final class AutoKeyboardMonitor implements AutoCloseable {
 
     public void foregroundChanged() {
         long start = tapStartedAt;
+        boolean hidden = tapHidden;
         cancel();
         if (!closed && start >= 0 && SystemClock.uptimeMillis() - start < 2200) {
             tapStartedAt = start;
+            tapHidden = hidden;
             schedule(generation.get(), start, tapX, tapY, new AutoKeyboardPolicy(), 180);
         }
     }
@@ -72,11 +76,15 @@ public final class AutoKeyboardMonitor implements AutoCloseable {
                 if (action != AutoKeyboardPolicy.NONE) {
                     main.post(() -> {
                         if (!closed && token == generation.get()) {
-                            tapStartedAt = -1;
+                            if (action == AutoKeyboardPolicy.SHOW) tapStartedAt = -1;
+                            else {
+                                if (tapHidden) return;
+                                tapHidden = true;
+                            }
                             listener.decision(action);
                         }
                     });
-                    return;
+                    if (action == AutoKeyboardPolicy.SHOW) return;
                 }
                 if (elapsed < 2200) schedule(token, start, x, y, policy, 160);
             } catch (Exception ignored) {

@@ -24,6 +24,14 @@ public final class VoiceInputController {
     private String mode(){String value;try{value=preferences.getString("provider","desktop");}catch(ClassCastException e){return "invalid";}
         return "local".equals(value) || "system".equals(value) || "desktop".equals(value)?value:"invalid";}
     public boolean isActive(){return desktop.isActive() || phone.active() || options!=null;}
+    public int buttonLabel(){
+        switch(mode()){
+            case "desktop": return R.string.tablet_voice_doubao;
+            case "local": return R.string.tablet_voice_local;
+            case "system": return R.string.tablet_voice_system;
+            default: return R.string.voice_input;
+        }
+    }
     public void toggle(){
         if(closed || options!=null)return;
         if(desktop.isActive()){desktop.end(false);return;}

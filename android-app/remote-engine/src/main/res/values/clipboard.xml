@@ -4,6 +4,7 @@
     <string name="clipboard_send">Send this device’s clipboard</string>
     <string name="clipboard_receive">Copy the computer’s clipboard</string>
     <string name="clipboard_working">Transferring text or image…</string>
+    <string name="clipboard_paste_working">Transferring the clipboard to the computer, then pasting…</string>
     <string name="clipboard_sent">Sent to the computer. You can now paste it.</string>
     <string name="clipboard_received">Copied to this device’s clipboard.</string>
     <string name="clipboard_empty">No supported text or image in the clipboard.</string>

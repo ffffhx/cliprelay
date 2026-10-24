@@ -75,6 +75,14 @@ public final class DisplayState {
         return other != null && instance.equals(other.instance) && stream == other.stream && generation == other.generation;
     }
 
+    /** Cycle in the same order as the display picker, only from a presented capture. */
+    public String relativeDisplay(int direction, long renderedFrame) {
+        if ((direction != -1 && direction != 1) || !ready(renderedFrame) || displays.size() < 2) return null;
+        int current = displays.indexOf(capture);
+        if (current < 0) return null;
+        return displays.get((current + direction + displays.size()) % displays.size());
+    }
+
     public boolean safeHostMute() {
         return supported && !shared && "active".equals(phase) && stream > 0 && firstFrame > 0 && generation > 0 &&
                 streamGeneration == generation && ("process".equals(audioCapture) || "system-tap".equals(audioCapture)) && audioGeneration > 0 && audioReady;
