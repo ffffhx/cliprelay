@@ -87,7 +87,7 @@ function verify(directory,pin){
       !sameKeys(manifest.nativeMinimumOS,Object.keys(manifest.nativeDependencies)) ||
       manifest.privacyFilter!==1 || JSON.stringify(manifest.privacyFilterTests)!==JSON.stringify(PRIVACY_CASES) ||
       manifest.captureBackend!=='screencapturekit' || JSON.stringify(manifest.captureTests)!==JSON.stringify(CAPTURE_CASES) ||
-      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==51 || new Set(manifest.inputTests).size!==51)reject();
+      !Array.isArray(manifest.inputTests) || manifest.inputTests.length!==52 || new Set(manifest.inputTests).size!==52)reject();
   const expected=Object.keys(manifest.files);
   if(expected.length>4096 || REQUIRED.some(name=>!Object.hasOwn(manifest.files,name)))reject();
   if(audioSource&&!Object.hasOwn(manifest.files,'source/'+AUDIO_SOURCE))reject();

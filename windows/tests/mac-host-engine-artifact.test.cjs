@@ -63,7 +63,7 @@ function fixture(t,arch='arm64'){
 test('stages a complete pinned engine without starting it or replacing a destination',t=>{
   const f=fixture(t),pin=f.pin(),destination=path.join(f.directory,'staged');
   const result=stage(f.source,destination,pin);
-  assert.equal(result.inputTests.length,51);assert.equal(verify(destination,pin).sourceCommit,commit);
+  assert.equal(result.inputTests.length,52);assert.equal(verify(destination,pin).sourceCommit,commit);
   assert.deepEqual(fs.readFileSync(path.join(destination,EXECUTABLE)),fs.readFileSync(path.join(f.source,EXECUTABLE)));
   assert.throws(()=>stage(f.source,destination,pin),{code:'EEXIST'});
 });
