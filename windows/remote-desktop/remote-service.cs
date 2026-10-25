@@ -39,7 +39,6 @@ namespace ClipRelay.Remote {
         readonly AudioMuteRecoverySchedule audioRecovery;
         Thread monitor;
         NamedPipeServerStream listeningPipe;
-        int pairPollTick;
 
         static JavaScriptSerializer Json() { return new JavaScriptSerializer { MaxJsonLength = 1024 * 1024 }; }
         static string Text(Dictionary<string, object> value, string key) { object v; return value.TryGetValue(key, out v) ? Convert.ToString(v) : ""; }
@@ -149,7 +148,6 @@ namespace ClipRelay.Remote {
                         }
                         if (Enabled && NetworkEnabled) EnsureNetwork(); else StopNetwork();
                         if (Enabled && IsRunning) EnsureFocus(); else StopFocus();
-                        if (Enabled && focusChild != null && !focusChild.HasExited) AutoApprovePairings();
                     } catch (Exception e) { Log("Engine: " + e.Message); }
                 }
             }
@@ -227,30 +225,6 @@ namespace ClipRelay.Remote {
             string executable = Path.Combine(Root, "cliprelay-network.exe");
             Native.StartInSession(executable, Quote(executable) + " --state-dir " + Quote(StateRoot) +
                 " --local-pairing --input-focus-probe " + Quote(typeof(HostService).Assembly.Location), Root, childSession, out focusChild, out focusJob);
-        }
-        // 局域网配对在手机发起后直接放行，不再需要电脑端勾选确认。
-        // 仅自动批准新版手机（generation 绑定）的请求；旧版 PIN 流程仍需手动输入。
-        void AutoApprovePairings() {
-            if (++pairPollTick % 3 != 0) return;
-            long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
-            List<Dictionary<string, object>> requests;
-            try { requests = LanPairingControl.List(PairingRequest, now); }
-            catch { return; }
-            foreach (Dictionary<string, object> entry in requests) {
-                object automatic;
-                if (!entry.TryGetValue("automatic", out automatic) || !(automatic is bool) || !(bool)automatic) continue;
-                if (Text(entry, "state") != "waiting") continue;
-                try {
-                    var input = new Dictionary<string, object> {
-                        { "action", "lanPairApprove" },
-                        { "id", entry["id"] },
-                        { "generation", entry["generation"] },
-                        { "verification", entry["verification"] }
-                    };
-                    LanPairingControl.Decide(input, true, PairingRequest);
-                    Log("Pairing auto-approved: " + Text(entry, "name"));
-                } catch (Exception e) { Log("Pairing auto-approve: " + e.Message); }
-            }
         }
         bool RecoverAudioMute(uint session) {
             Process recovery = null; IntPtr recoveryJob = IntPtr.Zero;

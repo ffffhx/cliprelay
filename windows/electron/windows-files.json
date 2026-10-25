@@ -2,6 +2,7 @@
   "main.js",
   "native-host.cjs",
   "windows.cjs",
+  "pairing-auto-approve.cjs",
   "preload.js",
   "launch-native.ps1",
   "native-bridge.cs",

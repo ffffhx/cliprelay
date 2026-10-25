@@ -3,6 +3,7 @@ const {app, dialog} = require('electron');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {NativeHost, parseArguments, readAgentDebugPort} = require('./native-host.cjs');
+const {PairingAutoApprover} = require('./pairing-auto-approve.cjs');
 
 // The distribution keeps native assets outside ASAR so Windows PowerShell 5.1
 // and the existing installers can read them without extraction or duplication.
@@ -27,6 +28,7 @@ if (process.platform === 'darwin') {
   app.setPath('userData', path.join(app.getPath('appData'), 'ClipRelay', 'Desktop', identity));
   let host;
   let windows;
+  let approver;
   let quitting = false;
   if (!app.requestSingleInstanceLock()) app.quit();
   else {
@@ -44,10 +46,11 @@ if (process.platform === 'darwin') {
       host = new NativeHost({root, launcher: path.join(__dirname, 'launch-native.ps1'), ...options});
       const {DesktopWindows} = require('./windows.cjs');
       windows = new DesktopWindows(host, root);
+      approver = new PairingAutoApprover({request: (action, data) => host.request(action, data)});
       host.on('message', message => { if (message.event === 'open') windows.open(message.window); });
-      host.on('ready', () => windows.refresh());
+      host.on('ready', () => { windows.refresh(); approver.start(); });
       host.on('failure', error => dialog.showErrorBox('ClipRelay', error.message));
-      host.on('exit', () => { quitting = true; windows.close(); app.quit(); });
+      host.on('exit', () => { approver.stop(); quitting = true; windows.close(); app.quit(); });
       return host.start();
     }).catch(error => {
       dialog.showErrorBox('ClipRelay', error.message);
