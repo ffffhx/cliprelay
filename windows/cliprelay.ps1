@@ -2087,7 +2087,16 @@ function Get-NormalizedRelayPeers {
 
         $enabledValue = Get-PropertyValue -Object $sourcePeer -Name "enabled"
         $legacyAllowedValue = Get-PropertyValue -Object $sourcePeer -Name 'legacyAllowed'
-        $legacyAllowed = $transport -eq 'legacy' -and $legacyAllowedValue -is [bool] -and $legacyAllowedValue
+        # 旧配置没有该字段时按允许处理；显式保存的非布尔值仍然拒绝，避免错误的兼容授权。
+        $legacyAllowed = $false
+        if ($transport -eq 'legacy') {
+            $legacyAllowedKnown = if ($sourcePeer -is [System.Collections.IDictionary]) {
+                $sourcePeer.Contains('legacyAllowed')
+            } else {
+                $null -ne $sourcePeer.PSObject.Properties['legacyAllowed']
+            }
+            $legacyAllowed = if (-not $legacyAllowedKnown) { $true } else { $legacyAllowedValue -is [bool] -and $legacyAllowedValue }
+        }
         $enabled = if ($null -eq $enabledValue) { $true } else { [bool]$enabledValue }
         $id = [string](Get-PropertyValue -Object $sourcePeer -Name "id")
         if ([string]::IsNullOrWhiteSpace($id)) {
@@ -2283,6 +2292,7 @@ function Merge-DiscoveredRelayDevices {
             enabled      = $true
             requiresAuth = $requiresAuth
             platform     = $platform
+            legacyAllowed = $true
         })
         $added++
     }
@@ -2433,6 +2443,7 @@ function Save-PeerConfiguration {
             enabled     = $true
             requiresAuth = $false
             platform    = ""
+            legacyAllowed = $true
         })
     }
     $normalizedPeerCandidates = @(Get-NormalizedRelayPeers -Peers $Peers -DefaultPort $ListenPort -DefaultAccessToken $normalizedAccessToken)
@@ -2931,6 +2942,7 @@ if ($peerWasExplicitlyProvided -or -not $hasConfiguredPeers) {
         enabled     = $true
         requiresAuth = $false
         platform    = ""
+        legacyAllowed = $true
     })
 }
 else {
@@ -4495,8 +4507,6 @@ function Show-RelayPeerEditor {
     $peerAddress = [string](Get-PropertyValue -Object $Peer -Name "address")
     $peerPortValue = Get-PropertyValue -Object $Peer -Name "port"
     $peerPort = if ($null -eq $peerPortValue -or [int]$peerPortValue -eq 0) { $DefaultPort } else { [int]$peerPortValue }
-    $peerTokenValue = Get-PropertyValue -Object $Peer -Name "accessToken"
-    $peerToken = if ($null -eq $peerTokenValue) { $DefaultAccessToken } else { [string]$peerTokenValue }
     $enabledValue = Get-PropertyValue -Object $Peer -Name "enabled"
     $peerEnabled = if ($null -eq $enabledValue) { $true } else { [bool]$enabledValue }
     $requiresAuthValue = Get-PropertyValue -Object $Peer -Name "requiresAuth"
@@ -4504,7 +4514,6 @@ function Show-RelayPeerEditor {
     $peerPlatform = [string](Get-PropertyValue -Object $Peer -Name "platform")
     $peerTransport = [string](Get-PropertyValue -Object $Peer -Name 'transport')
     $peerPairedOwner = [string](Get-PropertyValue -Object $Peer -Name 'pairedOwner')
-    $peerLegacyAllowed = Get-PropertyValue -Object $Peer -Name 'legacyAllowed'
 
     $form = New-Object ClipRelay.RelayForm
     $form.Text = "ClipRelay 接收设备"
@@ -4531,24 +4540,12 @@ function Show-RelayPeerEditor {
     $addressInput = & $newInput $editorCard $peerAddress 18 98 270 34 $false
     $null = & $newLabel $editorCard "端口" 306 78 70 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
     $peerPortInput = & $newInput $editorCard ([string]$peerPort) 306 98 128 34 $false
-    $null = & $newLabel $editorCard "访问密钥（这台目标设备）" 18 142 260 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-    $peerTokenInput = & $newInput $editorCard $peerToken 18 162 318 34 $true
-    $showTokenButton = & $newButton $editorCard "显示" 346 162 88 34 $colors.Raised $colors.Border $colors.Muted $colors.Border
-    $showTokenButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
     $null = & $newLabel $editorCard "加入广播" 18 214 110 22 9.0 ([System.Drawing.FontStyle]::Bold) $colors.Text $bodyFont
     $enabledToggle = New-Object ClipRelay.RelayToggle
     $enabledToggle.Location = New-Object System.Drawing.Point(125, 214)
     $enabledToggle.Checked = $peerEnabled
     $enabledToggle.OnColor = $colors.Blue
     $editorCard.Controls.Add($enabledToggle)
-    $legacyCheck = New-Object System.Windows.Forms.CheckBox
-    $legacyCheck.Text = '允许旧版未加密发送'
-    $legacyCheck.Location = New-Object Drawing.Point(210, 214)
-    $legacyCheck.Size = New-Object Drawing.Size(224, 22)
-    $legacyCheck.ForeColor = $colors.Warning
-    $legacyCheck.Checked = $peerLegacyAllowed -is [bool] -and $peerLegacyAllowed
-    $legacyCheck.Visible = -not [bool]$peerPairedOwner
-    $editorCard.Controls.Add($legacyCheck)
     $testState = & $newLabel $editorCard "保存前可先检测该设备" 18 248 266 22 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
     $testButton = & $newButton $editorCard "检测设备" 326 242 108 34 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
     $testButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
@@ -4557,8 +4554,6 @@ function Show-RelayPeerEditor {
         $addressInput.TextBox.Text = '配对加密连接'
         $addressInput.TextBox.Enabled = $false
         $peerPortInput.TextBox.Enabled = $false
-        $peerTokenInput.TextBox.Enabled = $false
-        $showTokenButton.Enabled = $false
         $testButton.Enabled = $false
         $testState.Text = '配对连接请在主界面检测'
     }
@@ -4572,10 +4567,6 @@ function Show-RelayPeerEditor {
     $normalizePeersCommand = Get-Command Get-NormalizedRelayPeers
     $closeButton.Add_Click({ $form.Close() }.GetNewClosure())
     $cancelButton.Add_Click({ $form.Close() }.GetNewClosure())
-    $showTokenButton.Add_Click({
-        $peerTokenInput.TextBox.UseSystemPasswordChar = -not $peerTokenInput.TextBox.UseSystemPasswordChar
-        $showTokenButton.Text = if ($peerTokenInput.TextBox.UseSystemPasswordChar) { "显示" } else { "隐藏" }
-    }.GetNewClosure())
     $testButton.Add_Click({
         $parsedPort = 0
         if (-not [int]::TryParse($peerPortInput.TextBox.Text.Trim(), [ref]$parsedPort)) {
@@ -4587,7 +4578,7 @@ function Show-RelayPeerEditor {
         $testButton.Text = "检测中"
         $form.Update()
         try {
-            $null = & $testPeerCommand -Address $addressInput.TextBox.Text.Trim() -Port $parsedPort -TimeoutMilliseconds 5000 -AccessToken $peerTokenInput.TextBox.Text -LegacyAllowed:([bool]$legacyCheck.Checked)
+            $null = & $testPeerCommand -Address $addressInput.TextBox.Text.Trim() -Port $parsedPort -TimeoutMilliseconds 5000 -AccessToken "" -LegacyAllowed
             $testState.Text = "链路可用 · $(Get-Date -Format 'HH:mm:ss')"
             $testState.ForeColor = $colors.Success
         }
@@ -4611,13 +4602,13 @@ function Show-RelayPeerEditor {
                 name = $nameInput.TextBox.Text
                 address = $addressInput.TextBox.Text
                 port = $parsedPort
-                accessToken = $peerTokenInput.TextBox.Text
+                accessToken = ""
                 enabled = [bool]$enabledToggle.Checked
                 requiresAuth = $peerRequiresAuth
                 platform = $peerPlatform
                 transport = $peerTransport
                 pairedOwner = $peerPairedOwner
-                legacyAllowed = [bool]$legacyCheck.Checked
+                legacyAllowed = $true
             }
             $normalized = @(& $normalizePeersCommand -Peers @($candidate) -DefaultPort $DefaultPort -DefaultAccessToken $DefaultAccessToken)[0]
             $form.Tag = $normalized
@@ -5250,18 +5241,6 @@ function Show-RelayControlCenter {
         $sidebarLastRelayLabel = & $newLabel $sidebarStatsCard "—" 90 92 102 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.TextDim $monoFont
         $sidebarLastRelayLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
 
-        $statDivider3 = New-Object System.Windows.Forms.Panel
-        $statDivider3.Location = New-Object System.Drawing.Point(12, 114)
-        $statDivider3.Size = New-Object System.Drawing.Size(180, 1)
-        $statDivider3.BackColor = $colors.Border
-        $sidebarStatsCard.Controls.Add($statDivider3)
-
-        $null = & $newLabel $sidebarStatsCard "安全密钥" 12 122 76 18 8.0 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
-        $sidebarAuthText = if (-not $script:LegacyReceiverEnabled) { "兼容关闭" } elseif ([string]::IsNullOrWhiteSpace($script:AccessToken)) { "未设密钥" } else { "已设密钥" }
-        $sidebarAuthColor = if ($script:LegacyReceiverEnabled) { $colors.Warning } else { $colors.Subtle }
-        $sidebarAuthLabel = & $newLabel $sidebarStatsCard $sidebarAuthText 90 122 102 18 8.0 ([System.Drawing.FontStyle]::Regular) $sidebarAuthColor $bodyFont
-        $sidebarAuthLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
-
         # Sidebar Target Nodes Card
         $sidebarPeersCard = & $newCard $sidebarPanel 16 374 204 260 $colors.SurfaceAlt $colors.Border 10
         $null = & $newLabel $sidebarPeersCard "TARGET NODES" 12 9 104 16 7.5 ([System.Drawing.FontStyle]::Bold) $colors.Violet $monoFont
@@ -5483,15 +5462,10 @@ function Show-RelayControlCenter {
         $deviceNameInput = & $newInput $preferencesCard $script:DeviceName 14 182 460 32 $false
         $deviceNameInput.TextBox.Name = "DeviceNameInput"
 
-        # Row 5: Port & Token
+        # Row 5: Port
         $null = & $newLabel $preferencesCard "本机端口" 14 222 80 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
         $portInput = & $newInput $preferencesCard ([string]$script:Port) 14 242 86 32 $false
         $portInput.TextBox.Name = "PortInput"
-        $null = & $newLabel $preferencesCard "本机接收密钥" 110 222 120 18 8.0 ([System.Drawing.FontStyle]::Bold) $colors.Muted $bodyFont
-        $tokenInput = & $newInput $preferencesCard $script:AccessToken 110 242 290 32 $true
-        $tokenInput.TextBox.Name = "AccessTokenInput"
-        $showTokenButton = & $newButton $preferencesCard "显示" 408 242 66 32 $colors.Raised $colors.Border $colors.Muted $colors.Border
-        $showTokenButton.Font = New-Object System.Drawing.Font($bodyFont, 8.5, [System.Drawing.FontStyle]::Bold)
 
         # Row 6: Security Hint
         $null = & $newLabel $preferencesCard "允许旧版未加密接收（仅局域网）" 14 282 400 18 7.5 ([System.Drawing.FontStyle]::Regular) $colors.Muted $bodyFont
@@ -5566,7 +5540,7 @@ function Show-RelayControlCenter {
                     -PeerAddress $(if ($enabledDraftPeers.Count -gt 0) { [string]$enabledDraftPeers[0].address } else { "" }) `
                     -Notifications ([bool]$notifyToggle.Checked) `
                     -ListenPort $parsedPort `
-                    -AccessToken $tokenInput.TextBox.Text `
+                    -AccessToken "" `
                     -StartupEnabled ([bool]$startupToggle.Checked) `
                     -Peers $peersToSave `
                     -DiscoveryEnabled ([bool]$discoveryToggle.Checked) `
@@ -5974,15 +5948,11 @@ function Show-RelayControlCenter {
         $discoveryToggle.Add_CheckedChanged({
             $null = & $saveCurrentSettings
         }.GetNewClosure())
-        foreach ($settingsTextBox in @($deviceNameInput.TextBox, $portInput.TextBox, $tokenInput.TextBox)) {
+        foreach ($settingsTextBox in @($deviceNameInput.TextBox, $portInput.TextBox)) {
             $settingsTextBox.Add_Leave({
                 $null = & $saveCurrentSettings
             }.GetNewClosure())
         }
-        $showTokenButton.Add_Click({
-            $tokenInput.TextBox.UseSystemPasswordChar = -not $tokenInput.TextBox.UseSystemPasswordChar
-            $showTokenButton.Text = if ($tokenInput.TextBox.UseSystemPasswordChar) { "显示" } else { "隐藏" }
-        }.GetNewClosure())
         $minimizeButton.Add_Click({
             $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
         }.GetNewClosure())

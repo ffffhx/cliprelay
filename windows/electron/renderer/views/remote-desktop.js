@@ -10,7 +10,7 @@ export async function mount(context){
   label('手机打开“连接电脑”，会自动发现本机；下方地址仅供手动排查。',24,100,620,28);
   const addresses=input('RemoteDesktopAddresses',24,132,626,58);addresses.readOnly=true;
   const snapshot=await api.request('snapshot');addresses.value=snapshot.addresses.filter(item=>/^\d+\./.test(item.Address)).map(item=>item.Address+':48789').join('    ');
-  label('首次配对 · 核对手机上的确认标识，再允许这台手机',24,210,620);
+  label('首次配对 · 手机发起后会自动允许，也可在这里手动处理',24,210,620);
   const pending=list('RemoteDesktopPairings',24,244,420,70);
   const pin=input('RemoteDesktopPin',462,244,188,30);pin.maxLength=4;pin.ariaLabel='手机配对 PIN';
   const verification=label('',462,244,188,30,'font:700 16px Consolas');verification.id='RemoteDesktopVerification';verification.hidden=true;

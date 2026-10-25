@@ -146,6 +146,7 @@ async function start(){
   host=new HostController({directory:__dirname,stateDirectory:path.join(app.getPath('userData'),'host'),safeStorage,localName,
     loginStartup:new LoginStartup({app}),
     autoStart:config.hostAutoStart===true,
+    autoApprovePairing:true,
     saveAutoStart:enabled=>{const next={...config,hostAutoStart:enabled};saveConfig(app.getPath('userData'),next);config=next;},
     onPairingRequest:notice=>hostNotices.show(notice),onUpdate:value=>{
       if(value.phase!=='running' || (!value.error && !value.requests.some(request=>request.state==='waiting' && request.expires>Date.now()/1000)))hostNotices.withdraw();

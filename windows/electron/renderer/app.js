@@ -33,7 +33,7 @@ async function closeSettings(){
   try{
     await saveQueue;
     const data={};
-    for(const [id,key] of Object.entries({DeviceNameInput:'deviceName',PortInput:'port',AccessTokenInput:'accessToken'})){
+    for(const [id,key] of Object.entries({DeviceNameInput:'deviceName',PortInput:'port'})){
       const value=byId(id).value;
       if(key==='port' && (!/^\d+$/.test(value.trim()) || Number(value)<1 || Number(value)>65535))throw new Error('服务端口必须是 1 到 65535 之间的整数。');
       if(String(snapshot.config[key])!==value)data[key]=key==='port'?Number(value):value;
@@ -59,7 +59,6 @@ if(layout){
   click('PhonePreviewButton',()=>open('preview-remote'));click('RemoteDesktopButton',()=>open('remote-desktop'));
   click('ScreenShareButton',()=>open('screen-share-picker'));click('UpdateButton',()=>open('updates'));
   click('ScreenSharingActionButton',async()=>{try{if(snapshot.sharing.Active)await api.request('stop-sharing');else await open('screen-share-picker');await refresh();}catch(error){fail(error);}});
-  click('showTokenButton',()=>{const input=byId('AccessTokenInput');input.type=input.type==='password'?'text':'password';text('showTokenButton',input.type==='password'?'显示':'隐藏');});
   click('switchAddressButton',()=>{addressIndex=(addressIndex+1)%snapshot.addresses.length;renderAddress();});
   click('copyButton',async()=>{await api.request('copy',{text:snapshot.addresses[addressIndex].Address});text('copyButton','已复制');setTimeout(()=>text('copyButton','复制'),2000);});
   click('AddPeerButton',()=>open('peer-editor'));
@@ -67,8 +66,9 @@ if(layout){
     byId(id).ariaLabel={notifications:'气泡通知提醒',startupEnabled:'开机自动启动',discoveryEnabled:'局域网自动发现 (mDNS)',legacyReceiverEnabled:'允许旧版未加密接收，仅限局域网'}[key];
     click(id,async()=>{byId(id).disabled=true;try{await patch({[key]:!snapshot.config[key]});}catch(error){showError(error);}finally{byId(id).disabled=false;}});
   }
-  for(const [id,key] of Object.entries({DeviceNameInput:'deviceName',PortInput:'port',AccessTokenInput:'accessToken'})){
-    byId(id).ariaLabel={deviceName:'发现设备名称',port:'本机端口',accessToken:'本机接收密钥'}[key];
+  for(const id of ['preferencesCard-17','preferencesCard-18','showTokenButton','statDivider3','sidebarStatsCard-10','sidebarAuthLabel']){const node=byId(id);if(node)node.hidden=true;}
+  for(const [id,key] of Object.entries({DeviceNameInput:'deviceName',PortInput:'port'})){
+    byId(id).ariaLabel={deviceName:'发现设备名称',port:'本机端口'}[key];
     byId(id).addEventListener('blur',()=>{
       const value=byId(id).value;
       if(String(snapshot.config[key])===value)return;
@@ -91,7 +91,7 @@ function renderPeers(){
     renderControl(model,panel);
     text('PeerNameLabel'+index,peer.name);text('PeerAddressLabel'+index,peer.pairedOwner?'配对加密连接':peer.address);
     const state=peerStatuses.get(peer.id);
-    const blocked=!peer.pairedOwner && peer.legacyAllowed!==true;
+    const blocked=!peer.pairedOwner && peer.legacyAllowed===false;
     text('PeerStatusLabel'+index,peer.enabled?(blocked?'兼容未开启':(state?.text || '待检测')):'已停用');color('PeerStatusLabel'+index,peer.enabled?(blocked?'#fbbf24':(state?.color || '#94a3b8')):'#64748b');
     checked('PeerEnabledToggle'+index,peer.enabled);byId('PeerEnabledToggle'+index).ariaLabel=`向 ${peer.name} 发送`;
     click('PeerEnabledToggle'+index,()=>{cancelCheck();patch({peers:peers.map(item=>item.id===peer.id?{...item,enabled:!item.enabled}:item),expectedRevision:snapshot.revision}).catch(showError);});
@@ -112,10 +112,9 @@ function render(){
   text('serviceLabel',legacy?'旧版接收已开启':'旧版接收已关闭');
   text('serviceSub',legacy?`未加密 · :${config.port}`:'配对连接独立运行');text('statusHeroCard-4',legacy?'旧版仅限局域网':'旧版 HTTP 推送已禁用');
   text('PeerCountLabel',`${(config.peers || []).filter(p=>p.enabled).length} 台`);
-  text('sidebarAuthLabel',legacy?(config.accessToken?'已设密钥':'未设密钥'):'兼容关闭');color('sidebarAuthLabel',legacy?'#fbbf24':'#64748b');
   checked('NotificationToggle',config.notifications);checked('StartupToggle',config.startupEnabled);checked('DiscoveryToggle',config.discoveryEnabled);checked('LegacyReceiverToggle',legacy);
   byId('LegacyReceiverToggle').title='文本、截图和访问密钥均以明文传输。仅为旧设备开启；配对连接不需要此开关。';
-  setValue('DeviceNameInput',config.deviceName);setValue('PortInput',config.port);setValue('AccessTokenInput',config.accessToken);
+  setValue('DeviceNameInput',config.deviceName);setValue('PortInput',config.port);
   text('screenshotHotkeyState',runtime.ScreenshotHotkeyAvailable?'可用':'冲突');color('screenshotHotkeyState',runtime.ScreenshotHotkeyAvailable?'#10b981':'#f43f5e');
   text('activityTitle',runtime.Detail);text('activityTime',date(runtime.At));text('sidebarLastRelayLabel',date(runtime.At));
   const activityColor=({success:'#10b981',partial:'#8b5cf6',error:'#f43f5e'})[runtime.State] || '#94a3b8';

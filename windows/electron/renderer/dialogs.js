@@ -51,16 +51,12 @@ export async function openDialog(view,root,api,params){
     const name=field(card,'peer-name','设备名称',18,14,416,peer.name);
     const address=field(card,'peer-address','局域网地址',18,78,270,peer.address);
     const port=field(card,'peer-port','端口',306,78,128,peer.port);
-    const token=field(card,'peer-token','访问密钥（这台目标设备）',18,142,318,peer.accessToken,true);
-    const reveal=button('显示',370,244,88,()=>{token.type=token.type==='password'?'text':'password';reveal.textContent=token.type==='password'?'显示':'隐藏';});reveal.style.cssText+=';height:34px;--button-fill:#202534;font-size:11.33px';
     const label=document.createElement('span');label.textContent='加入广播';label.style.cssText='position:absolute;left:18px;top:214px;font-weight:bold;font-size:12px';card.append(label);
     const enabled=document.createElement('button');enabled.className='toggle';enabled.setAttribute('role','switch');enabled.ariaLabel='加入广播';enabled.setAttribute('aria-checked',String(peer.enabled));enabled.style.cssText='position:absolute;left:125px;top:214px;width:44px;height:24px;--height:24px';enabled.onclick=()=>enabled.setAttribute('aria-checked',String(enabled.getAttribute('aria-checked')!=='true'));card.append(enabled);
-    const legacy=document.createElement('input');legacy.type='checkbox';legacy.id='legacy-allowed';legacy.checked=peer.legacyAllowed===true;legacy.style.cssText='position:absolute;left:210px;top:214px';card.append(legacy);
-    const legacyLabel=document.createElement('label');legacyLabel.htmlFor=legacy.id;legacyLabel.textContent='允许旧版未加密发送';legacyLabel.style.cssText='position:absolute;left:234px;top:214px;font-size:11px;color:#fbbf24';card.append(legacyLabel);
-    status.style.cssText='position:absolute;left:42px;top:330px;width:266px;height:28px;color:#94a3b8;font-size:10.67px';setStatus('旧版 HTTP 兼容连接不加密，仅用于可信局域网。');
+    status.style.cssText='position:absolute;left:42px;top:330px;width:266px;height:28px;color:#94a3b8;font-size:10.67px';setStatus('局域网内直接发送，不需要密钥。');
     const candidate=()=>{
       if(!/^\d+$/.test(port.value.trim()))throw new Error('设备端口必须是整数。');
-      return {...peer,name:name.value,address:address.value,port:Number(port.value),accessToken:token.value,enabled:enabled.getAttribute('aria-checked')==='true',transport:'legacy',pairedOwner:'',legacyAllowed:legacy.checked};
+      return {...peer,name:name.value,address:address.value,port:Number(port.value),accessToken:'',enabled:enabled.getAttribute('aria-checked')==='true',transport:'legacy',pairedOwner:'',legacyAllowed:true};
     };
     const probe=button('检测设备',350,324,108,async()=>{
       const data=candidate();probe.disabled=true;probe.textContent='检测中';

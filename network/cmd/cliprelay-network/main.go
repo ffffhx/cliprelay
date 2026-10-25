@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,31 @@ import (
 )
 
 const pairingURL = "https://124-221-36-36.anyip.dev:8443/cliprelay-network"
+
+var pairingDeviceID = regexp.MustCompile(`\A[0-9a-f]{24}\z`)
+
+// requester is the bounded public pairing API used by the helper.
+type requester interface {
+	Request(action, data string) (string, error)
+}
+
+// autoApprovePairings lets a phone that already entered the one-time pairing
+// code proceed without a separate confirmation on the computer. Errors are
+// ignored: an already handled or expired request disappears from the next
+// status response, and network failures are retried on the next poll.
+func autoApprovePairings(client requester, pending []map[string]any) {
+	for _, entry := range pending {
+		id, _ := entry["id"].(string)
+		if !pairingDeviceID.MatchString(id) {
+			continue
+		}
+		data, err := json.Marshal(map[string]string{"id": id})
+		if err != nil {
+			continue
+		}
+		_, _ = client.Request("approve", string(data))
+	}
+}
 
 type peer struct {
 	ID        string   `json:"id"`
@@ -214,6 +240,7 @@ func (r *runtime) session(ctx context.Context) error {
 		if value.Reauthorize {
 			return fmt.Errorf("renewing expired network registration")
 		}
+		autoApprovePairings(r.client, value.Pending)
 		ips := []string{}
 		for _, p := range value.Peers {
 			for _, ip := range p.Addresses {

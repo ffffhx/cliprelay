@@ -11,7 +11,7 @@ export function mount(root,api,cancel,initial){
   status.setAttribute('role','status');notice.setAttribute('aria-live','polite');controls.className='host-actions';
   controls.append(start,stop,permissions,close);root.append(title,status,controls,loginLabel,loginStatus,startupLabel,
     element('p','自动启动设置在下次打开应用时生效。当前远程访问使用上方的启动、停止按钮控制。'),
-    element('p','启动后，可在同一局域网的另一台设备中添加这台 Mac，再在此处核对验证码。关闭此窗口后仍允许连接，点击“停止远程访问”可结束连接。'),
+    element('p','启动后，可在同一局域网的另一台设备中添加这台 Mac；配对请求会自动允许。关闭此窗口后仍允许连接，点击“停止远程访问”可结束连接。'),
     capabilities,clipboard,element('p','本机语音及隐私控制仍待提供。'),notice,requests,clients);
   const errors={HOST_UNAVAILABLE:'此安装包未包含完整的本机远程访问组件。',HOST_PERMISSION_REQUIRED:'请先允许屏幕录制和键鼠控制。',HOST_KEYCHAIN_UNAVAILABLE:'系统钥匙串不可用，请稍后重试。',HOST_PAIR_STALE:'这次请求已过期或已处理，请核对当前请求。',HOST_PAIR_CLOSED:'远程访问已停止。',HOST_PAIR_TIMEOUT:'读取配对请求超时，请重试。',HOST_PAIR_UNAVAILABLE:'暂时无法读取配对请求，请重试。',HOST_ENGINE_EXITED:'远程画面组件已退出。',HOST_COMPANION_EXITED:'远程连接组件已退出。'};
   function render(){

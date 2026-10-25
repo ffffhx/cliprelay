@@ -558,7 +558,6 @@ private fun SettingsPanel(
 ) {
     var draft by remember(settings) { mutableStateOf(settings) }
     var portText by remember(settings.port) { mutableStateOf(settings.port.toString()) }
-    var revealToken by remember { mutableStateOf(false) }
     val parsedPort = portText.toIntOrNull()
     val portValid = parsedPort != null && parsedPort in AppPreferences.MIN_PORT..AppPreferences.MAX_PORT
     val normalizedDraft = draft.copy(port = parsedPort ?: settings.port)
@@ -612,26 +611,6 @@ private fun SettingsPanel(
             shape = RoundedCornerShape(15.dp),
         )
 
-        Spacer(Modifier.height(10.dp))
-        OutlinedTextField(
-            value = draft.accessToken,
-            enabled = draft.legacyCompatibility,
-            onValueChange = { draft = draft.copy(accessToken = it.take(128)) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("访问密钥（可选）") },
-            supportingText = {
-                Text("填写后旧客户端需使用同一密钥；该兼容连接仍未加密")
-            },
-            singleLine = true,
-            visualTransformation = if (revealToken) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                TextButton(onClick = { revealToken = !revealToken }) {
-                    Text(if (revealToken) "隐藏" else "显示")
-                }
-            },
-            shape = RoundedCornerShape(15.dp),
-        )
-
         Spacer(Modifier.height(8.dp))
         SettingSwitch(
             title = "开机恢复接收",
@@ -678,7 +657,7 @@ private fun SettingsPanel(
                 onClick = {
                     onSave(
                         normalizedDraft.copy(
-                            accessToken = draft.accessToken.trim(),
+                            accessToken = "",
                             deviceName = ClipRelayDiscovery.normalizeDeviceName(draft.deviceName),
                         ),
                     )

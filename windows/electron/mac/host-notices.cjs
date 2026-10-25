@@ -6,7 +6,7 @@ class HostNotices{
     this.withdraw();
     try{
       if(!this.Notification.isSupported())return false;
-      const notice=new this.Notification({title:'有设备请求连接这台 Mac',body:`${count} 台设备等待确认。点击打开请求列表并核对验证码。`,silent:false});
+      const notice=new this.Notification({title:'有设备正在配对这台 Mac',body:`${count} 台设备正在建立配对，已自动允许。`,silent:true});
       this.current=notice;
       notice.on('click',()=>{if(!this.closed && this.current===notice && this.active())this.open();});
       // Retain at most one token until replacement/withdrawal. Activation must

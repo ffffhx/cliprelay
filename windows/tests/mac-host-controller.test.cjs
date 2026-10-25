@@ -121,6 +121,22 @@ test('pending preference writes are serialized and joined on close without start
   const closing=f.controller.close();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.calls.length,0);finish();await saving;await closing;
   assert.equal(f.controller.snapshot().autoStart,true);assert.deepEqual(f.calls,[['close']]);
 });
+test('LAN pairing requests are approved automatically and never twice',async t=>{
+  const timers=new Set(),calls=[];
+  const f=fixture(t,{autoApprovePairing:true,
+    monitorOptions:{setTimer:fn=>{timers.add(fn);return fn;},clearTimer:fn=>timers.delete(fn)},
+    rpc:async({op,data})=>{calls.push([op,data]);return op==='host-pair-list'?{requests:[request]}:{ok:true};}});
+  await start(f);
+  const tick=[...timers][0];timers.delete(tick);tick();
+  for(let i=0;i<50 && !calls.some(([op])=>op==='host-pair-approve');i++)await new Promise(resolve=>setImmediate(resolve));
+  const approved=calls.filter(([op])=>op==='host-pair-approve');
+  assert.equal(approved.length,1);
+  assert.deepEqual(approved[0][1],{id:request.id,generation:request.generation,verification:request.verification});
+  const next=[...timers][0];if(next){timers.delete(next);next();}
+  for(let i=0;i<20;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.filter(([op])=>op==='host-pair-approve').length,1);
+});
+
 test('closing settings cancels foreground reads while the background request monitor continues',async t=>{
   const timers=new Set(),reads=[],notices=[];
   const f=fixture(t,{monitorOptions:{setTimer:fn=>{timers.add(fn);return fn;},clearTimer:fn=>timers.delete(fn)},onPairingRequest:value=>notices.push(value),

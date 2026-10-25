@@ -37,15 +37,15 @@ function createOwners({directory,stateDirectory,safeStorage,enginePin,companionP
   return {session:new HostSession({engine,companion,onUpdate}),companion};
 }
 class HostController{
-  constructor({directory,stateDirectory,safeStorage,localName,platform=process.platform,arch=process.arch,create=createOwners,rpc=hostPairing,clientRequest,onUpdate=()=>{},onPairingRequest=()=>{},autoStart=false,saveAutoStart,loginStartup,monitorOptions={}}){
-    Object.assign(this,{localName,rpc,onUpdate,saveAutoStart,loginStartup});this.autoStart=autoStart===true;this.owner=null;this.requests=[];this.operations=new Set();this.backgroundOperations=new Set();this.generation=0;this.error=null;this.closed=false;
+  constructor({directory,stateDirectory,safeStorage,localName,platform=process.platform,arch=process.arch,create=createOwners,rpc=hostPairing,clientRequest,onUpdate=()=>{},onPairingRequest=()=>{},autoStart=false,saveAutoStart,loginStartup,autoApprovePairing=false,monitorOptions={}}){
+    Object.assign(this,{localName,rpc,onUpdate,saveAutoStart,loginStartup});this.autoStart=autoStart===true;this.autoApprovePairing=autoApprovePairing===true;this.approvedPairings=new Set();this.owner=null;this.requests=[];this.operations=new Set();this.backgroundOperations=new Set();this.generation=0;this.error=null;this.closed=false;
     try{
       if(platform!=='darwin' || !['arm64','x64'].includes(arch))throw fault('HOST_PLATFORM_UNSUPPORTED');
       this.owner=create({directory,stateDirectory,safeStorage,enginePin:readPin(directory,'host-engine',arch),companionPin:readPin(directory,'host-companion',arch),onUpdate:()=>this.changed()});
       this.clients=new HostClients({session:this.owner.session,request:clientRequest});
       this.monitor=new HostMonitor({...monitorOptions,session:this.owner.session,version:()=>this.generation,
         read:signal=>this.query('host-pair-list',undefined,{signal,background:true}),
-        onRequests:requests=>{this.requests=requests;this.error=null;this.publish();},
+        onRequests:requests=>{this.requests=requests;this.error=null;this.publish();if(this.autoApprovePairing)this.autoApprove(requests);},
         onError:()=>{this.requests=[];this.error='HOST_PAIR_UNAVAILABLE';this.publish();},onNotice:onPairingRequest});
     }catch(error){this.error=error.code==='HOST_PLATFORM_UNSUPPORTED'?error.code:'HOST_UNAVAILABLE';}
   }
@@ -65,6 +65,19 @@ class HostController{
   }
   publish(){try{this.onUpdate(this.snapshot());}catch{}}
   cancelRequests(){for(const operation of this.operations)operation.abort();}
+  // 局域网配对在手机发起后自动放行；每个 id+generation 只尝试一次。
+  autoApprove(requests){
+    for(const request of requests){
+      if(request.state!=='waiting')continue;
+      const key=request.id+':'+request.generation;
+      if(this.approvedPairings.has(key))continue;
+      this.approvedPairings.add(key);
+      while(this.approvedPairings.size>128)this.approvedPairings.delete(this.approvedPairings.values().next().value);
+      this.query('host-pair-approve',{id:request.id,generation:request.generation,verification:request.verification})
+        .then(()=>{this.invalidate();return this.refreshPairing();})
+        .catch(()=>{});
+    }
+  }
   invalidate(){this.generation++;this.requests=[];this.cancelRequests();this.refreshOperation=null;}
   async query(op,data,{signal,background=false}={}){
     if(this.closed || this.owner?.session.snapshot().phase!=='running')throw fault('HOST_PAIR_CLOSED');
