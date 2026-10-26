@@ -38,7 +38,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Encrypted overlay test failed' }
       - name: Check Windows client and update flow
         run: |
-          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','updates','peer-endpoints','settings-ui','settings-save-scope','preview-remote-ui','screen-share-picker-ui','screen-share-tray')) {
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','updates','peer-endpoints','dpi-layout','settings-ui','settings-save-scope','preview-remote-ui','screen-share-picker-ui','screen-share-tray')) {
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1"
             if ($LASTEXITCODE -ne 0) { throw "Windows test failed: $test" }
           }

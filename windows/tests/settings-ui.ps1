@@ -145,6 +145,7 @@ function Show-PhonePreviewRemote {}
 function Show-RemoteDesktopSettings { param([System.Windows.Forms.Form]$Owner) $script:remoteDesktopOwner = $Owner }
 function Get-RelayUpdateSnapshot { return [PSCustomObject]@{ CurrentVersion='0.1.0'; Release=$null } }
 $script:sharingSnapshot = $null
+$script:screenSharingView = $null
 $script:sharingCommand = $null
 function Get-ScreenSharingStatus { return $script:sharingSnapshot }
 function Invoke-ScreenShareCommand {
@@ -252,8 +253,17 @@ if ($null -eq $form) {
     $errorSummary = @($Error | Select-Object -First 5 | ForEach-Object { $_.Exception.Message }) -join " | "
     throw "The relay control center did not open. Open forms: $openFormSummary. Errors: $errorSummary"
 }
-if ($form.ClientSize.Width -lt 600 -or $form.ClientSize.Height -lt 700) {
-    throw "The relay control center is unexpectedly small: $($form.ClientSize). Errors: $($Error | Select-Object -First 3)"
+# A small CI desktop constrains the visible window and makes the full layout
+# scrollable. Validate the content size rather than requiring a tall monitor.
+$minimumLayout = $form.DpiSize(600, 700)
+$contentSize = $form.UnconstrainedClientSize
+if ($contentSize.Width -lt $minimumLayout.Width -or $contentSize.Height -lt $minimumLayout.Height) {
+    throw "The relay control center layout is unexpectedly small: $contentSize. Errors: $($Error | Select-Object -First 3)"
+}
+if (($form.ClientSize.Width -lt $contentSize.Width -or $form.ClientSize.Height -lt $contentSize.Height) -and
+    (-not $form.AutoScroll -or $form.AutoScrollMinSize.Width -lt $contentSize.Width -or
+        $form.AutoScrollMinSize.Height -lt $contentSize.Height)) {
+    throw "The constrained control center does not keep its complete layout reachable by scrolling."
 }
 $testPeersButton = @($form.Controls.Find("TestPeersButton", $true)) | Select-Object -First 1
 if ($null -eq $testPeersButton -or $testPeersButton.Enabled) {

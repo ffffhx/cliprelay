@@ -16,8 +16,9 @@ $sourceMatch = [regex]::Match(
 )
 if (-not $sourceMatch.Success) { throw "ClipRelay C# source block was not found." }
 $dpiLayoutArmCount = ([regex]::Matches($source, '\$form\.EnableDpiLayout\(\)')).Count
-if ($dpiLayoutArmCount -ne 3) {
-    throw "Every runtime-authored form must arm DPI layout after its controls are created; found $dpiLayoutArmCount of 3."
+$formCount = ([regex]::Matches($source, '\$form\s*=\s*New-Object ClipRelay\.RelayForm')).Count
+if ($formCount -eq 0 -or $dpiLayoutArmCount -ne $formCount) {
+    throw "Every runtime-authored form must arm DPI layout after its controls are created; found $dpiLayoutArmCount of $formCount."
 }
 if ($source -match 'AutoScaleMode\]::Dpi') {
     throw "Runtime-authored forms must not establish the current monitor as their design DPI."
@@ -103,25 +104,32 @@ foreach ($dpi in @(96, 120, 144, 192)) {
     }
 }
 
-$compactForm = New-Object ClipRelay.RelayForm
-try {
-    $compactForm.ClientSize = New-Object System.Drawing.Size(760, 720)
-    $compactForm.ApplyDpiLayoutForTesting(
-        [single]144,
-        (New-Object System.Drawing.Size(1366, 768))
-    )
-    if (-not $compactForm.AutoScroll) {
-        throw "A scaled form larger than the working area must remain reachable through scrolling."
+foreach ($compactCase in @(
+    @{ Dpi = 96; Width = 1024; Height = 720; ContentWidth = 760; ContentHeight = 720 },
+    @{ Dpi = 144; Width = 1366; Height = 768; ContentWidth = 1140; ContentHeight = 1080 }
+)) {
+    $compactForm = New-Object ClipRelay.RelayForm
+    try {
+        $compactForm.ClientSize = New-Object System.Drawing.Size(760, 720)
+        $compactForm.ApplyDpiLayoutForTesting(
+            [single]$compactCase.Dpi,
+            (New-Object System.Drawing.Size($compactCase.Width, $compactCase.Height))
+        )
+        if (-not $compactForm.AutoScroll) {
+            throw "A form larger than the working area must remain reachable through scrolling."
+        }
+        if ($compactForm.ClientSize.Width -gt ($compactCase.Width - 24) -or
+            $compactForm.ClientSize.Height -gt ($compactCase.Height - 24)) {
+            throw "The form was not constrained to the working area."
+        }
+        if ($compactForm.AutoScrollMinSize.Width -lt $compactCase.ContentWidth -or
+            $compactForm.AutoScrollMinSize.Height -lt $compactCase.ContentHeight) {
+            throw "The full layout was not preserved as the scrollable extent."
+        }
     }
-    if ($compactForm.ClientSize.Width -gt 1342 -or $compactForm.ClientSize.Height -gt 744) {
-        throw "The scaled form was not constrained to the working area."
+    finally {
+        $compactForm.Dispose()
     }
-    if ($compactForm.AutoScrollMinSize.Width -lt 1140 -or $compactForm.AutoScrollMinSize.Height -lt 1080) {
-        throw "The full scaled layout was not preserved as the scrollable extent."
-    }
-}
-finally {
-    $compactForm.Dispose()
 }
 
 Write-Host "ClipRelay DPI layout regression checks passed at 100%, 125%, 150%, and 200%." -ForegroundColor Green
