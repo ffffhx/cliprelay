@@ -2047,7 +2047,11 @@ function Get-NormalizedRelayPeers {
     }
 
     $normalizedPeers = New-Object System.Collections.ArrayList
-    $endpointKeys = @{}
+    # Only enabled peers receive broadcasts, so only they must stay endpoint
+    # unique. A stale disabled entry keeps its old address when DHCP hands that
+    # address to a device that is still in use; it must not block the automatic
+    # address refresh of the enabled peers.
+    $endpointNames = @{}
     for ($index = 0; $index -lt $sourcePeers.Count; $index++) {
         $sourcePeer = $sourcePeers[$index]
         $pairedOwner = [string](Get-PropertyValue -Object $sourcePeer -Name 'pairedOwner')
@@ -2109,11 +2113,14 @@ function Get-NormalizedRelayPeers {
         $platform = $platform.Trim().ToLowerInvariant()
         if ($platform.Length -gt 24) { $platform = $platform.Substring(0, 24) }
 
-        $endpointKey = if ($transport -eq 'paired') { "paired:$pairedOwner" } else { "$($address.ToLowerInvariant())`:$peerPort" }
-        if ($endpointKeys.ContainsKey($endpointKey)) {
-            throw "接收设备地址重复：$address`:$peerPort。"
+        if ($enabled) {
+            $endpointKey = if ($transport -eq 'paired') { "paired:$pairedOwner" } else { "$($address.ToLowerInvariant())`:$peerPort" }
+            if ($endpointNames.ContainsKey($endpointKey)) {
+                $conflict = if ($transport -eq 'paired') { '同一台配对设备' } else { "$address`:$peerPort" }
+                throw "接收设备地址重复：$conflict（$($endpointNames[$endpointKey]) 与 $name）。"
+            }
+            $endpointNames[$endpointKey] = $name
         }
-        $endpointKeys[$endpointKey] = $true
 
         $null = $normalizedPeers.Add([PSCustomObject][ordered]@{
             id          = $id

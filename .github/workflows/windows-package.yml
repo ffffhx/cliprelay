@@ -25,7 +25,7 @@ jobs:
       - name: Validate installation and feature protocols
         run: |
           New-Item -ItemType Directory -Path .tools/uu-parity -Force | Out-Null
-          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','settings-save-scope','paired-relay','service-process-access','host-pairing','host-clients','engine-admin','remote-lan-pair-ui','authentication-protocol','image-protocol','multi-peer-broadcast')) {
+          foreach ($test in @('windows-package','desktop-viewer-package','desktop-network-package','file-transfer','clipboard-exchange','privacy-screen','session-lock','audio-mute','wake','terminal','paired-targets','legacy-policy','peer-endpoints','settings-save-scope','paired-relay','service-process-access','host-pairing','host-clients','engine-admin','remote-lan-pair-ui','authentication-protocol','image-protocol','multi-peer-broadcast')) {
             $testOptions = @()
             if ($test -eq 'multi-peer-broadcast') { $testOptions = @('-Clipboard') }
             powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "windows/tests/$test.ps1" @testOptions

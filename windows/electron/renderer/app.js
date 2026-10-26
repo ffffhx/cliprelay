@@ -125,8 +125,22 @@ function render(){
   renderAddress();renderPeers();
 }
 function connection(title,detail,stroke='#262c3c',dot='#94a3b8'){
-  text('ConnectionTitleLabel',title);text('connectionDetail',detail);
+  text('ConnectionTitleLabel',title);detailText(detail);
   byId('connectionPanel').style.setProperty('--panel-border',stroke);color('connectionDot',dot);
+}
+// Host errors can be longer than the one-line panel; wrap them instead of
+// hiding the reason behind the panel edge, and keep the full text on hover.
+function detailText(value){
+  const node=byId('connectionDetail');if(!node)return;
+  const detail=String(value ?? '');
+  node.textContent=detail;node.title=detail;node.style.pointerEvents='auto';
+  node.classList.remove('wrap');
+  // The single line clips with ellipsis, so measure the text itself instead of
+  // the flex box the label shrinks to.
+  const range=document.createRange();range.selectNodeContents(node);
+  const textWidth=range.getBoundingClientRect().width;range.detach?.();
+  const available=node.getBoundingClientRect().width-6;
+  if(available>0 && textWidth>available)node.classList.add('wrap');
 }
 function cancelCheck(){generation++;busy=false;byId('TestPeersButton').disabled=false;byId('ScanPeersButton').disabled=false;text('TestPeersButton','⚡ 检测全链路连接');}
 function setPeerStates(peers,label,tint='#94a3b8'){peerStatuses=new Map(peers.map(peer=>[peer.id,{text:label,color:tint}]));renderPeers();}

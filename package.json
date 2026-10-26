@@ -5,7 +5,7 @@
   "private": true,
   "description": "ClipRelay Electron desktop applications",
   "scripts": {
-    "test:electron": "node --test windows/tests/electron-host.test.cjs windows/tests/electron-mac.test.cjs",
+    "test:electron": "node --test windows/tests/electron-host.test.cjs windows/tests/electron-mac.test.cjs windows/tests/control-center-preload.test.cjs",
     "setup:electron": "npm --prefix windows/electron ci --ignore-scripts",
     "build:windows": "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File windows/electron/setup.ps1",
     "build:mac": "node windows/electron/build-macos.cjs",
