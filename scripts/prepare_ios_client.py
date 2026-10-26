@@ -86,7 +86,11 @@ def prepare(source, fetch=True):
         raise RuntimeError('iOS and desktop protocol core pins differ')
     patch = ROOT / 'ios-app/upstream.patch'
     subprocess.run(['git', 'apply', '--check', str(patch)], cwd=source, check=True)
+    common = source / 'moonlight-common/moonlight-common-c'
+    common_patch = ROOT / 'ios-app/common.patch'
+    subprocess.run(['git', 'apply', '--check', str(common_patch)], cwd=common, check=True)
     subprocess.run(['git', 'apply', str(patch)], cwd=source, check=True)
+    subprocess.run(['git', 'apply', str(common_patch)], cwd=common, check=True)
     added = []
     for item in sorted((ROOT / 'ios-app/native').iterdir()):
         if item.suffix not in {'.h', '.m'}:
@@ -105,6 +109,8 @@ def prepare(source, fetch=True):
     info_path.write_bytes(plistlib.dumps(info, sort_keys=False))
     tracked = run('git', 'ls-files', cwd=source).splitlines()
     names = set(tracked) | {f'Limelight/Network/{name}' for name in added}
+    for module in modules:
+        names.update(module + '/' + name for name in run('git', 'ls-files', cwd=source/module).splitlines())
     files = {name: hashlib.sha256((source/name).read_bytes()).hexdigest()
              for name in sorted(names) if (source/name).is_file()}
     receipt = {'protocol': 1, 'upstreamCommit': pin['commit'], 'submodules': modules,

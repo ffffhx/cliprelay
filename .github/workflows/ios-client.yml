@@ -50,3 +50,27 @@ jobs:
           name: ClipRelay-iOS-Development-${{ matrix.sdk }}
           path: .tools/ios-client-${{ matrix.sdk }}/
           if-no-files-found: warn
+  pairing:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: moonlight-stream/moonlight-ios
+          ref: 02dc9780496eeeac6d01c8bbdccb8b6fe71ef28a
+          path: ios-source
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - name: Check production pairing against synthetic native challenges
+        run: python3 scripts/test_ios_pairing.py --source ios-source
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-iOS-Pairing
+          path: .tools/ios-pairing/

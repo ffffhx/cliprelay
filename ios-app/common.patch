@@ -1,0 +1,19 @@
+diff --git a/src/SdpGenerator.c b/src/SdpGenerator.c
+index 22467c0..1751783 100644
+--- a/src/SdpGenerator.c
++++ b/src/SdpGenerator.c
+@@ -267,6 +267,14 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+     optionHead = NULL;
+     err = 0;
+ 
++    // ClipRelay requires encrypted video, audio and control. Do not silently
++    // downgrade if a peer offers only part of the negotiated encryption suite.
++    const uint32_t requiredEncryption = SS_ENC_CONTROL_V2 | SS_ENC_VIDEO | SS_ENC_AUDIO;
++    if (!IS_SUNSHINE() || (EncryptionFeaturesSupported & requiredEncryption) != requiredEncryption) {
++        Limelog("ClipRelay requires encrypted video, audio and control\n");
++        return NULL;
++    }
++
+     if (IS_SUNSHINE()) {
+         // Send client feature flags to Sunshine hosts
+         uint32_t moonlightFeatureFlags = ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1;
