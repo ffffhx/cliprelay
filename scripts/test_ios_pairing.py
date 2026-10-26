@@ -56,6 +56,7 @@ def test(source, output):
         results=[]
         try:
             for mode in ('good','bad-code','short-challenge','bad-signature','reject','expire','cancel'):
+                print('Pairing case: '+mode, flush=True)
                 peer=subprocess.Popen(['node',str(ROOT/'ios-app/tests/pairing-fixture.cjs'),str(directory),mode],
                                       stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
                 try:

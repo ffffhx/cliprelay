@@ -62,12 +62,20 @@ async function handler(request,response){
   response.writeHead(404);response.end();
 }
 const servers=[];
+function handle(request,response){
+  handler(request,response).catch(error=>{
+    // The client deliberately cancels feedback and native requests. A reset
+    // while reading their body is expected; protocol assertions remain fatal.
+    if(request.aborted&&['ECONNRESET','ERR_STREAM_PREMATURE_CLOSE'].includes(error.code))return;
+    console.error(error.message);process.exit(1);
+  });
+}
 async function main(){
   let base;
   for(base=34000;base<35000;base+=13){
     try{
       for(const offset of [0,-5,3]){
-        const server=offset===0?http.createServer(handler):https.createServer({...host,requestCert:true,rejectUnauthorized:false},handler);
+        const server=offset===0?http.createServer(handle):https.createServer({...host,requestCert:true,rejectUnauthorized:false},handle);
         servers.push(server);await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(base+offset,'127.0.0.1',resolve);});
       }
       break;
