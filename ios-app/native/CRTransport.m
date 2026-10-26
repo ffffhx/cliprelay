@@ -135,14 +135,18 @@ NSError *CRError(NSString *message) {
 }
 - (NSURL *)URLForPath:(NSString *)path offset:(NSInteger)offset {
     NSURLComponents *url = [[NSURLComponents alloc] init];
-    url.scheme = @"https"; url.host = self.host; url.port = @(self.port + offset); url.path = path;
+    url.scheme = @"https";
+    url.host = [self.host containsString:@":"] ? [NSString stringWithFormat:@"[%@]", self.host] : self.host;
+    url.port = @(self.port + offset); url.path = path;
     return url.URL;
 }
 - (CRHTTPResult *)perform:(NSURLRequest *)request bootstrap:(BOOL)bootstrap limit:(NSUInteger)limit error:(NSError **)error {
     NSURL *url = request.URL;
     BOOL secure = [url.scheme isEqual:@"https"];
     NSInteger port = url.port.integerValue;
-    BOOL origin = [url.host caseInsensitiveCompare:self.host] == NSOrderedSame && !url.user && !url.password && !url.fragment;
+    NSString *requestHost = url.host;
+    if ([requestHost hasPrefix:@"["] && [requestHost hasSuffix:@"]"]) requestHost = [requestHost substringWithRange:NSMakeRange(1, requestHost.length - 2)];
+    BOOL origin = requestHost.length && [requestHost caseInsensitiveCompare:self.host] == NSOrderedSame && !url.user && !url.password && !url.fragment;
     BOOL endpoint = secure ? (port == self.port - 5 || port == self.port + 2 || port == self.port + 3) :
         ([url.scheme isEqual:@"http"] && port == self.port && [request.HTTPMethod isEqual:@"GET"] && !request.HTTPBody &&
          ([url.path isEqual:@"/pair"] || ([url.path isEqual:@"/serverinfo"] && !self.serverCertificate)));

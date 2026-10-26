@@ -37,6 +37,9 @@ int main(int argc, const char **argv) {
 
         CRTransport *transport = [[CRTransport alloc] initWithHost:@"127.0.0.1" port:[fixture[@"port"] unsignedIntegerValue] certificate:nil pkcs12:identity error:&error];
         require(transport != nil, "client identity import");
+        CRTransport *ipv6 = [[CRTransport alloc] initWithHost:@"::1" port:48789 certificate:server pkcs12:identity error:&error];
+        require([[[ipv6 URLForPath:@"/v1/pair" offset:3] absoluteString] isEqual:@"https://[::1]:48792/v1/pair"], "IPv6 endpoint formatting");
+        [ipv6 cancel];
         NSDictionary *(^json)(NSString *, BOOL, NSUInteger, NSError **) = ^(NSString *path, BOOL bootstrap, NSUInteger limit, NSError **failure) {
             return [transport JSON:path offset:3 method:@"POST" body:@{} headers:@{} bootstrap:bootstrap timeout:2 limit:limit error:failure];
         };
