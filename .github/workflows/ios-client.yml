@@ -1,15 +1,32 @@
 name: iOS Client Development Build
 on:
   push:
-    branches: ['codex/desktop-client-input-*']
-    paths: ['ios-app/**', 'scripts/build_ios_client.py', '.github/workflows/ios-client.yml']
+    branches: ['main', 'codex/ios-*', 'codex/desktop-client-input-*']
+    paths: ['ios-app/**', 'scripts/*ios*.py', '.github/workflows/ios-client.yml']
+  pull_request:
+    paths: ['ios-app/**', 'scripts/*ios*.py', '.github/workflows/ios-client.yml']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  protocol:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check native certificate pinning, cancellation and pairing status
+        run: python3 scripts/test_ios_protocol.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipRelay-iOS-Protocol
+          path: .tools/ios-protocol/
   build:
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -22,7 +39,10 @@ jobs:
           ref: 02dc9780496eeeac6d01c8bbdccb8b6fe71ef28a
           path: ios-source
           submodules: recursive
-      - name: Build fixed native iOS foundation without device signing
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build integrated iOS application without device signing
         run: python3 scripts/build_ios_client.py --sdk '${{ matrix.sdk }}'
       - uses: actions/upload-artifact@v4
         if: always()
