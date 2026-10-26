@@ -28,9 +28,10 @@ $script:previewRemoteForm=$null
 $script:appIcon=$null
 $phone=New-Object ClipRelayTests.PreviewStateServer
 $other=New-Object ClipRelayTests.PreviewStateServer
+# These loopback fixtures implement the legacy HTTP preview protocol.
 $script:Peers=@(
-    [pscustomobject]@{name='Reading phone';address='127.0.0.1';port=$phone.Port;accessToken='test-token';enabled=$false;platform='android'},
-    [pscustomobject]@{name='Other phone';address='127.0.0.1';port=$other.Port;accessToken='other-token';enabled=$true;platform='android'},
+    [pscustomobject]@{name='Reading phone';address='127.0.0.1';port=$phone.Port;accessToken='test-token';enabled=$false;platform='android';legacyAllowed=$true},
+    [pscustomobject]@{name='Other phone';address='127.0.0.1';port=$other.Port;accessToken='other-token';enabled=$true;platform='android';legacyAllowed=$true},
     [pscustomobject]@{name='Windows PC';address='127.0.0.1';port=1;accessToken='';enabled=$true;platform='windows'}
 )
 try {

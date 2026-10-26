@@ -93,6 +93,7 @@ $script:AccessToken = ""
 $script:DeviceId = "local-device-id"
 $script:DeviceName = "Test PC"
 $script:DiscoveryEnabled = $true
+$script:LegacyReceiverEnabled = $false
 $script:appIcon = $null
 $script:Peers = @(
     [PSCustomObject]@{
@@ -128,6 +129,7 @@ $script:editorResult = $null
 $script:editorSelectedPeer = $null
 $script:saveCallCount = 0
 $script:lastSavedNotifications = $null
+$script:lastSavedLegacyReceiver = $null
 $script:lastSavedPeers = @()
 
 function Get-LocalShareableAddresses {
@@ -209,10 +211,13 @@ function Save-PeerConfiguration {
         [bool]$StartupEnabled,
         [object[]]$Peers,
         [bool]$DiscoveryEnabled,
+        [bool]$LegacyReceiverEnabled,
         [string]$DeviceName
     )
     $script:saveCallCount++
     $script:lastSavedNotifications = $Notifications
+    $script:lastSavedLegacyReceiver = $LegacyReceiverEnabled
+    $script:LegacyReceiverEnabled = $LegacyReceiverEnabled
     $script:lastSavedPeers = @($Peers)
     $script:Peers = @(Copy-RelayPeers -Peers $Peers)
     return $PeerAddress
@@ -428,6 +433,10 @@ $peerDetailsPanel = Find-Control "PeerDetailsPanel"
 $addPeerButton = Find-Control "AddPeerButton"
 $scanPeersButton = Find-Control "ScanPeersButton"
 $notificationToggle = Find-Control "NotificationToggle"
+$legacyReceiverToggle = Find-Control "LegacyReceiverToggle"
+if ($null -eq $legacyReceiverToggle -or $legacyReceiverToggle.Checked) {
+    throw "Legacy receiving must be disabled until explicitly enabled."
+}
 $autoSaveStatusLabel = Find-Control "AutoSaveStatusLabel"
 if ($null -ne (Find-Control "ManagePeersButton") -or $null -ne (Find-Control "PeerSummaryToggleButton")) {
     throw "The control center still requires a separate manager or expanding the device list."
@@ -507,6 +516,15 @@ $notificationToggle.Checked = -not $notificationToggle.Checked
 if ($script:saveCallCount -ne ($saveCountBeforeNotification + 1) -or
     $script:lastSavedNotifications -ne $notificationToggle.Checked) {
     throw "Notification autosave stopped working."
+}
+foreach ($legacyReceiverEnabled in @($true, $false)) {
+    $savesBeforeLegacyChange = $script:saveCallCount
+    $legacyReceiverToggle.Checked = $legacyReceiverEnabled
+    if ($script:saveCallCount -ne ($savesBeforeLegacyChange + 1) -or
+        $script:lastSavedLegacyReceiver -ne $legacyReceiverEnabled -or
+        $script:LegacyReceiverEnabled -ne $legacyReceiverEnabled) {
+        throw "The legacy receiver toggle did not autosave its explicit state."
+    }
 }
 $editedPhone = @(Copy-RelayPeers -Peers @($script:Peers[0]))[0]
 $editedPhone.name = "realme RMX3700"
