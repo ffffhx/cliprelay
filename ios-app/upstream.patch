@@ -311,25 +311,111 @@ index e210369..983e673 100644
          host.pairState = PairStateUnknown;
      }
 diff --git a/Limelight/Stream/Connection.m b/Limelight/Stream/Connection.m
-index 33361fc..faf84c6 100644
+index 33361fc..07304f0 100644
 --- a/Limelight/Stream/Connection.m
 +++ b/Limelight/Stream/Connection.m
-@@ -373,6 +373,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
+@@ -27,9 +27,12 @@
+     char _appVersionString[32];
+     char _gfeVersionString[32];
+     char _rtspSessionUrl[128];
++    VideoDecoderRenderer *_ownedRenderer;
++    id<ConnectionCallbacks> _ownedCallbacks;
+ }
+ 
+ static NSLock* initLock;
++static Connection *activeConnection;
+ static OpusMSDecoder* opusDecoder;
+ static id<ConnectionCallbacks> _callbacks;
+ static int lastFrameNumber;
+@@ -309,6 +312,11 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
+ 
+ void ClStageStarting(int stage)
+ {
++    // LiStartConnection resets its interrupt flag before the first stage.
++    // Reapply a cancellation that raced that reset before network work starts.
++    @synchronized (Connection.class) {
++        if (!activeConnection || activeConnection.cancelled) { LiInterruptConnection(); return; }
++    }
+     [_callbacks stageStarting:LiGetStageName(stage)];
+ }
+ 
+@@ -324,6 +332,9 @@ void ClStageFailed(int stage, int errorCode)
+ 
+ void ClConnectionStarted(void)
+ {
++    @synchronized (Connection.class) {
++        if (!activeConnection || activeConnection.cancelled) { LiInterruptConnection(); return; }
++    }
+     [_callbacks connectionStarted];
+ }
+ 
+@@ -373,18 +384,18 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
  
  -(void) terminate
  {
+-    // Interrupt any action blocking LiStartConnection(). This is
+-    // thread-safe and done outside initLock on purpose, since we
+-    // won't be able to acquire it if LiStartConnection is in
+-    // progress.
+-    LiInterruptConnection();
+-    
+-    // We dispatch this async to get out because this can be invoked
+-    // on a thread inside common and we don't want to deadlock. It also avoids
+-    // blocking on the caller's thread waiting to acquire initLock.
 +    [self cancel];
-     // Interrupt any action blocking LiStartConnection(). This is
-     // thread-safe and done outside initLock on purpose, since we
-     // won't be able to acquire it if LiStartConnection is in
-@@ -498,6 +499,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
++    @synchronized (Connection.class) {
++        if (activeConnection == self) LiInterruptConnection();
++    }
+     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+         [initLock lock];
+-        LiStopConnection();
++        BOOL owns;
++        @synchronized (Connection.class) { owns = activeConnection == self; }
++        if (owns) {
++            LiStopConnection();
++            @synchronized (Connection.class) { activeConnection = nil; }
++        }
+         [initLock unlock];
+     });
+ }
+@@ -432,8 +443,8 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
+     }
+     _serverInfo.serverCodecModeSupport = config.serverCodecModeSupport;
+ 
+-    renderer = myRenderer;
+-    _callbacks = callbacks;
++    _ownedRenderer = myRenderer;
++    _ownedCallbacks = callbacks;
+ 
+     LiInitializeStreamConfiguration(&_streamConfig);
+     _streamConfig.width = config.width;
+@@ -498,13 +509,25 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
  -(void) main
  {
      [initLock lock];
-+    if (self.cancelled) { [initLock unlock]; return; }
-     LiStartConnection(&_serverInfo,
+-    LiStartConnection(&_serverInfo,
++    @synchronized (Connection.class) {
++        if (self.cancelled) { [initLock unlock]; return; }
++        if (activeConnection) {
++            [initLock unlock];
++            [_ownedCallbacks launchFailed:@"上一段连接仍在结束，请稍后重试。"]; return;
++        }
++        activeConnection = self;
++        renderer = _ownedRenderer; _callbacks = _ownedCallbacks;
++    }
++    int result = LiStartConnection(&_serverInfo,
                        &_streamConfig,
                        &_clCallbacks,
+                       &_drCallbacks,
+                       &_arCallbacks,
+                       NULL, 0,
+                       NULL, 0);
++    if (result != 0) {
++        @synchronized (Connection.class) { if (activeConnection == self) activeConnection = nil; }
++    }
+     [initLock unlock];
+ }
+ 
 diff --git a/Limelight/Stream/StreamManager.m b/Limelight/Stream/StreamManager.m
 index e776fee..f1c6755 100644
 --- a/Limelight/Stream/StreamManager.m

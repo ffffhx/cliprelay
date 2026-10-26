@@ -37,6 +37,7 @@ async function handler(request,response){
       if(!Buffer.from(q.get('clientcert'),'hex').equals(client))throw Error('Client certificate changed');
       verificationObserved=true;
       secretKey=hash(Buffer.from(q.get('salt'),'hex'),pin).subarray(0,16);
+      if(mode==='cancel')return; // Keep a real pending native request for cancellation.
       xml(response,{plaincert:host.cert.toString('hex')});return;
     }
     if(q.has('clientchallenge')){
