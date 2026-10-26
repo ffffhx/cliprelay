@@ -19,8 +19,10 @@
     if (!(self = [super init])) return nil;
     NSString *host = [Utils addressPortStringToAddress:address];
     NSUInteger port = [Utils addressPortStringToPort:address];
+    NSError *setupError = nil;
     _transport = [[CRTransport alloc] initWithHost:host port:port certificate:certificate
-        pkcs12:[CryptoManager readP12FromFile] error:&_setupError];
+        pkcs12:[CryptoManager readP12FromFile] error:&setupError];
+    _setupError = setupError;
     NSData *identity = [CryptoManager pemToDer:[CryptoManager readCertFromFile]];
     if (identity.length) {
         NSData *hash = [[[CryptoManager alloc] init] SHA256HashData:identity];

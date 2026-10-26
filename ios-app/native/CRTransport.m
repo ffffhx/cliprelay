@@ -13,22 +13,22 @@ NSError *CRError(NSString *message) {
 @property(atomic, copy, readwrite) NSData *serverCertificate;
 @property(nonatomic, copy, readwrite) NSString *host;
 @property(nonatomic, readwrite) NSUInteger port;
-@property NSData *identityData;
-@property NSURLCredential *credential;
-@property NSMutableSet<NSURLSession *> *sessions;
+@property(nonatomic, strong) NSData *identityData;
+@property(nonatomic, strong) NSURLCredential *credential;
+@property(nonatomic, strong) NSMutableSet<NSURLSession *> *sessions;
 @property BOOL cancelled;
 - (BOOL)acceptCertificate:(NSData *)certificate bootstrap:(BOOL)bootstrap;
 @end
 
 @interface CRHTTPExchange : NSObject <NSURLSessionDataDelegate>
-@property CRTransport *owner;
+@property(nonatomic, strong) CRTransport *owner;
 @property BOOL bootstrap;
 @property BOOL verifiedPeer;
 @property NSUInteger limit;
-@property NSMutableData *bytes;
+@property(nonatomic, strong) NSMutableData *bytes;
 @property NSInteger status;
-@property NSError *error;
-@property dispatch_semaphore_t finished;
+@property(nonatomic, strong) NSError *error;
+@property(nonatomic, strong) dispatch_semaphore_t finished;
 @end
 
 @implementation CRHTTPExchange
