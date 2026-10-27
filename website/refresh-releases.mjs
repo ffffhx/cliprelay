@@ -3,6 +3,7 @@ import {readFile,writeFile} from 'node:fs/promises';
 const page=new URL('./dist/index.html',import.meta.url);
 const base='https://124-221-36-36.anyip.dev:8443/cliprelay';
 const channels={windows:{tag:/^windows-v\d+\.\d+\.\d+$/,asset:/^ClipRelay-Windows-\d+\.\d+\.\d+\.zip$/,manifest:`${base}/windows/update.json`,downloadKey:'downloadUrl'},android:{tag:/^android-v\d+\.\d+\.\d+$/,asset:/^ClipRelay-\d+\.\d+\.\d+\.apk$/,manifest:`${base}/update.json`,downloadKey:'apkUrl'}};
+channels.macos={tag:/^macos-v\d+\.\d+\.\d+$/};
 async function json(url) {
   const response=await fetch(url,{headers:{'User-Agent':'ClipRelay-Website','Accept':'application/json'},signal:AbortSignal.timeout(20000)});
   if(!response.ok) throw new Error(`${new URL(url).hostname}: HTTP ${response.status}`);
@@ -26,6 +27,24 @@ const report=[];
 for(const [platform,channel] of Object.entries(channels)){
   const release=latest[platform];if(!release)throw new Error(`No published ${platform} release found`);
   const version=release.tag_name.split('-v')[1];
+  if(platform==='macos'){
+    const prefix=`https://github.com/ffffhx/cliprelay/releases/download/${release.tag_name}/`;
+    const metadataAsset=release.assets.find(item=>item.name==='macos-update.json');
+    if(metadataAsset?.browser_download_url!==prefix+'macos-update.json')throw new Error('Missing macOS release metadata');
+    const metadata=await json(metadataAsset.browser_download_url);
+    if(metadata.versionName!==version||metadata.platform!=='macos'||metadata.notarized!==false||metadata.signature!=='ad-hoc')throw new Error('Review macOS publication status before updating this page');
+    for(const arch of ['arm64','x64']){
+      const asset=release.assets.find(item=>item.name===`ClipRelay-macOS-${arch}-${version}.zip`);
+      const info=metadata.assets?.[arch];
+      if(!asset||asset.browser_download_url!==prefix+asset.name||info?.downloadUrl!==asset.browser_download_url||info.size!==asset.size||info.host!==true||info.streamAcceptance!=='deferred')throw new Error('Review macOS capabilities and acceptance notice before updating this page');
+      replaceOne(new RegExp(`data-download="macos-${arch}" href="[^"]+"`),`data-download="macos-${arch}" href="${asset.browser_download_url}"`);
+      replaceOne(new RegExp(`data-size="macos-${arch}">[^<]+`),`data-size="macos-${arch}">${(asset.size/1048576).toFixed(1)} MB`);
+      report.push({platform:`macos-${arch}`,version,download:asset.browser_download_url,size:asset.size});
+    }
+    replaceOne(/data-version="macos">[^<]+/,`data-version="macos">v${version}`);
+    replaceOne(/data-release="macos" href="[^"]+"/,`data-release="macos" href="${release.html_url}"`);
+    continue;
+  }
   const asset=release.assets.find(item=>channel.asset.test(item.name)&&item.name.includes(version));
   if(!asset)throw new Error(`No ${platform} installer in release`);
   const prefix='https://github.com/ffffhx/cliprelay/releases/';

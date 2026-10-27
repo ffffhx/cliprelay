@@ -64,6 +64,10 @@ Windows 主界面收敛为「剪切板」「远程控制」「设置」，支持
 
 ## Mac 端
 
+[下载 macOS 0.4.3](https://github.com/ffffhx/cliprelay/releases/tag/macos-v0.4.3)：提供 Apple Silicon（arm64）与 Intel（x64）完整功能包，要求 macOS 14.2 或更新版本。解压后将 `ClipRelay.app` 拖入「应用程序」。安装包使用 ad-hoc 签名，尚未完成 Apple Developer ID 签名和公证；首次打开受阻时，确认下载来源及 SHA-256，再按 [Apple 官方说明](https://support.apple.com/zh-cn/102445)在「隐私与安全性」中选择「仍要打开」。
+
+本次按“先发布、后验收”发布：构建、原生剪贴板／登录项和包完整性检查通过后提供下载；实际视频／音频串流、用户 Mac 安装、系统授权及两台电脑端到端验收仍待完成。发布页附安装限制、构建记录、`SHA256SUMS` 与 `macos-update.json`；后者明确记录各架构的组件和验收状态。下方保留源码构建及历史开发记录。
+
 在 macOS 上使用 Node.js 22.12 或更新版本、Xcode Command Line Tools 构建：
 
 ```bash
