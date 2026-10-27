@@ -45,7 +45,7 @@ async function build(){
     for(const name of ['package.json','package-lock.json'])fs.copyFileSync(path.join(__dirname,name),path.join(source,name));
     fs.copyFileSync(path.join(repo,'LICENSE'),path.join(source,'LICENSE'));
     execFileSync('npm',['ci','--omit=dev','--ignore-scripts'],{cwd:source,stdio:'inherit'});
-    execFileSync('/usr/bin/clang',['-arch',architecture==='x64'?'x86_64':'arm64','-fobjc-arc','-framework','Foundation','-framework','ApplicationServices',path.join(source,'mac','copy-selection.m'),'-o',path.join(source,'mac','copy-selection')],{stdio:'inherit'});
+    execFileSync('/usr/bin/clang',['-arch',architecture==='x64'?'x86_64':'arm64','-mmacosx-version-min=14.2','-fobjc-arc','-framework','Foundation','-framework','ApplicationServices',path.join(source,'mac','copy-selection.m'),'-o',path.join(source,'mac','copy-selection')],{stdio:'inherit'});
     const iconset=path.join(staging,'ClipRelay.iconset');fs.mkdirSync(iconset);
     const logo=path.join(repo,'assets','logo-512.png');
     for(const size of [16,32,128,256,512]){
