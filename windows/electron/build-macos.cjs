@@ -223,8 +223,19 @@ async function build(){
       // Seal the completed outer application without changing pinned nested runtimes.
       // Ad-hoc signing is not Developer ID signing or Apple notarization.
       const app=path.join(bundle,'ClipRelay.app');
+      // Packager renames Electron helper bundles; x64 Electron runtimes may
+      // also be unsigned. Sign only Electron-owned framework/login code here.
+      // Never recursively re-sign Resources/app/mac: its component hashes are pinned.
+      for(const relative of ['Contents/Frameworks','Contents/Library/LoginItems']){
+        const directory=path.join(app,relative);
+        if(!fs.existsSync(directory))continue;
+        for(const name of fs.readdirSync(directory)){
+          if(!/\.(?:app|framework|dylib)$/.test(name))continue;
+          execFileSync('/usr/bin/codesign',['--force','--deep','--sign','-','--preserve-metadata=entitlements,flags,runtime',path.join(directory,name)],{stdio:'inherit'});
+        }
+      }
       execFileSync('/usr/bin/codesign',['--force','--sign','-','--preserve-metadata=entitlements,flags,runtime',app],{stdio:'inherit'});
-      execFileSync('/usr/bin/codesign',['--verify','--strict',app],{stdio:'inherit'});
+      execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',app],{stdio:'inherit'});
       const minimumOS=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :LSMinimumSystemVersion',path.join(app,'Contents/Info.plist')],{encoding:'utf8'}).trim();
       const nativeArchitecture=execFileSync(path.join(app,'Contents/MacOS/ClipRelay'),['-p','process.arch'],{encoding:'utf8',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}}).trim();
       if(nativeArchitecture!==architecture)throw new Error('Sealed application architecture mismatch');
