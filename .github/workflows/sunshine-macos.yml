@@ -52,14 +52,22 @@ jobs:
         run: python3 scripts/test_macos_privacy_filter.py --source sunshine-source --output privacy-filter-tests.json
       - name: Verify native capture pixels and window exclusion
         run: python3 scripts/test_macos_capture.py --source sunshine-source --output capture-tests.json
+      - name: Check the complete platform overlay before compiling dependencies
+        run: python3 scripts/prepare_sunshine.py sunshine-source --check --macos-host
       - name: Install build tools
         run: brew install cmake ninja pkgconf
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: native-dependencies
         with:
           path: mac-dependencies/install
           key: macos-host-dependencies-${{ matrix.arch }}-v1-${{ hashFiles('engine/sunshine/macos-dependencies.json', 'scripts/build_sunshine_macos_dependencies.py') }}
       - name: Build pinned runtime dependencies for macOS 14.2
         run: python3 scripts/build_sunshine_macos_dependencies.py mac-dependencies
+      - uses: actions/cache/save@v4
+        if: steps.native-dependencies.outputs.cache-hit != 'true'
+        with:
+          path: mac-dependencies/install
+          key: ${{ steps.native-dependencies.outputs.cache-primary-key }}
       - name: Apply pinned source and test platform independent controls
         run: |
           set -euo pipefail

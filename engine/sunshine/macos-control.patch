@@ -58,13 +58,13 @@ index c364049..eb4804b 100644
      if (!authenticate(response, request)) return;
 -#ifdef _WIN32
 +#if defined(_WIN32) || defined(__APPLE__)
-     // EnumOutputs filters detached/non-capturable devices in the same way as
-     // the capture thread. Revalidate by ID there before applying a selection.
+     // Inventory must not create a second duplication of the current output.
+     // The capture thread revalidates the selected ID and actual capture.
      if (request->query_string == "refresh=1") {
 +  #ifdef __APPLE__
 +      cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::videotoolbox));
 +  #else
-       cliprelay::displays.catalog(platf::display_names(platf::mem_type_e::dxgi));
+       cliprelay::displays.catalog(platf::attached_display_names());
 +  #endif
      } else if (!request->query_string.empty()) {
        bad_request(response, request, "Invalid display query"); return;
