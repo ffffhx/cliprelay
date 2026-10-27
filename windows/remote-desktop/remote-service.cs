@@ -77,6 +77,31 @@ namespace ClipRelay.Remote {
             File.WriteAllText(temp, Json().Serialize(settings), new UTF8Encoding(false));
             File.Replace(temp, SettingsPath, null);
         }
+        object DeviceCode(bool rotate) {
+            string existing = Text(settings, "deviceCode");
+            bool valid = System.Text.RegularExpressions.Regex.IsMatch(existing, "\\A[0-9]{8}\\z");
+            bool updating = Text(settings, "deviceCodeUpdating") == "True";
+            if (valid && !rotate && !updating) return new { value = existing };
+            if (rotate && !valid) throw new InvalidOperationException("请先获取本机设备码，再更新。");
+            if (!NetworkEnabled) { settings["networkEnabled"] = true; SaveSettings(); }
+            EnsureNetwork();
+            if (rotate && !updating) {
+                // Keep unknown clients out while the server/local commit is in
+                // flight. Persist the old value so crash/retry is idempotent.
+                settings["deviceCodeUpdating"] = true;
+                try { SaveSettings(); } catch { settings.Remove("deviceCodeUpdating"); throw; }
+                updating = true;
+            }
+            string action = updating ? "device-code-rotate" : "device-code";
+            var result = NetworkRequest(action, new { action = action, previous = existing }) as Dictionary<string, object>;
+            string value = result == null ? "" : Text(result, "value");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(value, "\\A[0-9]{8}\\z")) throw new InvalidOperationException("暂时无法获取设备码，请稍后重试。");
+            settings["deviceCode"] = value;
+            settings["deviceCodeUpdating"] = false;
+            try { SaveSettings(); }
+            catch { settings["deviceCode"] = existing; settings["deviceCodeUpdating"] = updating; throw; }
+            return new { value = value };
+        }
         void EnsureEngineConfiguration() {
             if (Text(settings, "connectionDefaultsVersion") != "1") {
                 settings["enabled"] = true;
@@ -359,6 +384,22 @@ namespace ClipRelay.Remote {
             }
             if (action == "networkStatus") return NetworkRequest("status", "");
             if (action == "networkCode") return NetworkRequest("code", "");
+            if (action == "deviceAccess") {
+                lock (gate) {
+                    object required;
+                    if (request.TryGetValue("required", out required)) {
+                        if (!(required is bool)) throw new ArgumentException("Invalid device-code policy");
+                        if ((bool)required && !System.Text.RegularExpressions.Regex.IsMatch(Text(settings, "deviceCode"), "\\A[0-9]{8}\\z"))
+                            throw new InvalidOperationException("请先联网获取本机设备码，再开启此选项。");
+                        settings["requireDeviceCode"] = required; SaveSettings();
+                    }
+                    bool updating = Text(settings, "deviceCodeUpdating") == "True";
+                    return new { required = Text(settings, "requireDeviceCode") == "True", code = updating ? "" : Text(settings, "deviceCode"), updating = updating };
+                }
+            }
+            if (action == "deviceCode" || action == "deviceCodeRotate") {
+                lock (gate) return DeviceCode(action == "deviceCodeRotate");
+            }
             if (action == "networkApprove" || action == "networkRevoke") {
                 string id = Text(request, "id");
                 if (!System.Text.RegularExpressions.Regex.IsMatch(id, "\\A[0-9a-f]{24}\\z")) throw new ArgumentException("Invalid device ID");

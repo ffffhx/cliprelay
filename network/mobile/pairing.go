@@ -52,6 +52,10 @@ func (c *PairingClient) Request(action, data string) (string, error) {
 		path = "hosts"
 	case "code":
 		path = "codes"
+	case "device-code":
+		path = "device-code"
+	case "device-code-rotate":
+		path = "device-code/rotate"
 	case "claim":
 		path = "claims"
 	case "approve", "revoke", "enroll", "presence":

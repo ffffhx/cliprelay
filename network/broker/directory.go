@@ -2,7 +2,6 @@ package broker
 
 import (
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 )
@@ -48,72 +47,12 @@ func (s *Server) publishPresence(w http.ResponseWriter, r *http.Request, identit
 	return nil
 }
 
+// Public enumeration and address-free claims are retired. LAN discovery stays
+// local; an unpaired Internet client must prove possession of the device code.
 func (s *Server) discover(w http.ResponseWriter, r *http.Request, identity string) error {
-	devices := []presence{}
-	for id, p := range s.directory {
-		if !p.Expires.After(s.now()) {
-			delete(s.directory, id)
-			continue
-		}
-		if id != identity[:24] {
-			devices = append(devices, p)
-		}
-	}
-	sort.Slice(devices, func(i, j int) bool { return devices[i].ID < devices[j].ID })
-	reply(w, 200, map[string]any{"devices": devices})
+	reply(w, 200, map[string]any{"devices": []presence{}})
 	return nil
 }
-
-// The host explicitly publishes both discovery and connection permission.
-// Each viewer still receives its own revocable identity in that host's network.
-// Existing pairing-code endpoints retain their original approval semantics.
 func (s *Server) claimDiscovered(w http.ResponseWriter, r *http.Request, identity string) error {
-	var req struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	if err := body(r, &req); err != nil {
-		return err
-	}
-	if !nameOK(req.Name) {
-		return fail(400, "invalid device name")
-	}
-	p, ok := s.directory[req.ID]
-	if !ok || !p.Expires.After(s.now()) || !p.Connectable {
-		return fail(404, "computer is not accepting connections")
-	}
-	if !s.take(identity+":directory-claim", 6) {
-		return fail(429, "too many connection attempts")
-	}
-	if existing := s.db.Devices[identity]; existing != nil {
-		if existing.HostID != req.ID || existing.State != "approved" || existing.ID == existing.HostID {
-			return fail(409, "device already has a pairing record")
-		}
-		reply(w, 200, map[string]string{"id": existing.ID, "state": "approved", "computer": p.Name, "hostId": req.ID})
-		return nil
-	}
-	var host *Device
-	count := 0
-	for _, d := range s.db.Devices {
-		if d.ID == req.ID && d.ID == d.HostID && d.State == "approved" {
-			host = d
-		}
-		if d.HostID == req.ID && d.ID != req.ID && d.State != "revoked" && (d.State != "pending" || d.Expires.After(s.now())) {
-			count++
-		}
-	}
-	if host == nil {
-		return fail(404, "computer is unavailable")
-	}
-	if count >= 8 || len(s.db.Devices) >= 1000 {
-		return fail(409, "computer device capacity reached")
-	}
-	d := &Device{ID: identity[:24], TokenHash: identity, Name: req.Name, HostID: host.ID, UserID: host.UserID, State: "approved", Created: s.now()}
-	s.db.Devices[identity] = d
-	if err := s.save(); err != nil {
-		delete(s.db.Devices, identity)
-		return err
-	}
-	reply(w, 201, map[string]string{"id": d.ID, "state": "approved", "computer": p.Name, "hostId": host.ID})
-	return nil
+	return fail(403, "device code required")
 }

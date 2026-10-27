@@ -8,6 +8,18 @@ const {pairHost}=require('../electron/mac/pairing.cjs');
 test('DER certificate signature matches independently parsed Go certificate',()=>{
   for(const value of Object.values(identities))assert.equal(signature(value.cert).toString('hex'),value.signature);
 });
+
+test('first pairing sends the device code inside TLS and rejects absent or incorrect codes before native exchange',async()=>{
+  const f=await fixture({deviceCode:'12345678'});f.approve();
+  const args={address:'127.0.0.1',name:'Viewer',identity:f.client,ports:f.ports};
+  try{
+    await assert.rejects(pairHost(args),{code:'DEVICE_CODE_REQUIRED'});
+    await assert.rejects(pairHost({...args,deviceCode:'87654321'}),{code:'DEVICE_CODE_INVALID'});
+    assert.deepEqual(f.trace,[]);
+    const host=await pairHost({...args,deviceCode:'12345678'});assert.equal(f.authorized,true);
+    assert.equal(JSON.stringify(host).includes('12345678'),false);
+  }finally{await f.close();}
+});
 test('client finishes PIN and signed-secret exchange only after operator approval',async()=>{
   const f=await fixture();let showCode;
   const shown=new Promise(resolve=>{showCode=resolve});

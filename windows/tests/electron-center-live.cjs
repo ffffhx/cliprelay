@@ -16,15 +16,19 @@ const state={revision:0,config:{deviceName:'我的 Windows',port:47632,peers:[pe
 let discovery,probe,merge,windows,center;
 let remoteAvailable=false,clipboardUnavailable=false,remoteServer;
 let incomingEnabled=true,incomingFailure=false,incomingMutation;
+let codeRequired=false,deviceCode='12345678',codeUpdate,codeFailure=false,networkHosts=[],networkOnline=true,networkPairing={state:'idle'},target,session={phase:'idle',peerId:'',error:''};
 const host={async request(action,data={}){
   calls.push({action,data:structuredClone(data)});
   if(action==='snapshot')return structuredClone(state);
   if(action==='patch'){const {expectedRevision,...patch}=data;if(expectedRevision!==undefined&&expectedRevision!==state.revision)throw new Error('设备列表已改变，请重试。');Object.assign(state.config,structuredClone(patch));state.revision++;return structuredClone(state);}
   if(action==='discover')return discovery?discovery.promise:[];
-  if(action==='merge'){if(merge)return merge.promise;const added=data.addNew?data.devices.filter(d=>!data.peers.some(p=>p.id===d.id)).map(d=>({...d,enabled:true,remotePort:remoteServer.address().port})):[];return {Peers:[...data.peers,...added],Added:added.length,Updated:0,Removed:0};}
+  if(action==='merge'){if(merge)return merge.promise;const added=data.addNew?data.devices.filter(d=>!data.peers.some(p=>p.id===(d.id||d.Id))).map(d=>({...d,enabled:true,remotePort:remoteServer.address().port})):[];let updated=0;const peers=data.peers.map(p=>{const d=data.devices.find(d=>(d.id||d.Id)===p.id);const address=d?.address||d?.Address;if(!data.addNew&&address&&address!==p.address){updated++;return {...p,address};}return p;});return {Peers:[...peers,...added],Added:added.length,Updated:updated,Removed:0};}
   if(action==='probe')return probe?probe.promise:data.peers.map(p=>({Success:p.id==='pc'&&!clipboardUnavailable,ErrorMessage:p.id==='pc'&&!clipboardUnavailable?'':'连接超时',StatusCode:p.id==='pc'&&!clipboardUnavailable?200:0}));
   if(action==='normalize-peer'){if(!data.address||data.port<1||data.port>65535)throw new Error('设备地址或端口无效');return data;}
   if(action==='remote'){
+    if(data.action==='deviceAccess'){if(data.required!==undefined)codeRequired=data.required;return {ok:true,data:{required:codeRequired,code:deviceCode}};}
+    if(data.action==='deviceCode')return {ok:true,data:{value:deviceCode}};
+    if(data.action==='deviceCodeRotate'){if(codeUpdate)await codeUpdate.promise;if(codeFailure)return {ok:false,error:'Network unavailable'};deviceCode='87654321';return {ok:true,data:{value:deviceCode}};}
     if(data.action==='status')return incomingFailure?{ok:false,error:'Service unavailable'}:{ok:true,data:{enabled:incomingEnabled,ready:incomingEnabled}};
     if(incomingMutation)await incomingMutation.promise;
     if(data.action==='enable'||data.action==='disable'){incomingEnabled=data.action==='enable';return {ok:true,data:{enabled:incomingEnabled}};}
@@ -32,7 +36,7 @@ const host={async request(action,data={}){
   if(action.startsWith('update-'))return null;
   throw new Error('Unexpected '+action);
 }};
-const evaluate=script=>center.webContents.executeJavaScript(script);
+const evaluate=async script=>{try{return await center.webContents.executeJavaScript(script);}catch(error){throw new Error(script+'\n'+error.message);}};
 const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const ready=()=>evaluate('document.body.dataset.ready === "true"').catch(()=>false);
 const record=name=>{checks.push(name);fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(checks,null,2));};
@@ -40,6 +44,12 @@ app.whenReady().then(async()=>{
   remoteServer=http.createServer((req,res)=>{assert.equal(req.url,'/serverinfo');res.end(remoteAvailable?'<root status_code="200"><appversion>7.1</appversion><uniqueid>pc</uniqueid><state>SUNSHINE_SERVER_FREE</state></root>':'ok');});
   await new Promise(r=>remoteServer.listen(0,'127.0.0.1',r));
   windows=new DesktopWindows(host,path.resolve(__dirname,'..'));
+  windows.client={open(peer){target=peer;session={phase:'starting',peerId:peer.id,error:''};return session;},direct:{get busy(){return false;},status:()=>session,stop:()=>session={phase:'idle',peerId:'',error:''}},paired:{store:{hosts:()=>networkHosts}},network:{
+    snapshot:()=>({pairing:networkPairing}),route:()=>networkOnline?{address:'127.0.0.1',port:remoteServer.address().port}:null,
+    claim(code){networkPairing={state:'connecting'};setTimeout(()=>{if(code!=='12345678'){networkPairing={state:'error',error:'PAIRING_CODE_EXPIRED'};return;}networkHosts=[{networkId:'a'.repeat(24),name:'Paired away computer',enabled:true}];networkPairing={state:'paired'};},80);return {pairing:networkPairing};},
+    connectSaved(){this.pairTask=Promise.resolve();this.pairing={state:networkOnline?'paired':'error',error:'NETWORK_NOT_READY'};},
+    cancelPair(){networkPairing={state:'error',error:'CANCELLED'};},remove(){networkHosts=[];}
+  },close(){}};
   discovery=deferred();center=windows.open();await wait(ready,'renderer ready');
   await wait(()=>calls.some(c=>c.action==='discover'),'automatic detection');
   assert.equal(await evaluate('typeof require'),'undefined');
@@ -90,7 +100,6 @@ app.whenReady().then(async()=>{
   assert.equal(await evaluate('document.querySelector(".probe-summary").innerText.includes("1/2 台设备接收可用")'),true);
   state.config.peers[0].address='127.0.0.1';state.config.peers[0].remotePort=remoteServer.address().port;state.revision++;windows.refresh();await sleep(120);
   await click('[data-action="probe"]');await wait(()=>evaluate('document.body.innerText.includes("1/2 台设备接收可用")'),'clipboard succeeds');
-  let target,session={phase:'idle',peerId:'',error:''};windows.client={open(peer){target=peer;session={phase:'starting',peerId:peer.id,error:''};return session;},direct:{status:()=>session,stop:()=>session={phase:'idle',peerId:'',error:''}},close(){}};
   await click('[data-page="remote"]');await wait(()=>evaluate('document.body.innerText.includes("未检测到兼容的远控服务")'),'remote check rejects clipboard-style reply');
   assert.equal(await evaluate('document.querySelector("[data-action=connect]").disabled'),true);
   assert.equal(await evaluate('document.querySelectorAll("[data-device-id]").length'),1);
@@ -190,17 +199,46 @@ app.whenReady().then(async()=>{
   fs.writeFileSync(path.join(output,'remote-session.png'),(await remote.webContents.capturePage()).toPNG());
   record('real remote renderer consumes target and opens viewer without manual sending or approval UI');remote.destroy();ipcMain.removeHandler('mac:request');
   await click('[data-page="remote"]');
-  windows.directory.devices=[{id:'a'.repeat(24),deviceId:'far-away',name:'朋友的电脑 <外出>',platform:'windows',connectable:true}];
-  windows.refresh();
-  await wait(()=>evaluate(`!!document.querySelector('[data-device-id="directory:aaaaaaaaaaaaaaaaaaaaaaaa"]')`),'public computer appears without adding an address');
-  assert.equal(await evaluate(`document.querySelector('[data-device-id="directory:aaaaaaaaaaaaaaaaaaaaaaaa"] [data-action=connect]').disabled`),false);
-  await click('[data-action="connect"][data-id="directory:aaaaaaaaaaaaaaaaaaaaaaaa"]');
-  assert.equal(target.directoryId,'a'.repeat(24));assert.equal(target.address,undefined);
-  await click('[data-action="remote-stop"]');
-  windows.directory.devices[0].connectable=false;windows.refresh();
-  await wait(()=>evaluate(`document.querySelector('[data-device-id="directory:aaaaaaaaaaaaaaaaaaaaaaaa"] [data-action=connect]').disabled`),'public device stops accepting connections');
-  windows.directory.devices=[];windows.refresh();
-  await wait(()=>evaluate(`!document.querySelector('[data-device-id="directory:aaaaaaaaaaaaaaaaaaaaaaaa"]')`),'offline public device removed');
-  record('public devices appear automatically, connect without address or code, honor host switch and disappear offline');
+  windows.directory.devices=[{id:'b'.repeat(24),deviceId:'not-added',name:'Unadded public PC',platform:'windows',connectable:true}];windows.refresh();await sleep(150);
+  assert.equal(await evaluate(`!!document.querySelector('[data-device-id="directory:bbbbbbbbbbbbbbbbbbbbbbbb"]')`),false);
+  await wait(()=>evaluate('!document.querySelector("[data-action=remote-probe]").disabled'),'initial remote check finished');
+  await click('[data-action="remote-probe"]');await wait(()=>evaluate('!document.querySelector("[data-action=remote-probe]").disabled'),'saved computer probe');
+  assert.equal(state.config.peers.length,4);record('refresh and detection never add public computers');
+  await click('[data-action="connect-new"]');await wait(()=>evaluate('!!document.querySelector("[data-action=code-add]")'),'code entry in LAN scan');
+  await click('[data-action="code-add"]');await evaluate('document.querySelector("#code-form input").value="00000000"');await click('[data-action="code-submit"]');
+  await wait(()=>evaluate('!!document.querySelector("[data-action=code-add]")'),'wrong code feedback and retry');assert.equal(networkHosts.length,0);
+  await click('[data-action="code-add"]');await evaluate('document.querySelector("#code-form input").value="12345678"');await click('[data-action="code-submit"]');
+  await wait(()=>evaluate(`!!document.querySelector('[data-device-id="network:aaaaaaaaaaaaaaaaaaaaaaaa"]')`),'code paired saved card');
+  await wait(()=>evaluate(`!document.querySelector('[data-id="network:aaaaaaaaaaaaaaaaaaaaaaaa"][data-action=connect]').disabled`),'paired route actually probed');
+  await click('[data-action="connect"][data-id="network:aaaaaaaaaaaaaaaaaaaaaaaa"]');assert.equal(target.networkId,'a'.repeat(24));assert.equal(target.deviceCode,undefined);await click('[data-action="remote-stop"]');
+  await wait(()=>evaluate('!document.querySelector("[data-action=remote-probe]").disabled'),'connection stopped');
+  networkOnline=false;await click('[data-action="remote-probe"]');await wait(()=>evaluate(`document.querySelector('[data-id="network:aaaaaaaaaaaaaaaaaaaaaaaa"][data-action=connect]').disabled`),'offline saved card disabled');
+  assert.equal(await evaluate(`!!document.querySelector('[data-device-id="network:aaaaaaaaaaaaaaaaaaaaaaaa"]')`),true);
+  assert.equal(JSON.stringify(state.config).includes('12345678'),false);
+  record('external computer requires correct device code; saved authorization reconnects without code and remains listed offline');
+  await click('[data-page="settings"]');await click('[data-tab="general"]');await wait(()=>evaluate('!!document.querySelector("[data-action=toggle-code-policy]")'),'code policy');
+  await click('[data-action="toggle-code-policy"]');await wait(()=>codeRequired,'required code saved');
+  await click('[data-page="remote"]');await click('[data-page="settings"]');
+  assert.equal(await evaluate('document.querySelector("[data-action=toggle-code-policy]").getAttribute("aria-checked")'),'true');
+  record('device code and first-pairing requirement are available in settings');
+  const rotations=()=>calls.filter(c=>c.action==='remote'&&c.data.action==='deviceCodeRotate').length;
+  await click('[data-action="rotate-device-code"]');await click('dialog [data-action="dismiss"]');assert.equal(rotations(),0);
+  await click('[data-action="rotate-device-code"]');codeFailure=true;
+  await click('[data-action="confirm-device-code"]');await wait(()=>evaluate('document.querySelector(".modal-error").textContent.includes("Network unavailable")'),'rotation failure');
+  assert.equal(deviceCode,'12345678');await click('dialog [data-action="dismiss"]');codeFailure=false;
+  await wait(()=>evaluate('!document.querySelector("[data-action=rotate-device-code]").disabled'),'rotation retry ready');
+  session={phase:'running',peerId:'network:'+ 'a'.repeat(24),error:''};
+  const beforeRotation=JSON.stringify({session,networkHosts,config:state.config,incomingEnabled,codeRequired});
+  await click('[data-action="rotate-device-code"]');codeUpdate=deferred();
+  await click('[data-action="confirm-device-code"]');await wait(()=>rotations()===2,'rotation submitted');
+  assert.equal(await evaluate('document.querySelector("[data-action=confirm-device-code]").disabled'),true);
+  await click('[data-action="confirm-device-code"]');assert.equal(rotations(),2);
+  codeUpdate.resolve();codeUpdate=null;
+  await wait(()=>evaluate('document.querySelector("#device-code").textContent==="87654321"&&!document.querySelector("dialog").open'),'new device code visible');
+  assert.equal(JSON.stringify({session,networkHosts,config:state.config,incomingEnabled,codeRequired}),beforeRotation);
+  assert.equal(await evaluate('document.querySelector("[data-action=rotate-device-code]").disabled'),false);
+  center.setSize(560,700);await new Promise(r=>setTimeout(r,100));
+  assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
+  record('device code rotation confirms, handles errors, prevents duplicate requests and preserves existing sessions and pairings');
   windows.close();remoteServer.close();app.quit();
 }).catch(async error=>{fs.writeFileSync(path.join(output,'failure.txt'),error.stack);if(center&&!center.isDestroyed()){fs.writeFileSync(path.join(output,'failure-dialog.html'),await evaluate('document.querySelector("dialog").outerHTML'));fs.writeFileSync(path.join(output,'failure-calls.json'),JSON.stringify(calls.slice(-15),null,2));}remoteServer?.close();windows?.close();app.exit(1);});

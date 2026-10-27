@@ -98,14 +98,17 @@ test('close prevents delayed network updates from restarting receivers',async t=
   let changes=0;const f=setup(t,{onUpdate:()=>changes++}),record=f.catalog.save(token(),peer);f.manager.reconcile();await until(()=>f.manager.route(record.id));
   const before=changes;await f.manager.close();f.manager.reconcile();assert.equal(changes,before);assert.equal(f.manager.route(record.id),null);assert.equal(f.channels[0].closed,true);
 });
-test('public discovery enrolls once, pairs automatically and reuses its saved identity',async t=>{
+test('public IDs cannot enroll; device-code pairing persists credentials reused without entering the code again',async t=>{
   const f=setup(t);
   f.manager.connectDiscovered(peer.id);await f.manager.pairTask;
+  assert.equal(f.manager.pairing.error,'DEVICE_CODE_REQUIRED');assert.equal(f.catalog.records().length,0);
+  let receivedCode;const original=f.manager.pair;f.manager.pair=value=>{receivedCode=value.deviceCode;return original(value);};
+  f.manager.claim('12345678');await f.manager.pairTask;assert.equal(receivedCode,'12345678');
   assert.equal(f.manager.pairing.state,'paired');assert.equal(f.catalog.records().length,1);
   const record=f.catalog.records()[0],credential=f.catalog.credential(record.id);
   assert.equal(f.store.selected().networkId,record.id);
   assert.ok(f.manager.route(record.id));
-  f.manager.connectDiscovered(peer.id);await f.manager.pairTask;
+  f.manager.connectSaved(record.id);await f.manager.pairTask;
   assert.equal(f.manager.pairing.state,'paired');assert.equal(f.catalog.records().length,1);
   assert.equal(f.catalog.credential(record.id),credential);
   f.manager.enable(record.id,false);f.manager.connectDiscovered(peer.id);await f.manager.pairTask;

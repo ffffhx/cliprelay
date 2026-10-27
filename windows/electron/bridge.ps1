@@ -111,7 +111,7 @@ function Invoke-ElectronRequest([string]$Json) {
                 $task = [ClipRelay.RelayBroadcaster]::NavigatePreviewAsync($targets,$direction,1500)
             }
             'remote' {
-                if ($data.action -notin @('status','pairings','lanPairings','clients','enable','disable','pair','pairReject','lanPairApprove','lanPairReject','unpair','disconnect','networkStatus','networkCode','networkApprove','networkRevoke','networkEnable','networkDisable','networkPresence')) { throw 'Unknown remote action.' }
+                if ($data.action -notin @('status','pairings','lanPairings','clients','enable','disable','pair','pairReject','lanPairApprove','lanPairReject','unpair','disconnect','networkStatus','networkCode','networkApprove','networkRevoke','networkEnable','networkDisable','networkPresence','deviceAccess','deviceCode','deviceCodeRotate')) { throw 'Unknown remote action.' }
                 if (-not ('ClipRelay.Remote.ControlClient' -as [type])) { Add-Type -Path (Join-Path (Split-Path $PSScriptRoot) 'remote-desktop\remote-client.cs') }
                 $task = [ClipRelay.Remote.ControlClient]::RequestAsync(($data | ConvertTo-Json -Compress))
             }

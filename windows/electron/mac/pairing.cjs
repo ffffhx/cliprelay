@@ -4,7 +4,7 @@ const {exchange,jsonRequest,endpoint,fault}=require('./paired-transport.cjs');
 const {hash,fromHex,signature,aes,xmlValue}=require('./paired-crypto.cjs');
 const feedback=require('./pairing-feedback.cjs');
 
-async function pairHost({address,port=48789,name,identity,signal,onVerification=()=>{},expectedCert,ports={}}){
+async function pairHost({address,port=48789,name,identity,signal,onVerification=()=>{},expectedCert,ports={},deviceCode}){
   const target=endpoint(address,port);
   if(typeof name!=='string' || !name.trim() || Buffer.byteLength(name)>128 || /[\r\n\0]/.test(name))throw fault('INVALID_NAME');
   const nonce=crypto.randomBytes(16).toString('hex'),pin=String(crypto.randomInt(10000)).padStart(4,'0');
@@ -14,7 +14,9 @@ async function pairHost({address,port=48789,name,identity,signal,onVerification=
   const base={address:target.address,identity,trust,signal:owner.signal};
   let id,bound,monitorTask,feedbackError,readFeedback;
   try{
-    const bootstrap=await jsonRequest({...base,port:ports.bootstrap || port+3,path:'/v1/pair',body:{nonce,name,pin},headers:{'X-ClipRelay-Pairing-Feedback':'1','X-ClipRelay-Pairing-Native':'1'},timeout:6000,limit:2048});
+    if(deviceCode!==undefined&&!/^[0-9]{8}$/.test(deviceCode))throw fault('INVALID_PAIRING_CODE');
+    const bootstrap=await jsonRequest({...base,port:ports.bootstrap || port+3,path:'/v1/pair',body:{nonce,name,pin,...(deviceCode?{deviceCode}:{})},headers:{'X-ClipRelay-Pairing-Feedback':'1','X-ClipRelay-Pairing-Native':'1'},acceptStatuses:[200,403,429,503],timeout:6000,limit:2048});
+    if(['DEVICE_CODE_REQUIRED','DEVICE_CODE_INVALID','DEVICE_CODE_RATE_LIMIT','DEVICE_ACCESS_UNAVAILABLE'].includes(bootstrap?.code))throw fault(bootstrap.code);
     const digest=hash('cliprelay-lan-pair-v1\n',new crypto.X509Certificate(trust.cert).raw,new crypto.X509Certificate(identity.cert).raw,nonce).toString('hex');
     const verification=digest.slice(0,12).toUpperCase().match(/.{4}/g).join(' ');
     id=digest.slice(0,32);

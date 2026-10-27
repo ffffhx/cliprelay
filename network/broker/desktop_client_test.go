@@ -21,7 +21,7 @@ func TestDesktopClientRealBrokerApprovalAndRevocation(t *testing.T) {
 	runDesktopBroker(t, false)
 }
 
-func TestDesktopClientPublicDirectoryWithoutPairingCode(t *testing.T) {
+func TestDesktopClientPersistentDeviceCode(t *testing.T) {
 	runDesktopBroker(t, true)
 }
 
@@ -69,8 +69,10 @@ func runDesktopBroker(t *testing.T, discovery bool) {
 	}
 	defer func() { input.Close(); command.Process.Kill() }()
 	publicCA := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
-	config := map[string]any{"endpoint": server.URL + "/network", "ca": publicCA, "hostId": hostID, "discovery": discovery}
-	if !discovery {
+	config := map[string]any{"endpoint": server.URL + "/network", "ca": publicCA, "hostId": hostID, "discovery": false}
+	if discovery {
+		config["code"] = call(t, s, "POST", "/v1/device-code", host, `{}`, 200)["value"]
+	} else {
 		config["code"] = code(t, s, host)
 	}
 	json.NewEncoder(input).Encode(config)
@@ -91,9 +93,7 @@ func runDesktopBroker(t *testing.T, discovery bool) {
 	if !ok {
 		t.Fatal("missing desktop claim ID")
 	}
-	if !discovery {
-		call(t, s, "POST", "/v1/approve", host, fmt.Sprintf(`{"id":%q}`, id), 200)
-	}
+	call(t, s, "POST", "/v1/approve", host, fmt.Sprintf(`{"id":%q}`, id), 200)
 	io.WriteString(input, "approved\n")
 	next("enrolled")
 	call(t, s, "POST", "/v1/revoke", host, fmt.Sprintf(`{"id":%q}`, id), 200)

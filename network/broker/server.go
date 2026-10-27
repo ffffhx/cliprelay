@@ -1,15 +1,12 @@
 package broker
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -37,8 +34,10 @@ type PairCode struct {
 	Expires time.Time `json:"expires"`
 }
 type database struct {
-	Devices map[string]*Device  `json:"devices"`
-	Codes   map[string]PairCode `json:"codes"`
+	Devices      map[string]*Device  `json:"devices"`
+	Codes        map[string]PairCode `json:"codes"`
+	DeviceCodes  map[string]string   `json:"deviceCodes,omitempty"`
+	RetiredCodes map[string]bool     `json:"retiredCodes,omitempty"`
 }
 type rateEntry struct {
 	Start time.Time
@@ -69,6 +68,12 @@ func New(control Control, controlURL, statePath string) (*Server, error) {
 	if s.db.Devices == nil || s.db.Codes == nil {
 		return nil, errors.New("invalid pairing database")
 	}
+	if s.db.DeviceCodes == nil {
+		s.db.DeviceCodes = map[string]string{}
+	}
+	if s.db.RetiredCodes == nil {
+		s.db.RetiredCodes = map[string]bool{}
+	}
 	return s, nil
 }
 
@@ -77,6 +82,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { reply(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("POST /v1/hosts", s.wrap(s.createHost))
 	mux.HandleFunc("POST /v1/codes", s.wrap(s.createCode))
+	mux.HandleFunc("POST /v1/device-code", s.wrap(s.deviceCode))
+	mux.HandleFunc("POST /v1/device-code/rotate", s.wrap(s.rotateDeviceCode))
 	mux.HandleFunc("POST /v1/claims", s.wrap(s.claim))
 	mux.HandleFunc("POST /v1/approve", s.wrap(s.approve))
 	mux.HandleFunc("POST /v1/revoke", s.wrap(s.revoke))
@@ -274,23 +281,9 @@ func (s *Server) createCode(w http.ResponseWriter, r *http.Request, identity str
 	if !s.take(identity+":code", 6) {
 		return fail(429, "too many pairing codes")
 	}
-	var code string
-	for {
-		n, err := rand.Int(rand.Reader, big.NewInt(100000000))
-		if err != nil {
-			return err
-		}
-		code = fmt.Sprintf("%08d", n)
-		duplicate := false
-		for _, v := range s.db.Codes {
-			if v.Value == code && v.Expires.After(s.now()) {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			break
-		}
+	code, err := s.newPairingCode()
+	if err != nil {
+		return err
 	}
 	pair := PairCode{Value: code, Expires: s.now().Add(5 * time.Minute)}
 	previous, existed := s.db.Codes[host.ID]
@@ -328,6 +321,14 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request, identity string) 
 		}
 	}
 	if hostID == "" {
+		for id, value := range s.db.DeviceCodes {
+			if value == req.Code {
+				hostID = id
+				break
+			}
+		}
+	}
+	if hostID == "" {
 		return fail(404, "pairing code expired or incorrect")
 	}
 	var host *Device
@@ -348,11 +349,13 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request, identity string) 
 	}
 	d := &Device{ID: identity[:24], TokenHash: identity, Name: req.Name, HostID: hostID, UserID: host.UserID, State: "pending", Created: s.now(), Expires: s.now().Add(5 * time.Minute)}
 	s.db.Devices[identity] = d
-	previous := s.db.Codes[hostID]
+	previous, hadCode := s.db.Codes[hostID]
 	delete(s.db.Codes, hostID)
 	if err := s.save(); err != nil {
 		delete(s.db.Devices, identity)
-		s.db.Codes[hostID] = previous
+		if hadCode {
+			s.db.Codes[hostID] = previous
+		}
 		return err
 	}
 	reply(w, 201, map[string]string{"id": d.ID, "state": "pending", "computer": host.Name})

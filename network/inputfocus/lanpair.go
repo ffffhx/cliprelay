@@ -35,6 +35,7 @@ type lanRequest struct {
 	Feedback         *pairFeedbackTicket `json:"feedback,omitempty"`
 	Native           *nativePairTicket   `json:"native,omitempty"`
 	pin              string
+	deviceCode       string
 	client           []byte
 	cancel           context.CancelFunc
 	generation       string
@@ -46,17 +47,19 @@ type lanRequest struct {
 }
 
 type lanPairer struct {
-	mu         sync.Mutex
-	closed     bool
-	pending    sync.WaitGroup
-	closeIdle  func()
-	dir        string
-	serverCert []byte
-	requests   map[string]*lanRequest
-	engine     func(context.Context, string, string, any) ([]byte, error)
-	ctx        context.Context
-	managed    bool
-	feedback   map[string]pairFeedbackResult
+	mu           sync.Mutex
+	closed       bool
+	pending      sync.WaitGroup
+	closeIdle    func()
+	dir          string
+	serverCert   []byte
+	requests     map[string]*lanRequest
+	engine       func(context.Context, string, string, any) ([]byte, error)
+	ctx          context.Context
+	managed      bool
+	feedback     map[string]pairFeedbackResult
+	deviceAccess func() (bool, string, error)
+	codeAttempts map[string]codeAttempt
 }
 
 func newLANPairer(ctx context.Context, dir string, cert tls.Certificate) *lanPairer {
@@ -163,15 +166,19 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Nonce string `json:"nonce"`
-		Name  string `json:"name"`
-		PIN   string `json:"pin"`
+		Nonce      string `json:"nonce"`
+		Name       string `json:"name"`
+		PIN        string `json:"pin"`
+		DeviceCode string `json:"deviceCode,omitempty"`
 	}
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048))
 	d.DisallowUnknownFields()
 	if d.Decode(&input) != nil || d.Decode(new(any)) != io.EOF || !pairNonce.MatchString(input.Nonce) || !pairPIN.MatchString(input.PIN) ||
 		len(input.Name) == 0 || len(input.Name) > 128 || strings.ContainsAny(input.Name, "\r\n\x00") {
 		http.Error(w, "invalid request", 400)
+		return
+	}
+	if !p.checkDeviceCode(w, r, clientCert, input.DeviceCode) {
 		return
 	}
 	id, code := verification(p.serverCert, clientCert, input.Nonce)
@@ -205,7 +212,7 @@ func (p *lanPairer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute)
-	request := &lanRequest{ID: id, Name: input.Name, Verification: code, Expires: time.Now().Add(2 * time.Minute).Unix(), pin: input.PIN, client: append([]byte(nil), clientCert...), cancel: cancel}
+	request := &lanRequest{ID: id, Name: input.Name, Verification: code, Expires: time.Now().Add(2 * time.Minute).Unix(), pin: input.PIN, deviceCode: input.DeviceCode, client: append([]byte(nil), clientCert...), cancel: cancel}
 	var err error
 	if p.managed {
 		var generation [16]byte

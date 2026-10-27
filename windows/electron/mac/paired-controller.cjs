@@ -5,6 +5,8 @@ const {endpoint,fault}=require('./paired-transport.cjs');
 const {sameRoute}=require('./routed-store.cjs');
 const {clipboardAccess,captureSelection}=require('./clipboard-access.cjs');
 function message(error){
+  const access={DEVICE_CODE_REQUIRED:'这台电脑要求首次配对时输入设备码',DEVICE_CODE_INVALID:'设备码不正确，请核对后重试',DEVICE_CODE_RATE_LIMIT:'设备码尝试过于频繁，请稍后重试',DEVICE_ACCESS_UNAVAILABLE:'电脑的连接设置暂不可用，请稍后重试'};
+  if(access[error?.code])return access[error.code];
   if(error?.code==='DEVICE_NOT_AVAILABLE')return '电脑已离线或停止接收连接，请刷新列表';
   const network={NETWORK_NOT_READY:'正在连接电脑，请稍后重试',NETWORK_UNAVAILABLE:'请更新 ClipRelay 以使用外网配对',NETWORK_REVOKED:'电脑已撤销外网授权，请重新配对',NETWORK_PEER_CHANGED:'电脑的配对身份已改变，连接已停止',BROKER_UNAVAILABLE:'暂时无法连接配对服务，请稍后重试',BROKER_BAD_REPLY:'配对服务返回了无效信息，连接已停止',BROKER_REDIRECT:'配对服务地址发生变化，连接已停止',BROKER_RATE_LIMIT:'配对请求过于频繁，请稍后重试',BROKER_CONFLICT:'配对请求已存在，请重新生成配对码',NETWORK_NOT_APPROVED:'请先在电脑确认配对请求',PAIRING_CODE_EXPIRED:'配对码已过期或不正确，请重新生成',INVALID_PAIRING_CODE:'请输入电脑显示的 8 位数字配对码',UNKNOWN_NETWORK:'未找到这台电脑的外网配对',INVALID_NETWORK_CREDENTIAL:'配对凭据无法读取，请重新配对',NETWORK_CONNECTION_FAILED:'网络连接暂时不可用，正在重试'};
   if(network[error?.code])return network[error.code];
@@ -52,12 +54,12 @@ class PairedController{
       try{
         const identity=await this.store.identity();if(controller.signal.aborted)throw fault('CANCELLED');
         const existing=this.store.hosts().find(host=>host.address===target.address && host.port===target.port);
-        const host=await this.pair({...target,identity,name:this.localName,expectedCert:existing?.certificate,signal:controller.signal,onVerification:({verification,expires})=>{
+        const host=await this.pair({...target,identity,name:this.localName,deviceCode:data?.deviceCode,expectedCert:existing?.certificate,signal:controller.signal,onVerification:({verification,expires})=>{
           this.pairing={state:'waiting',verification,expires,message:'请在电脑端核对相同验证码，然后确认配对。'};this.onUpdate();
         }});
         if(controller.signal.aborted)throw fault('CANCELLED');
         this.cancelTransfers();this.store.add({...host,name:label || host.name});this.receiver.refresh();this.pairing={state:'paired',message:'配对成功。电脑端添加此设备为配对广播目标后即可自动接收。'};
-      }catch(error){this.pairing={state:'error',message:expired?'配对已超时，请重新发起':message(error)};}
+      }catch(error){this.pairing={state:'error',code:error.code,message:expired?'配对已超时，请重新发起':message(error)};}
       finally{clearTimeout(timer);this.pairController=null;this.onUpdate();}
     })();
     return this.snapshot();

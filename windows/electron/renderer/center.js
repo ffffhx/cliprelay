@@ -16,7 +16,8 @@ export async function mount(root,api,view='control-center'){
   let snapshot,closed=false,polling=false,shown=false,saveQueue=Promise.resolve(),saving=0,saveError='',connectionError='',page=['remote-home','remote-desktop','remote-network'].includes(view)?'remote':'devices',settingsTab='general';
   let probe=null,generation=0,roster='',pageSignature='',scanCommit=false,toastTimer,dialogReturnFocus;
   let remoteProbe=null,remoteGeneration=0,remoteRoster='',remoteSession={phase:'idle',peerId:'',error:''};
-  let directory={devices:[],error:''},activeComputer=null;
+  let savedComputers=[],activeComputer=null,remoteScanCommit=false;
+  let deviceAccess=null,deviceAccessError='',accessReading=false,codeRotationBusy=false,codeTarget=null,codePairing=false,promptedCode='';
   let remoteHost=null,remoteHostError='',remoteHostBusy=false,remoteHostReading=false,remoteHostGeneration=0;
   let theme=localStorage.getItem('cliprelay-appearance')||'light';
   const media=matchMedia('(prefers-color-scheme: dark)');
@@ -28,16 +29,15 @@ export async function mount(root,api,view='control-center'){
   const targets=()=>peers().filter(p=>p.enabled);
   const computers=()=>{
     const saved=peers().filter(p=>!['Android','iOS'].includes(platform(p)));
-    const found=directory.devices||[];
-    const all=[...saved.map(p=>{const entry=found.find(d=>d.deviceId===p.id);return entry?{...p,directoryId:entry.id,connectable:entry.connectable}:p;}),
-      ...found.filter(d=>!saved.some(p=>p.id===d.deviceId)).map(d=>({...d,id:'directory:'+d.id,directoryId:d.id}))];
+    const all=[...saved,...savedComputers];
     if(activeComputer&&remoteActive()&&!all.some(p=>p.id===activeComputer.id))all.push(activeComputer);
     return all;
   };
-  const remoteTarget=p=>({id:p.id,name:p.name,...(p.directoryId?{directoryId:p.directoryId}:{address:p.address,port:Number(p.remotePort||48789)})});
+  const remoteTarget=p=>({id:p.id,name:p.name,...(p.networkId?{networkId:p.networkId}:{address:p.address,port:Number(p.remotePort||48789)})});
   function toast(message){clearTimeout(toastTimer);root.querySelector('.toast').textContent=message;toastTimer=setTimeout(()=>root.querySelector('.toast').textContent='',4000);}
   function closeDialog(){dialog.close();}
-  dialog.addEventListener('close',()=>{if(dialog.open)return;dialog.replaceChildren();dialogReturnFocus?.focus();dialogReturnFocus=null;});
+  dialog.addEventListener('cancel',event=>{if(codeRotationBusy)event.preventDefault();});
+  dialog.addEventListener('close',()=>{if(dialog.open)return;if(codePairing){codePairing=false;void api.window('desktop-code-cancel').catch(error);}dialog.replaceChildren();dialogReturnFocus?.focus();dialogReturnFocus=null;});
   function modal(title,body,footer=''){
     dialog.scanMarker=null;
     if(!dialog.open)dialogReturnFocus=document.activeElement;
@@ -61,7 +61,7 @@ export async function mount(root,api,view='control-center'){
     if(roster&&roster!==nextRoster&&!scanCommit)cancelProbe();
     roster=nextRoster;snapshot=next;
     const nextRemoteRoster=signature(computers().map(remoteTarget));
-    if(nextRemoteRoster!==remoteRoster){remoteGeneration++;remoteProbe=null;remoteRoster=nextRemoteRoster;}
+    if(nextRemoteRoster!==remoteRoster){if(!remoteScanCommit){remoteGeneration++;remoteProbe=null;}remoteRoster=nextRemoteRoster;}
   }
   const heading=(title,subtitle,action='')=>`<header class="page-head"><div><h1>${title}</h1><p>${subtitle}</p></div>${action}</header>`;
   function peerResult(peer){return probe?.phase==='done'?probe.results.find(r=>r.id===peer.id):null;}
@@ -85,21 +85,22 @@ export async function mount(root,api,view='control-center'){
   function devices(){return heading('剪切板','选择接收设备，按快捷键发送文本或截图。',button('添加设备','add','','plus'))+`<div class="section-heading"><h2>设备 <span>${peers().length}</span></h2><div class="device-toolbar"><span class="small muted">${probe?.phase==='done'?probe.results.filter(r=>r.ok).length+' 台可发送剪切板':''}</span>${button(probe&&probe.phase!=='done'?'检测中…':'检测全链路连接','probe','','wifi',probe&&probe.phase!=='done'?'disabled':'')}</div></div>${probeSummary()}${deviceList()}<section class="shortcut-section"><div class="section-heading"><h2>快捷键</h2><button class="inline-action" data-action="targets">发送目标 · ${targets().length} 台设备${icon('down')}</button></div>${shortcutRows()}<div class="last-status" role="status">${icon(['error','partial'].includes(snapshot.runtime.State)?'help':'checkCircle')}<span>${esc(time(snapshot.runtime.At))} ${esc(snapshot.runtime.Detail||'等待下一次发送')}</span></div></section>`;}
   const remoteActive=()=>['connecting','starting','running','recovering','closing'].includes(remoteSession.phase);
   function remoteCard(peer){
-    const result=peer.directoryId?{ok:peer.connectable,detail:peer.connectable?'':'对方暂未允许连接'}:remoteProbe?.results.find(r=>r.id===peer.id),owned=remoteSession.peerId===peer.id;
+    const result=remoteProbe?.results.find(r=>r.id===peer.id),owned=remoteSession.peerId===peer.id;
     const phase=owned&&remoteActive()?remoteSession.phase:'';
     const failure=owned&&remoteSession.error||(!result?.ok&&result?.detail)||remoteProbe?.error||'';
     const label=phase?({connecting:'正在连接…',starting:'正在启动控制…',running:'已连接',recovering:'正在重连…',closing:'正在断开…'})[phase]:failure?'无法连接':result?.ok?'可连接':remoteProbe?.phase==='checking'?'检测中…':'待检测';
-    const action=phase?button(phase==='connecting'?'取消连接':'断开连接','remote-stop','','',phase==='closing'?'disabled':''):button('连接电脑','connect','primary','remote',`data-id="${esc(peer.id)}" ${!result?.ok||remoteActive()?'disabled':''}`);
-    return `<article class="device-card remote-card" data-device-id="${esc(peer.id)}"><div class="remote-art">${icon(glyph(peer))}</div><div class="remote-info"><h3>${esc(peer.name)}</h3><div class="device-meta"><span>${platform(peer)}</span><span class="${failure?'failed':result?.ok?'passed':'muted'}">${label}</span></div>${failure?`<p class="remote-error" role="status">${esc(failure)}</p>`:''}${action}</div></article>`;
+    const action=phase?button(phase==='connecting'?'取消连接':'断开连接','remote-stop','','',phase==='closing'?'disabled':''):button('连接电脑','connect','primary','remote',`data-id="${esc(peer.id)}" ${!result?.ok||remoteActive()||remoteProbe?.phase==='checking'?'disabled':''}`);
+    return `<article class="device-card remote-card" data-device-id="${esc(peer.id)}"><div class="remote-art">${icon(glyph(peer))}</div><div class="remote-info"><h3>${esc(peer.name)}</h3><div class="device-meta"><span>${platform(peer)}</span><span class="${failure?'failed':result?.ok?'passed':'muted'}">${label}</span></div>${failure?`<p class="remote-error" role="status">${esc(failure)}</p>`:''}${owned&&['DEVICE_CODE_REQUIRED','DEVICE_CODE_INVALID'].includes(remoteSession.errorCode)?button('输入设备码','retry-code','primary','',`data-id="${esc(peer.id)}"`):action}${peer.networkId&&!phase?button('移除','remove-computer','text','',`data-id="${esc(peer.networkId)}"`):''}</div></article>`;
   }
-  function remote(){return heading('远程控制','已开启发现的电脑会自动出现，选择后即可连接。',button('添加电脑','connect-new','','plus'))+`${directory.error?`<p class="remote-error" role="status">${esc(directory.error)}</p>`:''}<div class="section-heading"><h2>电脑 <span>${computers().length}</span></h2>${button(remoteProbe?.phase==='checking'?'检测中…':'重新检测','remote-probe','','wifi',remoteProbe?.phase==='checking'?'disabled':'')}</div>${computers().length?`<div class="devices-grid">${computers().map(remoteCard).join('')}</div>`:'<div class="empty-state">'+icon('monitor')+'<h2>等待电脑上线</h2><p>请在对方 ClipRelay 中开启「允许被发现」和「允许被连接」。</p></div>'}`;}
+  function remote(){return heading('远程控制','添加电脑后即可连接；重新检测会更新已添加电脑的地址并检查连通性。',button('添加电脑','connect-new','','plus'))+`<div class="section-heading"><h2>电脑 <span>${computers().length}</span></h2>${button(remoteProbe?.phase==='checking'?'检测中…':'重新检测','remote-probe','','wifi',remoteProbe?.phase==='checking'||remoteActive()?'disabled':'')}</div>${computers().length?`<div class="devices-grid">${computers().map(remoteCard).join('')}</div>`:'<div class="empty-state">'+icon('monitor')+'<h2>添加你的第一台电脑</h2><p>点击「添加电脑」扫描局域网；不同网络请使用设备码添加。</p></div>'}`;}
   function settings(){
     const c=snapshot.config;
-    const hostDetail=remoteHostError?'无法读取远控状态：'+esc(remoteHostError):remoteHostBusy?'正在保存…':!remoteHost?'正在读取远控状态…':remoteHost.enabled&&!remoteHost.ready?'正在准备接收连接…':'开启后，使用此 ClipRelay 服务的人可直接控制本机，无需逐台确认。关闭会断开远控并停止接收连接。';
+    const hostDetail=remoteHostError?'无法读取远控状态：'+esc(remoteHostError):remoteHostBusy?'正在保存…':!remoteHost?'正在读取远控状态…':remoteHost.enabled&&!remoteHost.ready?'正在准备接收连接…':'开启后允许设备连接本机，首次配对可要求输入设备码。关闭会断开远控并停止接收连接。';
     const hostControl=`<button class="switch" role="switch" aria-label="允许被连接" aria-checked="${remoteHost?.enabled===true}" data-action="toggle-host" ${remoteHostBusy||!remoteHost?'disabled':''}></button>`;
-    const common=row('设备名称','在其他设备上显示的名称。',`<input class="setting-input" id="device-name" aria-label="设备名称" maxlength="32" value="${esc(c.deviceName)}">`)+row('允许被连接',hostDetail,hostControl)+row('允许被发现','开启后，使用此 ClipRelay 服务的人都能发现本机，无需处于同一网络。关闭后退出设备目录，已添加的设备仍可连接。',toggle('允许被发现','discoveryEnabled',c.discoveryEnabled))+row('开机启动','登录后在后台保持连接。',toggle('开机启动','startupEnabled',c.startupEnabled))+row('通知提醒','发送和接收完成后显示通知。',toggle('通知提醒','notifications',c.notifications))+row('外观','选择适合你的界面。',`<select class="setting-input" id="appearance" aria-label="外观">${[['light','浅色'],['dark','深色'],['system','跟随系统']].map(([v,l])=>`<option value="${v}" ${theme===v?'selected':''}>${l}</option>`).join('')}</select>`);
+    const common=row('设备名称','在其他设备上显示的名称。',`<input class="setting-input" id="device-name" aria-label="设备名称" maxlength="32" value="${esc(c.deviceName)}">`)+row('允许被连接',hostDetail,hostControl)+row('允许被发现','开启后，同一局域网的设备可以扫描到本机。跨网络连接需输入设备码。',toggle('允许被发现','discoveryEnabled',c.discoveryEnabled))+row('开机启动','登录后在后台保持连接。',toggle('开机启动','startupEnabled',c.startupEnabled))+row('通知提醒','发送和接收完成后显示通知。',toggle('通知提醒','notifications',c.notifications))+row('外观','选择适合你的界面。',`<select class="setting-input" id="appearance" aria-label="外观">${[['light','浅色'],['dark','深色'],['system','跟随系统']].map(([v,l])=>`<option value="${v}" ${theme===v?'selected':''}>${l}</option>`).join('')}</select>`);
     const advanced=row('快捷键发送目标',`已选择 ${targets().length} 台设备。`,button('选择设备','targets'))+`<details class="accordion"><summary>快捷键</summary>${shortcutRows()}<p>复制文本后自动发送；截图快捷键调用系统截图。</p></details><details class="accordion"><summary>连接诊断</summary><p>本机地址：${(snapshot.addresses||[]).map(a=>esc(a.Address)).join(' / ')||'暂未获取'} · 端口 ${c.port}</p>${row('服务端口','更改后自动重启接收服务。',`<input class="setting-input" id="listen-port" aria-label="服务端口" inputmode="numeric" value="${c.port}">`)}${button('检测全链路连接','probe','','wifi')}</details><details class="accordion"><summary>关于与更新</summary><p>ClipRelay · v${esc(snapshot.update.CurrentVersion||'—')}</p>${button(snapshot.update.Release?'查看新版':'检查更新','updates')}</details>`;
-    return heading('设置','把常用偏好放在一起。')+`<div class="segmented" role="tablist" aria-label="设置分类"><button role="tab" aria-selected="${settingsTab==='general'}" class="${settingsTab==='general'?'active':''}" data-tab="general">通用</button><button role="tab" aria-selected="${settingsTab==='advanced'}" class="${settingsTab==='advanced'?'active':''}" data-tab="advanced">高级</button></div>${settingsTab==='general'?common:advanced}<p class="small muted" role="status">${saving?'正在保存…':saveError?'保存失败：'+esc(saveError):'更改会自动保存'}</p>`;
+    const access=row('本机设备码',deviceAccessError||'其他设备首次配对时输入此码。更新后旧码作废，已配对设备和当前连接不受影响。',`<strong id="device-code">${esc(deviceAccess?.code||'正在获取…')}</strong>${button(codeRotationBusy?'正在更新…':'更新设备码','rotate-device-code','','',!deviceAccess?.code||codeRotationBusy?'disabled':'')}`)+row('必须输入设备码','开启后，局域网中的新设备也必须输入正确设备码；已配对设备不受影响。',`<button class="switch" role="switch" aria-label="必须输入设备码" aria-checked="${deviceAccess?.required===true}" data-action="toggle-code-policy" ${!deviceAccess?.code||codeRotationBusy?'disabled':''}></button>`);
+    return heading('设置','把常用偏好放在一起。')+`<div class="segmented" role="tablist" aria-label="设置分类"><button role="tab" aria-selected="${settingsTab==='general'}" class="${settingsTab==='general'?'active':''}" data-tab="general">通用</button><button role="tab" aria-selected="${settingsTab==='advanced'}" class="${settingsTab==='advanced'?'active':''}" data-tab="advanced">高级</button></div>${settingsTab==='general'?common+access:advanced}<p class="small muted" role="status">${saving?'正在保存…':saveError?'保存失败：'+esc(saveError):'更改会自动保存'}</p>`;
   }
   function paint(force=false){
     if(!snapshot)return;
@@ -107,7 +108,7 @@ export async function mount(root,api,view='control-center'){
     root.querySelector('#local-state').textContent=connectionError?'后台连接中断':'Windows · 后台运行中';
     for(const node of root.querySelectorAll('[data-page]')){node.classList.toggle('active',node.dataset.page===page);node.setAttribute('aria-current',node.dataset.page===page?'page':'false');}
     root.querySelector('#window-label').textContent=page==='settings'?'偏好设置':page==='remote'?'远程控制':'剪切板';
-    const key=signature([page,settingsTab,snapshot.config,snapshot.runtime,snapshot.update,probe,remoteProbe,remoteSession,directory,remoteHost,remoteHostError,remoteHostBusy,saving,saveError,connectionError,theme]);
+    const key=signature([page,settingsTab,snapshot.config,snapshot.runtime,snapshot.update,probe,remoteProbe,remoteSession,savedComputers,remoteHost,remoteHostError,remoteHostBusy,deviceAccess,deviceAccessError,codeRotationBusy,saving,saveError,connectionError,theme]);
     if(!force&&(key===pageSignature||content.contains(document.activeElement)&&document.activeElement.matches('input,select')))return;
     const scroll=content.scrollTop,focus=document.activeElement;
     const focusedAction=focus?.dataset.action,focusedId=focus?.dataset.id;
@@ -119,10 +120,57 @@ export async function mount(root,api,view='control-center'){
   }
   async function refresh(){
     if(polling||closed)return;polling=true;
-    if(page==='remote')try{directory=await api.window('desktop-directory');}catch{directory={devices:[],error:'设备列表暂时无法更新，请稍后重试。'};}
+    try{savedComputers=(await api.window('desktop-saved')).devices;}catch{/* Keep saved cards visible during a temporary backend failure. */}
     try{accept(await api.request('snapshot'));connectionError='';if(page==='remote'||remoteActive())remoteSession=await api.window('desktop-status');if(page==='settings')void readRemoteHost();paint();updateDialog();document.body.dataset.ready='true';if(!shown){shown=true;await api.window('ready');if(view==='peer-editor')edit(new URLSearchParams(location.search).get('peerId'));else if(view==='updates')updates();else void checkPeers();}if(page==='remote'&&!remoteProbe)void checkRemote();}
     catch(e){connectionError=e.message;if(snapshot)paint();else{content.innerHTML=`<div class="empty-state"><h2>暂时无法连接后台</h2><p>${esc(e.message)}</p>${button('重试','refresh','primary')}</div>`;if(!shown){await api.window('ready');}}}
     finally{polling=false;}
+    if(page==='settings')void readDeviceAccess();
+    if(codePairing)await readCodePairing().catch(error);
+    if(['DEVICE_CODE_REQUIRED','DEVICE_CODE_INVALID'].includes(remoteSession.errorCode)&&promptedCode!==remoteSession.peerId+remoteSession.errorCode&&!dialog.open){promptedCode=remoteSession.peerId+remoteSession.errorCode;codeDialog(computers().find(p=>p.id===remoteSession.peerId));}
+  }
+  async function readDeviceAccess(){
+    if(accessReading||codeRotationBusy||deviceAccess?.code)return;accessReading=true;
+    try{
+      const reply=await api.request('remote',{action:'deviceAccess'});if(!reply?.ok)throw new Error(reply?.error||'请更新电脑端连接服务');deviceAccess=reply.data;
+      if(!deviceAccess.code){const code=await api.request('remote',{action:'deviceCode'});if(!code?.ok)throw new Error(code?.error||'无法获取设备码');deviceAccess.code=code.data.value;}
+      deviceAccessError='';
+    }catch(e){deviceAccessError=e.message;}finally{accessReading=false;paint();}
+  }
+  function confirmCodeRotation(){
+    if(codeRotationBusy||!deviceAccess?.code)return;
+    modal('更新设备码', '<p>更新后，旧设备码将立即作废。请将新码提供给需要首次配对的设备。</p><p>已配对设备无需重新输入，当前连接不会断开。</p>',button('取消','dismiss')+button('确认更新','confirm-device-code','primary'));
+  }
+  async function rotateDeviceCode(){
+    if(codeRotationBusy)return;codeRotationBusy=true;paint();
+    dialog.querySelectorAll('button').forEach(node=>{node.disabled=true;});
+    try{
+      const reply=await api.request('remote',{action:'deviceCodeRotate'});
+      if(!reply?.ok||!/^[0-9]{8}$/.test(reply.data?.value||''))throw new Error(reply?.error||'设备码更新未完成，请联网后重试。');
+      deviceAccess={...deviceAccess,code:reply.data.value};deviceAccessError='';closeDialog();toast('设备码已更新，旧码已作废');
+    }catch(e){deviceAccess={...deviceAccess,code:''};deviceAccessError='设备码更新未完成，正在重新获取。';throw e;}
+    finally{codeRotationBusy=false;dialog.querySelectorAll('button').forEach(node=>{node.disabled=false;});paint();}
+  }
+  async function connectComputer(peer,deviceCode){
+    promptedCode='';remoteSession=await api.window('desktop-client',{peer:{...remoteTarget(peer),...(deviceCode?{deviceCode}:{})}});activeComputer={...peer};paint();
+  }
+  function codeDialog(peer=null){
+    codeTarget=peer;
+    modal(peer?'输入设备码':'通过设备码添加电脑',`<form id="code-form"><p>${peer?'请输入 '+esc(peer.name)+' 的设备码。':'不同网络的电脑通过设备码配对。'}</p><label>设备码<input class="modal-input" name="code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" placeholder="对方设置中显示的 8 位设备码" required></label><p>配对成功后会记住这台电脑。</p><button type="submit" hidden></button></form>`,button('取消','dismiss')+button('配对连接','code-submit','primary'));
+  }
+  async function submitCode(){
+    const form=dialog.querySelector('#code-form');if(!form||!form.reportValidity())return;
+    const code=form.elements.code.value;form.elements.code.value='';
+    if(codeTarget){const peer=codeTarget;closeDialog();await connectComputer(peer,code);return;}
+    await api.window('desktop-code-start',{code});codePairing=true;
+    modal('正在配对电脑','<p id="code-progress" role="status">正在建立连接，请保持对方 ClipRelay 运行…</p>',button('取消配对','code-cancel'));await readCodePairing();
+  }
+  async function readCodePairing(){
+    const state=await api.window('desktop-code-status');
+    if(['paired','error'].includes(state.state)){
+      codePairing=false;
+      if(state.state==='error'){if(dialog.open){modal('配对未完成',`<p>${state.error==='PAIRING_CODE_EXPIRED'?'设备码不正确，请核对后重试。':'请检查设备码、网络和对方连接设置后重试。'}</p>`,button('关闭','dismiss')+button('重新输入','code-add','primary'));}return;}
+      savedComputers=(await api.window('desktop-saved')).devices;accept(snapshot);closeDialog();page='remote';paint();toast('电脑已配对并添加');void checkRemote();
+    }
   }
   async function hostRequest(action){
     const reply=await api.request('remote',{action});
@@ -131,6 +179,7 @@ export async function mount(root,api,view='control-center'){
     return reply.data;
   }
   async function readRemoteHost(){
+    void readDeviceAccess();
     if(remoteHostReading||remoteHostBusy||closed)return;
     remoteHostReading=true;const current=remoteHostGeneration;
     try{const value=await hostRequest('status');if(current===remoteHostGeneration&&!closed){remoteHost=value;remoteHostError='';}}
@@ -175,9 +224,23 @@ export async function mount(root,api,view='control-center'){
     }catch(e){if(active()){probe.phase='done';probe.error=e.message;probe.detail=e.message;paint();}}
   }
   async function checkRemote(){
-    if(remoteProbe?.phase==='checking')return;
-    const current=++remoteGeneration;remoteProbe={phase:'checking',results:[]};paint();
-    try{directory=await api.window('desktop-directory');const results=await api.window('desktop-probe',{peers:computers().filter(p=>!p.directoryId).map(remoteTarget)});if(current!==remoteGeneration||closed)return;remoteProbe={phase:'done',results};}
+    if(remoteProbe?.phase==='checking'||remoteActive()||codePairing)return;
+    if(!computers().length){remoteProbe={phase:'done',results:[]};paint();return;}
+    const current=++remoteGeneration,active=()=>current===remoteGeneration&&!closed;remoteProbe={phase:'checking',results:[]};paint();
+    try{
+      let found=[];try{found=list(await api.request('discover'));}catch{/* Probe the saved route if LAN discovery fails. */}
+      if(!active())return;
+      const latest=await api.request('snapshot');if(!active())return;
+      if(probeRoster(latest.config.peers)!==roster){accept(latest);paint();return;}
+      const merged=await api.request('merge',{peers:latest.config.peers,devices:found,addNew:false});if(!active())return;
+      if(merged.Added||merged.Updated||merged.Removed){remoteScanCommit=true;try{await patch(currentSnapshot=>{
+        if(probeRoster(currentSnapshot.config.peers)!==probeRoster(latest.config.peers))throw new Error('设备列表已改变，请重新检测');
+        const selected=new Map(currentSnapshot.config.peers.map(p=>[p.id,p.enabled]));
+        return {peers:merged.Peers.map(p=>({...p,enabled:selected.has(p.id)?selected.get(p.id):p.enabled})),expectedRevision:currentSnapshot.revision};
+      });}finally{remoteScanCommit=false;}}
+      if(!active())return;
+      const results=await api.window('desktop-probe',{peers:computers().map(remoteTarget)});if(!active())return;remoteProbe={phase:'done',results};
+    }
     catch(e){if(current!==remoteGeneration||closed)return;remoteProbe={phase:'done',results:[],error:e.message};}
     paint();
   }
@@ -205,7 +268,7 @@ export async function mount(root,api,view='control-center'){
   async function add(kind='devices'){
     discoveryKind=kind;discovered=[];
     const computerOnly=kind==='computers',title=computerOnly?'添加电脑':'添加设备';
-    const footer=()=>button('手动输入地址','manual','','',`data-kind="${kind}"`)+button('重新扫描','scan-again','','',`data-kind="${kind}"`)+button('完成','dismiss');
+    const footer=()=>button('输入设备码','code-add','primary')+button('手动输入地址','manual','','',`data-kind="${kind}"`)+button('重新扫描','scan-again','','',`data-kind="${kind}"`)+button('完成','dismiss');
     modal(title,`<p role="status">正在扫描局域网中的${computerOnly?'电脑':'设备'}…</p><p>请在对方的 ClipRelay 设置中开启「允许被发现」。</p>`,footer());
     const marker=Symbol();dialog.scanMarker=marker;
     try{const raw=list(await api.request('discover'));if(!dialog.open||dialog.scanMarker!==marker)return;
@@ -226,7 +289,12 @@ export async function mount(root,api,view='control-center'){
     'toggle-target':async el=>{const id=el.dataset.id;await patch(current=>({peers:current.config.peers.map(p=>p.id===id?{...p,enabled:!p.enabled}:p),expectedRevision:current.revision}));},
     remove:async el=>{const id=el.dataset.id;await patch(current=>({peers:current.config.peers.filter(p=>p.id!==id),expectedRevision:current.revision}));closeDialog();toast('设备已移除');},
     'add-found':async el=>{const device=discovered[Number(el.dataset.index)],computerOnly=discoveryKind==='computers';if(!device)return;await patch(async current=>{const merged=await api.request('merge',{peers:current.config.peers,devices:[device],addNew:true});return {peers:merged.Peers.map(p=>computerOnly&&!current.config.peers.some(existing=>sameDevice(existing,p))?{...p,enabled:false}:p),expectedRevision:current.revision};});closeDialog();toast(computerOnly?'电脑已添加':'设备已添加');},
-    connect:async el=>{const p=computers().find(p=>p.id===el.dataset.id);if(!p)return;remoteSession=await api.window('desktop-client',{peer:remoteTarget(p)});activeComputer={...p};paint();},
+    'remove-computer':async el=>{savedComputers=(await api.window('desktop-remove',{id:el.dataset.id})).devices;accept(snapshot);paint();toast('电脑已移除');},
+    connect:async el=>{const p=computers().find(p=>p.id===el.dataset.id);if(p)await connectComputer(p);},
+    'code-add':()=>codeDialog(), 'code-submit':submitCode, 'code-cancel':async()=>{await api.window('desktop-code-cancel');closeDialog();},
+    'retry-code':el=>codeDialog(computers().find(p=>p.id===el.dataset.id)),
+    'toggle-code-policy':async()=>{const reply=await api.request('remote',{action:'deviceAccess',required:!deviceAccess.required});if(!reply?.ok)throw new Error(reply?.error||'无法保存连接设置');deviceAccess=reply.data;paint();},
+    'rotate-device-code':confirmCodeRotation,'confirm-device-code':rotateDeviceCode,
     'remote-probe':checkRemote,'remote-stop':async()=>{remoteSession=await api.window('desktop-stop');paint();},
     'connect-new':()=>add('computers'),preview:()=>api.window('open',{name:'preview-remote'}),updates,'update-check':()=>api.request('update-check'),'update-download':()=>api.request('update-download'),'update-open':()=>api.request('update-open')
   };
@@ -239,7 +307,7 @@ export async function mount(root,api,view='control-center'){
       if(actions[el.dataset.action]){el.disabled=true;await actions[el.dataset.action](el);}
     }catch(e){error(e);}finally{if(el.isConnected)el.disabled=false;}
   });
-  root.addEventListener('submit',event=>{if(event.target.id==='peer-form'){event.preventDefault();savePeer().catch(error);}});
+  root.addEventListener('submit',event=>{if(event.target.id==='peer-form'){event.preventDefault();savePeer().catch(error);}if(event.target.id==='code-form'){event.preventDefault();submitCode().catch(error);}});
   root.addEventListener('change',event=>{if(event.target.id==='appearance'){theme=event.target.value;localStorage.setItem('cliprelay-appearance',theme);applyTheme();paint();}});
   root.addEventListener('focusout',event=>{if(['device-name','listen-port'].includes(event.target.id))commitInput(event.target).catch(error);});
   api.onClose(close);api.onError(message=>error(new Error(message)));const unsubscribe=api.onRefresh(refresh);

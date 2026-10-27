@@ -5,8 +5,10 @@ package inputfocus
 // a managed host never adopts a file left by an earlier process or request.
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -99,6 +101,14 @@ func (p *lanPairer) local(raw []byte) (any, bool) {
 		return managedPairError("HOST_PAIR_STALE"), true
 	}
 	approved := fields["op"] == "host-pair-approve"
+	if approved && p.deviceAccess != nil {
+		required, expected, err := p.deviceAccess()
+		if !paired(filepath.Join(filepath.Dir(p.dir), "clients.json"), request.client) && (err != nil || (required && (expected == "" || subtle.ConstantTimeCompare([]byte(expected), []byte(request.deviceCode)) != 1))) {
+			request.finalState = "rejected"
+			request.cancel()
+			return managedPairError("HOST_PAIR_STALE"), true
+		}
+	}
 	request.decision = "approving"
 	if !approved {
 		request.decision = "rejected"

@@ -34,37 +34,38 @@ class DirectConnection{
     const viewer=this.viewer.snapshot();
     const ended=viewer.error==='VIEWER_STOPPED';
     return {peerId:this.target?.id||'',address:this.target?.address||'',phase:this.busy?'connecting':ended?'idle':viewer.phase,
-      available:viewer.available,error:this.error||(!this.busy&&!ended&&viewer.error?message({code:viewer.error}):'')};
+      available:viewer.available,errorCode:this.errorCode||'',error:this.error||(!this.busy&&!ended&&viewer.error?message({code:viewer.error}):'')};
   }
   start(peer){
-    const remote=peer?.directoryId;
+    const remote=peer?.networkId||peer?.directoryId;
     if(remote&&(!this.network||!/^[a-f0-9]{24}$/.test(remote)))throw new Error('设备信息无效，请刷新列表');
-    const target={...(remote?{directoryId:remote}:endpoint(peer?.address,Number(peer?.port||48789))),id:String(peer?.id||''),label:String(peer?.name||'').slice(0,128)};
+    const target={...(remote?peer.networkId?{networkId:remote}:{directoryId:remote}:endpoint(peer?.address,Number(peer?.port||48789))),id:String(peer?.id||''),label:String(peer?.name||'').slice(0,128)};
+    if(peer?.deviceCode!==undefined&&!/^[0-9]{8}$/.test(peer.deviceCode))throw fault('INVALID_PAIRING_CODE');
     if(this.busy||this.paired.pairController||this.network?.pairAbort||['starting','running','recovering','closing'].includes(this.viewer.snapshot().phase))throw new Error('已有远控连接正在进行，请先结束当前连接');
     if(!this.viewer.snapshot().available)throw new Error('远程控制组件不可用，请重新安装 ClipRelay');
-    this.target=target;this.busy=true;this.error='';const generation=++this.generation;
+    this.target=target;this.busy=true;this.error='';this.errorCode='';const generation=++this.generation;
     this.task=(async()=>{
       try{
-        if(target.directoryId){
-          this.network.connectDiscovered(target.directoryId);await this.network.pairTask;
+        if(target.directoryId||target.networkId){
+          if(target.networkId)this.network.connectSaved(target.networkId);else this.network.connectDiscovered(target.directoryId);await this.network.pairTask;
           if(generation!==this.generation)return;
           if(this.network.pairing.state!=='paired')throw fault(this.network.pairing.error||'NETWORK_CONNECTION_FAILED');
         }else{
         const existing=this.paired.store.hosts().find(h=>h.address===target.address&&h.port===target.port);
         if(existing){if(!existing.enabled)this.paired.enable(existing.id,true);this.paired.select(existing.id);}
         else{
-          this.paired.startPair(target);await this.paired.pairTask;
+          this.paired.startPair({...target,...(peer.deviceCode?{deviceCode:peer.deviceCode}:{})});await this.paired.pairTask;
           if(generation!==this.generation)return;
-          if(this.paired.pairing.state!=='paired')throw new Error(this.paired.pairing.message||'连接未完成，请重试');
+          if(this.paired.pairing.state!=='paired')throw Object.assign(new Error(this.paired.pairing.message||'连接未完成，请重试'),{code:this.paired.pairing.code});
         }
         }
         if(generation!==this.generation)return;
         await this.viewer.open({width:1920,height:1080,fps:60,bitrate:12000});
-      }catch(error){if(generation===this.generation)this.error=error.code?message(error):error.message;}
+      }catch(error){if(generation===this.generation){this.errorCode=error.code||'';this.error=error.code?message(error):error.message;}}
       finally{if(generation===this.generation)this.busy=false;}
     })();
     return this.status();
   }
-  stop(){++this.generation;this.busy=false;this.error='';this.paired.cancelPair();if(this.target?.directoryId)this.network?.cancelPair();this.viewer.stop();return this.status();}
+  stop(){++this.generation;this.busy=false;this.error='';this.errorCode='';this.paired.cancelPair();if(this.target?.directoryId||this.target?.networkId)this.network?.cancelPair();this.viewer.stop();return this.status();}
 }
 module.exports={probeComputer,DirectConnection};

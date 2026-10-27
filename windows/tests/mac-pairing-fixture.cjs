@@ -20,7 +20,7 @@ async function listen(server,{maximumPort}={}){
   throw Error('Fixture port range unavailable');
 }
 async function close(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
-async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client,feedback=false,native=false,onStatus}={}){
+async function fixture({badSignature=false,badCode=false,badPin=false,clientIdentity=identities.client,feedback=false,native=false,onStatus,deviceCode}={}){
   const host=identities.host,client=clientIdentity,trace=[],writes=[];
   let pin,id,session,key,challenge,responseHash,authorized=false,approval=false,waiting,waitingResponse,deleted=false;
   const receipt=crypto.randomBytes(16).toString('hex');let expires,state='waiting',statusReads=0,cancelReceipt;
@@ -30,6 +30,7 @@ async function fixture({badSignature=false,badCode=false,badPin=false,clientIden
     if(!req.socket.getPeerCertificate().raw?.equals(der(client.cert))){res.writeHead(403);res.end();return;}
     if(req.url==='/v1/pair'){
       let raw='';for await(const chunk of req)raw+=chunk;const data=JSON.parse(raw);pin=data.pin;
+      if(deviceCode&&data.deviceCode!==deviceCode){res.writeHead(403);res.end(JSON.stringify({code:data.deviceCode?'DEVICE_CODE_INVALID':'DEVICE_CODE_REQUIRED'}));return;}
       const hashed=digest('cliprelay-lan-pair-v1\n',der(host.cert),der(client.cert),data.nonce).toString('hex');id=hashed.slice(0,32);
       expires=Math.floor(Date.now()/1000)+120;
       nativeAdvertised=native&&feedback&&req.headers['x-cliprelay-pairing-native']==='1';

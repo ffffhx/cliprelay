@@ -138,7 +138,7 @@ class NetworkController{
       if(signal.aborted)throw fault('CANCELLED');
       if(approved.peers.length!==1)throw fault('BROKER_BAD_REPLY');
       const record=this.catalog.save(credential,approved.peers[0]);this.reconcile(record.id);
-      await this.finishPair(record.id,signal);
+      await this.finishPair(record.id,signal,code);
     });
   }
   connectDiscovered(id){
@@ -147,11 +147,7 @@ class NetworkController{
       let record=this.catalog.records().find(value=>value.peerId===id);
       if(record&&!record.enabled)throw fault('NETWORK_PAUSED');
       if(!record){
-        const credential=crypto.randomBytes(32).toString('base64url');
-        const claim=await this.client(credential).request('connect-device',{id,name:this.localName},signal);
-        if(signal.aborted)throw fault('CANCELLED');
-        if(claim.hostId!==id)throw fault('NETWORK_PEER_CHANGED');
-        record=this.catalog.save(credential,{id,name:claim.computer});
+        throw fault('DEVICE_CODE_REQUIRED');
       }
       const host=this.store.hosts().find(value=>value.networkId===record.id);
       if(host){
@@ -168,8 +164,12 @@ class NetworkController{
       }else{this.reconcile();await this.finishPair(record.id,signal);}
     });
   }
+  connectSaved(id){
+    const record=this.catalog.get(id);if(!record)throw fault('UNKNOWN_NETWORK');
+    return this.connectDiscovered(record.peerId);
+  }
   pairSaved(id){if(!this.catalog.get(id)?.enabled)throw fault('UNKNOWN_NETWORK');return this.job(signal=>this.finishPair(id,signal));}
-  async finishPair(id,signal){
+  async finishPair(id,signal,deviceCode){
     const record=this.catalog.get(id);if(!record)throw fault('UNKNOWN_NETWORK');
     this.pairing={state:'connecting',computer:record.name};this.changed();
     const deadline=Date.now()+this.routeTimeoutMs;let route;
@@ -184,7 +184,7 @@ class NetworkController{
     const pairingAbort=new AbortController(),cancel=()=>pairingAbort.abort();signal.addEventListener('abort',cancel,{once:true});
     const monitor=setInterval(()=>{if(!active())cancel();},50);
     try{
-      const host=await this.pair({address:route.address,port:route.port,name:this.localName,identity,expectedCert:old?.certificate,signal:pairingAbort.signal,onVerification:value=>{
+      const host=await this.pair({address:route.address,port:route.port,name:this.localName,identity,deviceCode,expectedCert:old?.certificate,signal:pairingAbort.signal,onVerification:value=>{
         if(!active())throw fault('CANCELLED');this.pairing={state:'waiting',computer:record.name,verification:value.verification};this.changed();
       }});
       if(!active())throw fault('CANCELLED');

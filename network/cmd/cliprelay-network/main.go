@@ -162,6 +162,7 @@ func main() {
 		var req struct {
 			Action   string         `json:"action"`
 			ID       string         `json:"id"`
+			Previous string         `json:"previous"`
 			Presence *advertisement `json:"presence"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &req) != nil {
@@ -188,10 +189,13 @@ func main() {
 			app.mu.Lock()
 			response = app.value
 			app.mu.Unlock()
-		case "code", "approve", "revoke":
+		case "code", "device-code", "device-code-rotate", "approve", "revoke":
 			data, _ := json.Marshal(map[string]string{"id": req.ID})
-			if req.Action == "code" {
+			if req.Action == "code" || req.Action == "device-code" {
 				data = []byte("{}")
+			}
+			if req.Action == "device-code-rotate" {
+				data, _ = json.Marshal(map[string]string{"previous": req.Previous})
 			}
 			var raw string
 			raw, err = client.Request(req.Action, string(data))

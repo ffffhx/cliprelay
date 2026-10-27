@@ -644,5 +644,8 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	server.Handler = automationManager.handler(server.Handler)
 	pairer := newLANPairerWithAccess(ctx, dir, cert, access)
 	pairer.managed = managed
+	if managed && executable != "" {
+		pairer.deviceAccess = deviceAccessFile(filepath.Join(dir, "service.json"))
+	}
 	return runHostListeners(ctx, cancel, listeners, server, pairer, cert, relay, onListening...)
 }

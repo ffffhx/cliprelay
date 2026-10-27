@@ -43,13 +43,21 @@ class DesktopWindows {
       else if (action === 'pin') { window.setAlwaysOnTop(!window.isAlwaysOnTop()); return window.isAlwaysOnTop(); }
       else if (action === 'desktop-probe') {
         if(!Array.isArray(data?.peers)||data.peers.length>16)throw new Error('Invalid devices');
-        const {probeComputer}=require('./desktop-connection.cjs');
-        return Promise.all(data.peers.map(peer=>probeComputer(peer)));
+        return this.probeComputers(data.peers);
       }
       else if (action === 'desktop-status') return this.client?.direct.status() || {phase:'idle',peerId:'',error:''};
       else if (action === 'desktop-directory') return this.directory.snapshot();
+      else if (action === 'desktop-saved') return this.savedComputers();
+      else if (action === 'desktop-code-start') {
+        if(this.probing||['connecting','starting','running','recovering','closing'].includes(this.client?.direct.status().phase)||this.ai.sessions.size)throw new Error('请先结束当前连接或检测');
+        return this.getClient().network.claim(data?.code);
+      }
+      else if (action === 'desktop-code-status') return this.client?.network.snapshot().pairing||{state:'idle'};
+      else if (action === 'desktop-code-cancel') {this.client?.network.cancelPair();return;}
+      else if (action === 'desktop-remove') {this.getClient().network.remove(data?.id);return this.savedComputers();}
       else if (action === 'desktop-stop') return this.client?.direct.stop() || {phase:'idle',peerId:'',error:''};
       else if (action === 'desktop-client') {
+        if(this.probing)throw new Error('正在检测连接，请稍候');
         if(data?.peer?.directoryId&&!this.directory.snapshot().devices.some(device=>device.id===data.peer.directoryId&&device.connectable))throw new Error('电脑已离线或停止接收连接，请刷新列表');
         return this.getClient().open(data?.peer);
       }
@@ -70,6 +78,32 @@ class DesktopWindows {
         ]).popup({window});
       } else throw new Error('Invalid window action.');
     });
+  }
+
+  savedComputers(){
+    const client=this.getClient();
+    return {devices:client.paired.store.hosts().filter(h=>h.networkId).map(h=>({id:'network:'+h.networkId,networkId:h.networkId,name:h.name,platform:'windows'}))};
+  }
+  async probeComputers(peers){
+    if(this.probing)throw new Error('正在检测连接，请稍候');
+    if(this.client?.direct.busy||this.client?.network.pairAbort||['starting','running','recovering','closing'].includes(this.client?.direct.status().phase)||this.ai.sessions.size)throw new Error('请先结束当前控制或配对，再重新检测');
+    this.probing=true;
+    try{
+      const {probeComputer}=require('./desktop-connection.cjs'),{message}=require('./mac/paired-controller.cjs');
+      const {config}=await this.host.request('snapshot'),saved=this.savedComputers().devices,results=[];
+      for(const peer of peers){
+        const local=config.peers.find(p=>p.id===peer.id),remote=saved.find(p=>p.id===peer.id);
+        if(!local&&!remote)throw new Error('请先添加电脑');
+        if(remote){
+          try{
+            const network=this.getClient().network;let route=network.route(remote.networkId);
+            if(!route){network.connectSaved(remote.networkId);await network.pairTask;route=network.route(remote.networkId);if(!route)throw {code:network.pairing.error||'NETWORK_NOT_READY'};}
+            results.push(await probeComputer({...peer,address:route.address,port:route.port}));
+          }catch(error){results.push({id:peer.id,ok:false,detail:message(error)});}
+        }else results.push(await probeComputer({...local,port:local.remotePort||48789}));
+      }
+      return results;
+    }finally{this.probing=false;}
   }
 
   open(name = 'control-center', peerId = '') {
