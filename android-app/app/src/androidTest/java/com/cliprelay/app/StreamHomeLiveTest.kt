@@ -8,12 +8,16 @@ import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
-import android.widget.AbsListView
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import com.limelight.Game
-import com.limelight.PcView
 import com.limelight.R
 import com.limelight.binding.PlatformBinding
 import com.limelight.binding.video.MediaCodecDecoderRenderer
@@ -32,6 +36,7 @@ import org.junit.Test
 
 /** Opt-in: return without PiP and resume the host session, without desktop input. */
 class StreamHomeLiveTest {
+    @get:org.junit.Rule val compose = androidx.compose.ui.test.junit4.createEmptyComposeRule()
     private val instrument = InstrumentationRegistry.getInstrumentation()
     private fun ui(action: () -> Unit) = instrument.runOnMainSync(action)
     private fun field(target: Any, name: String): Any? = target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
@@ -68,7 +73,9 @@ class StreamHomeLiveTest {
             await("Embedded channel not ready", 45000) { NetworkConnectionService.state.value.ready }
         }
         val db = ComputerDatabaseManager(context)
-        val computer = try { db.allComputers.single { it.serverCert != null } } finally { db.close() }
+        val computerName = InstrumentationRegistry.getArguments().getString("computerName")
+        val computer = try { db.allComputers.single { it.serverCert != null &&
+            (computerName == null || it.name == computerName) } } finally { db.close() }
         val address = requireNotNull(if (cellular) computer.embeddedAddress else computer.localAddress ?: computer.manualAddress ?: computer.embeddedAddress)
         if (cellular) assertTrue(EmbeddedNetwork.isAddress(address))
         val uid = IdentityManager(context).uniqueId
@@ -123,13 +130,12 @@ class StreamHomeLiveTest {
                         assertTrue(game.findViewById<View>(R.id.gameHomeButton).performClick())
                     }
                 }
-                var computers: PcView? = null
+                var computers: MainActivity? = null
                 await("Computer list did not appear in round $round") {
                     computers = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
-                        .filterIsInstance<PcView>().firstOrNull()
+                        .filterIsInstance<MainActivity>().firstOrNull()
                     previousGame.isFinishing && !previousGame.isStreamConnected &&
-                        computers?.findViewById<View>(R.id.networkPairPc)?.isShown == true &&
-                        computers?.findViewById<View>(R.id.manuallyAddPc)?.isShown == true
+                        computers?.hasWindowFocus() == true
                 }
                 ui {
                     assertFalse("Return unexpectedly opened PiP", previousGame.isInPictureInPictureMode)
@@ -141,22 +147,11 @@ class StreamHomeLiveTest {
 
                 // Select the actual computer card, exercising direct reconnect
                 // rather than constructing a second stream intent in the test.
-                var position = -1
-                await("Paired computer did not become available", 30000) {
-                    val list = requireNotNull(computers).findViewById<AbsListView>(R.id.fragmentView)
-                    val adapter = list.adapter ?: return@await false
-                    position = (0 until adapter.count).firstOrNull { index ->
-                        val details = (adapter.getItem(index) as PcView.ComputerObject).details
-                        details.uuid == computer.uuid && details.state == ComputerDetails.State.ONLINE &&
-                            details.pairState == PairingManager.PairState.PAIRED && details.activeAddress != null
-                    } ?: -1
-                    position >= 0
+                compose.waitUntil(30000) {
+                    compose.onAllNodes(hasText("在线") and hasAnyAncestor(hasTestTag("computer-${computer.uuid}")),
+                        useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
                 }
-                ui {
-                    val list = requireNotNull(computers).findViewById<AbsListView>(R.id.fragmentView)
-                    assertTrue(list.performItemClick(list.adapter.getView(position, null, list), position,
-                        list.adapter.getItemId(position)))
-                }
+                compose.onNodeWithTag("connect-${computer.uuid}").performScrollTo().performClick()
                 await("Computer card did not resume video in round $round", 35000) {
                     val latest = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
                         .filterIsInstance<Game>().firstOrNull() ?: return@await false

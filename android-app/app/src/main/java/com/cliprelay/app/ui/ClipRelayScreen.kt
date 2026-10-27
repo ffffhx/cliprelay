@@ -47,6 +47,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -115,6 +121,7 @@ import kotlin.math.abs
 import kotlinx.coroutines.launch
 import androidx.lifecycle.repeatOnLifecycle
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClipRelayScreen(
     status: ReceiverStatus,
@@ -140,11 +147,31 @@ fun ClipRelayScreen(
     onInstallUpdate: () -> Unit,
     onOpenRemoteDesktop: () -> Unit = {},
     remoteStreamAvailable: Boolean = false,
+    onConnectComputer: (String) -> Unit = { onOpenRemoteDesktop() },
+    computers: List<HomeComputer> = emptyList(),
+    nearbyComputers: List<HomeComputer> = emptyList(),
+    connectingComputer: String? = null,
+    connectionError: String? = null,
+    onCancelConnection: () -> Unit = {},
+    onDismissConnectionError: () -> Unit = {},
+    onAddComputer: (String) -> Unit = {},
+    onComputerActions: (String) -> Unit = {},
+    onRescanComputers: () -> Unit = {},
+    onAddAddress: () -> Unit = {},
+    onAddPairingCode: () -> Unit = {},
+    onRemoteSettings: () -> Unit = {},
+    onOpenSourceNotices: () -> Unit = {},
 ) {
     val primaryAddress = status.addresses.firstOrNull()
     val endpoint = primaryAddress?.let { "$it:${status.port}" }
     val listState = rememberLazyListState()
     var fullscreenClipId by remember { mutableStateOf<Long?>(null) }
+    var selectedTab by rememberSaveable { mutableStateOf("devices") }
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    var showAddComputer by rememberSaveable { mutableStateOf(false) }
+    if (showAddComputer) AddComputerSheet(nearbyComputers, { showAddComputer = false },
+        onAddComputer, onRescanComputers, onAddAddress, onAddPairingCode)
+    BackHandler(connectingComputer != null && !showAddComputer) { onCancelConnection() }
 
     fullscreenClipId?.let { selectedId ->
         if (history.isNotEmpty()) {
@@ -173,88 +200,153 @@ fun ClipRelayScreen(
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding()
-            .navigationBarsPadding(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 20.dp,
-            top = 24.dp,
-            end = 20.dp,
-            bottom = 36.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
-    ) {
-        item {
-            AppHeader()
-        }
-        item {
-            ReceiverPanel(
-                status = status,
-                primaryAddress = primaryAddress,
-                endpoint = endpoint,
-                legacyCompatibility = settings.legacyCompatibility,
-                onToggleReceiver = onToggleReceiver,
-                onCopyEndpoint = onCopyEndpoint,
-                onShareEndpoint = onShareEndpoint,
-            )
-        }
-        item {
-            SectionSurface {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("远程电脑", style = MaterialTheme.typography.headlineSmall)
-                        Text(if (remoteStreamAvailable) "串流保持中，点击即可回到电脑画面" else "查看电脑桌面，使用触控和键盘操作", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Button(onClick = onOpenRemoteDesktop, modifier = Modifier.testTag("open-remote-desktop")) {
-                        Text(if (remoteStreamAvailable) "继续控制" else "连接电脑")
-                    }
+    if (showHistory) {
+        ModalBottomSheet(onDismissRequest = { showHistory = false }) {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp),
+                contentPadding = PaddingValues(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item { HistoryHeader(history.isNotEmpty(), onClearHistory) }
+                if (history.isEmpty()) item { EmptyHistory() }
+                items(history, key = { it.id }) { clip ->
+                    HistoryItem(
+                        clip = clip,
+                        onOpen = { showHistory = false; fullscreenClipId = clip.id; onSetImmersiveFullscreen(true); onSetFullscreenLandscape(true) },
+                        onCopy = { onCopyClip(clip) }, onSaveImage = { onSaveImage(clip) },
+                        savingImageId = savingImageId, copied = clip.id in copiedClipIds, saved = clip.id in savedImageIds,
+                    )
                 }
             }
         }
-        item {
-            SettingsPanel(
-                settings = settings,
-                receiverRunning = status.phase in setOf(
-                    ReceiverPhase.RUNNING,
-                    ReceiverPhase.STARTING,
-                    ReceiverPhase.ERROR,
-                ),
-                onSave = onSaveSettings,
-            )
-        }
-        item {
-            UpdatePanel(
-                state = updateState,
-                onCheck = onCheckUpdate,
-                onDownload = onDownloadUpdate,
-                onInstall = onInstallUpdate,
-            )
-        }
-        item {
-            HistoryHeader(history.isNotEmpty(), onClearHistory)
-        }
-        if (history.isEmpty()) {
-            item { EmptyHistory() }
-        } else {
-            items(history, key = { it.id }) { clip ->
-                HistoryItem(
-                    clip = clip,
-                    onOpen = {
-                        fullscreenClipId = clip.id
-                        onSetImmersiveFullscreen(true)
-                        onSetFullscreenLandscape(true)
-                    },
-                    onCopy = { onCopyClip(clip) },
-                    onSaveImage = { onSaveImage(clip) },
-                    savingImageId = savingImageId,
-                    copied = clip.id in copiedClipIds,
-                    saved = clip.id in savedImageIds,
-                )
+    }
+    BackHandler(selectedTab != "devices") { selectedTab = "devices" }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (selectedTab == "devices") "我的设备" else "设置", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+                    if (selectedTab == "devices") TextButton(onClick = { showAddComputer = true },
+                        enabled = connectingComputer == null, modifier = Modifier.testTag("add-computer")) { Text("＋ 添加") }
+                }
             }
+            if (selectedTab == "devices") {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(if (status.phase == ReceiverPhase.RUNNING) Color(0xFF338267) else MaterialTheme.colorScheme.outline))
+                        Text(when (status.phase) {
+                            ReceiverPhase.RUNNING -> "剪贴板接收已开启"
+                            ReceiverPhase.STARTING -> "正在开启剪贴板接收…"
+                            ReceiverPhase.ERROR -> "剪贴板接收暂不可用"
+                            else -> "剪贴板接收已暂停"
+                        }, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (status.phase == ReceiverPhase.STOPPED || status.phase == ReceiverPhase.ERROR) {
+                            TextButton(onClick = { onToggleReceiver(true) }) { Text("恢复接收") }
+                        }
+                    }
+                }
+                if (remoteStreamAvailable) item {
+                    SectionSurface {
+                        Text("远程控制进行中", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(12.dp))
+                        Button(onClick = onOpenRemoteDesktop, modifier = Modifier.fillMaxWidth().testTag("open-remote-desktop")) { Text("继续控制") }
+                    }
+                }
+                items(computers, key = { it.uuid }) { computer ->
+                    ComputerCard(computer, connectingComputer == computer.uuid, connectingComputer != null,
+                        onConnect = { onConnectComputer(computer.uuid) }, onCancel = onCancelConnection,
+                        onRescan = onRescanComputers, onActions = { onComputerActions(computer.uuid) })
+                }
+                if (connectionError != null) item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(connectionError, color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        TextButton(onClick = onDismissConnectionError) { Text("关闭") }
+                    }
+                }
+                if (computers.isEmpty()) item {
+                    SectionSurface {
+                        DeviceOutline(Modifier.size(42.dp))
+                        Spacer(Modifier.height(16.dp))
+                        Text("连接你的第一台电脑", style = MaterialTheme.typography.titleMedium)
+                        Text("选择附近设备，或输入电脑地址。", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(16.dp))
+                        Button(onClick = { showAddComputer = true }, modifier = Modifier.fillMaxWidth().testTag("open-remote-desktop")) { Text("添加设备") }
+                    }
+                }
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("最近收到", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { showHistory = true }) { Text("全部 →") }
+                    }
+                }
+                if (history.isEmpty()) item { EmptyHistory() }
+                else item {
+                    val clip = history.first()
+                    HistoryItem(clip = clip,
+                        onOpen = { fullscreenClipId = clip.id; onSetImmersiveFullscreen(true); onSetFullscreenLandscape(true) },
+                        onCopy = { onCopyClip(clip) }, onSaveImage = { onSaveImage(clip) },
+                        savingImageId = savingImageId, copied = clip.id in copiedClipIds, saved = clip.id in savedImageIds)
+                }
+            } else {
+                item {
+                    SectionSurface {
+                        Text("远程控制", style = MaterialTheme.typography.titleMedium)
+                        TextButton(onClick = onRemoteSettings) { Text("画面、声音与操作设置 →") }
+                        TextButton(onClick = onOpenSourceNotices) { Text("开源许可") }
+                    }
+                }
+                item { SettingsPanel(settings, status.phase != ReceiverPhase.STOPPED, onSaveSettings) }
+                item {
+                    SectionSurface {
+                        var expanded by rememberSaveable { mutableStateOf(false) }
+                        TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "连接诊断 −" else "连接诊断 +") }
+                        if (expanded) {
+                            Text(status.detail ?: "接收服务运行状态：" + status.phase.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(endpoint ?: "等待设备地址", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (endpoint != null) TextButton(onClick = { onCopyEndpoint(endpoint) }) { Text("复制地址") }
+                            TextButton(onClick = { onToggleReceiver(true) }) { Text("重新连接") }
+                        }
+                    }
+                }
+                item { UpdatePanel(updateState, onCheckUpdate, onDownloadUpdate, onInstallUpdate) }
+            }
+        }
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+            NavigationBarItem(selected = selectedTab == "devices", onClick = { selectedTab = "devices" },
+                icon = { DeviceOutline(Modifier.size(23.dp)) }, label = { Text("设备") })
+            NavigationBarItem(selected = selectedTab == "settings", onClick = { selectedTab = "settings" },
+                icon = { SettingsOutline(Modifier.size(23.dp)) }, label = { Text("设置") })
+        }
+    }
+}
+
+@Composable
+internal fun DeviceOutline(modifier: Modifier = Modifier, tint: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    Canvas(modifier) {
+        val stroke = 1.6.dp.toPx()
+        drawRoundRect(tint, Offset(size.width * .08f, size.height * .12f), androidx.compose.ui.geometry.Size(size.width * .84f, size.height * .58f), androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()), style = Stroke(stroke))
+        drawLine(tint, Offset(size.width * .5f, size.height * .7f), Offset(size.width * .5f, size.height * .9f), stroke)
+        drawLine(tint, Offset(size.width * .3f, size.height * .9f), Offset(size.width * .7f, size.height * .9f), stroke)
+    }
+}
+
+@Composable
+private fun SettingsOutline(modifier: Modifier = Modifier) {
+    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(modifier) {
+        val stroke = 1.6.dp.toPx()
+        drawCircle(tint, size.minDimension * .32f, style = Stroke(stroke))
+        drawCircle(tint, size.minDimension * .12f, style = Stroke(stroke))
+        for (i in 0..7) {
+            val angle = i * Math.PI / 4
+            val direction = Offset(kotlin.math.cos(angle).toFloat(), kotlin.math.sin(angle).toFloat())
+            drawLine(tint, center + direction * size.minDimension * .32f, center + direction * size.minDimension * .45f, stroke)
         }
     }
 }
@@ -551,123 +643,30 @@ private fun RelaySignalRail(active: Boolean, accent: Color) {
 }
 
 @Composable
-private fun SettingsPanel(
-    settings: AppSettings,
-    receiverRunning: Boolean,
-    onSave: (AppSettings) -> Unit,
-) {
-    var draft by remember(settings) { mutableStateOf(settings) }
-    var portText by remember(settings.port) { mutableStateOf(settings.port.toString()) }
-    val parsedPort = portText.toIntOrNull()
-    val portValid = parsedPort != null && parsedPort in AppPreferences.MIN_PORT..AppPreferences.MAX_PORT
-    val normalizedDraft = draft.copy(port = parsedPort ?: settings.port)
-    val hasChanges = normalizedDraft != settings
-
+private fun SettingsPanel(settings: AppSettings, receiverRunning: Boolean, onSave: (AppSettings) -> Unit) {
+    var name by remember(settings.deviceName) { mutableStateOf(settings.deviceName) }
+    var advanced by rememberSaveable { mutableStateOf(false) }
+    var port by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     SectionSurface {
-        Text("接收设置", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(5.dp))
-        Text(
-            text = "配对加密接收不需要填写地址或密钥。下方兼容设置只用于仍使用旧版客户端的局域网设备。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(18.dp))
-        SettingSwitch(
-            title = "旧版局域网兼容（未加密）",
-            description = "默认关闭。开启后允许旧客户端通过 HTTP 发送；访问密钥只能限制访问，不能加密内容。请仅在可信局域网使用。",
-            checked = draft.legacyCompatibility,
-            onCheckedChange = { draft = draft.copy(legacyCompatibility = it) },
-        )
-
-        OutlinedTextField(
-            value = draft.deviceName,
-            onValueChange = {
-                draft = draft.copy(
-                    deviceName = it.replace('\n', ' ').replace('\r', ' ')
-                        .take(ClipRelayDiscovery.MAX_DEVICE_NAME_LENGTH),
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("局域网设备名称") },
-            supportingText = { Text("默认使用品牌 + 型号，也可以自定义") },
-            singleLine = true,
-            shape = RoundedCornerShape(15.dp),
-        )
-
-        Spacer(Modifier.height(10.dp))
-
-        OutlinedTextField(
-            value = portText,
-            enabled = draft.legacyCompatibility,
-            onValueChange = { portText = it.filter(Char::isDigit).take(5) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("旧版接收端口") },
-            supportingText = {
-                Text(if (portValid) "电脑端也使用同一端口" else "请输入 1024–65535")
-            },
-            isError = !portValid,
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            shape = RoundedCornerShape(15.dp),
-        )
-
-        Spacer(Modifier.height(8.dp))
-        SettingSwitch(
-            title = "开机恢复接收",
-            description = "手机重启或 App 更新后继续等待电脑发送",
-            checked = draft.startOnBoot,
-            onCheckedChange = { draft = draft.copy(startOnBoot = it) },
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-        SettingSwitch(
-            title = "通知显示文本预览",
-            description = "关闭后仍会提醒，但不在通知里展示内容",
-            checked = draft.showNotificationPreview,
-            onCheckedChange = { draft = draft.copy(showNotificationPreview = it) },
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-        SettingSwitch(
-            title = "允许局域网发现",
-            description = "仅在旧版兼容开启时公布接收地址，不影响配对加密连接",
-            checked = draft.discoveryEnabled,
-            onCheckedChange = { draft = draft.copy(discoveryEnabled = it) },
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-        SettingSwitch(
-            title = "预览暗黑模式",
-            description = "开启为黑底白字，关闭为白底黑字",
-            checked = draft.fullscreenDarkMode,
-            onCheckedChange = { draft = draft.copy(fullscreenDarkMode = it) },
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-        SettingSwitch(
-            title = "调试时保持亮屏",
-            description = "USB 或 Wi-Fi 调试任一开启时不自动息屏；都关闭后恢复。需保持接收服务运行，电源键仍可锁屏。",
-            checked = draft.debugStayAwake,
-            onCheckedChange = { draft = draft.copy(debugStayAwake = it) },
-        )
-        FullscreenTextSizeSetting(
-            value = draft.fullscreenTextSizeSp,
-            onValueChange = { draft = draft.copy(fullscreenTextSizeSp = it) },
-        )
-
-        if (hasChanges) {
-            Spacer(Modifier.height(14.dp))
-            Button(
-                onClick = {
-                    onSave(
-                        normalizedDraft.copy(
-                            accessToken = "",
-                            deviceName = ClipRelayDiscovery.normalizeDeviceName(draft.deviceName),
-                        ),
-                    )
-                },
-                enabled = portValid,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-            ) {
-                Text(if (receiverRunning) "保存并重启接收" else "保存设置")
-            }
+        Text("通用", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(value = name, onValueChange = { name = it.take(ClipRelayDiscovery.MAX_DEVICE_NAME_LENGTH) },
+            modifier = Modifier.fillMaxWidth(), label = { Text("设备名称") }, singleLine = true, shape = RoundedCornerShape(10.dp))
+        if (name != settings.deviceName) TextButton(onClick = { onSave(settings.copy(deviceName = ClipRelayDiscovery.normalizeDeviceName(name))) }, enabled = name.isNotBlank()) { Text("保存名称") }
+        SettingSwitch("开机恢复接收", "登录后保持设备连接。", settings.startOnBoot) { onSave(settings.copy(startOnBoot = it)) }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .35f))
+        SettingSwitch("通知预览", "通知中显示收到的文本。", settings.showNotificationPreview) { onSave(settings.copy(showNotificationPreview = it)) }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .35f))
+        SettingSwitch("全屏深色外观", "查看收到的内容时使用深色背景。", settings.fullscreenDarkMode) { onSave(settings.copy(fullscreenDarkMode = it)) }
+        FullscreenTextSizeSetting(settings.fullscreenTextSizeSp) { onSave(settings.copy(fullscreenTextSizeSp = it)) }
+        TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "高级设置 −" else "高级设置 +") }
+        if (advanced) {
+            SettingSwitch("自动发现", "查找局域网中的设备。", settings.discoveryEnabled) { onSave(settings.copy(discoveryEnabled = it)) }
+            SettingSwitch("调试时保持亮屏", "调试连接期间保持屏幕亮起。", settings.debugStayAwake) { onSave(settings.copy(debugStayAwake = it)) }
+            val valid = port.toIntOrNull()?.let { it in AppPreferences.MIN_PORT..AppPreferences.MAX_PORT } == true
+            OutlinedTextField(value = port, onValueChange = { port = it.filter(Char::isDigit).take(5) }, label = { Text("接收端口") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true, isError = !valid, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            if (port != settings.port.toString()) TextButton(onClick = { onSave(settings.copy(port = port.toInt())) }, enabled = valid) { Text("保存端口") }
         }
     }
 }
@@ -742,10 +741,10 @@ private fun SectionSurface(content: @Composable ColumnScope.() -> Unit) {
             .border(
                 width = 1.dp,
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(12.dp),
             ),
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(12.dp),
     ) {
         Column(modifier = Modifier.padding(20.dp), content = content)
     }

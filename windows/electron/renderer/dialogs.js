@@ -30,7 +30,7 @@ export async function openDialog(view,root,api,params){
       const enabledLabel=document.createElement('label');enabledLabel.textContent='加入广播';enabledLabel.htmlFor=enabled.id;enabledLabel.style.cssText='position:absolute;left:44px;top:214px;font-size:12px';card.append(enabledLabel);
       let peers=[];
       try {const result=await api.request('paired-peers');if(!result.ok)throw new Error('配对设备暂不可用');peers=result.peers || [];}
-      catch {setStatus('请先开启电脑的“手机远控”并完成配对。',true);}
+      catch {setStatus('请先在“远程桌面 → 允许设备连接”中开启远控并完成配对。',true);}
       if(peer.pairedOwner && !peers.some(p=>p.owner===peer.pairedOwner))peers.push({owner:peer.pairedOwner,name:peer.name,online:false});
       if(!peers.length){const option=document.createElement('option');option.value='';option.textContent='暂无已配对设备';select.append(option);}
       for(const item of peers){const option=document.createElement('option');option.value=item.owner;option.textContent=`${item.name} · ${item.online?'接收已开启':'等待手机开启接收'}`;select.append(option);}
@@ -39,7 +39,7 @@ export async function openDialog(view,root,api,params){
       const candidate=()=>{if(!/^[0-9a-f]{64}$/.test(select.value))throw new Error('请先在手机上完成远控配对并开启接收。');return {...peer,name:name.value,transport:'paired',pairedOwner:select.value,address:'',port:config.port,accessToken:'',enabled:enabled.checked,requiresAuth:true,platform:'android'};};
       status.style.cssText='position:absolute;left:42px;top:330px;width:266px;height:28px;color:#94a3b8;font-size:10.67px';
       const probe=button('检测设备',350,324,108,async()=>{probe.disabled=true;try{const normalized=await api.request('normalize-peer',candidate());const values=await api.request('probe',{peers:[{...normalized,enabled:true}]});const delivery=Array.isArray(values)?values[0]:values;if(!delivery.Success)throw new Error(delivery.ErrorMessage || '尚未收到接收确认');setStatus('加密连接和接收确认正常');}finally{probe.disabled=false;}});probe.style.height='34px';
-      button('手机远控',26,390,92,async()=>{await api.window('open',{name:'remote-desktop'});close();});
+      button('连接设置',26,390,92,async()=>{await api.window('open',{name:'remote-desktop'});close();});
       if(!existing)button('旧版兼容',128,390,92,()=>api.window('peer-mode',{mode:'legacy'}));
       button('取消',282,390,92,close);
       button('保存设备',384,390,92,async()=>{const normalized=await api.request('normalize-peer',candidate());const current=await api.request('snapshot');const list=current.config.peers;const index=list.findIndex(p=>p.id===peer.id);if(index>=0)list[index]=normalized;else{if(list.length>=16)throw new Error('最多可添加 16 台设备。');list.push(normalized);}await api.request('patch',{peers:list,expectedRevision:current.revision});close();},true);

@@ -88,7 +88,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'engine-files.json') -Destinatio
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'engine.json') -Destination $serviceRoot -Force
 $settingsPath = Join-Path $stateRoot 'service.json'
 if (!(Test-Path -LiteralPath $settingsPath)) {
-    [IO.File]::WriteAllText($settingsPath, (@{operatorSid=$OperatorSid; enabled=$false} | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($settingsPath, (@{operatorSid=$OperatorSid; enabled=$true} | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 }
 $binary = '"' + (Join-Path $serviceRoot 'ClipRelay.Remote.Service.exe') + '"'
 if ($null -eq $existing) {

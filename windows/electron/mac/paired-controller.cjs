@@ -5,6 +5,7 @@ const {endpoint,fault}=require('./paired-transport.cjs');
 const {sameRoute}=require('./routed-store.cjs');
 const {clipboardAccess,captureSelection}=require('./clipboard-access.cjs');
 function message(error){
+  if(error?.code==='DEVICE_NOT_AVAILABLE')return '电脑已离线或停止接收连接，请刷新列表';
   const network={NETWORK_NOT_READY:'正在连接电脑，请稍后重试',NETWORK_UNAVAILABLE:'请更新 ClipRelay 以使用外网配对',NETWORK_REVOKED:'电脑已撤销外网授权，请重新配对',NETWORK_PEER_CHANGED:'电脑的配对身份已改变，连接已停止',BROKER_UNAVAILABLE:'暂时无法连接配对服务，请稍后重试',BROKER_BAD_REPLY:'配对服务返回了无效信息，连接已停止',BROKER_REDIRECT:'配对服务地址发生变化，连接已停止',BROKER_RATE_LIMIT:'配对请求过于频繁，请稍后重试',BROKER_CONFLICT:'配对请求已存在，请重新生成配对码',NETWORK_NOT_APPROVED:'请先在电脑确认配对请求',PAIRING_CODE_EXPIRED:'配对码已过期或不正确，请重新生成',INVALID_PAIRING_CODE:'请输入电脑显示的 8 位数字配对码',UNKNOWN_NETWORK:'未找到这台电脑的外网配对',INVALID_NETWORK_CREDENTIAL:'配对凭据无法读取，请重新配对',NETWORK_CONNECTION_FAILED:'网络连接暂时不可用，正在重试'};
   if(network[error?.code])return network[error.code];
   const pairing={PAIRING_REJECTED:'电脑已拒绝本次配对，可重新发起请求',PAIRING_EXPIRED:'配对请求已过期，请重新发起',PAIRING_CANCELLED_REMOTE:'电脑已结束本次配对，请重新发起',PAIRING_STATUS_UNAVAILABLE:'无法确认电脑的配对状态，请检查连接后重试',PAIRING_STATUS_INVALID:'电脑返回的配对状态无效，已停止配对'};

@@ -44,6 +44,7 @@ public final class VirtualKeyboardView extends LinearLayout {
     private boolean functions, available;
     private int rowHeight;
     private int reservedBottom;
+    private RepeatingButton backspaceRepeat;
 
     public VirtualKeyboardView(Activity activity, GameInputState.KeySink sink, Runnable close, Runnable phoneKeyboard) {
         super(activity);
@@ -153,11 +154,14 @@ public final class VirtualKeyboardView extends LinearLayout {
         if (VirtualKeyboardState.isModifier(code)) {
             button.setOnLongClickListener(v -> { state.pressAlone(code); refresh(); return true; });
         }
+        if (code == 0x08) backspaceRepeat = new RepeatingButton(button,
+                () -> available && !state.isClickPending(), () -> { state.press(code); refresh(); });
     }
     private void letters(LinearLayout row, String value) {
         for (int i = 0; i < value.length(); i++) key(row, value.substring(i, i + 1), value.charAt(i), 1);
     }
     private void rebuild() {
+        if (backspaceRepeat != null) backspaceRepeat.cancel();
         // Retain the always-visible modifier/navigation row across pages.
         keys.entrySet().removeIf(e -> e.getKey().getParent() instanceof View
                 && ((View)e.getKey().getParent()).getParent() == body);
@@ -186,8 +190,13 @@ public final class VirtualKeyboardView extends LinearLayout {
         }
         refresh();
     }
-    public void setAvailable(boolean value) { if (!value) cancelDrag(); available = value; state.setEnabled(value); refresh(); }
-    public void clearModifiers() { cancelDrag(); state.clear(); refresh(); }
+    public void setAvailable(boolean value) {
+        if (!value) { cancelDrag(); if (backspaceRepeat != null) backspaceRepeat.cancel(); }
+        available = value; state.setEnabled(value); refresh();
+    }
+    public void clearModifiers() {
+        cancelDrag(); if (backspaceRepeat != null) backspaceRepeat.cancel(); state.clear(); refresh();
+    }
     public boolean hasModifiers() { return available && state.hasModifiers(); }
     public void clickWithModifiers(Runnable click) {
         try { state.clickWithModifiers(click); }

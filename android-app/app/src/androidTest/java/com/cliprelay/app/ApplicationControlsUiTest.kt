@@ -247,6 +247,57 @@ class ApplicationControlsUiTest {
         screenshot("desktop-side-rails-qa.png")
     }
 
+    @Test fun backspaceRepeatsWhileHeldAndStopsOnReleaseOrInterruption() {
+        val button = root.findViewById<Button>(R.id.desktopBackspaceButton)
+        fun event(action: Int, x: Float = button.width / 2f) = ui {
+            val now = SystemClock.uptimeMillis()
+            val motion = MotionEvent.obtain(now, now, action, x, button.height / 2f, 0)
+            button.dispatchTouchEvent(motion); motion.recycle()
+        }
+        event(MotionEvent.ACTION_DOWN)
+        ui { assertEquals(listOf("8:true:0", "8:false:0"), events) }
+        SystemClock.sleep(android.view.ViewConfiguration.getLongPressTimeout() + 220L)
+        ui { assertTrue(events.count { it == "8:true:0" } >= 3); assertTrue(held.isEmpty()) }
+        event(MotionEvent.ACTION_UP)
+        var count = 0
+        ui { count = events.size }
+        SystemClock.sleep(180)
+        ui { assertEquals(count, events.size) }
+        for (cancel in listOf<() -> Unit>(
+            { event(MotionEvent.ACTION_CANCEL) },
+            { event(MotionEvent.ACTION_MOVE, -20f) },
+            { ui { toolbar.setPaused(true); toolbar.setPaused(false) } },
+            { ui { toolbar.setFocused(false); toolbar.setFocused(true) } },
+            { ui { toolbar.setConnected(false); toolbar.setConnected(true) } },
+            { ui { toolbar.observeApplication("orca"); toolbar.observeApplication("other") } }
+        )) {
+            event(MotionEvent.ACTION_DOWN); cancel()
+            ui { count = events.size }
+            SystemClock.sleep(android.view.ViewConfiguration.getLongPressTimeout() + 100L)
+            ui { assertEquals(count, events.size); assertTrue(held.isEmpty()) }
+            event(MotionEvent.ACTION_UP)
+        }
+    }
+
+    @Test fun virtualBackspaceRepeatsAndStopsWhenKeyboardCloses() {
+        ui { toolbar.showVirtualKeyboard() }
+        instrument.waitForIdleSync()
+        val key = root.findViewWithTag<Button>("vk:8")
+        ui {
+            val now = SystemClock.uptimeMillis()
+            val motion = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, key.width / 2f, key.height / 2f, 0)
+            key.dispatchTouchEvent(motion); motion.recycle()
+        }
+        SystemClock.sleep(android.view.ViewConfiguration.getLongPressTimeout() + 220L)
+        var count = 0
+        ui {
+            assertTrue(events.count { it == "8:true:0" } >= 3)
+            toolbar.hideVirtualKeyboard(); count = events.size
+        }
+        SystemClock.sleep(180)
+        ui { assertEquals(count, events.size); assertTrue(held.isEmpty()) }
+    }
+
     @Test fun applicationMenuIncludesGamesWithoutSeparateButton() {
         val game = root.findViewById<GameControlsView>(R.id.gameControlsOverlay)
         val video = root.findViewById<View>(R.id.surfaceView)

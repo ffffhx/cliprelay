@@ -1,0 +1,773 @@
+diff --git a/Limelight/Crypto/CryptoManager.h b/Limelight/Crypto/CryptoManager.h
+index b1fc76d..9d74a92 100644
+--- a/Limelight/Crypto/CryptoManager.h
++++ b/Limelight/Crypto/CryptoManager.h
+@@ -9,6 +9,7 @@
+ @interface CryptoManager : NSObject
+ 
+ + (void) generateKeyPairUsingSSL;
+++ (NSError *)identityError;
+ + (NSData*) readCertFromFile;
+ + (NSData*) readKeyFromFile;
+ + (NSData*) readP12FromFile;
+diff --git a/Limelight/Crypto/CryptoManager.m b/Limelight/Crypto/CryptoManager.m
+index f9603cc..0792a7b 100644
+--- a/Limelight/Crypto/CryptoManager.m
++++ b/Limelight/Crypto/CryptoManager.m
+@@ -8,6 +8,7 @@
+ 
+ #import "CryptoManager.h"
+ #import "mkcert.h"
++#import <Security/Security.h>
+ 
+ #include <openssl/sha.h>
+ #include <openssl/x509.h>
+@@ -20,6 +21,7 @@ static const int SHA256_HASH_LENGTH = 32;
+ static NSData* key = nil;
+ static NSData* cert = nil;
+ static NSData* p12 = nil;
++static NSError *identityError = nil;
+ 
+ - (NSData*) createAESKeyFromSaltSHA1:(NSData*)saltedPIN {
+     return [[self SHA1HashData:saltedPIN] subdataWithRange:NSMakeRange(0, 16)];
+@@ -88,12 +90,14 @@ static NSData* p12 = nil;
+ }
+ 
+ + (NSData*) pemToDer:(NSData*)pemCertBytes {
++    if (!pemCertBytes.length || pemCertBytes.length > 16384) return nil;
+     X509* x509;
+     
+     BIO* bio = BIO_new_mem_buf([pemCertBytes bytes], (int)[pemCertBytes length]);
+     x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+     BIO_free(bio);
+     
++    if (!x509) return nil;
+     bio = BIO_new(BIO_s_mem());
+     i2d_X509_bio(bio, x509);
+     X509_free(x509);
+@@ -169,56 +173,15 @@ static NSData* p12 = nil;
+     return signedData;
+ }
+ 
+-+ (NSData*) readCryptoObject:(NSString*)item {
+-#if TARGET_OS_TV
+-    return [[NSUserDefaults standardUserDefaults] dataForKey:item];
+-#else
+-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+-    NSString *documentsDirectory = [paths objectAtIndex:0];
+-    NSString *file = [documentsDirectory stringByAppendingPathComponent:item];
+-    return [NSData dataWithContentsOfFile:file];
+-#endif
+-}
+-
+-+ (void) writeCryptoObject:(NSString*)item data:(NSData*)data {
+-#if TARGET_OS_TV
+-    [[NSUserDefaults standardUserDefaults] setObject:data forKey:item];
+-#else
+-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+-    NSString *documentsDirectory = [paths objectAtIndex:0];
+-    NSString *file = [documentsDirectory stringByAppendingPathComponent:item];
+-    [data writeToFile:file atomically:NO];
+-#endif
+-}
+-
+-+ (NSData*) readCertFromFile {
+-    if (cert == nil) {
+-        cert = [CryptoManager readCryptoObject:@"client.crt"];
+-    }
+-    return cert;
+-}
+-
+-+ (NSData*) readP12FromFile {
+-    if (p12 == nil) {
+-        p12 = [CryptoManager readCryptoObject:@"client.p12"];
+-    }
+-    return p12;
+-}
+-
+-+ (NSData*) readKeyFromFile {
+-    if (key == nil) {
+-        key = [CryptoManager readCryptoObject:@"client.key"];
+-    }
+-    return key;
+-}
+-
+-+ (bool) keyPairExists {
+-    bool keyFileExists = [CryptoManager readCryptoObject:@"client.key"] != nil;
+-    bool p12FileExists = [CryptoManager readCryptoObject:@"client.p12"] != nil;
+-    bool certFileExists = [CryptoManager readCryptoObject:@"client.crt"] != nil;
+-    
+-    return keyFileExists && p12FileExists && certFileExists;
+++ (NSDictionary *)identityQuery {
++    return @{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
++        (__bridge id)kSecAttrService:[NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".pairing-identity"],
++        (__bridge id)kSecAttrAccount:@"controller-v1", (__bridge id)kSecAttrSynchronizable:@NO};
+ }
+++ (NSData*) readCertFromFile { @synchronized(self) { return cert; } }
+++ (NSData*) readP12FromFile { @synchronized(self) { return p12; } }
+++ (NSData*) readKeyFromFile { @synchronized(self) { return key; } }
+++ (NSError *)identityError { @synchronized(self) { return identityError; } }
+ 
+ + (NSData *)getSignatureFromCert:(NSData *)cert {
+     BIO* bio = BIO_new_mem_buf([cert bytes], (int)[cert length]);
+@@ -284,25 +247,39 @@ static NSData* p12 = nil;
+ }
+ 
+ + (void) generateKeyPairUsingSSL {
+-    static dispatch_once_t pred;
+-    dispatch_once(&pred, ^{
+-        if (![CryptoManager keyPairExists]) {
+-            Log(LOG_I, @"Generating Certificate... ");
+-            CertKeyPair certKeyPair = generateCertKeyPair();
+-            
+-            NSData* certData = [CryptoManager getCertFromCertKeyPair:&certKeyPair];
+-            NSData* p12Data = [CryptoManager getP12FromCertKeyPair:&certKeyPair];
+-            NSData* keyData = [CryptoManager getKeyFromCertKeyPair:&certKeyPair];
+-            
+-            freeCertKeyPair(certKeyPair);
+-            
+-            [CryptoManager writeCryptoObject:@"client.crt" data:certData];
+-            [CryptoManager writeCryptoObject:@"client.p12" data:p12Data];
+-            [CryptoManager writeCryptoObject:@"client.key" data:keyData];
+-            
+-            Log(LOG_I, @"Certificate created");
++    @synchronized (self) {
++        if (key && cert && p12) return;
++        NSMutableDictionary *query = [[self identityQuery] mutableCopy];
++        query[(__bridge id)kSecReturnData] = @YES;
++        query[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
++        CFTypeRef raw = NULL;
++        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &raw);
++        NSDictionary *identity = nil;
++        if (status == errSecSuccess) {
++            NSData *data = CFBridgingRelease(raw);
++            id value = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:nil];
++            if ([value isKindOfClass:NSDictionary.class]) identity = value;
++        } else if (status == errSecItemNotFound) {
++            CertKeyPair pair = generateCertKeyPair();
++            if (!pair.pkey || !pair.x509 || !pair.p12) {
++                freeCertKeyPair(pair);
++                identityError = [NSError errorWithDomain:@"ClipRelay" code:1 userInfo:@{NSLocalizedDescriptionKey:@"无法创建配对身份。"}]; return;
++            }
++            identity = @{@"key":[self getKeyFromCertKeyPair:&pair], @"cert":[self getCertFromCertKeyPair:&pair], @"p12":[self getP12FromCertKeyPair:&pair]};
++            freeCertKeyPair(pair);
++            NSData *data = [NSPropertyListSerialization dataWithPropertyList:identity format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
++            NSMutableDictionary *save = [[self identityQuery] mutableCopy];
++            save[(__bridge id)kSecValueData] = data;
++            save[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
++            status = SecItemAdd((__bridge CFDictionaryRef)save, NULL);
+         }
+-    });
++        if (status != errSecSuccess || ![identity[@"key"] isKindOfClass:NSData.class] || ![identity[@"cert"] isKindOfClass:NSData.class] || ![identity[@"p12"] isKindOfClass:NSData.class] ||
++            ![identity[@"key"] length] || ![identity[@"cert"] length] || ![identity[@"p12"] length]) {
++            identityError = [NSError errorWithDomain:@"ClipRelay" code:status userInfo:@{NSLocalizedDescriptionKey:@"无法读取安全配对身份。请解锁设备后重新打开 ClipRelay。"}];
++            return; // Never replace an unreadable identity or persist plaintext keys.
++        }
++        key = identity[@"key"]; cert = identity[@"cert"]; p12 = identity[@"p12"]; identityError = nil;
++    }
+ }
+ 
+ @end
+diff --git a/Limelight/Network/DiscoveryManager.m b/Limelight/Network/DiscoveryManager.m
+index a72df63..f27fd30 100644
+--- a/Limelight/Network/DiscoveryManager.m
++++ b/Limelight/Network/DiscoveryManager.m
+@@ -182,17 +182,7 @@
+             else if ([DiscoveryManager isAddressLAN:inet_addr([hostAddress UTF8String])]) {
+                 // Don't send a STUN request if we're connected to a VPN. We'll likely get the VPN
+                 // gateway's external address rather than the external address of the LAN.
+-                if (![Utils isActiveNetworkVPN]) {
+-                    // This host was discovered over a permissible LAN address, so we can update our
+-                    // external address for this host.
+-                    struct in_addr wanAddr;
+-                    int err = LiFindExternalAddressIP4("stun.moonlight-stream.org", 3478, &wanAddr.s_addr);
+-                    if (err == 0) {
+-                        char addrStr[INET_ADDRSTRLEN];
+-                        inet_ntop(AF_INET, &wanAddr, addrStr, sizeof(addrStr));
+-                        host.externalAddress = [NSString stringWithFormat: @"%s", addrStr];
+-                    }
+-                }
++                // ClipRelay uses the advertised local address, without third-party STUN.
+             }
+         }
+         
+diff --git a/Limelight/Network/HttpManager.h b/Limelight/Network/HttpManager.h
+index 4d23846..88a40fc 100644
+--- a/Limelight/Network/HttpManager.h
++++ b/Limelight/Network/HttpManager.h
+@@ -7,11 +7,15 @@
+ //
+ 
+ #import "HttpResponse.h"
++#import "CRTransport.h"
+ #import "HttpRequest.h"
+ #import "StreamConfiguration.h"
+ #import "TemporaryHost.h"
+ 
+-@interface HttpManager : NSObject <NSURLSessionDelegate>
++@interface HttpManager : NSObject
++@property(nonatomic, readonly) CRTransport *transport;
++- (void)setPairingIdentifier:(NSString *)identifier;
++- (void)cancel;
+ 
+ - (id) initWithHost:(TemporaryHost*) host;
+ - (id) initWithAddress:(NSString*) hostAddressPortString httpsPort:(unsigned short) httpsPort serverCert:(NSData*) serverCert;
+diff --git a/Limelight/Network/HttpResponse.m b/Limelight/Network/HttpResponse.m
+index 5cb398d..28f3bb8 100644
+--- a/Limelight/Network/HttpResponse.m
++++ b/Limelight/Network/HttpResponse.m
+@@ -95,7 +95,7 @@
+     
+     xmlFreeDoc(docPtr);
+     
+-    Log(LOG_D, @"Parsed XML data: %@", _elements);
++    // Do not log pairing proofs or launch-session responses.
+ }
+ 
+ @end
+diff --git a/Limelight/Network/MDNSManager.m b/Limelight/Network/MDNSManager.m
+index c0e0265..d9fcf62 100644
+--- a/Limelight/Network/MDNSManager.m
++++ b/Limelight/Network/MDNSManager.m
+@@ -191,22 +191,7 @@ static NSString* NV_SERVICE_TYPE = @"_nvstream._tcp";
+             
+             // Don't send a STUN request if we're connected to a VPN. We'll likely get the VPN
+             // gateway's external address rather than the external address of the LAN.
+-            if (![Utils isActiveNetworkVPN]) {
+-                // Since we discovered this host over IPv4 mDNS, we know we're on the same network
+-                // as the PC and we can use our current WAN address as a likely candidate
+-                // for our PC's external address.
+-                struct in_addr wanAddr;
+-                int err = LiFindExternalAddressIP4("stun.moonlight-stream.org", 3478, &wanAddr.s_addr);
+-                if (err == 0) {
+-                    char addrStr[INET_ADDRSTRLEN];
+-                    inet_ntop(AF_INET, &wanAddr, addrStr, sizeof(addrStr));
+-                    host.externalAddress = [NSString stringWithFormat: @"%s", addrStr];
+-                    Log(LOG_I, @"External IPv4 address (STUN): %@ -> %@", [service hostName], host.externalAddress);
+-                }
+-                else {
+-                    Log(LOG_E, @"STUN failed to get WAN address: %d", err);
+-                }
+-            }
++            // ClipRelay uses the advertised local address, without third-party STUN.
+             
+             host.localAddress = [MDNSManager sockAddrToString:addrData];
+             Log(LOG_I, @"Local address chosen: %@ -> %@", [service hostName], host.localAddress);
+diff --git a/Limelight/Network/PairManager.h b/Limelight/Network/PairManager.h
+index 2cc29d2..6e68547 100644
+--- a/Limelight/Network/PairManager.h
++++ b/Limelight/Network/PairManager.h
+@@ -8,7 +8,10 @@
+ 
+ #import "HttpManager.h"
+ 
++@class PairManager;
+ @protocol PairCallback <NSObject>
++- (BOOL)isCurrentPairing:(PairManager *)operation;
++- (void)updatePairingCode:(NSString *)code;
+ 
+ - (void) startPairing:(NSString*)PIN;
+ - (void) pairSuccessful:(NSData*)serverCert;
+diff --git a/Limelight/Network/ServerInfoResponse.m b/Limelight/Network/ServerInfoResponse.m
+index e210369..983e673 100644
+--- a/Limelight/Network/ServerInfoResponse.m
++++ b/Limelight/Network/ServerInfoResponse.m
+@@ -29,7 +29,7 @@
+     }
+     else {
+         // Use the default if it's not specified
+-        host.httpsPort = 47984;
++        host.httpsPort = 48784;
+     }
+     
+     // We might get an IPv4 loopback address if we're using GS IPv6 Forwarder
+@@ -46,8 +46,8 @@
+             localPort = [Utils addressPortStringToPort:host.localAddress];
+         }
+         else {
+-            // If all else fails, use 47989
+-            localPort = 47989;
++            // If all else fails, use 48789
++            localPort = 48789;
+         }
+         
+         host.localAddress = [Utils addressAndPortToAddressPortString:lanAddr port:localPort];
+@@ -62,7 +62,7 @@
+         }
+         else {
+             // Otherwise use the default
+-            externalHttpPort = 47989;
++            externalHttpPort = 48789;
+         }
+     }
+     
+@@ -90,7 +90,7 @@
+     
+     NSInteger pairStatus;
+     if ([self getIntTag:TAG_PAIR_STATUS value:&pairStatus]) {
+-        host.pairState = pairStatus ? PairStatePaired : PairStateUnpaired;
++        host.pairState = pairStatus && host.serverCert.length ? PairStatePaired : PairStateUnpaired;
+     } else {
+         host.pairState = PairStateUnknown;
+     }
+diff --git a/Limelight/Stream/Connection.m b/Limelight/Stream/Connection.m
+index 33361fc..07304f0 100644
+--- a/Limelight/Stream/Connection.m
++++ b/Limelight/Stream/Connection.m
+@@ -27,9 +27,12 @@
+     char _appVersionString[32];
+     char _gfeVersionString[32];
+     char _rtspSessionUrl[128];
++    VideoDecoderRenderer *_ownedRenderer;
++    id<ConnectionCallbacks> _ownedCallbacks;
+ }
+ 
+ static NSLock* initLock;
++static Connection *activeConnection;
+ static OpusMSDecoder* opusDecoder;
+ static id<ConnectionCallbacks> _callbacks;
+ static int lastFrameNumber;
+@@ -309,6 +312,11 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
+ 
+ void ClStageStarting(int stage)
+ {
++    // LiStartConnection resets its interrupt flag before the first stage.
++    // Reapply a cancellation that raced that reset before network work starts.
++    @synchronized (Connection.class) {
++        if (!activeConnection || activeConnection.cancelled) { LiInterruptConnection(); return; }
++    }
+     [_callbacks stageStarting:LiGetStageName(stage)];
+ }
+ 
+@@ -324,6 +332,9 @@ void ClStageFailed(int stage, int errorCode)
+ 
+ void ClConnectionStarted(void)
+ {
++    @synchronized (Connection.class) {
++        if (!activeConnection || activeConnection.cancelled) { LiInterruptConnection(); return; }
++    }
+     [_callbacks connectionStarted];
+ }
+ 
+@@ -373,18 +384,18 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
+ 
+ -(void) terminate
+ {
+-    // Interrupt any action blocking LiStartConnection(). This is
+-    // thread-safe and done outside initLock on purpose, since we
+-    // won't be able to acquire it if LiStartConnection is in
+-    // progress.
+-    LiInterruptConnection();
+-    
+-    // We dispatch this async to get out because this can be invoked
+-    // on a thread inside common and we don't want to deadlock. It also avoids
+-    // blocking on the caller's thread waiting to acquire initLock.
++    [self cancel];
++    @synchronized (Connection.class) {
++        if (activeConnection == self) LiInterruptConnection();
++    }
+     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+         [initLock lock];
+-        LiStopConnection();
++        BOOL owns;
++        @synchronized (Connection.class) { owns = activeConnection == self; }
++        if (owns) {
++            LiStopConnection();
++            @synchronized (Connection.class) { activeConnection = nil; }
++        }
+         [initLock unlock];
+     });
+ }
+@@ -432,8 +443,8 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
+     }
+     _serverInfo.serverCodecModeSupport = config.serverCodecModeSupport;
+ 
+-    renderer = myRenderer;
+-    _callbacks = callbacks;
++    _ownedRenderer = myRenderer;
++    _ownedCallbacks = callbacks;
+ 
+     LiInitializeStreamConfiguration(&_streamConfig);
+     _streamConfig.width = config.width;
+@@ -498,13 +509,25 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
+ -(void) main
+ {
+     [initLock lock];
+-    LiStartConnection(&_serverInfo,
++    @synchronized (Connection.class) {
++        if (self.cancelled) { [initLock unlock]; return; }
++        if (activeConnection) {
++            [initLock unlock];
++            [_ownedCallbacks launchFailed:@"上一段连接仍在结束，请稍后重试。"]; return;
++        }
++        activeConnection = self;
++        renderer = _ownedRenderer; _callbacks = _ownedCallbacks;
++    }
++    int result = LiStartConnection(&_serverInfo,
+                       &_streamConfig,
+                       &_clCallbacks,
+                       &_drCallbacks,
+                       &_arCallbacks,
+                       NULL, 0,
+                       NULL, 0);
++    if (result != 0) {
++        @synchronized (Connection.class) { if (activeConnection == self) activeConnection = nil; }
++    }
+     [initLock unlock];
+ }
+ 
+diff --git a/Limelight/Stream/StreamManager.m b/Limelight/Stream/StreamManager.m
+index e776fee..f1c6755 100644
+--- a/Limelight/Stream/StreamManager.m
++++ b/Limelight/Stream/StreamManager.m
+@@ -25,6 +25,7 @@
+     UIView* _renderView;
+     id<ConnectionCallbacks> _callbacks;
+     Connection* _connection;
++    HttpManager *_httpManager;
+ }
+ 
+ - (id) initWithConfig:(StreamConfiguration*)config renderView:(UIView*)view connectionCallbacks:(id<ConnectionCallbacks>)callbacks {
+@@ -38,14 +39,17 @@
+ }
+ 
+ - (void)main {
++    if (self.cancelled) return;
+     [CryptoManager generateKeyPairUsingSSL];
+     
+     HttpManager* hMan = [[HttpManager alloc] initWithAddress:_config.host httpsPort:_config.httpsPort
+                                                      serverCert:_config.serverCert];
++    @synchronized (self) { _httpManager = hMan; if (self.cancelled) { [hMan cancel]; return; } }
+     
+     ServerInfoResponse* serverInfoResp = [[ServerInfoResponse alloc] init];
+     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResp withUrlRequest:[hMan newServerInfoRequest:false]
+                                        fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
++    if (self.cancelled) return;
+     NSString* pairStatus = [serverInfoResp getStringTag:@"PairStatus"];
+     NSString* appversion = [serverInfoResp getStringTag:@"appversion"];
+     NSString* gfeVersion = [serverInfoResp getStringTag:@"GfeVersion"];
+@@ -94,11 +98,17 @@
+         }
+     }
+     
++    if (self.cancelled) return;
++    if (![sessionUrl hasPrefix:@"rtspenc://"] || [sessionUrl lengthOfBytesUsingEncoding:NSUTF8StringEncoding] >= 128) {
++        [_callbacks launchFailed:@"电脑未提供加密串流，请更新电脑端 ClipRelay。"];
++        return;
++    }
+     // Populate RTSP session URL from launch/resume response
+     _config.rtspSessionUrl = sessionUrl;
+     
+     // Initializing the renderer must be done on the main thread
+     dispatch_async(dispatch_get_main_queue(), ^{
++        if (self.cancelled) return;
+         VideoDecoderRenderer* renderer = [[VideoDecoderRenderer alloc] initWithView:self->_renderView callbacks:self->_callbacks streamAspectRatio:(float)self->_config.width / (float)self->_config.height useFramePacing:self->_config.useFramePacing];
+         self->_connection = [[Connection alloc] initWithConfig:self->_config renderer:renderer connectionCallbacks:self->_callbacks];
+         NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];
+@@ -108,12 +118,15 @@
+ 
+ - (void) stopStream
+ {
++    [self cancel];
++    @synchronized (self) { [_httpManager cancel]; }
+     [_connection terminate];
+ }
+ 
+ - (BOOL) launchApp:(HttpManager*)hMan receiveSessionUrl:(NSString**)sessionUrl {
+     HttpResponse* launchResp = [[HttpResponse alloc] init];
+     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:launchResp withUrlRequest:[hMan newLaunchOrResumeRequest:@"launch" config:_config]]];
++    if (self.cancelled) return NO;
+     NSString *gameSession = [launchResp getStringTag:@"gamesession"];
+     if (![launchResp isStatusOk]) {
+         [_callbacks launchFailed:launchResp.statusMessage];
+@@ -132,6 +145,7 @@
+ - (BOOL) resumeApp:(HttpManager*)hMan receiveSessionUrl:(NSString**)sessionUrl {
+     HttpResponse* resumeResp = [[HttpResponse alloc] init];
+     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:resumeResp withUrlRequest:[hMan newLaunchOrResumeRequest:@"resume" config:_config]]];
++    if (self.cancelled) return NO;
+     NSString* resume = [resumeResp getStringTag:@"resume"];
+     if (![resumeResp isStatusOk]) {
+         [_callbacks launchFailed:resumeResp.statusMessage];
+diff --git a/Limelight/Utility/Utils.m b/Limelight/Utility/Utils.m
+index fded11b..51217d1 100644
+--- a/Limelight/Utility/Utils.m
++++ b/Limelight/Utility/Utils.m
+@@ -23,21 +23,16 @@ NSString *const deviceName = @"roth";
+     return randomData;
+ }
+ 
+-+ (NSData*) hexToBytes:(NSString*) hex {
+-    unsigned long len = [hex length];
+-    NSMutableData* data = [NSMutableData dataWithCapacity:len / 2];
+-    char byteChars[3] = {'\0','\0','\0'};
+-    unsigned long wholeByte;
+-    
+-    const char *chars = [hex UTF8String];
+-    int i = 0;
+-    while (i < len) {
+-        byteChars[0] = chars[i++];
+-        byteChars[1] = chars[i++];
+-        wholeByte = strtoul(byteChars, NULL, 16);
+-        [data appendBytes:&wholeByte length:1];
+++ (NSData*) hexToBytes:(NSString*)hex {
++    if (![hex isKindOfClass:NSString.class] || !hex.length || hex.length % 2 || hex.length > 32768 ||
++        [hex rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefABCDEF"].invertedSet].location != NSNotFound) return nil;
++    NSMutableData *data = [NSMutableData dataWithLength:hex.length / 2];
++    uint8_t *bytes = data.mutableBytes;
++    for (NSUInteger i = 0; i < hex.length; i += 2) {
++        unsigned int value = 0;
++        [[NSScanner scannerWithString:[hex substringWithRange:NSMakeRange(i, 2)]] scanHexInt:&value];
++        bytes[i / 2] = (uint8_t)value;
+     }
+-    
+     return data;
+ }
+ 
+@@ -130,10 +125,13 @@ NSString *const deviceName = @"roth";
+ + (unsigned short) addressPortStringToPort:(NSString*)addressPort {
+     NSRange addressRange, portRange;
+     if (![self parseAddressPortString:addressPort address:&addressRange port:&portRange] || portRange.location == NSNotFound) {
+-        return 47989;
++        return 48789;
+     }
+     
+-    return [[addressPort substringWithRange:portRange] integerValue];
++    NSString *value = [addressPort substringWithRange:portRange];
++    if (!value.length || value.length > 5 || [value rangeOfCharacterFromSet:[NSCharacterSet decimalDigitCharacterSet].invertedSet].location != NSNotFound) return 0;
++    NSInteger port = value.integerValue;
++    return port >= 6 && port <= 65514 ? (unsigned short)port : 0;
+ }
+ 
+ + (NSString*) addressAndPortToAddressPortString:(NSString*)address port:(unsigned short)port {
+diff --git a/Limelight/ViewControllers/MainFrameViewController.m b/Limelight/ViewControllers/MainFrameViewController.m
+index 169bb13..b993931 100644
+--- a/Limelight/ViewControllers/MainFrameViewController.m
++++ b/Limelight/ViewControllers/MainFrameViewController.m
+@@ -26,6 +26,7 @@
+ #import "TemporaryApp.h"
+ #import "IdManager.h"
+ #import "ConnectionHelper.h"
++#import "CRClipboardViewController.h"
+ 
+ #if !TARGET_OS_TV
+ #import "SettingsViewController.h"
+@@ -47,6 +48,8 @@
+     AppAssetManager* _appManager;
+     StreamConfiguration* _streamConfig;
+     UIAlertController* _pairAlert;
++    PairManager *_pairOperation;
++    NSUInteger _selectionGeneration;
+     LoadingFrameViewController* _loadingFrame;
+     UIScrollView* hostScrollView;
+     FrontViewPosition currentPosition;
+@@ -59,22 +62,21 @@
+ }
+ static NSMutableSet* hostList;
+ 
+-- (void)startPairing:(NSString *)PIN {
+-    // Needs to be synchronous to ensure the alert is shown before any potential
+-    // failure callback could be invoked.
+-    dispatch_sync(dispatch_get_main_queue(), ^{
+-        self->_pairAlert = [UIAlertController alertControllerWithTitle:@"Pairing"
+-                                                               message:[NSString stringWithFormat:@"Enter the following PIN on the host machine: %@\n\nIf your host PC is running Sunshine, navigate to the Sunshine web UI to enter the PIN.", PIN]
+-                                                        preferredStyle:UIAlertControllerStyleAlert];
+-        [self->_pairAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {
+-            self->_pairAlert = nil;
+-            [self->_discMan startDiscovery];
+-            [self hideLoadingFrame: ^{
+-                [self showHostSelectionView];
+-            }];
+-        }]];
+-        [[self activeViewController] presentViewController:self->_pairAlert animated:YES completion:nil];
+-    });
++- (BOOL)isCurrentPairing:(PairManager *)operation { return _pairOperation == operation && !_background; }
++- (void)cancelPairing {
++    [_pairOperation cancel]; _pairOperation = nil; _selectionGeneration++;
++    [_pairAlert dismissViewControllerAnimated:NO completion:nil]; _pairAlert = nil;
++}
++- (void)startPairing:(NSString *)message {
++    _pairAlert = [UIAlertController alertControllerWithTitle:@"配对电脑" message:message preferredStyle:UIAlertControllerStyleAlert];
++    [_pairAlert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
++        [self cancelPairing]; [self->_discMan startDiscovery];
++        [self hideLoadingFrame:^{ [self showHostSelectionView]; }];
++    }]];
++    [[self activeViewController] presentViewController:_pairAlert animated:YES completion:nil];
++}
++- (void)updatePairingCode:(NSString *)code {
++    _pairAlert.message = [NSString stringWithFormat:@"请在电脑端允许这台 iPhone / iPad，并核对两端标识完全一致：\n\n%@\n\n请求两分钟后失效。", code];
+ }
+ 
+ - (void)displayPairingFailureDialog:(NSString *)message {
+@@ -93,27 +95,19 @@ static NSMutableSet* hostList;
+ }
+ 
+ - (void)pairFailed:(NSString *)message {
+-    dispatch_async(dispatch_get_main_queue(), ^{
+-        if (self->_pairAlert != nil) {
+-            [self->_pairAlert dismissViewControllerAnimated:YES completion:^{
+-                [self displayPairingFailureDialog:message];
+-            }];
+-            self->_pairAlert = nil;
+-        }
+-    });
++    _pairOperation = nil;
++    if (_pairAlert) {
++        [_pairAlert dismissViewControllerAnimated:YES completion:^{ [self displayPairingFailureDialog:message]; }];
++        _pairAlert = nil;
++    } else [self displayPairingFailureDialog:message];
+ }
+-
+-- (void)pairSuccessful:(NSData*)serverCert {
+-    dispatch_async(dispatch_get_main_queue(), ^{
+-        // Store the cert from pairing with the host
+-        self->_selectedHost.serverCert = serverCert;
+-        
+-        [self->_pairAlert dismissViewControllerAnimated:YES completion:nil];
+-        self->_pairAlert = nil;
+-        
+-        [self->_discMan startDiscovery];
+-        [self alreadyPaired];
+-    });
++- (void)pairSuccessful:(NSData *)serverCert {
++    _pairOperation = nil;
++    _selectedHost.serverCert = serverCert;
++    _selectedHost.pairState = PairStatePaired;
++    [[[DataManager alloc] init] updateHost:_selectedHost];
++    [_pairAlert dismissViewControllerAnimated:YES completion:nil]; _pairAlert = nil;
++    [_discMan startDiscovery]; [self alreadyPaired];
+ }
+ 
+ - (void)disableUpButton {
+@@ -288,6 +282,7 @@ static NSMutableSet* hostList;
+ }
+ 
+ - (void)showHostSelectionView {
++    [self cancelPairing];
+ #if TARGET_OS_TV
+     // Remove the menu button intercept to allow the app to exit
+     // when at the host selection view.
+@@ -336,6 +331,8 @@ static NSMutableSet* hostList;
+     }
+     
+     Log(LOG_D, @"Clicked host: %@", host.name);
++    [self cancelPairing];
++    NSUInteger generation = _selectionGeneration;
+     _selectedHost = host;
+     [self updateTitle];
+     [self enableUpButton];
+@@ -420,7 +417,11 @@ static NSMutableSet* hostList;
+                     // Polling the server while pairing causes the server to screw up
+                     [self->_discMan stopDiscoveryBlocking];
+                     PairManager* pMan = [[PairManager alloc] initWithManager:hMan clientCert:self->_clientCert callback:self];
+-                    [self->_opQueue addOperation:pMan];
++                    dispatch_async(dispatch_get_main_queue(), ^{
++                        if (self->_background || self->_selectedHost != host || self->_selectionGeneration != generation) { [pMan cancel]; return; }
++                        self->_pairOperation = pMan;
++                        [self->_opQueue addOperation:pMan];
++                    });
+                 }
+                 else {
+                     // Not user action, so just return to host screen
+@@ -472,6 +473,13 @@ static NSMutableSet* hostList;
+     }
+     
+     UIAlertController* longClickAlert = [UIAlertController alertControllerWithTitle:host.name message:message preferredStyle:UIAlertControllerStyleActionSheet];
++    if (host.serverCert.length && host.state == StateOnline && host.pairState == PairStatePaired) {
++        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"剪贴板收发…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
++            CRClipboardViewController *clipboard = [[CRClipboardViewController alloc] initWithHost:host];
++            UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:clipboard];
++            [[self activeViewController] presentViewController:navigation animated:YES completion:nil];
++        }]];
++    }
+     if (host.state != StateOnline) {
+         [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Wake PC" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+             UIAlertController* wolAlert = [UIAlertController alertControllerWithTitle:@"Wake-On-LAN" message:@"" preferredStyle:UIAlertControllerStyleAlert];
+@@ -560,8 +568,9 @@ static NSMutableSet* hostList;
+ }
+ 
+ - (void) addHostClicked {
++    if (![CryptoManager readCertFromFile]) { [self displayPairingFailureDialog:[CryptoManager identityError].localizedDescription ?: @"无法读取配对身份，请解锁设备后重试。"]; return; }
+     Log(LOG_D, @"Clicked add host");
+-    UIAlertController* alertController = [UIAlertController alertControllerWithTitle:@"Add Host Manually" message:@"If Moonlight doesn't find your local gaming PC automatically,\nenter the IP address of your PC" preferredStyle:UIAlertControllerStyleAlert];
++    UIAlertController* alertController = [UIAlertController alertControllerWithTitle:@"Add Host Manually" message:@"请输入电脑的局域网 IP 或主机名。默认端口 48789，可填写 IP:端口。请先在电脑的 ClipRelay 中开启远程访问。" preferredStyle:UIAlertControllerStyleAlert];
+     [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+     [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+         NSString* hostAddress = [((UITextField*)[[alertController textFields] objectAtIndex:0]).text trim];
+@@ -597,7 +606,10 @@ static NSMutableSet* hostList;
+             });
+         }];
+     }]];
+-    [alertController addTextFieldWithConfigurationHandler:nil];
++    [alertController addTextFieldWithConfigurationHandler:^(UITextField *field) {
++        field.placeholder = @"例如 192.168.1.10:48789";
++        field.autocapitalizationType = UITextAutocapitalizationTypeNone; field.autocorrectionType = UITextAutocorrectionTypeNo;
++    }];
+     [[self activeViewController] presentViewController:alertController animated:YES completion:nil];
+ }
+ 
+@@ -1030,7 +1042,7 @@ static NSMutableSet* hostList;
+ 
+ -(void)beginForegroundRefresh
+ {
+-    if (!_background) {
++    if (!_background && !_pairOperation) {
+         // This will kick off box art caching
+         [self updateHosts];
+         
+@@ -1078,7 +1090,8 @@ static NSMutableSet* hostList;
+ -(void)handleReturnToForeground
+ {
+     _background = NO;
+-    
++    [CryptoManager generateKeyPairUsingSSL];
++    _clientCert = [CryptoManager readCertFromFile];
+     [self beginForegroundRefresh];
+     
+     // Check for a pending shortcut action when returning to foreground
+@@ -1088,7 +1101,8 @@ static NSMutableSet* hostList;
+ -(void)handleEnterBackground
+ {
+     _background = YES;
+-    
++    [self cancelPairing];
++    [self hideLoadingFrame:nil];
+     [_discMan stopDiscovery];
+ }
+ 
+@@ -1147,6 +1161,8 @@ static NSMutableSet* hostList;
+     // you cannot restart an NSOperation when it is finished
+     [_discMan stopDiscovery];
+     
++    [self cancelPairing];
++
+     // Purge the box art cache
+     [_boxArtCache removeAllObjects];
+     
+diff --git a/Limelight/ViewControllers/StreamFrameViewController.m b/Limelight/ViewControllers/StreamFrameViewController.m
+index a4c8f34..d5cc731 100644
+--- a/Limelight/ViewControllers/StreamFrameViewController.m
++++ b/Limelight/ViewControllers/StreamFrameViewController.m
+@@ -317,19 +317,10 @@
+ 
+ // This will fire if the user opens control center or gets a low battery message
+ - (void)applicationWillResignActive:(NSNotification *)notification {
+-    if (_inactivityTimer != nil) {
+-        [_inactivityTimer invalidate];
+-    }
+-    
+-#if !TARGET_OS_TV
+-    // Terminate the stream if the app is inactive for 60 seconds
+-    Log(LOG_I, @"Starting inactivity termination timer");
+-    _inactivityTimer = [NSTimer scheduledTimerWithTimeInterval:60
+-                                                      target:self
+-                                                    selector:@selector(inactiveTimerExpired:)
+-                                                    userInfo:nil
+-                                                     repeats:NO];
+-#endif
++    if (_inactivityTimer) { [_inactivityTimer invalidate]; _inactivityTimer = nil; }
++    [_controllerSupport cleanup];
++    [_streamMan stopStream];
++    [self returnToMainFrame];
+ }
+ 
+ - (void)inactiveTimerExpired:(NSTimer*)timer {

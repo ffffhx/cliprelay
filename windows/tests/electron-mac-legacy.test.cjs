@@ -65,14 +65,15 @@ test('redirect response is a failure and never forwards clipboard or credentials
   try{await assert.rejects(postText({legacyEnabled:true,peer:'127.0.0.1',peerPort:server.address().port,peerToken:'fixture'},'fixture'),/302/);assert.equal(calls,1);}
   finally{await stop(server);}
 });
-test('upgrade keeps saved peer and tokens but never infers plaintext consent',()=>{
+test('upgrade keeps the saved peer and applies the approved connection defaults once',()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-legacy-test-'));
   try{
     for(const legacyEnabled of [undefined,'true',true,false]){
       fs.writeFileSync(path.join(directory,'config.json'),JSON.stringify({peer:'saved.local',peerToken:'saved',accessToken:'receiver',legacyEnabled}));
       const config=loadConfig(directory);
-      assert.equal(config.legacyEnabled,legacyEnabled===true);assert.equal(config.peer,'saved.local');assert.equal(config.peerToken,'saved');assert.equal(config.accessToken,'receiver');
-      assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'config.json'))).legacyEnabled,legacyEnabled===true);
+      assert.equal(config.legacyEnabled,true);assert.equal(config.peer,'saved.local');assert.equal(config.peerToken,'');assert.equal(config.accessToken,'');
+      assert.equal(config.connectionDefaultsVersion,1);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'config.json'))).legacyEnabled,true);
     }
   }finally{assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir())+path.sep));assert.ok(path.basename(directory).startsWith('cliprelay-legacy-test-'));fs.rmSync(directory,{recursive:true,force:true});}
 });

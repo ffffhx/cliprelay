@@ -11,7 +11,7 @@ function configuration(hostName){
   // A user's home directory may contain spaces, Unicode or '#'.
   return [`sunshine_name = ClipRelay - ${name(hostName)}`,'port = 48789','origin_web_ui_allowed = pc',
     'system_tray = disabled','upnp = disabled','controller = disabled','min_log_level = 2',
-    'lan_encryption_mode = 2','wan_encryption_mode = 2','file_apps = apps.json','file_state = clients.json',
+    'lan_encryption_mode = 0','wan_encryption_mode = 0','file_apps = apps.json','file_state = clients.json',
     'credentials_file = credentials.json','pkey = cakey.pem','cert = cacert.pem','log_path = engine.log',''].join('\n');
 }
 function credentials(secret,salt=crypto.randomBytes(8).toString('hex')){

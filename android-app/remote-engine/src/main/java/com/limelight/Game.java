@@ -1007,10 +1007,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (desktopToolbar != null) desktopToolbar.releaseTouches();
         setInputGrabState(false);
         displayedFailureDialog = true;
-        // Disconnect this client without quitting the host application. PcView
+        // Disconnect this client without quitting the host application. The home
         // resumes the host session when the user selects this computer again.
         stopConnection();
-        startActivity(new Intent(this, PcView.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+        startActivity(new Intent().setClassName(this, "com.cliprelay.app.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
         finish();
     }

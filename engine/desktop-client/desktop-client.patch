@@ -385,7 +385,7 @@ index 2b701d71..22f9047f 100644
      switch (commandLineParserResult) {
      case GlobalCommandLineParser::ListRequested:
          // Don't log to the console since it will jumble the command output
-@@ -995,10 +1010,32 @@ int main(int argc, char *argv[])
+@@ -995,10 +1010,35 @@ int main(int argc, char *argv[])
          {
              initialView = "qrc:/gui/CliStartStreamSegue.qml";
              StreamingPreferences* preferences = StreamingPreferences::get();
@@ -411,6 +411,9 @@ index 2b701d71..22f9047f 100644
 +            preferences->gameOptimizations = false;
 +            preferences->richPresence = false;
 +            preferences->absoluteMouseMode = true;
++            // Imported desktop sessions must not wait 3.5 seconds for gaming
++            // configuration toasts. Actual launch/decoder failures remain errors.
++            preferences->configurationWarnings = false;
 +            preferences->backgroundGamepad = false;
 +            preferences->gamepadMouse = false;
 +            preferences->playAudioOnHost = true;

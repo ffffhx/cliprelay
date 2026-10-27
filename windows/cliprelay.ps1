@@ -2432,13 +2432,13 @@ function Save-PeerConfiguration {
     if ($ListenPort -lt 1 -or $ListenPort -gt 65535) {
         throw "服务端口必须是 1 到 65535 之间的整数。"
     }
-    $normalizedAccessToken = if ($null -eq $AccessToken) { "" } else { $AccessToken.Trim() }
+    $normalizedAccessToken = ""
     if ($normalizedAccessToken.Length -gt 128) {
         throw "访问密钥不能超过 128 个字符。"
     }
     $normalizedDeviceName = Get-NormalizedDeviceName -Value $DeviceName
     $oldLegacyReceiver = Get-Variable -Name LegacyReceiverEnabled -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-    if ($null -eq $LegacyReceiverEnabled) { $LegacyReceiverEnabled = ($oldLegacyReceiver -is [bool] -and $oldLegacyReceiver) }
+    $LegacyReceiverEnabled = $true
 
     if ($null -eq $Peers) {
         $Peers = @([PSCustomObject]@{
@@ -2935,8 +2935,9 @@ if ($script:DeviceId.Length -gt 128) {
 $script:DeviceName = Get-NormalizedDeviceName -Value $configuredDeviceName
 $script:DiscoveryEnabled = if ($null -eq $configuredDiscoveryEnabled) { $true } else { [bool]$configuredDiscoveryEnabled }
 $configuredLegacyReceiver = Get-PropertyValue -Object $configuration -Name 'legacyReceiverEnabled'
-$script:LegacyReceiverEnabled = $configuredLegacyReceiver -is [bool] -and $configuredLegacyReceiver
-if ($configuredLegacyReceiver -isnot [bool]) { $configRequiresDiscoveryMigration = $true }
+$script:LegacyReceiverEnabled = $true
+$script:AccessToken = ''
+if ($configuredLegacyReceiver -ne $true) { $configRequiresDiscoveryMigration = $true }
 
 $hasConfiguredPeers = $null -ne $configuration -and $null -ne $configuration.PSObject.Properties["peers"]
 if ($peerWasExplicitlyProvided -or -not $hasConfiguredPeers) {
@@ -2956,6 +2957,14 @@ else {
     $peerSeed = @($configuration.peers)
 }
 $normalizedPeerSeed = @(Get-NormalizedRelayPeers -Peers $peerSeed -DefaultPort $Port -DefaultAccessToken $script:AccessToken)
+foreach ($savedPeer in $normalizedPeerSeed) {
+    if (-not $savedPeer.pairedOwner) {
+        if (-not $savedPeer.legacyAllowed -or $savedPeer.accessToken) { $configRequiresDiscoveryMigration = $true }
+        $savedPeer.legacyAllowed = $true
+        $savedPeer.accessToken = ''
+        $savedPeer.requiresAuth = $false
+    }
+}
 $localPeerFilter = Remove-LocalRelayPeers `
     -Peers $normalizedPeerSeed `
     -LocalDeviceId $script:DeviceId `
@@ -3877,7 +3886,7 @@ function Start-RelayPeersConnectivityTest {
         probe = $true
     }
     $json = $payload | ConvertTo-Json -Compress
-    $targets = New-RelayBroadcastTargets -Peers $Peers
+    $targets = New-RelayBroadcastTargets -Peers $Peers -IncludeDisabled
     return [ClipRelay.RelayBroadcaster]::SendTextAsync($targets, $json, $TimeoutMilliseconds)
 }
 
@@ -4297,29 +4306,7 @@ function Handle-Client {
     }
 
     if ($request.Path -in @('/screen/invite', '/screen/message')) {
-        $status = 503
-        try {
-            if ($request.BodyBytes.Length -gt 262144) { $status = 413 }
-            else {
-                $body = [Text.Encoding]::UTF8.GetString($request.BodyBytes)
-                $data = $null
-                try { $data = $body | ConvertFrom-Json -ErrorAction Stop } catch { $status = 400 }
-                if ($null -eq $data) {
-                    Send-HttpResponse -Stream $request.Stream -StatusCode 400 -Reason 'Bad Request' -Body 'invalid JSON'
-                    return
-                }
-                Initialize-ScreenSharing
-                $address = ([Net.IPEndPoint]$Client.Client.RemoteEndPoint).Address.ToString()
-                try {
-                    $result = Invoke-ScreenShareCommand -Command @{ action='signal'; path=$request.Path; data=$data; remoteAddress=$address } -NoStart:($request.Path -eq '/screen/message')
-                    $status = if ($null -eq $result) { 401 } else { [int]$result.status }
-                } catch [Net.WebException] {
-                    if ($null -ne $_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
-                    else { $status = 503 }
-                }
-            }
-        } catch { $status = 503 }
-        Send-HttpResponse -Stream $request.Stream -StatusCode $status -Reason $(if ($status -lt 300) { 'OK' } else { 'Error' }) -Body ([string]$status)
+        Send-HttpResponse -Stream $request.Stream -StatusCode 404 -Reason 'Not Found' -Body 'not found'
         return
     }
 
@@ -5311,9 +5298,9 @@ function Show-RelayControlCenter {
         $showPhonePreviewCommand = Get-Command Show-PhonePreviewRemote
         $phonePreviewButton.Add_Click({ & $showPhonePreviewCommand }.GetNewClosure())
 
-        $remoteDesktopButton = & $newButton $form "手机远控" 542 52 98 30 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
+        $remoteDesktopButton = & $newButton $form "远程控制" 542 52 98 30 $colors.Raised $colors.Border $colors.BlueLight $colors.Border
         $remoteDesktopButton.Name = 'RemoteDesktopButton'
-        $remoteDesktopButton.AccessibleName = '手机远控'
+        $remoteDesktopButton.AccessibleName = '远程控制'
         $showRemoteDesktopCommand = Get-Command Show-RemoteDesktopSettings
         $remoteDesktopButton.Add_Click({ & $showRemoteDesktopCommand -Owner $form }.GetNewClosure())
 
@@ -6220,25 +6207,9 @@ try {
     $exitMenuItem.Add_Click({ $script:stopRequested = $true })
 
     $null = $trayMenu.Items.Add($configureMenuItem)
-    $remoteDesktopMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('手机远控 · 桌面与键鼠')
-    $remoteDesktopMenuItem.Add_Click({ Show-RemoteDesktopSettings })
+    $remoteDesktopMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('远程控制')
+    $remoteDesktopMenuItem.Add_Click({ if ($ElectronHostPipe) { Show-RemoteDesktopHome } else { Show-RemoteDesktopSettings } })
     $null = $trayMenu.Items.Add($remoteDesktopMenuItem)
-    $screenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('屏幕共享 · 实时视频')
-    $screenShareMenuItem.Add_Click({ Show-ScreenSharing })
-    $null = $trayMenu.Items.Add($screenShareMenuItem)
-    $script:screenShareStatusMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('屏幕共享 · 未开始')
-    $script:screenShareStatusMenuItem.Enabled = $false
-    $null = $trayMenu.Items.Add($script:screenShareStatusMenuItem)
-    $script:stopScreenShareMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem('停止所有屏幕共享')
-    $script:stopScreenShareMenuItem.Enabled = $false
-    $script:stopScreenShareMenuItem.Add_Click({
-        try {
-            $null = Invoke-ScreenShareCommand -Command @{action='stop-all'} -NoStart
-            $script:screenShareNextUpdate = [DateTime]::MinValue
-            Update-ScreenSharingTrayState
-        } catch { Show-ClipRelayNotification -Title 'ClipRelay 无法结束共享' -Message $_.Exception.Message -Icon Warning }
-    })
-    $null = $trayMenu.Items.Add($script:stopScreenShareMenuItem)
     $previewRemoteMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("手机翻页 · ← / →")
     $previewRemoteMenuItem.Add_Click({ Show-PhonePreviewRemote })
     $null = $trayMenu.Items.Add($previewRemoteMenuItem)
@@ -6312,7 +6283,6 @@ try {
     while (-not $stopRequested) {
         Process-WindowsMessages
         Update-RelayUpdateState
-        Update-ScreenSharingTrayState
         if ($openSettingsEvent.WaitOne(0)) { Show-PeerConfiguration }
         Update-RelayTransfers
         Update-RelayRequestReads

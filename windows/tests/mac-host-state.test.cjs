@@ -14,7 +14,7 @@ test('host configuration contains only owned relative files and cannot inject ad
   const value=configuration('Mac\nupnp = enabled # comment');
   assert.equal(value.split('\n').filter(line=>line.startsWith('upnp = ')).length,1);assert.match(value,/\nupnp = disabled\n/);
   for(const key of ['file_apps','file_state','credentials_file','pkey','cert','log_path'])assert.match(value,new RegExp('\\n'+key+' = [a-z.]+\\n'));
-  assert.match(value,/lan_encryption_mode = 2/);assert.match(value,/wan_encryption_mode = 2/);assert.throws(()=>configuration({}));
+  assert.match(value,/lan_encryption_mode = 0/);assert.match(value,/wan_encryption_mode = 0/);assert.throws(()=>configuration({}));
 });
 test('admin credential hashing uses the existing Sunshine reversed uppercase digest format',()=>{
   const secret='secret-password',salt='0123456789abcdef',value=credentials(secret,salt);

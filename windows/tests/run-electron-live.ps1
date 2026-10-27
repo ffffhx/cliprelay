@@ -1,12 +1,12 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('native','renderer')][string]$Mode = 'native')
+param([ValidateSet('native','renderer','center','native-center')][string]$Mode = 'native')
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $windowsRoot = Split-Path $PSScriptRoot
 $repo = Split-Path $windowsRoot
 $fixture = Join-Path $repo ('.tools\electron-qa-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $fixture -Force | Out-Null
-foreach ($file in @('cliprelay.ps1','cliprelay.ico','updates.ps1','update-client.cs','version.json')) {
+foreach ($file in @('cliprelay.ps1','cliprelay.ico','paired-relay.cs','updates.ps1','update-client.cs','version.json')) {
     Copy-Item -LiteralPath (Join-Path $windowsRoot $file) -Destination $fixture
 }
 foreach ($folder in @('electron','screen-share','remote-desktop')) {
@@ -24,13 +24,14 @@ $ast = [Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,
 $setter = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-StartupRegistration'},$true)
 if ($null -eq $setter) { throw 'Cannot isolate startup registration.' }
 $source = $source.Remove($setter.Extent.StartOffset,$setter.Extent.EndOffset-$setter.Extent.StartOffset).Insert($setter.Extent.StartOffset,'function Set-StartupRegistration { param([bool]$Enabled) }')
+$source = $source.Insert($ast.ParamBlock.Extent.EndOffset, "`ntrap { [IO.File]::WriteAllText((Join-Path `$PSScriptRoot 'native-failure.txt'), (`$_ | Out-String) + `$_.ScriptStackTrace); throw }`n")
 [IO.File]::WriteAllText($client,$source,[Text.UTF8Encoding]::new($true))
 $config = @{peer='';peers=@();port=47931;notifications=$false;accessToken='';deviceId='electron-qa';deviceName='Electron migration QA';discoveryEnabled=$false}
 [IO.File]::WriteAllText((Join-Path $fixture 'config.json'),($config | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $fixture '.electron-test-fixture'),'startup-registration-disabled')
 $engine = Join-Path $windowsRoot 'screen-share\engine\electron.exe'
 if (!(Test-Path -LiteralPath $engine)) { & (Join-Path $windowsRoot 'screen-share\setup.ps1') }
-$test = Join-Path $PSScriptRoot $(if($Mode -eq 'native'){'electron-live.cjs'}else{'electron-renderer-live.cjs'})
+$test = Join-Path $PSScriptRoot $(if($Mode -in @('native','native-center')){'electron-native-center-live.cjs'}else{'electron-center-live.cjs'})
 $arguments = '"' + $test + '" --root="' + $fixture + '" --force-device-scale-factor=1'
 $inner = @'
 $psi = New-Object Diagnostics.ProcessStartInfo

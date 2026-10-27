@@ -590,6 +590,10 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 		}
 	}
 	terminal := &probe{ctx: ctx, executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	automation := &probe{ctx: ctx, executable: executable, argument: "--automation-probe", maxOutput: 4 * 1024 * 1024, timeout: 40 * time.Second}
+	if managed {
+		automation.executable = ""
+	} // Windows desktop worker; explicit unsupported elsewhere.
 	if managed {
 		if err := configureManagedTerminal(terminal, dir); err != nil {
 			return err
@@ -597,7 +601,7 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	}
 	// Registered before manager joins: those cleanup operations run first, then
 	// every remaining worker gets its EOF/grace period at the same time.
-	defer func() { cancel(); stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal) }()
+	defer func() { cancel(); stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal, automation) }()
 	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, cleanupRead: privacy.readCleanup, now: time.Now}
 	if managed {
 		closePrivacy, err := configureManagedPrivacy(ctx, privacyManager, dir, access)
@@ -622,6 +626,10 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	terminalDone := make(chan struct{})
 	go func() { defer close(terminalDone); terminalManager.maintain(ctx) }()
 	defer func() { cancel(); <-terminalDone }()
+	automationManager := &automationControl{clients: clients, read: automation.read, cleanupRead: automation.readCleanup}
+	automationDone := make(chan struct{})
+	go func() { defer close(automationDone); automationManager.maintain(ctx) }()
+	defer func() { cancel(); <-automationDone }()
 	// Start the user worker on host startup so an interrupted microphone switch
 	// is recovered before the next phone dictation. This does not start recording.
 	_, _ = voice.read("voice-status")
@@ -633,6 +641,7 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 		TLSConfig: controlTLSConfig(cert, clients),
 	}
 	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProviderWithAccess(access))
+	server.Handler = automationManager.handler(server.Handler)
 	pairer := newLANPairerWithAccess(ctx, dir, cert, access)
 	pairer.managed = managed
 	return runHostListeners(ctx, cancel, listeners, server, pairer, cert, relay, onListening...)

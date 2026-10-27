@@ -12,7 +12,6 @@ import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,7 +49,44 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : ComponentActivity() {
+class MainActivity : com.limelight.PcView() {
+    private lateinit var deviceDirectory: com.cliprelay.app.ui.DeviceDirectory
+    private var homeComputers by mutableStateOf<List<com.cliprelay.app.ui.HomeComputer>>(emptyList())
+    private var nearbyComputers by mutableStateOf<List<com.cliprelay.app.ui.HomeComputer>>(emptyList())
+    private var connectingComputer by mutableStateOf<String?>(null)
+    private var connectionError by mutableStateOf<String?>(null)
+    private val devicePreferences by lazy { getSharedPreferences("device_home", MODE_PRIVATE) }
+
+    override fun usesDeviceHome() = true
+
+    override fun onComputerChanged(computer: com.limelight.nvstream.http.ComputerDetails) {
+        if (!::deviceDirectory.isInitialized) return
+        deviceDirectory.update(com.cliprelay.app.ui.HomeComputer(computer.uuid, computer.name, computer.state),
+            explicitlyAdded = computer.manualAddress != null || computer.embeddedAddress != null || computer.serverCert != null)
+        publishDevices()
+    }
+
+    override fun onComputerRemoved(uuid: String) {
+        deviceDirectory.remove(uuid)
+        publishDevices()
+    }
+
+    override fun onConnectionChanged(uuid: String?, error: String?) {
+        connectingComputer = uuid
+        connectionError = error
+    }
+
+    private fun publishDevices() {
+        homeComputers = deviceDirectory.saved()
+        nearbyComputers = deviceDirectory.nearby()
+        if (devicePreferences.getStringSet("saved_ids", emptySet()) != deviceDirectory.savedIds)
+            devicePreferences.edit().putStringSet("saved_ids", deviceDirectory.savedIds).apply()
+    }
+
+    private fun addHomeComputer(uuid: String) {
+        deviceDirectory.add(uuid)
+        publishDevices()
+    }
     private var liveStreamAvailable by mutableStateOf(false)
     private val liveStreamListener = Runnable {
         runOnUiThread { liveStreamAvailable = com.limelight.ui.LiveStreamSession.isActive() }
@@ -95,6 +131,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val database = com.limelight.computers.ComputerDatabaseManager(this)
+        val stored = try { database.allComputers } finally { database.close() }
+        val savedIds = if (devicePreferences.contains("saved_ids"))
+            devicePreferences.getStringSet("saved_ids", emptySet()).orEmpty()
+        else stored.map { it.uuid }.toSet().also {
+            devicePreferences.edit().putStringSet("saved_ids", it).apply()
+        }
+        deviceDirectory = com.cliprelay.app.ui.DeviceDirectory(savedIds)
+        stored.forEach { onComputerChanged(it) }
         com.cliprelay.app.network.NetworkConnectionService.restore(this)
         pendingImagePath = savedInstanceState?.getString("pendingGalleryImage")
         pendingImageId = savedInstanceState?.takeIf { it.containsKey("pendingGalleryImageId") }
@@ -134,11 +179,23 @@ class MainActivity : ComponentActivity() {
                     },
                     onCopyClip = ::copyClipToClipboard,
                     onOpenRemoteDesktop = {
-                        if (!com.limelight.ui.LiveStreamSession.resume(this)) {
-                            startActivity(Intent(this, com.limelight.PcView::class.java))
-                        }
+                        com.limelight.ui.LiveStreamSession.resume(this)
                     },
                     remoteStreamAvailable = liveStreamAvailable,
+                    computers = homeComputers,
+                    nearbyComputers = nearbyComputers,
+                    connectingComputer = connectingComputer,
+                    connectionError = connectionError,
+                    onConnectComputer = ::connectToComputer,
+                    onCancelConnection = ::cancelComputerConnection,
+                    onDismissConnectionError = { connectionError = null },
+                    onAddComputer = ::addHomeComputer,
+                    onComputerActions = ::showComputerActions,
+                    onRescanComputers = ::rescanComputers,
+                    onAddAddress = { startActivity(Intent(this, com.limelight.preferences.AddComputerManually::class.java)) },
+                    onAddPairingCode = { startActivity(Intent(this, com.cliprelay.app.network.NetworkPairActivity::class.java)) },
+                    onRemoteSettings = { startActivity(Intent(this, com.limelight.preferences.StreamSettings::class.java)) },
+                    onOpenSourceNotices = { com.limelight.ui.OpenSourceNotice.show(this) },
                     onSaveImage = ::requestSaveImage,
                     savingImageId = clipActions.savingImageId,
                     copiedClipIds = clipActions.copiedClipIds,

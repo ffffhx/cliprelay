@@ -66,11 +66,11 @@ test('unsupported or failing notifications do not affect the running host',()=>{
     const notices=new HostNotices({Notification,active:()=>true,open:()=>assert.fail('must not open')});assert.equal(notices.show({count:1}),false);notices.close();
   }
 });
-test('startup preference defaults off, rejects truthy legacy values and persists only an explicit boolean',()=>{
+test('startup defaults on after migration and preserves subsequent explicit boolean settings',()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-host-startup-'));
   try{
-    const initial=loadConfig(directory,{legacy:()=>({}),defaults:()=>({}),hostname:()=> 'Disposable Mac'});assert.equal(initial.hostAutoStart,false);
-    for(const invalid of [undefined,null,'true',1,{},[]]){saveConfig(directory,{...initial,hostAutoStart:invalid});assert.equal(loadConfig(directory).hostAutoStart,false);}
+    const initial=loadConfig(directory,{legacy:()=>({}),defaults:()=>({}),hostname:()=> 'Disposable Mac'});assert.equal(initial.hostAutoStart,true);
+    for(const invalid of [undefined,null,'true',1,{},[]]){saveConfig(directory,{...initial,hostAutoStart:invalid});assert.equal(loadConfig(directory).hostAutoStart,true);}
     saveConfig(directory,{...initial,hostAutoStart:true});const enabled=loadConfig(directory);assert.equal(enabled.hostAutoStart,true);assert.equal(enabled.deviceId,initial.deviceId);
     saveConfig(directory,{...enabled,hostAutoStart:false});assert.equal(loadConfig(directory).hostAutoStart,false);
   }finally{assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir())+path.sep));assert.ok(path.basename(directory).startsWith('cliprelay-host-startup-'));fs.rmSync(directory,{recursive:true,force:true});}

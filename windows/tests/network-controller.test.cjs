@@ -24,6 +24,7 @@ function setup(t,options={}){
     client:credential=>({id:credentialId(credential),request:async(action,data,signal)=>{
       if(signal?.aborted)throw error('CANCELLED');if(control.revoked)throw error('NETWORK_REVOKED');if(control.offline)throw error('BROKER_UNAVAILABLE');
       if(action==='claim')return {id:credentialId(credential),state:'pending',computer:peer.name};
+      if(action==='connect-device')return {id:credentialId(credential),state:'approved',computer:peer.name,hostId:peer.id};
       if(action==='enroll')return {hostname:'cr-'+credentialId(credential),controlUrl:'https://control.invalid',authKey:'one-use'};
       return {id:credentialId(credential),state:control.approved?'approved':'pending',peers:[{...control.peer}],reauthorize:control.reauthorize};
     }}),
@@ -96,6 +97,19 @@ test('direct fallback is permitted for a temporary outage but blocked after paus
 test('close prevents delayed network updates from restarting receivers',async t=>{
   let changes=0;const f=setup(t,{onUpdate:()=>changes++}),record=f.catalog.save(token(),peer);f.manager.reconcile();await until(()=>f.manager.route(record.id));
   const before=changes;await f.manager.close();f.manager.reconcile();assert.equal(changes,before);assert.equal(f.manager.route(record.id),null);assert.equal(f.channels[0].closed,true);
+});
+test('public discovery enrolls once, pairs automatically and reuses its saved identity',async t=>{
+  const f=setup(t);
+  f.manager.connectDiscovered(peer.id);await f.manager.pairTask;
+  assert.equal(f.manager.pairing.state,'paired');assert.equal(f.catalog.records().length,1);
+  const record=f.catalog.records()[0],credential=f.catalog.credential(record.id);
+  assert.equal(f.store.selected().networkId,record.id);
+  assert.ok(f.manager.route(record.id));
+  f.manager.connectDiscovered(peer.id);await f.manager.pairTask;
+  assert.equal(f.manager.pairing.state,'paired');assert.equal(f.catalog.records().length,1);
+  assert.equal(f.catalog.credential(record.id),credential);
+  f.manager.enable(record.id,false);f.manager.connectDiscovered(peer.id);await f.manager.pairTask;
+  assert.equal(f.manager.pairing.error,'NETWORK_PAUSED');assert.equal(f.manager.route(record.id),null);
 });
 
 test('cancelled approval cannot overwrite a saved computer or start a channel',async t=>{

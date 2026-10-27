@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>ClipRelay · 界面设计提案 01</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="review-bar">
+    <a class="review-brand" href="index.html"><span class="review-mark">C / R</span><span>ClipRelay <span class="muted">Design 01</span></span></a>
+    <nav class="review-tabs" aria-label="设计稿视图">
+      <button data-preview="desktop" class="selected">电脑端</button>
+      <button data-preview="mobile">手机端</button>
+      <button data-preview="notes">设计说明</button>
+    </nav>
+    <div class="review-end"><span>交互设计稿 · 示例数据</span><button class="icon-button" id="theme-toggle" aria-label="切换深浅色"></button></div>
+  </header>
+  <main id="stage"></main>
+  <div id="modal-root"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

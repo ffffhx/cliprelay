@@ -38,7 +38,7 @@ if (process.platform === 'darwin') {
       if (host && !quitting) {
         event.preventDefault();
         quitting = true;
-        host.stop();
+        Promise.resolve(windows?.close()).finally(()=>host.stop());
       }
     });
     app.whenReady().then(() => {
@@ -48,9 +48,9 @@ if (process.platform === 'darwin') {
       windows = new DesktopWindows(host, root);
       approver = new PairingAutoApprover({request: (action, data) => host.request(action, data)});
       host.on('message', message => { if (message.event === 'open') windows.open(message.window); });
-      host.on('ready', () => { windows.refresh(); approver.start(); });
+      host.on('ready', () => { windows.refresh(); approver.start(); windows.directory.start(); void windows.aiServer.start().catch(error=>{windows.aiError=error.code||'AI_UNAVAILABLE';}); });
       host.on('failure', error => dialog.showErrorBox('ClipRelay', error.message));
-      host.on('exit', () => { approver.stop(); quitting = true; windows.close(); app.quit(); });
+      host.on('exit', () => { approver.stop(); quitting = true; void windows.close().finally(()=>app.quit()); });
       return host.start();
     }).catch(error => {
       dialog.showErrorBox('ClipRelay', error.message);

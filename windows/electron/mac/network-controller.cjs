@@ -141,6 +141,33 @@ class NetworkController{
       await this.finishPair(record.id,signal);
     });
   }
+  connectDiscovered(id){
+    if(typeof id!=='string'||!/^[a-f0-9]{24}$/.test(id))throw fault('UNKNOWN_NETWORK');
+    return this.job(async signal=>{
+      let record=this.catalog.records().find(value=>value.peerId===id);
+      if(record&&!record.enabled)throw fault('NETWORK_PAUSED');
+      if(!record){
+        const credential=crypto.randomBytes(32).toString('base64url');
+        const claim=await this.client(credential).request('connect-device',{id,name:this.localName},signal);
+        if(signal.aborted)throw fault('CANCELLED');
+        if(claim.hostId!==id)throw fault('NETWORK_PEER_CHANGED');
+        record=this.catalog.save(credential,{id,name:claim.computer});
+      }
+      const host=this.store.hosts().find(value=>value.networkId===record.id);
+      if(host){
+        if(!host.enabled)throw fault('NETWORK_PAUSED');
+        this.store.select(host.id);this.reconcile();
+        const deadline=Date.now()+this.routeTimeoutMs;
+        while(!this.route(record.id)){
+          if(signal.aborted)throw fault('CANCELLED');
+          const session=this.sessions.get(record.id);
+          if(session?.phase==='error')throw fault(session.error);
+          if(Date.now()>deadline)throw fault('NETWORK_NOT_READY');
+          await wait(Math.min(100,this.pollMs),signal);
+        }
+      }else{this.reconcile();await this.finishPair(record.id,signal);}
+    });
+  }
   pairSaved(id){if(!this.catalog.get(id)?.enabled)throw fault('UNKNOWN_NETWORK');return this.job(signal=>this.finishPair(id,signal));}
   async finishPair(id,signal){
     const record=this.catalog.get(id);if(!record)throw fault('UNKNOWN_NETWORK');

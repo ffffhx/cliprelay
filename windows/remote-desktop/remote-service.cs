@@ -78,6 +78,11 @@ namespace ClipRelay.Remote {
             File.Replace(temp, SettingsPath, null);
         }
         void EnsureEngineConfiguration() {
+            if (Text(settings, "connectionDefaultsVersion") != "1") {
+                settings["enabled"] = true;
+                settings["connectionDefaultsVersion"] = 1;
+                SaveSettings();
+            }
             string password = Text(settings, "adminPassword");
             if (password.Length == 0) {
                 byte[] bytes = new byte[32];
@@ -91,7 +96,7 @@ namespace ClipRelay.Remote {
             string cfg = "sunshine_name = ClipRelay - " + Environment.MachineName + "\n" +
                 "port = 48789\norigin_web_ui_allowed = pc\nsystem_tray = disabled\n" +
                 "upnp = disabled\ncontroller = disabled\ngamepad_driver = vigembus\n" +
-                "min_log_level = 2\nlan_encryption_mode = 2\nwan_encryption_mode = 2\n" +
+                "min_log_level = 2\nlan_encryption_mode = 0\nwan_encryption_mode = 0\n" +
                 // Trusted service PID covers both the engine and voice workers.
                 // The engine verifies ancestry and liveness before accepting it.
                 "cliprelay_audio_exclude_pid = " + Process.GetCurrentProcess().Id + "\n" +
@@ -146,7 +151,7 @@ namespace ClipRelay.Remote {
                             childSession = session;
                             Log("Remote engine started in session " + session + ", PID " + child.Id);
                         }
-                        if (Enabled && NetworkEnabled) EnsureNetwork(); else StopNetwork();
+                        if (NetworkEnabled) EnsureNetwork(); else StopNetwork();
                         if (Enabled && IsRunning) EnsureFocus(); else StopFocus();
                     } catch (Exception e) { Log("Engine: " + e.Message); }
                 }
@@ -184,12 +189,15 @@ namespace ClipRelay.Remote {
             }
         }
         object NetworkRequest(string action, string id) {
+            return NetworkRequest(action, new { action = action, id = id });
+        }
+        object NetworkRequest(string action, object payload) {
             lock (networkGate) {
                 if (networkChild == null || networkChild.HasExited) {
                     if (action != "status") throw new InvalidOperationException("外网连接尚未就绪，请稍后重试。");
                     return new { ready = false, state = "disabled", error = "外网连接未开启", peers = new object[0], pending = new object[0] };
                 }
-                networkChild.StandardInput.WriteLine(Json().Serialize(new { action = action, id = id }));
+                networkChild.StandardInput.WriteLine(Json().Serialize(payload));
                 networkChild.StandardInput.Flush();
                 var read = networkChild.StandardOutput.ReadLineAsync();
                 if (!read.Wait(15000) || read.Result == null) {
@@ -326,6 +334,20 @@ namespace ClipRelay.Remote {
                 }
                 using (expected) return RelayIpc.Request((Dictionary<string, object>)value, expected);
             }
+            if (action == "networkPresence") {
+                object rawPresence;
+                if (!request.TryGetValue("presence", out rawPresence) || !(rawPresence is Dictionary<string, object>)) throw new ArgumentException("Invalid presence");
+                var presence = (Dictionary<string, object>)rawPresence;
+                object discoverable;
+                string deviceId = Text(presence, "deviceId"), name = Text(presence, "name");
+                if (deviceId.Length < 1 || deviceId.Length > 64 || name.Length < 1 || Encoding.UTF8.GetByteCount(name) > 128 ||
+                    !presence.TryGetValue("discoverable", out discoverable) || !(discoverable is bool)) throw new ArgumentException("Invalid presence");
+                lock (gate) {
+                    if (!NetworkEnabled) { settings["networkEnabled"] = true; SaveSettings(); }
+                    EnsureNetwork();
+                    return NetworkRequest("presence", new { action = "presence", presence = new { deviceId = deviceId, name = name, platform = "windows", discoverable = (bool)discoverable, connectable = Enabled && IsReady } });
+                }
+            }
             if (action == "networkEnable" || action == "networkDisable") {
                 lock (gate) {
                     settings["networkEnabled"] = action == "networkEnable";
@@ -346,7 +368,7 @@ namespace ClipRelay.Remote {
                 lock (gate) return new { enabled = Enabled, running = IsRunning, ready = IsReady, port = 48789, name = Environment.MachineName, pid = IsRunning ? child.Id : 0, version = "2026.914.233613" };
             }
             if (action == "enable" || action == "disable") {
-                lock (gate) { settings["enabled"] = action == "enable"; SaveSettings(); if (!Enabled) StopEngine(); }
+                lock (gate) { settings["enabled"] = action == "enable"; SaveSettings(); if (!Enabled) { StopNetwork(); StopEngine(); } }
                 return new { enabled = action == "enable" };
             }
             if (action == "lanPairings") return new { pairings = LanPairings() };
@@ -441,6 +463,7 @@ namespace ClipRelay.Remote {
             if (args.Length == 1 && args[0] == "--voice-probe") return VoiceInput.Run();
             if (args.Length == 1 && args[0] == "--wake-probe") return WakeProbe.Run();
             if (args.Length == 1 && args[0] == "--terminal-probe") return TerminalWorker.Run();
+            if (args.Length == 1 && args[0] == "--automation-probe") return AutomationWorker.Run();
             if (args.Length == 1 && args[0] == "--voice-recover") return VoiceInput.Run(true);
             if (args.Length == 1 && args[0] == "--focus-probe") return InputFocus.Run();
             if (args.Length == 2 && args[0] == "--terminate") {

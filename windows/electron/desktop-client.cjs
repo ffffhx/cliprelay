@@ -18,6 +18,7 @@ const {AudioMuteController,message:audioMuteMessage}=require('./mac/audio-mute-c
 const {SessionLockController,message:sessionLockMessage}=require('./mac/session-lock-controller.cjs');
 const {WakeController,message:wakeMessage}=require('./mac/wake-controller.cjs');
 const {ClipboardSync,message:clipboardMessage}=require('./mac/clipboard-sync.cjs');
+const {DirectConnection}=require('./desktop-connection.cjs');
 
 class DesktopClient {
   constructor(root){
@@ -39,11 +40,12 @@ class DesktopClient {
     this.terminal=new DesktopTerminal({store,BrowserWindow,ipcMain,clipboard,withClipboard:operation=>this.paired.withClipboard(operation)});
     this.paired=new PairedController({store,clipboard,ClipboardItem,nativeImage,localName,copySelection:async()=>{},onClipboardApplied:()=>this.clipboardSync?.externalApplied(),onUpdate:()=>{this.viewer.reconcile(this.paired?.status);this.files.reconcile(this.paired?.status);this.terminal.reconcile(this.paired?.status);this.wake?.reconcile();this.clipboardSync?.reconcile();}});
     this.clipboardSync=new ClipboardSync({store,viewer:this.viewer,paired:this.paired,nativeImage,powerMonitor});
+    this.direct=new DirectConnection(this.paired,this.viewer,this.network);
     this.paired.start();
     this.network.reconcile();
     ipcMain.handle('mac:request',(event,action,data)=>this.request(event,action,data));
   }
-  snapshot(){this.bitrate.reconcile();this.displays.reconcile();this.privacy.reconcile();this.audioMute.reconcile();this.sessionLock.reconcile();this.wake.reconcile();this.clipboardSync.reconcile();return {...this.paired.snapshot(),viewer:this.viewer.snapshot(),network:this.network.snapshot(),files:this.files.snapshot(),bitrate:this.bitrate.snapshot(),displays:this.displays.snapshot(),privacy:this.privacy.snapshot(),audioMute:this.audioMute.snapshot(),sessionLock:this.sessionLock.snapshot(),wake:this.wake.snapshot(),clipboardSync:this.clipboardSync.snapshot(),desktopOnly:true};}
+  snapshot(){this.bitrate.reconcile();this.displays.reconcile();this.privacy.reconcile();this.audioMute.reconcile();this.sessionLock.reconcile();this.wake.reconcile();this.clipboardSync.reconcile();return {...this.paired.snapshot(),viewer:this.viewer.snapshot(),network:this.network.snapshot(),files:this.files.snapshot(),bitrate:this.bitrate.snapshot(),displays:this.displays.snapshot(),privacy:this.privacy.snapshot(),audioMute:this.audioMute.snapshot(),sessionLock:this.sessionLock.snapshot(),wake:this.wake.snapshot(),clipboardSync:this.clipboardSync.snapshot(),desktopOnly:true,launchTarget:this.launchTarget};}
   async request(event,action,data){
     if(!this.window || event.sender!==this.window.webContents || event.senderFrame!==event.sender.mainFrame || event.senderFrame.url!==this.url+'?kind=paired')throw new Error('Unknown renderer');
     if(Buffer.byteLength(JSON.stringify(data ?? {}))>32768)throw new Error('Invalid request');
@@ -85,14 +87,15 @@ class DesktopClient {
       this.network.reconcile();this.paired.reconcileRoutes();this.viewer.reconcile();this.files.reconcile();this.terminal.reconcile();return this.snapshot();
     }catch(error){throw new Error(error.clipboardMessage||error.fileMessage||error.bitrateMessage||error.displayMessage||error.privacyMessage||error.audioMuteMessage||error.sessionLockMessage||error.wakeMessage?error.message:message(error));}
   }
-  open(){
+  open(target){
+    if(target)return this.direct.start(target);
     if(this.window && !this.window.isDestroyed()){this.window.show();this.window.focus();return;}
-    const window=this.window=new BrowserWindow({width:680,height:720,title:'ClipRelay · 控制其他电脑',show:false,resizable:true,autoHideMenuBar:true,backgroundColor:'#f5f7fa',webPreferences:{preload:path.join(__dirname,'mac','preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    const window=this.window=new BrowserWindow({width:920,height:754,minWidth:540,minHeight:500,title:'ClipRelay · 远程控制',show:false,resizable:true,autoHideMenuBar:true,backgroundColor:'#ffffff',webPreferences:{preload:path.join(__dirname,'mac','preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
     for(const event of ['did-start-loading','render-process-gone'])window.webContents.on(event,()=>this.clipboardSync.cancelReceive());
     window.once('ready-to-show',()=>window.show());window.on('closed',()=>{if(this.window===window)this.window=null;this.clipboardSync.cancelReceive();this.paired.cancelPair();this.network.cancelPair();this.files.releaseWindow();});
     window.loadFile(this.page,{query:{kind:'paired'}});
   }
-  close(){this.clipboardSync.close();this.wake.close();this.sessionLock.close();this.audioMute.close();this.privacy.close();this.displays.close();this.bitrate.close();this.terminal.close();this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
+  close(){this.direct.stop();this.clipboardSync.close();this.wake.close();this.sessionLock.close();this.audioMute.close();this.privacy.close();this.displays.close();this.bitrate.close();this.terminal.close();this.files.close();this.viewer.stop();this.paired.close();this.network.close();this.window?.destroy();ipcMain.removeHandler('mac:request');}
 }
 module.exports={DesktopClient};

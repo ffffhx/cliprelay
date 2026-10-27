@@ -83,19 +83,12 @@ function menu(){
   const hosting=({running:'已启动',starting:'正在启动',stopping:'正在停止',failed:'需检查权限或连接',closed:'正在退出'})[hostState?.phase] || '已停止';
   tray.setTitle(pending?`ClipRelay · ${pending} 个待确认`:'ClipRelay');
   tray.setContextMenu(Menu.buildFromTemplate([
-    {label:selected?`配对电脑：${selected.name} · ${status}`:'尚未选择配对电脑',enabled:false},
-    {label:'配对电脑与安全收发…',click:()=>{const existing=[...windows.values()].find(entry=>entry.kind==='paired');if(existing){existing.window.show();existing.window.focus();}else openWindow('paired',{}, {width:620,height:640,alwaysOnTop:true,vibrancy:'popover'});}},
-    {label:'允许其他设备连接这台 Mac…',click:()=>showHostWindow('host')},
+    {label:selected?`${selected.name} · ${status}`:'ClipRelay · 后台运行中',enabled:false},
+    {label:'远程控制…',click:()=>{const existing=[...windows.values()].find(entry=>entry.kind==='paired');if(existing){existing.window.show();existing.window.focus();}else openWindow('paired',{}, {width:920,height:754,minWidth:540,minHeight:500,frame:true,resizable:true,transparent:false,backgroundColor:'#ffffff'});}},
     {label:`本机远程访问：${hosting}${pending?` · ${pending} 个待确认`:''}`,enabled:false},
-    {label:'本机远程访问权限…',click:()=>showHostWindow('host-permissions')},
-    {label:'发送当前剪贴板到配对电脑',enabled:!!selected?.enabled,click:()=>paired.sendCurrent().then(sent=>{if(sent)alert('已加密发送到 '+selected.name);}).catch(error=>alert(pairedMessage(error)))},
     {type:'separator'},
-    {label:`旧版目标：${config.peer}:${config.peerPort}`,enabled:false},
-    {label:'使用旧版目标收发（未加密）',type:'checkbox',checked:paired?.store.data.legacySelected===true,click:item=>item.checked?paired.selectLegacy():paired.select(null)},
-    {label:'旧版局域网收发（未加密）',type:'checkbox',checked:config.legacyEnabled===true,enabled:!legacyChanging,click:item=>setLegacy(item.checked)},
-    {label:'设置本机旧版接收密钥…',click:()=>openWindow('receiver-token',{token:config.accessToken || ''},{width:420,height:230,alwaysOnTop:true,vibrancy:'popover'})},
-    {label:'扫描局域网设备…',click:scan},
-    {label:'允许局域网发现',type:'checkbox',checked:config.discoveryEnabled,click:()=>{config.discoveryEnabled=!config.discoveryEnabled;saveConfig(app.getPath('userData'),config);publish();menu();}},
+    {label:`快捷键：${config.hotkey || 'Control+Alt+G'}`,enabled:false},
+    {label:'选择发送目标…',click:scan},
     {type:'separator'},{label:'退出 ClipRelay',role:'quit'}
   ]));
 }

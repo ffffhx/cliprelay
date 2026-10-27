@@ -75,6 +75,7 @@ public final class DesktopToolbar {
         private boolean keyboardOpen;
         private DesktopSideRails sideRails;
         private CustomShortcutPanel shortcuts;
+        private RepeatingButton backspaceRepeat;
 
         public boolean isSideRailsActive() { return sideRails != null && sideRails.isAvailable(); }
         private boolean isBottomDocked() {
@@ -177,6 +178,7 @@ public final class DesktopToolbar {
         public void setPaused(boolean value) { paused = value; update(); }
         public void setPictureInPicture(boolean value) { pip = value; update(); }
         public void releaseTouches() {
+            if (backspaceRepeat != null) backspaceRepeat.cancel();
             game.releaseTouches();
             if (virtualKeyboard != null) virtualKeyboard.clearModifiers();
         }
@@ -184,6 +186,7 @@ public final class DesktopToolbar {
             if (shortcuts != null && (!connected || paused || pip)) shortcuts.close();
             if (morePopup != null && (!connected || paused || pip)) { morePopup.dismiss(); morePopup = null; }
             boolean ready = connected && focused && !paused && !pip;
+            if ((!ready || gameMode) && backspaceRepeat != null) backspaceRepeat.cancel();
             if (keyboardOpen && !ready) {
                 keyboardOpen = false;
                 actions.virtualKeyboardChanged(false);
@@ -298,6 +301,7 @@ public final class DesktopToolbar {
             controller.update();
         });
         controller.rebuild = () -> {
+            if (controller.backspaceRepeat != null) controller.backspaceRepeat.cancel();
             if (controller.morePopup != null) { controller.morePopup.dismiss(); controller.morePopup = null; }
             tools.removeAllViews();
             endTools.removeAllViews();
@@ -351,7 +355,8 @@ public final class DesktopToolbar {
             Button backspace = button(activity, secondary, activity.getString(R.string.desktop_backspace));
             controller.style(backspace, activity.getString(R.string.desktop_backspace), Icon.BACKSPACE, Tone.NEUTRAL);
             backspace.setId(R.id.desktopBackspaceButton);
-            backspace.setOnClickListener(v -> { if (controller.canSend()) keyboard.tap(0x08); });
+            controller.backspaceRepeat = new RepeatingButton(backspace,
+                    () -> controller.canSend() && controller.focused, () -> keyboard.tap(0x08));
             Button esc = shortcut(activity, secondary, controller, keyboard, "Esc", 0x1B);
             controller.style(esc, "Esc", Icon.ESC, Tone.NEUTRAL);
             // Keep More reachable even when the other right-hand controls must scroll.

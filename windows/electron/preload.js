@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('cliprelay', {
   window: (action, data) => ipcRenderer.invoke('relay:window', action, data),
   onError: callback => ipcRenderer.on('relay:error', (_event,message) => callback(message)),
   onClose: callback => ipcRenderer.on('relay:closing', () => callback()),
+  onNavigate: callback => {
+    const listener = (_event,page) => callback(page);
+    ipcRenderer.on('relay:navigate',listener);
+    return () => ipcRenderer.removeListener('relay:navigate',listener);
+  },
   onRefresh: callback => {
     const listener = () => callback();
     ipcRenderer.on('relay:refresh', listener);

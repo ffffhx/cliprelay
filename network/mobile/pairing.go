@@ -54,7 +54,7 @@ func (c *PairingClient) Request(action, data string) (string, error) {
 		path = "codes"
 	case "claim":
 		path = "claims"
-	case "approve", "revoke", "enroll":
+	case "approve", "revoke", "enroll", "presence":
 		path = action
 	default:
 		return "", errors.New("unknown pairing action")

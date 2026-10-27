@@ -36,6 +36,15 @@ function Get-ClipRelayHostManifest {
     return $manifest
 }
 
+function Set-ClipRelayViewerPreferences {
+    # Existing packaged viewers read this Qt preference. A configuration toast
+    # otherwise delays every desktop launch by 3000 ms plus a 500 ms fade-out.
+    # This key belongs only to ClipRelay Stream, not an independent Moonlight app.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\ClipRelay\ClipRelay Stream')
+    try { $key.SetValue('confwarnings', 0, [Microsoft.Win32.RegistryValueKind]::DWord) }
+    finally { $key.Dispose() }
+}
+
 function Assert-ClipRelayPackage {
     param([string]$Directory)
     $manifestPath = Join-Path $Directory 'package-files.json'
@@ -47,7 +56,8 @@ function Assert-ClipRelayPackage {
     $hostManifest = Get-ClipRelayHostManifest $hostRoot
     $electron = Get-Content -LiteralPath (Join-Path $Directory 'electron/windows-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $required = @('install.ps1','install-support.ps1','cliprelay.ps1','start.ps1','uninstall.ps1','updates.ps1','update-client.cs','paired-relay.cs','cliprelay.ico','version.json',
-        'desktop/ClipRelay.exe','desktop/icudtl.dat','desktop/resources/app/main.js',
+        'desktop/ClipRelay.exe','desktop/icudtl.dat','desktop/resources/app/main.js','desktop/resources/app/device-directory.cjs',
+        'ai.ps1','desktop/resources/app/ai-mcp.cjs','desktop/resources/app/ai-server.cjs','desktop/resources/app/ai-controller.cjs','desktop/resources/app/ai-cli-leases.cjs',
         'remote-desktop/files.json','remote-desktop/bin/ClipRelay.Remote.Service.exe','remote-desktop/bin/ClipRelay.Remote.Client.dll','remote-desktop/bin/cliprelay-network.exe',
         'electron/windows-files.json','remote-viewer/manifest.json','desktop-network/manifest.json')
     $required += @($hostManifest.serviceSources + $hostManifest.supportFiles | ForEach-Object { 'remote-desktop/' + $_ })

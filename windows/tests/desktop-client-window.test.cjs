@@ -25,6 +25,7 @@ function fixture(){
   imports['./mac/session-lock-controller.cjs']={SessionLockController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}setEnabled(data){this.actions.push(data);}},message:()=> 'Audio mute operation failed'};
   imports['./mac/wake-controller.cjs']={WakeController:class{constructor(){this.actions=[];}snapshot(){return {phase:'idle'};}reconcile(){}close(){this.closed=true;}action(action,data){this.actions.push(data);}},message:()=> 'Wake operation failed'};
   imports['./mac/clipboard-sync.cjs']={ClipboardSync:class{constructor(){this.actions=[];this.cancelled=0;}snapshot(){return {phase:'off'};}reconcile(){}close(){this.closed=true;}cancelReceive(){this.cancelled++;}externalApplied(){}setEnabled(data){this.actions.push(data);}resume(data){this.actions.push(data);}async receive(data,authorized){assert.ok(authorized());this.actions.push(data);}},message:()=> 'Clipboard operation failed'};
+  imports['./desktop-connection.cjs']=require('../electron/desktop-connection.cjs');
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),{__dirname:path.dirname(filename),module,require:name=>imports[name] || require(name),Buffer},{filename});
   const client=new module.exports.DesktopClient('.');client.open();const event={sender:client.window.webContents,senderFrame:client.window.webContents.mainFrame};
   return {client,event,viewer,controller,network,files,handlers};
@@ -70,4 +71,12 @@ test('only the owned top-level pairing page can open a viewer or change pairings
   assert.equal(f.client.audioMute.closed,true);
   assert.equal(f.client.sessionLock.closed,true);
   assert.equal(f.client.wake.closed,true);
+});
+
+test('opening a device connects without creating a settings window',async()=>{
+  const f=fixture();f.client.window.close();
+  f.controller.store.hosts=()=>[{id:'host',address:'pc.local',port:48789,enabled:true}];
+  f.controller.select=id=>assert.equal(id,'host');
+  f.client.open({id:'card',name:'PC',address:'pc.local',port:48789});await f.client.direct.task;
+  assert.equal(f.viewer.opens,1);assert.equal(f.client.window,null);f.client.close();
 });

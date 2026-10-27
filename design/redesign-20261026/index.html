@@ -1,0 +1,1198 @@
+<title>ClipRelay 界面重设计</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* ————————————————————————————————————————————————
+   设计稿页面 token
+   纸面取冷灰蓝，靠留白和细线分栏；强调色取自 ClipRelay 品牌蓝。
+   字体与 App 同一套系统字体，不加载网络字体。
+   ———————————————————————————————————————————————— */
+:root{
+  --font-ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+  --font-display:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;
+  --font-mono:"Cascadia Mono","Cascadia Code",Consolas,"SF Mono",ui-monospace,monospace;
+
+  --bg:#F2F5F9;
+  --surface:#FFFFFF;
+  --surface-2:#F7F9FC;
+  --stage:#E9EDF3;
+  --stage-dot:rgba(20,35,60,.07);
+  --ink:#0F141C;
+  --ink-2:#4B5668;
+  --ink-3:#5F6B7C;
+  --line:#DCE2EB;
+  --line-2:#C6CFDC;
+  --accent:#2C63E5;
+  --accent-soft:#E7EEFF;
+  --ok:#0B7F58;
+  --ok-soft:#E3F5ED;
+  --warn:#92620C;
+  --warn-soft:#FBF0DA;
+  --bad:#B83349;
+  --bad-soft:#FBE7EB;
+  --shadow:0 18px 40px -24px rgba(15,25,45,.35),0 1px 2px rgba(15,25,45,.08);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0B0E13;
+    --surface:#121721;
+    --surface-2:#161C27;
+    --stage:#10141B;
+    --stage-dot:rgba(180,205,255,.08);
+    --ink:#E9EEF6;
+    --ink-2:#A2ACBC;
+    --ink-3:#8B96A8;
+    --line:#232B38;
+    --line-2:#313B4B;
+    --accent:#7FA6FF;
+    --accent-soft:#172038;
+    --ok:#4DD6A0;
+    --ok-soft:#10261F;
+    --warn:#E5B05B;
+    --warn-soft:#251D0F;
+    --bad:#FF8A9C;
+    --bad-soft:#291319;
+    --shadow:0 24px 50px -24px rgba(0,0,0,.75),0 1px 2px rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0B0E13;
+  --surface:#121721;
+  --surface-2:#161C27;
+  --stage:#10141B;
+  --stage-dot:rgba(180,205,255,.08);
+  --ink:#E9EEF6;
+  --ink-2:#A2ACBC;
+  --ink-3:#8B96A8;
+  --line:#232B38;
+  --line-2:#313B4B;
+  --accent:#7FA6FF;
+  --accent-soft:#172038;
+  --ok:#4DD6A0;
+  --ok-soft:#10261F;
+  --warn:#E5B05B;
+  --warn-soft:#251D0F;
+  --bad:#FF8A9C;
+  --bad-soft:#291319;
+  --shadow:0 24px 50px -24px rgba(0,0,0,.75),0 1px 2px rgba(0,0,0,.4);
+}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--font-ui);
+  font-size:15px;
+  line-height:1.7;
+  padding-left:max(20px,env(safe-area-inset-left,0px));
+  padding-right:max(20px,env(safe-area-inset-right,0px));
+  -webkit-font-smoothing:antialiased;
+}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:30;background:var(--bg)}
+.page{max-width:1120px;margin:0 auto}
+h1,h2,h3{font-family:var(--font-display);text-wrap:balance;margin:0;letter-spacing:-.01em}
+p{margin:0}
+a{color:var(--accent)}
+button{font-family:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+code{font-family:var(--font-mono);font-size:.86em;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;white-space:nowrap}
+
+/* ——— 顶部导航 ——— */
+.topbar{
+  position:sticky;top:env(safe-area-inset-top,0px);z-index:20;
+  display:flex;align-items:center;gap:16px;
+  height:56px;border-bottom:1px solid var(--line);
+  background:var(--bg);
+}
+.brand{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600;min-width:0}
+.brand .glyph{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,#3B82F6,#38BDF8);display:grid;place-items:center;color:#fff;flex:none}
+.brand .glyph svg{width:14px;height:14px}
+.brand .slash{color:var(--ink-3);font-weight:400}
+.brand .doc{color:var(--ink-2);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topnav{display:flex;gap:2px;margin-left:auto}
+.topnav a{color:var(--ink-2);text-decoration:none;font-size:12.5px;padding:6px 10px;border-radius:7px}
+.topnav a:hover{background:var(--surface-2);color:var(--ink)}
+.version-tag{font-family:var(--font-mono);font-size:11px;color:var(--ink-3);border:1px solid var(--line);border-radius:6px;padding:3px 7px;white-space:nowrap}
+@media (max-width:820px){.topnav{display:none}}
+
+/* ——— 页头 ——— */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) 552px;gap:48px;align-items:start;padding:44px 0 56px}
+.kicker{font-family:var(--font-mono);font-size:11.5px;letter-spacing:.1em;color:var(--accent);text-transform:uppercase;margin-bottom:10px}
+.hero h1{font-size:clamp(32px,4.2vw,46px);line-height:1.12;font-weight:650;margin-bottom:18px}
+.hero .lead{font-size:16px;line-height:1.8;color:var(--ink-2);max-width:46ch}
+.specs{display:grid;grid-template-columns:1fr 1fr;column-gap:28px;margin:30px 0 0;padding:0;border-top:1px solid var(--line)}
+.spec{padding:14px 0 16px;border-bottom:1px solid var(--line)}
+.spec dd{margin:0;font-family:var(--font-display);font-size:23px;font-weight:600;line-height:1.3;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.spec dt{margin-top:2px;font-size:12px;color:var(--ink-2)}
+.hero-stage{
+  background:var(--stage);border:1px solid var(--line);border-radius:16px;padding:14px 14px 12px;
+  background-image:radial-gradient(var(--stage-dot) 1px,transparent 1px);background-size:16px 16px;
+  min-width:0;
+}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px}
+.seg{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);background:var(--surface-2);border-radius:9px}
+.seg button{appearance:none;border:0;background:transparent;color:var(--ink-2);font-size:12px;line-height:1;padding:6px 10px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+.screen{overflow-x:auto;overscroll-behavior-x:contain;padding:2px 0 4px;scrollbar-width:thin}
+.screen>.appwin{margin-inline:auto}
+.screen::-webkit-scrollbar{height:8px}
+.screen::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:99px}
+.caption{margin-top:10px;font-size:11.5px;color:var(--ink-3);display:flex;justify-content:space-between;gap:12px}
+.caption .mono{font-family:var(--font-mono)}
+@media (max-width:1019px){
+  .hero{grid-template-columns:1fr;gap:32px}
+  .hero-stage{width:100%;max-width:552px;margin-inline:auto}
+}
+
+/* ——— 通用分节 ——— */
+.section{padding:56px 0;border-top:1px solid var(--line);scroll-margin-top:72px}
+.section-head{max-width:780px}
+.section-head h2{font-size:clamp(23px,2.6vw,30px);font-weight:600;margin-bottom:12px}
+.section-lead{color:var(--ink-2);font-size:15px;max-width:64ch}
+.stack{margin-top:32px}
+
+/* ——— 现状对比 ——— */
+.compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:36px;align-items:start;margin-top:32px}
+@media (max-width:900px){.compare{grid-template-columns:1fr}}
+.shot{margin:0;min-width:0}
+.shot-frame{
+  width:100%;aspect-ratio:760/720;border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  background:#111318;box-shadow:var(--shadow);
+}
+.shot-frame .before-app{transform-origin:top left}
+.shot figcaption{font-size:11.5px;color:var(--ink-3);margin-top:9px;display:flex;justify-content:space-between;gap:10px}
+.issues{list-style:none;margin:0;padding:0;counter-reset:issue}
+.issues li{position:relative;padding:14px 0 14px 42px;border-top:1px solid var(--line)}
+.issues li:last-child{border-bottom:1px solid var(--line)}
+.issues li::before{counter-increment:issue;content:"0" counter(issue);position:absolute;left:0;top:15px;font-family:var(--font-mono);font-size:11px;color:var(--accent)}
+.issues strong{display:block;font-size:14px;font-weight:600;margin-bottom:2px}
+.issues span{display:block;font-size:13.5px;line-height:1.7;color:var(--ink-2)}
+
+/* ——— 结构原则 ——— */
+.rules{display:grid;grid-template-columns:1fr 1fr;gap:24px 44px;margin-top:30px}
+@media (max-width:760px){.rules{grid-template-columns:1fr}}
+.rule{min-width:0;padding-left:14px;border-left:2px solid var(--line-2)}
+.rule:first-child{border-left-color:var(--accent)}
+.rule strong{display:block;font-size:14.5px;font-weight:600;margin-bottom:3px}
+.rule p{font-size:13.5px;color:var(--ink-2);line-height:1.75}
+
+/* ——— 表格 ——— */
+.tablewrap{overflow-x:auto;margin-top:30px;scrollbar-width:thin}
+table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:560px}
+th{text-align:left;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);font-weight:600;padding:0 14px 9px;white-space:nowrap}
+td{padding:11px 14px;border-top:1px solid var(--line);vertical-align:top;line-height:1.6}
+td:first-child{color:var(--ink);white-space:nowrap}
+td:last-child{color:var(--ink-2)}
+tr:hover td{background:var(--surface-2)}
+.tag{display:inline-block;font-size:11px;line-height:1.6;padding:1px 8px;border-radius:999px;white-space:nowrap;border:1px solid transparent}
+.tag.keep{color:var(--accent);background:var(--accent-soft)}
+.tag.merge{color:var(--ink-2);background:var(--surface-2);border-color:var(--line)}
+.tag.demote{color:var(--warn);background:var(--warn-soft)}
+.tag.remove{color:var(--bad);background:var(--bad-soft)}
+.idtable td:first-child{white-space:normal}
+
+/* ——— 原型分栏 ——— */
+.split{display:grid;grid-template-columns:520px minmax(0,1fr);gap:40px;align-items:start;margin-top:32px}
+.split .notes{padding-top:4px}
+@media (max-width:1019px){.split{grid-template-columns:1fr}}
+.notes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:20px}
+.notes li{min-width:0}
+.notes strong{display:block;font-size:14px;font-weight:600;margin-bottom:2px}
+.notes span{display:block;font-size:13.5px;color:var(--ink-2);line-height:1.75}
+.state-panels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;align-items:start;margin-top:40px}
+@media (max-width:900px){.state-panels{grid-template-columns:1fr}}
+.mini-label{font-family:var(--font-mono);font-size:11px;color:var(--ink-3);margin-bottom:8px;display:flex;justify-content:space-between;gap:10px}
+.state-stack{display:flex;flex-direction:column;gap:24px;min-width:0}
+
+/* ——— 视觉规范 ——— */
+.spec-two{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;margin-top:30px;align-items:start}
+@media (max-width:900px){.spec-two{grid-template-columns:1fr}}
+.hero>*,.compare>*,.rules>*,.spec-two>*,.split>*,.impl-grid>*,.state-panels>*{min-width:0}
+.tokens{border-top:1px solid var(--line)}
+.tokrow{display:grid;grid-template-columns:minmax(0,1fr) 96px 96px;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+.tokname{font-size:13px;min-width:0}
+.tokname em{font-style:normal;font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);display:block;margin-top:1px}
+.swatch{display:flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:10.5px;color:var(--ink-2);min-width:0}
+.swatch i{width:16px;height:16px;border-radius:5px;border:1px solid var(--line-2);flex:none}
+.typetable{margin-top:30px}
+.metrics{list-style:none;margin:24px 0 0;padding:0;border-top:1px solid var(--line)}
+.metrics li{display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+.metrics li span:last-child{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-2);text-align:right}
+
+/* ——— 落地 ——— */
+.impl-grid{display:grid;grid-template-columns:1fr 1fr;gap:44px;margin-top:30px}
+@media (max-width:900px){.impl-grid{grid-template-columns:1fr}}
+.impl h3{font-size:14px;font-weight:600;margin-bottom:10px}
+.impl ul{margin:0;padding-left:18px}
+.impl li{font-size:13.5px;color:var(--ink-2);line-height:1.8;margin-bottom:6px}
+.impl li code{white-space:normal}
+.questions{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:12px}
+.questions li{border:1px solid var(--line);border-radius:12px;padding:15px 18px;background:var(--surface)}
+.questions strong{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;margin-bottom:3px;flex-wrap:wrap}
+.questions p{font-size:13.5px;color:var(--ink-2)}
+.pill{font-size:10.5px;font-family:var(--font-mono);color:var(--accent);background:var(--accent-soft);border-radius:99px;padding:1px 8px;font-weight:500}
+.pagefoot{border-top:1px solid var(--line);padding:22px 0 48px;color:var(--ink-3);font-size:12px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-family:var(--font-mono)}
+.mobile-hint{display:none}
+@media (max-width:640px){
+  .mobile-hint{display:block;font-size:11px;color:var(--ink-3);margin-top:6px}
+  .caption{flex-direction:column;gap:2px}
+  .section{padding:44px 0}
+}
+
+/* ════════════════════════════════════════════════
+   App 预览：独立的主题变量，不跟随页面明暗
+   ════════════════════════════════════════════════ */
+.app-skin{
+  --a-bg:#0E1117;--a-surface:#161A23;--a-raised:#1B212C;--a-field:#11151D;
+  --a-line:rgba(255,255,255,.075);--a-line2:rgba(255,255,255,.13);
+  --a-text:#EDF0F6;--a-2:#A0A9B8;--a-3:#6F7987;
+  --a-accent:#4C8DFF;--a-ok:#3DDC97;--a-warn:#F2B34F;--a-bad:#FF6B81;--a-info:#38BDF8;
+  --a-ok-soft:rgba(61,220,151,.14);--a-info-soft:rgba(56,189,248,.09);--a-info-line:rgba(56,189,248,.3);
+  --a-switch:#2E3542;--a-hover:rgba(255,255,255,.045);
+  color-scheme:dark;
+}
+html[data-app-theme="light"] .app-skin{
+  --a-bg:#F4F6FA;--a-surface:#FFFFFF;--a-raised:#FFFFFF;--a-field:#F1F4F8;
+  --a-line:#E3E7EE;--a-line2:#D3DAE4;
+  --a-text:#141922;--a-2:#5C6676;--a-3:#8A94A3;
+  --a-accent:#2F6BE8;--a-ok:#0B7F58;--a-warn:#92620C;--a-bad:#C23A52;--a-info:#0C7FB8;
+  --a-ok-soft:rgba(11,127,88,.1);--a-info-soft:rgba(12,127,184,.08);--a-info-line:rgba(12,127,184,.28);
+  --a-switch:#CBD3DF;--a-hover:rgba(15,23,38,.04);
+  color-scheme:light;
+}
+
+/* 窗口外壳 */
+.appwin{
+  width:520px;height:520px;flex:none;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--a-bg);color:var(--a-text);border:1px solid var(--a-line2);border-radius:12px;
+  box-shadow:0 28px 56px -28px rgba(6,10,18,.6),0 2px 5px rgba(6,10,18,.2);
+  font-size:13px;line-height:1.4;font-family:var(--font-ui);user-select:none;
+}
+.appwin.settings-win{height:720px}
+.tbar{height:44px;flex:none;display:flex;align-items:center;gap:9px;padding:0 8px 0 14px}
+.mark{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,#3B82F6,#38BDF8);display:grid;place-items:center;color:#fff;flex:none}
+.mark svg{width:13px;height:13px}
+.aname{font-size:12.5px;font-weight:500;color:var(--a-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.aname.strong{color:var(--a-text);font-weight:600;font-size:13px}
+.spacer{flex:1}
+.wbtn{width:30px;height:30px;flex:none;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:var(--a-3);cursor:pointer}
+.wbtn:hover{background:var(--a-hover);color:var(--a-text)}
+.wbtn.close:hover{background:var(--a-bad);color:#fff}
+.wbtn svg{width:13px;height:13px}
+.wbody{flex:1;min-height:0;display:flex;flex-direction:column}
+.settings-win .wbody{overflow-y:auto;padding:0 20px 18px;scrollbar-width:thin}
+.settings-win .wbody::-webkit-scrollbar{width:8px}
+.settings-win .wbody::-webkit-scrollbar-thumb{background:var(--a-line2);border-radius:9px}
+
+/* 状态区 */
+.banner{display:flex;align-items:center;gap:10px;margin:14px 20px 0;padding:9px 10px 9px 12px;border:1px solid var(--a-info-line);background:var(--a-info-soft);border-radius:10px;flex:none}
+.banner .bicon{display:grid;place-items:center;color:var(--a-info);flex:none}
+.banner .bicon svg{width:16px;height:16px}
+.banner .btext{min-width:0;display:flex;flex-direction:column;gap:1px}
+.banner .btext strong{font-size:12px;font-weight:600}
+.banner .btext span{font-size:11px;color:var(--a-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status{padding:18px 20px 10px;flex:none}
+.status-row{display:flex;align-items:center;gap:9px}
+.status h1{font-size:22px;line-height:1.27;font-weight:600;letter-spacing:-.01em;margin:0;white-space:nowrap}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--a-ok);box-shadow:0 0 0 3px var(--a-ok-soft);flex:none}
+.pulse.idle{background:var(--a-3);box-shadow:none}
+.pulse.offline{background:var(--a-3)}
+.pulse.small{width:6px;height:6px;box-shadow:none}
+.status-sub{margin-top:5px;font-size:12px;color:var(--a-2);font-variant-numeric:tabular-nums}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 12px;border:1px solid var(--a-line2);border-radius:8px;background:transparent;color:var(--a-text);font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap;flex:none}
+.btn:hover{background:var(--a-hover)}
+.btn.primary{background:var(--a-accent);border-color:transparent;color:#fff}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn.tiny{height:26px;padding:0 9px;font-size:11px}
+
+/* 设备列表 */
+.secbar{display:flex;align-items:center;gap:6px;padding:6px 20px 8px;flex:none}
+.secbar h2{font-size:13px;font-weight:600;margin:0}
+.count{font-size:12px;color:var(--a-3);font-variant-numeric:tabular-nums}
+.linkbtn{display:inline-flex;align-items:center;gap:5px;border:0;background:none;color:var(--a-accent);font-size:12px;font-weight:500;padding:4px 6px;border-radius:6px;cursor:pointer}
+.linkbtn:hover{background:var(--a-hover)}
+.linkbtn svg{width:12px;height:12px}
+.listcard{margin:0 20px;background:var(--a-surface);border:1px solid var(--a-line);border-radius:12px;flex:none}
+.drow{display:grid;grid-template-columns:32px minmax(0,1fr) auto 26px;align-items:center;gap:10px;height:62px;padding:0 8px 0 12px;position:relative}
+.drow + .drow{border-top:1px solid var(--a-line)}
+.dtile{width:32px;height:32px;border-radius:9px;background:var(--a-field);border:1px solid var(--a-line);display:grid;place-items:center;color:var(--a-2)}
+.dtile svg{width:16px;height:16px}
+.dtext{min-width:0;display:flex;flex-direction:column;gap:2px}
+.dname{font-size:13.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsub{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--a-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.dsub svg{width:11px;height:11px;flex:none}
+.dotsep{color:var(--a-3)}
+.st-paus{display:none}
+.drow.off .st-live{display:none}
+.drow.off .st-paus{display:inline}
+.drow.off .dname{color:var(--a-2)}
+.drow.off .pulse{background:var(--a-3);box-shadow:none}
+.drow.off .dtile{opacity:.75}
+.switch{position:relative;width:34px;height:20px;flex:none;border:0;border-radius:999px;background:var(--a-switch);padding:0;cursor:pointer;transition:background .16s ease}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(8,14,24,.35);transition:transform .16s ease}
+.switch[aria-checked="true"]{background:var(--a-accent)}
+.switch[aria-checked="true"]::after{transform:translateX(14px)}
+.more{width:26px;height:26px;flex:none;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--a-3);cursor:pointer}
+.more:hover,.more[aria-expanded="true"]{background:var(--a-hover);color:var(--a-text)}
+.more svg{width:14px;height:14px}
+.menu{position:absolute;right:8px;top:50px;z-index:6;width:172px;padding:4px;background:var(--a-raised);border:1px solid var(--a-line2);border-radius:10px;box-shadow:0 16px 32px -12px rgba(4,8,16,.55)}
+.menu button{display:flex;align-items:center;width:100%;height:32px;padding:0 9px;border:0;border-radius:6px;background:none;color:var(--a-text);font-size:12px;text-align:left;cursor:pointer}
+.menu button:hover{background:var(--a-hover)}
+.menu button.danger{color:var(--a-bad)}
+.msep{height:1px;margin:3px 4px;background:var(--a-line)}
+.recent{display:flex;align-items:center;gap:6px;padding:10px 20px 4px;font-size:11.5px;color:var(--a-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none}
+.recent svg{width:12px;height:12px;flex:none}
+.emptycard{display:flex;flex-direction:column;align-items:center;text-align:center;margin:0 20px;padding:26px 20px;border:1px dashed var(--a-line2);border-radius:12px;flex:none}
+.eicon{width:40px;height:40px;border-radius:11px;background:var(--a-field);display:grid;place-items:center;color:var(--a-2);margin-bottom:8px}
+.eicon svg{width:19px;height:19px}
+.emptycard strong{font-size:13.5px;font-weight:600}
+.emptycard p{margin-top:3px;font-size:12px;color:var(--a-2);line-height:1.65;max-width:310px}
+.row-actions{display:flex;gap:8px;margin-top:12px}
+.appfoot{margin-top:auto;height:46px;flex:none;border-top:1px solid var(--a-line);display:flex;align-items:center;gap:2px;padding:0 12px}
+.footbtn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 9px;border:0;border-radius:7px;background:none;color:var(--a-2);font-size:12px;cursor:pointer}
+.footbtn:hover{background:var(--a-hover);color:var(--a-text)}
+.footbtn svg{width:14px;height:14px}
+.versionbtn{margin-left:auto;font-family:var(--font-mono);font-size:10.5px;color:var(--a-3);background:none;border:0;border-radius:6px;padding:5px 7px;cursor:pointer;white-space:nowrap}
+.versionbtn:hover{background:var(--a-hover);color:var(--a-text)}
+
+/* 设置页 */
+.settings-head{display:flex;align-items:center;gap:8px;padding:4px 0 2px;flex:none}
+.backbtn{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:7px;background:none;color:var(--a-2);cursor:pointer}
+.backbtn:hover{background:var(--a-hover);color:var(--a-text)}
+.backbtn svg{width:15px;height:15px}
+.settings-head h2{font-size:16px;font-weight:600;margin:0}
+.group{margin-top:14px}
+.gtitle{font-size:12px;font-weight:600;color:var(--a-2);margin:0 2px 6px}
+.listcard.plain{margin:0}
+.setrow{display:flex;align-items:center;gap:12px;padding:8px 14px;min-height:54px}
+.setrow + .setrow{border-top:1px solid var(--a-line)}
+.setmain{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.setlabel{font-size:13px}
+.sethint{font-size:11.5px;line-height:1.45;color:var(--a-2)}
+.sethint.warn{color:var(--a-warn)}
+.setctl{display:flex;align-items:center;gap:8px;flex:none}
+.field{width:152px;height:30px;display:flex;align-items:center;padding:0 9px;border:1px solid var(--a-line2);border-radius:7px;background:var(--a-field);color:var(--a-text);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.field.mono{font-family:var(--font-mono);width:88px;font-variant-numeric:tabular-nums}
+.keycap{font-family:var(--font-mono);font-size:11px;border:1px solid var(--a-line2);border-radius:5px;padding:2px 6px;color:var(--a-text);background:var(--a-field);white-space:nowrap}
+.chip-ok{font-size:11px;color:var(--a-ok);background:var(--a-ok-soft);border-radius:999px;padding:1px 8px;white-space:nowrap}
+
+/* 组件状态展板 */
+.spec-panel{background:var(--a-surface);border:1px solid var(--a-line);border-radius:12px;padding:14px;color:var(--a-text)}
+.spec-panel .listcard{margin:0}
+.menu.flat{position:static;width:100%;box-shadow:none;background:var(--a-surface)}
+.spec-panel .banner{margin:0}
+
+/* ——— 现状还原图（固定颜色，1:1 坐标后再缩放） ——— */
+.before-app{position:relative;width:760px;height:720px;background:#111318;color:#f1f5f9;font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;font-size:12px;overflow:hidden}
+.b-card{position:absolute;background:#171a24;border:1px solid #262c3c;border-radius:10px}
+.b-lbl{position:absolute;display:flex;align-items:center;white-space:nowrap;overflow:hidden;color:#f1f5f9}
+.b-mut{color:#94a3b8}
+.b-eyebrow{position:absolute;font-size:7.5px;letter-spacing:.14em;color:#a78bfa;display:flex;align-items:center;white-space:nowrap}
+.b-btn{position:absolute;display:flex;align-items:center;justify-content:center;background:#202534;border:1px solid #262c3c;border-radius:7px;color:#f1f5f9;font-size:9px}
+.b-tgl{position:absolute;width:32px;height:18px;border-radius:9px;background:#3b82f6}
+.b-tgl::after{content:"";position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff}
+.b-tgl.off{background:#2b3346}
+.b-tgl.off::after{left:2px;right:auto}
+.b-field{position:absolute;background:#12141c;border:1px solid #262c3c;border-radius:7px}
+.b-div{position:absolute;height:1px;background:#262c3c}
+.b-row{position:absolute;width:168px;height:60px;background:#1b2029;border:1px solid #262c3c;border-radius:8px}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
+</style>
+
+<div class="page">
+  <header class="topbar">
+    <div class="brand">
+      <span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 9h13m0 0-3.4-3.4M18 9l-3.4 3.4M19 15H6m0 0 3.4-3.4M6 15l3.4 3.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span>ClipRelay</span><span class="slash">/</span><span class="doc">控制中心重设计</span>
+    </div>
+    <nav class="topnav" aria-label="章节">
+      <a href="#current">现状</a>
+      <a href="#structure">结构</a>
+      <a href="#prototype">原型</a>
+      <a href="#visual">规范</a>
+      <a href="#impl">落地</a>
+    </nav>
+    <span class="version-tag">v1 · 2026-10-26</span>
+  </header>
+
+  <main>
+    <!-- HERO -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="kicker">ClipRelay · Windows 控制中心</p>
+        <h1 id="hero-title">控制中心重设计</h1>
+        <p class="lead">主窗口只回答三件事：在不在同步、发给了谁、下一步做什么。统计、快捷键和偏好移进设置、设备菜单与托盘。</p>
+        <dl class="specs">
+          <div class="spec"><dd>13 → 1</dd><dt>带边框面板</dt></div>
+          <div class="spec"><dd>10 → 11.5</dd><dt>最小字号（px）</dt></div>
+          <div class="spec"><dd>9 → 4</dd><dt>一级操作</dt></div>
+          <div class="spec"><dd>520×520</dd><dt>窗口（原 760×720）</dt></div>
+        </dl>
+      </div>
+
+      <div class="hero-stage">
+        <div class="demo-controls">
+          <div class="seg" role="group" aria-label="预览状态">
+            <button type="button" data-preset="normal" aria-pressed="true">正常</button>
+            <button type="button" data-preset="paused" aria-pressed="false">已暂停</button>
+            <button type="button" data-preset="empty" aria-pressed="false">无设备</button>
+            <button type="button" data-preset="shared" aria-pressed="false">共享中</button>
+          </div>
+          <div class="seg" role="group" aria-label="预览主题">
+            <button type="button" data-theme-opt="dark" aria-pressed="true">深色</button>
+            <button type="button" data-theme-opt="light" aria-pressed="false">浅色</button>
+          </div>
+        </div>
+        <div class="screen" tabindex="0" role="group" aria-label="ClipRelay 主窗口预览，可左右滚动">
+          <div class="app-skin appwin main-win" id="mainWin" data-state="normal">
+            <div class="tbar">
+              <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 9h13m0 0-3.4-3.4M18 9l-3.4 3.4M19 15H6m0 0 3.4-3.4M6 15l3.4 3.4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="aname">ClipRelay</span>
+              <span class="spacer"></span>
+              <button class="wbtn" type="button" aria-label="置顶窗口"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H8v-2l3-3-1-6Z"/></svg></button>
+              <button class="wbtn" type="button" aria-label="最小化"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+              <button class="wbtn close" type="button" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+            </div>
+            <div class="wbody">
+              <div class="banner" id="shareBanner" hidden>
+                <span class="bicon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+                <div class="btext"><strong>正在共享屏幕</strong><span>office PC 正在观看这台电脑</span></div>
+                <span class="spacer"></span>
+                <button class="btn tiny" type="button">结束</button>
+              </div>
+              <div class="status">
+                <div class="status-row">
+                  <span class="pulse" id="statusDot" aria-hidden="true"></span>
+                  <h1 id="statusTitle">正在同步</h1>
+                  <span class="spacer"></span>
+                  <button class="btn" id="pauseAll" type="button">全部暂停</button>
+                </div>
+                <p class="status-sub" id="statusSub">2 台在线 · 上次同步 12:31</p>
+              </div>
+              <div class="secbar">
+                <h2>设备</h2>
+                <span class="count" id="devCount">3</span>
+                <span class="spacer"></span>
+                <button class="linkbtn" id="addPeerLink" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加设备</button>
+              </div>
+              <div class="listcard" id="devList">
+                <div class="drow" data-online="true">
+                  <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2.2"/><path d="M10.8 18h2.4"/></svg></span>
+                  <div class="dtext">
+                    <span class="dname">phone</span>
+                    <span class="dsub"><span class="pulse small" aria-hidden="true"></span>192.168.1.9<span class="dotsep">·</span><span class="st-live">在线</span><span class="st-paus">已暂停</span></span>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="向 phone 发送"></button>
+                  <button class="more" type="button" aria-label="phone 的更多操作" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+                  <div class="menu" hidden>
+                    <button type="button">编辑设备</button>
+                    <button type="button">重新检测</button>
+                    <button type="button">手机翻页</button>
+                    <div class="msep"></div>
+                    <button type="button" class="danger">移除设备</button>
+                  </div>
+                </div>
+                <div class="drow" data-online="true">
+                  <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2.5 18.5h19"/></svg></span>
+                  <div class="dtext">
+                    <span class="dname">office PC</span>
+                    <span class="dsub"><span class="pulse small" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>配对加密<span class="dotsep">·</span><span class="st-live">在线</span><span class="st-paus">已暂停</span></span>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="向 office PC 发送"></button>
+                  <button class="more" type="button" aria-label="office PC 的更多操作" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+                  <div class="menu" hidden>
+                    <button type="button">编辑设备</button>
+                    <button type="button">重新检测</button>
+                    <div class="msep"></div>
+                    <button type="button" class="danger">移除设备</button>
+                  </div>
+                </div>
+                <div class="drow" data-online="false">
+                  <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2.2"/><path d="M10.8 18h2.4"/></svg></span>
+                  <div class="dtext">
+                    <span class="dname">backup tablet</span>
+                    <span class="dsub"><span class="pulse small offline" aria-hidden="true"></span>192.168.1.30<span class="dotsep">·</span><span class="st-live">离线</span><span class="st-paus">已暂停</span></span>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="向 backup tablet 发送"></button>
+                  <button class="more" type="button" aria-label="backup tablet 的更多操作" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+                  <div class="menu" hidden>
+                    <button type="button">编辑设备</button>
+                    <button type="button">重新检测</button>
+                    <button type="button">手机翻页</button>
+                    <div class="msep"></div>
+                    <button type="button" class="danger">移除设备</button>
+                  </div>
+                </div>
+              </div>
+              <p class="recent" id="recentLine"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v5h5"/><path d="M12 8v4.2l2.8 1.7"/></svg>最近 12:31 将文本发送到 phone、office PC</p>
+              <div class="emptycard" id="emptyCard" hidden>
+                <span class="eicon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="12" height="15" rx="2"/><rect x="15" y="9" width="6" height="11" rx="1.6"/></svg></span>
+                <strong>还没有设备</strong>
+                <p>同一局域网打开另一台 ClipRelay，它会出现在这里。</p>
+                <div class="row-actions">
+                  <button class="btn primary" type="button" data-preset="normal">添加设备</button>
+                  <button class="btn" type="button">扫描局域网</button>
+                </div>
+              </div>
+              <div class="appfoot">
+                <button class="footbtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1.2l1.8-1.4-2-3.4-2.1.9a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.7a7 7 0 0 0-2 1.2l-2.1-.9-2 3.4 1.8 1.4a7 7 0 0 0 0 2.4L3.7 14.6l2 3.4 2.1-.9a7 7 0 0 0 2 1.2l.4 2.7h4l.4-2.7a7 7 0 0 0 2-1.2l2.1.9 2-3.4-1.8-1.4c.1-.4.1-.8.1-1.2Z"/></svg>设置</button>
+                <button class="footbtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>远程桌面</button>
+                <span class="spacer"></span>
+                <button class="versionbtn" type="button" title="检查更新">v0.4.1</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span>实际尺寸 520 × 520 · 可点击开关、⋯ 菜单</span><span class="mono">可交互</span></p>
+        <p class="mobile-hint">窗口较宽，可在预览区内左右滑动。</p>
+      </div>
+    </section>
+
+    <!-- 01 现状 -->
+    <section class="section" id="current" aria-labelledby="current-title">
+      <div class="section-head">
+        <p class="kicker">01 / 现状</p>
+        <h2 id="current-title">一屏 13 个框，没有主角</h2>
+        <p class="section-lead">现在的控制中心由旧 WinForms 布局逐像素导出，字号、间距和绝对坐标都沿用了旧窗口。主要问题在信息密度和层级，配色只是次要因素。</p>
+      </div>
+      <div class="compare">
+        <figure class="shot">
+          <div class="shot-frame" aria-hidden="true">
+            <div class="before-app" style="transform:scale(.68421)">
+              <!-- 侧栏 -->
+              <div style="position:absolute;left:18px;top:18px;width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#3b82f6,#2563eb);display:flex;align-items:center;justify-content:center;font:700 12px 'Segoe UI';color:#fff">CR</div>
+              <div class="b-lbl" style="left:62px;top:16px;width:156px;height:22px;font-size:14px;font-weight:700">ClipRelay</div>
+              <div class="b-lbl b-mut" style="left:63px;top:38px;width:156px;height:16px;font-size:9.5px">局域网剪贴板中继</div>
+              <div class="b-card" style="left:16px;top:68px;width:204px;height:136px"></div>
+              <div class="b-lbl" style="left:28px;top:77px;width:164px;height:22px;font-size:10.5px;font-weight:700"><span style="color:#10b981;margin-right:6px">●</span>旧版接收已关闭</div>
+              <div class="b-lbl b-mut" style="left:28px;top:100px;width:180px;height:18px;font-size:9px">配对连接独立运行</div>
+              <div class="b-field" style="left:26px;top:124px;width:184px;height:34px;border-radius:8px"></div>
+              <div class="b-lbl" style="left:34px;top:133px;width:104px;height:18px;font-size:9.5px;font-family:'Cascadia Mono',Consolas,monospace">192.168.1.9</div>
+              <div class="b-btn" style="left:140px;top:127px;width:26px;height:28px">↕</div>
+              <div class="b-btn" style="left:168px;top:127px;width:38px;height:28px;background:#3b82f6;border-color:#3b82f6;color:#fff">复制</div>
+              <div class="b-lbl b-mut" style="left:28px;top:164px;width:180px;height:18px;font-size:9px">旧版 HTTP 推送已禁用</div>
+
+              <div class="b-card" style="left:16px;top:216px;width:204px;height:146px"></div>
+              <div class="b-eyebrow" style="left:28px;top:225px;width:180px;height:16px">NETWORK STATS</div>
+              <div class="b-lbl b-mut" style="left:28px;top:248px;width:76px;height:18px;font-size:9.5px">广播目标</div>
+              <div class="b-lbl" style="left:106px;top:248px;width:102px;height:18px;font-size:9.5px;justify-content:flex-end">3 台</div>
+              <div class="b-div" style="left:28px;top:270px;width:180px"></div>
+              <div class="b-lbl b-mut" style="left:28px;top:278px;width:76px;height:18px;font-size:9.5px">在线状态</div>
+              <div class="b-lbl" style="left:106px;top:278px;width:102px;height:18px;font-size:9.5px;justify-content:flex-end;color:#10b981">3/3 台可用</div>
+              <div class="b-div" style="left:28px;top:300px;width:180px"></div>
+              <div class="b-lbl b-mut" style="left:28px;top:308px;width:76px;height:18px;font-size:9.5px">最近同步</div>
+              <div class="b-lbl" style="left:106px;top:308px;width:102px;height:18px;font-size:9.5px;justify-content:flex-end;color:#94a3b8">12:31:05</div>
+
+              <div class="b-card" style="left:16px;top:374px;width:204px;height:260px"></div>
+              <div class="b-eyebrow" style="left:28px;top:383px;width:104px;height:16px">TARGET NODES</div>
+              <div class="b-btn" style="left:146px;top:379px;width:62px;height:24px">+ 添加</div>
+              <div class="b-row" style="left:24px;top:406px"></div>
+              <div class="b-lbl" style="left:33px;top:412px;width:116px;height:20px;font-size:10px;font-weight:700">phone</div>
+              <div class="b-lbl b-mut" style="left:33px;top:431px;width:126px;height:16px;font-size:8.5px">192.168.1.9</div>
+              <div class="b-lbl" style="left:33px;top:447px;width:126px;height:16px;font-size:8.5px;color:#10b981">✓ 可用</div>
+              <span class="b-tgl" style="left:152px;top:413px"></span>
+              <div class="b-btn" style="left:164px;top:439px;width:22px;height:22px;font-size:8px">···</div>
+              <div class="b-row" style="left:24px;top:470px"></div>
+              <div class="b-lbl" style="left:33px;top:476px;width:116px;height:20px;font-size:10px;font-weight:700">office PC</div>
+              <div class="b-lbl b-mut" style="left:33px;top:495px;width:126px;height:16px;font-size:8.5px">192.168.1.20</div>
+              <div class="b-lbl" style="left:33px;top:511px;width:126px;height:16px;font-size:8.5px;color:#10b981">✓ 可用</div>
+              <span class="b-tgl" style="left:152px;top:477px"></span>
+              <div class="b-btn" style="left:164px;top:503px;width:22px;height:22px;font-size:8px">···</div>
+              <div class="b-row" style="left:24px;top:534px"></div>
+              <div class="b-lbl" style="left:33px;top:540px;width:116px;height:20px;font-size:10px;font-weight:700">backup tablet</div>
+              <div class="b-lbl b-mut" style="left:33px;top:559px;width:126px;height:16px;font-size:8.5px">192.168.1.30</div>
+              <div class="b-lbl" style="left:33px;top:575px;width:126px;height:16px;font-size:8.5px;color:#10b981">✓ 可用</div>
+              <span class="b-tgl" style="left:152px;top:541px"></span>
+              <div class="b-btn" style="left:164px;top:567px;width:22px;height:22px;font-size:8px">···</div>
+              <div class="b-btn" style="left:28px;top:603px;width:180px;height:24px;font-size:9.5px">扫描添加设备</div>
+              <div class="b-btn" style="left:16px;top:652px;width:204px;height:46px;background:#3b82f6;border-color:#3b82f6;color:#fff;font-size:10.5px;font-weight:700">⚡ 检测全链路连接</div>
+
+              <!-- 主区 -->
+              <div class="b-lbl" style="left:256px;top:14px;width:200px;height:16px;font-size:8px;letter-spacing:.16em;color:#38bdf8">CLIP / RELAY</div>
+              <div class="b-lbl" style="left:256px;top:30px;width:320px;height:32px;font-size:21px;font-weight:700">设备链路工作区</div>
+              <div class="b-lbl b-mut" style="left:256px;top:62px;width:276px;height:18px;font-size:9.5px">剪贴板同步 · 远程桌面与屏幕共享</div>
+              <div class="b-btn" style="left:594px;top:18px;width:76px;height:30px">Pin</div>
+              <div class="b-btn" style="left:676px;top:18px;width:32px;height:30px;font-size:12px">−</div>
+              <div class="b-btn" style="left:714px;top:18px;width:32px;height:30px;font-size:12px">×</div>
+              <div class="b-btn" style="left:542px;top:52px;width:98px;height:30px">远程桌面</div>
+              <div class="b-btn" style="left:646px;top:52px;width:98px;height:30px">手机翻页</div>
+
+              <div class="b-card" style="left:256px;top:86px;width:488px;height:64px"></div>
+              <div class="b-lbl" style="left:270px;top:94px;width:16px;height:20px;font-size:11px;color:#10b981">●</div>
+              <div class="b-lbl" style="left:288px;top:92px;width:442px;height:22px;font-size:10.5px;font-weight:700">全部可用 · 3/3 台设备</div>
+              <div class="b-lbl b-mut" style="left:288px;top:116px;width:442px;height:20px;font-size:9px">检测 全部送达 3/3 台 · 12:31:05</div>
+
+              <div class="b-card" style="left:256px;top:160px;width:488px;height:96px"></div>
+              <div class="b-eyebrow" style="left:270px;top:168px;width:320px;height:16px;color:#60a5fa">SHORTCUTS · 快捷同步指令</div>
+              <div class="b-card" style="left:270px;top:190px;width:224px;height:54px;background:#1b2029;border-radius:8px"></div>
+              <div style="position:absolute;left:278px;top:200px;width:34px;height:34px;border-radius:8px;background:#2a2340;display:flex;align-items:center;justify-content:center;color:#a78bfa;font-size:13px;font-weight:700">T</div>
+              <div class="b-lbl" style="left:318px;top:198px;width:168px;height:20px;font-size:9.5px;font-weight:700">CTRL + C</div>
+              <div class="b-lbl b-mut" style="left:318px;top:218px;width:168px;height:18px;font-size:8px">文本广播 · 1 秒防重</div>
+              <div class="b-card" style="left:506px;top:190px;width:224px;height:54px;background:#1b2029;border-radius:8px"></div>
+              <div style="position:absolute;left:514px;top:200px;width:34px;height:34px;border-radius:8px;background:#102b36;display:flex;align-items:center;justify-content:center;color:#38bdf8;font-size:13px;font-weight:700">S</div>
+              <div class="b-lbl" style="left:554px;top:198px;width:110px;height:20px;font-size:9.5px;font-weight:700">CTRL + ALT + F12</div>
+              <div class="b-lbl" style="left:674px;top:198px;width:48px;height:20px;font-size:8px;color:#10b981">可用</div>
+              <div class="b-lbl b-mut" style="left:554px;top:218px;width:168px;height:18px;font-size:8px">全屏静默截屏广播</div>
+
+              <div class="b-card" style="left:256px;top:266px;width:488px;height:58px"></div>
+              <div style="position:absolute;left:256px;top:276px;width:3px;height:38px;background:#10b981"></div>
+              <div class="b-eyebrow" style="left:270px;top:272px;width:180px;height:16px">LAST ACTIVITY</div>
+              <div class="b-lbl" style="left:270px;top:290px;width:350px;height:24px;font-size:10.5px">文本已发送到 3 台设备</div>
+              <div class="b-lbl b-mut" style="left:622px;top:288px;width:108px;height:24px;font-size:9px;justify-content:flex-end">12:31:05</div>
+
+              <div class="b-card" style="left:256px;top:334px;width:488px;height:310px"></div>
+              <div class="b-eyebrow" style="left:270px;top:343px;width:320px;height:16px">PREFERENCES · 偏好与安全设置</div>
+              <div class="b-lbl" style="left:270px;top:364px;width:180px;height:20px;font-size:10px;font-weight:700">气泡通知提醒</div>
+              <div class="b-lbl b-mut" style="left:270px;top:382px;width:370px;height:16px;font-size:8px">收到剪贴板内容或网络异常时弹出系统气泡通知</div>
+              <span class="b-tgl" style="left:682px;top:368px;width:44px;height:24px"></span>
+              <div class="b-div" style="left:270px;top:402px;width:460px"></div>
+              <div class="b-lbl" style="left:270px;top:408px;width:180px;height:20px;font-size:10px;font-weight:700">开机自动启动</div>
+              <div class="b-lbl b-mut" style="left:270px;top:426px;width:370px;height:16px;font-size:8px">登录 Windows 后自动在后台保持接收与中继服务</div>
+              <span class="b-tgl" style="left:682px;top:412px;width:44px;height:24px"></span>
+              <div class="b-div" style="left:270px;top:446px;width:460px"></div>
+              <div class="b-lbl" style="left:270px;top:452px;width:200px;height:20px;font-size:10px;font-weight:700">局域网自动发现 (mDNS)</div>
+              <div class="b-lbl b-mut" style="left:270px;top:470px;width:370px;height:16px;font-size:8px">仅在旧版兼容开启时公布地址，配对连接不受影响</div>
+              <span class="b-tgl" style="left:682px;top:456px;width:44px;height:24px"></span>
+              <div class="b-div" style="left:270px;top:490px;width:460px"></div>
+              <div class="b-lbl" style="left:270px;top:496px;width:140px;height:18px;font-size:9.5px">发现设备名称</div>
+              <div class="b-field" style="left:270px;top:516px;width:460px;height:32px"></div>
+              <div class="b-lbl" style="left:280px;top:523px;width:440px;height:18px;font-size:9.5px">DESKTOP-7F2A</div>
+              <div class="b-lbl" style="left:270px;top:556px;width:80px;height:18px;font-size:9.5px">本机端口</div>
+              <div class="b-field" style="left:270px;top:576px;width:86px;height:32px"></div>
+              <div class="b-lbl" style="left:280px;top:583px;width:66px;height:18px;font-size:9.5px">47632</div>
+              <div class="b-lbl" style="left:270px;top:616px;width:400px;height:18px;font-size:9.5px">允许旧版未加密接收（仅局域网）</div>
+              <span class="b-tgl off" style="left:682px;top:614px;width:44px;height:24px"></span>
+
+              <div class="b-lbl" style="left:256px;top:666px;width:202px;height:24px;font-size:9px;color:#10b981">● 已自动保存 · 12:31</div>
+              <div class="b-btn" style="left:466px;top:654px;width:150px;height:40px">版本 v0.4.1</div>
+              <div class="b-btn" style="left:628px;top:654px;width:116px;height:40px">关闭</div>
+            </div>
+          </div>
+          <figcaption><span>按 control-center.json 的坐标还原</span><span>缩至 68%</span></figcaption>
+        </figure>
+        <ol class="issues">
+          <li><strong>面板过多</strong><span>一屏 13 个带边框的面板，每个都有自己的标题，视线找不到落点。</span></li>
+          <li><strong>英文小标题只是装饰</strong><span>NETWORK STATS、TARGET NODES、SHORTCUTS、PREFERENCES 重复了下面的中文，还占着最醒目的位置。</span></li>
+          <li><strong>字号偏小</strong><span>正文 12px，说明 10.67px，需要换行的说明被压到 7.5pt。缩放到 125% 仍然吃力。</span></li>
+          <li><strong>同一件事说三遍</strong><span>广播目标等于设备数，在线状态等于检测结果，旧版接收的状态在侧栏出现三次。</span></li>
+          <li><strong>主次颠倒</strong><span>最大的实心按钮是诊断用的「检测全链路连接」；首次使用最需要的「添加设备」只有 62×24。</span></li>
+          <li><strong>绝对定位留下错位</strong><span>空状态写死在 top:48px；长错误详情把行高撑到 32px，盖住相邻标签。</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- 02 结构 -->
+    <section class="section" id="structure" aria-labelledby="structure-title">
+      <div class="section-head">
+        <p class="kicker">02 / 结构</p>
+        <h2 id="structure-title">主窗口只留三件事</h2>
+        <p class="section-lead">同步状态、设备列表、一个页脚。其余内容按「跟谁有关」重新分配：设备相关的进设备菜单，全局的进设置，偶尔用的进托盘。</p>
+      </div>
+      <div class="rules">
+        <div class="rule"><strong>状态先行</strong><p>第一行永远是同步状态，一个圆点加一句话。打开窗口就能判断是否正常。</p></div>
+        <div class="rule"><strong>常驻操作只有四个</strong><p>添加设备、单台开关、全部暂停、设置。检测连接放进设备菜单，打开窗口时自动跑一次。</p></div>
+        <div class="rule"><strong>次要功能跟着对象走</strong><p>手机翻页只对安卓设备出现；屏幕共享只在共享进行时出现一条横幅。</p></div>
+        <div class="rule"><strong>中文标题，不加英文眉题</strong><p>分组标题只写「设备」「常规」「兼容性」。英文小标题不再承担装饰作用。</p></div>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th scope="col">现在的元素</th><th scope="col">处理</th><th scope="col">去向</th></tr></thead>
+          <tbody>
+            <tr><td>品牌区 + 「设备链路工作区」大标题</td><td><span class="tag remove">删除</span></td><td>标题栏只保留标记和 ClipRelay</td></tr>
+            <tr><td>NETWORK STATS 统计卡</td><td><span class="tag remove">删除</span></td><td>设备数并入「设备」标题，最近同步并入状态行</td></tr>
+            <tr><td>TARGET NODES 设备列表</td><td><span class="tag keep">保留</span></td><td>主窗口唯一的列表</td></tr>
+            <tr><td>SHORTCUTS 快捷键卡</td><td><span class="tag demote">降级</span></td><td>设置 › 快捷键</td></tr>
+            <tr><td>LAST ACTIVITY 活动卡</td><td><span class="tag merge">合并</span></td><td>状态行下面一行「最近 12:31 …」</td></tr>
+            <tr><td>PREFERENCES 偏好卡</td><td><span class="tag demote">移出</span></td><td>设置 › 常规 / 这台电脑 / 兼容性</td></tr>
+            <tr><td>「检测全链路连接」大按钮</td><td><span class="tag demote">降级</span></td><td>打开时自动检测；设备菜单「重新检测」</td></tr>
+            <tr><td>「手机翻页」顶栏按钮</td><td><span class="tag demote">下沉</span></td><td>安卓设备菜单</td></tr>
+            <tr><td>「远程桌面」顶栏按钮</td><td><span class="tag demote">降级</span></td><td>页脚入口，托盘保留一份</td></tr>
+            <tr><td>屏幕共享状态面板</td><td><span class="tag merge">条件显示</span></td><td>共享进行时的顶部横幅</td></tr>
+            <tr><td>自动保存状态文字</td><td><span class="tag remove">删除</span></td><td>保存失败时才提示</td></tr>
+            <tr><td>版本更新按钮</td><td><span class="tag demote">降级</span></td><td>页脚版本号，点开是更新窗口</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 03 原型 -->
+    <section class="section" id="prototype" aria-labelledby="prototype-title">
+      <div class="section-head">
+        <p class="kicker">03 / 原型</p>
+        <h2 id="prototype-title">设置页与组件状态</h2>
+        <p class="section-lead">设置页接管原来的偏好卡和快捷键。主窗口通过六种组件状态覆盖日常情况：在线、配对加密、离线、已暂停、空列表、共享中。</p>
+      </div>
+
+      <div class="split">
+        <div class="screen">
+          <div class="app-skin appwin settings-win">
+            <div class="tbar">
+              <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 9h13m0 0-3.4-3.4M18 9l-3.4 3.4M19 15H6m0 0 3.4-3.4M6 15l3.4 3.4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="aname">ClipRelay</span>
+              <span class="spacer"></span>
+              <button class="wbtn" type="button" aria-label="置顶窗口"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H8v-2l3-3-1-6Z"/></svg></button>
+              <button class="wbtn" type="button" aria-label="最小化"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+              <button class="wbtn close" type="button" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+            </div>
+            <div class="wbody">
+              <div class="settings-head">
+                <button class="backbtn" type="button" aria-label="返回设备列表"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+                <h2>设置</h2>
+              </div>
+
+              <div class="group">
+                <h3 class="gtitle">常规</h3>
+                <div class="listcard plain">
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">开机自动启动</span><span class="sethint">登录 Windows 后自动运行</span></div>
+                    <div class="setctl"><button class="switch" type="button" role="switch" aria-checked="true" aria-label="开机自动启动"></button></div>
+                  </div>
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">桌面通知</span><span class="sethint">收到内容或连接失败时提醒</span></div>
+                    <div class="setctl"><button class="switch" type="button" role="switch" aria-checked="true" aria-label="桌面通知"></button></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="group">
+                <h3 class="gtitle">这台电脑</h3>
+                <div class="listcard plain">
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">设备名称</span><span class="sethint">其他设备在局域网里看到的名字</span></div>
+                    <div class="setctl"><span class="field">DESKTOP-7F2A</span></div>
+                  </div>
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">本机端口</span><span class="sethint">旧版接收与屏幕共享使用</span></div>
+                    <div class="setctl"><span class="field mono">47632</span></div>
+                  </div>
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">局域网自动发现</span><span class="sethint">mDNS，让旧版设备找到这台电脑</span></div>
+                    <div class="setctl"><button class="switch" type="button" role="switch" aria-checked="true" aria-label="局域网自动发现"></button></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="group">
+                <h3 class="gtitle">兼容性</h3>
+                <div class="listcard plain">
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">允许旧版未加密接收</span><span class="sethint warn">文本和截图以明文传输，只在可信局域网开启</span></div>
+                    <div class="setctl"><button class="switch" type="button" role="switch" aria-checked="false" aria-label="允许旧版未加密接收"></button></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="group">
+                <h3 class="gtitle">快捷键</h3>
+                <div class="listcard plain">
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">复制即发送</span></div>
+                    <div class="setctl"><span class="keycap">Ctrl + C</span><span class="chip-ok">可用</span></div>
+                  </div>
+                  <div class="setrow">
+                    <div class="setmain"><span class="setlabel">截取全屏并发送</span></div>
+                    <div class="setctl"><span class="keycap">Ctrl + Alt + F12</span><span class="chip-ok">可用</span></div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+        <ul class="notes">
+          <li><strong>四组设置，每组一列</strong><span>常规、这台电脑、兼容性、快捷键。原来的偏好卡在这里展开成一份可读的表单。</span></li>
+          <li><strong>保存是默认行为</strong><span>输入框失焦、开关点击即保存。不再常驻显示「已自动保存」，只有失败时才出现一行提示。</span></li>
+          <li><strong>兼容性写明代价</strong><span>开关旁直接写「明文传输」，默认关闭。旧版设备才需要打开。</span></li>
+          <li><strong>快捷键只读展示</strong><span>从主窗口移到这里，显示按键和可用状态，不再占一屏版面。</span></li>
+          <li><strong>更新入口留在页脚</strong><span>主窗口右下角的版本号点开就是更新窗口，设置页不再重复一份。</span></li>
+          <li><strong>窗口随视图调整</strong><span>设置页 720 高，主窗口 520 高。切换时调整内容尺寸，超过屏幕可用时内部滚动。</span></li>
+        </ul>
+      </div>
+
+      <div class="split" style="margin-top:44px">
+        <div>
+          <p class="mini-label"><span>四种设备行状态</span><span>DS-ROW</span></p>
+          <div class="app-skin spec-panel">
+            <div class="listcard plain">
+              <div class="drow" data-online="true">
+                <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2.2"/><path d="M10.8 18h2.4"/></svg></span>
+                <div class="dtext"><span class="dname">phone</span><span class="dsub"><span class="pulse small" aria-hidden="true"></span>192.168.1.9<span class="dotsep">·</span><span class="st-live">在线</span><span class="st-paus">已暂停</span></span></div>
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="向 phone 发送"></button>
+                <button class="more" type="button" aria-label="phone 的更多操作" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+              </div>
+              <div class="drow" data-online="true">
+                <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2.5 18.5h19"/></svg></span>
+                <div class="dtext"><span class="dname">office PC</span><span class="dsub"><span class="pulse small" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>配对加密<span class="dotsep">·</span><span class="st-live">在线</span><span class="st-paus">已暂停</span></span></div>
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="向 office PC 发送"></button>
+                <button class="more" type="button" aria-label="office PC 的更多操作" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+              </div>
+              <div class="drow" data-online="false">
+                <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2.2"/><path d="M10.8 18h2.4"/></svg></span>
+                <div class="dtext"><span class="dname">backup tablet</span><span class="dsub"><span class="pulse small offline" aria-hidden="true"></span>192.168.1.30<span class="dotsep">·</span><span class="st-live">离线</span><span class="st-paus">已暂停</span></span></div>
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="向 backup tablet 发送"></button>
+                <button class="more" type="button" aria-label="backup tablet 的更多操作" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+              </div>
+              <div class="drow off" data-online="true">
+                <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2.5 18.5h19"/></svg></span>
+                <div class="dtext"><span class="dname">macbook</span><span class="dsub"><span class="pulse small" aria-hidden="true"></span>192.168.1.44<span class="dotsep">·</span><span class="st-live">在线</span><span class="st-paus">已暂停</span></span></div>
+                <button class="switch" type="button" role="switch" aria-checked="false" aria-label="向 macbook 发送"></button>
+                <button class="more" type="button" aria-label="macbook 的更多操作" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+              </div>
+            </div>
+          </div>
+          <p class="caption"><span>关闭开关时整行降对比，状态改为「已暂停」。</span><span class="mono">62px</span></p>
+        </div>
+        <ul class="notes" style="padding-top:18px">
+          <li><strong>在线</strong><span>绿点加地址；配对设备用锁图标替代 IP。</span></li>
+          <li><strong>离线</strong><span>灰点，开关保持开启。下一次复制仍会尝试发送。</span></li>
+          <li><strong>已暂停</strong><span>关闭开关后整行降到 60% 对比度，文字写「已暂停」。</span></li>
+        </ul>
+      </div>
+
+      <div class="state-panels">
+        <div>
+            <p class="mini-label"><span>共享进行时</span><span>BANNER</span></p>
+            <div class="app-skin spec-panel">
+              <div class="banner">
+                <span class="bicon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+                <div class="btext"><strong>正在共享屏幕</strong><span>office PC 正在观看这台电脑</span></div>
+                <span class="spacer"></span>
+                <button class="btn tiny" type="button">结束</button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <p class="mini-label"><span>空列表</span><span>EMPTY</span></p>
+            <div class="app-skin spec-panel">
+              <div class="emptycard" style="margin:0">
+                <span class="eicon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="12" height="15" rx="2"/><rect x="15" y="9" width="6" height="11" rx="1.6"/></svg></span>
+                <strong>还没有设备</strong>
+                <p>同一局域网打开另一台 ClipRelay，它会出现在这里。</p>
+                <div class="row-actions"><button class="btn primary" type="button">添加设备</button><button class="btn" type="button">扫描局域网</button></div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div style="max-width:240px">
+              <p class="mini-label"><span>设备菜单</span><span>MENU</span></p>
+              <div class="app-skin spec-panel">
+                <div class="menu flat">
+                  <button type="button">编辑设备</button>
+                  <button type="button">重新检测</button>
+                  <button type="button">手机翻页</button>
+                  <div class="msep"></div>
+                  <button type="button" class="danger">移除设备</button>
+                </div>
+              </div>
+            </div>
+          </div>
+      </div>
+    </section>
+
+    <!-- 04 规范 -->
+    <section class="section" id="visual" aria-labelledby="visual-title">
+      <div class="section-head">
+        <p class="kicker">04 / 规范</p>
+        <h2 id="visual-title">颜色、字级与间距</h2>
+        <p class="section-lead">一套以深色为主的 token，配一份浅色映射。字体使用 Windows 自带的 Segoe UI Variable 与微软雅黑，不引入网络字体。</p>
+      </div>
+
+      <div class="spec-two">
+        <div>
+          <p class="mini-label"><span>颜色</span><span>README 里也放一份</span></p>
+          <div class="tokens">
+            <div class="tokrow"><div class="tokname">窗口背景<em>--a-bg</em></div><div class="swatch"><i style="background:#0E1117"></i>#0E1117</div><div class="swatch"><i style="background:#F4F6FA"></i>#F4F6FA</div></div>
+            <div class="tokrow"><div class="tokname">卡片<em>--a-surface</em></div><div class="swatch"><i style="background:#161A23"></i>#161A23</div><div class="swatch"><i style="background:#FFFFFF"></i>#FFFFFF</div></div>
+            <div class="tokrow"><div class="tokname">输入框<em>--a-field</em></div><div class="swatch"><i style="background:#11151D"></i>#11151D</div><div class="swatch"><i style="background:#F1F4F8"></i>#F1F4F8</div></div>
+            <div class="tokrow"><div class="tokname">分隔线<em>--a-line</em></div><div class="swatch"><i style="background:#262B36"></i>#262B36</div><div class="swatch"><i style="background:#E3E7EE"></i>#E3E7EE</div></div>
+            <div class="tokrow"><div class="tokname">主文字<em>--a-text</em></div><div class="swatch"><i style="background:#EDF0F6"></i>#EDF0F6</div><div class="swatch"><i style="background:#141922"></i>#141922</div></div>
+            <div class="tokrow"><div class="tokname">次要文字<em>--a-2</em></div><div class="swatch"><i style="background:#A0A9B8"></i>#A0A9B8</div><div class="swatch"><i style="background:#5C6676"></i>#5C6676</div></div>
+            <div class="tokrow"><div class="tokname">强调色<em>--a-accent</em></div><div class="swatch"><i style="background:#4C8DFF"></i>#4C8DFF</div><div class="swatch"><i style="background:#2F6BE8"></i>#2F6BE8</div></div>
+            <div class="tokrow"><div class="tokname">在线 / 成功<em>--a-ok</em></div><div class="swatch"><i style="background:#3DDC97"></i>#3DDC97</div><div class="swatch"><i style="background:#0B7F58"></i>#0B7F58</div></div>
+            <div class="tokrow"><div class="tokname">警告<em>--a-warn</em></div><div class="swatch"><i style="background:#F2B34F"></i>#F2B34F</div><div class="swatch"><i style="background:#92620C"></i>#92620C</div></div>
+            <div class="tokrow"><div class="tokname">危险<em>--a-bad</em></div><div class="swatch"><i style="background:#FF6B81"></i>#FF6B81</div><div class="swatch"><i style="background:#C23A52"></i>#C23A52</div></div>
+          </div>
+          <p class="caption" style="margin-top:10px"><span>左：深色（默认）</span><span>右：浅色映射</span></p>
+        </div>
+
+        <div>
+          <p class="mini-label"><span>字级</span><span>SEGOE UI VARIABLE / YAHEI UI</span></p>
+          <div class="tablewrap typetable">
+            <table>
+              <thead><tr><th scope="col">用途</th><th scope="col">字号 / 行高</th><th scope="col">字重</th></tr></thead>
+              <tbody>
+                <tr><td>同步状态</td><td>22 / 28</td><td>600</td></tr>
+                <tr><td>分组标题</td><td>13 / 18</td><td>600</td></tr>
+                <tr><td>设备名</td><td>13.5 / 20</td><td>500</td></tr>
+                <tr><td>设置项</td><td>13 / 18</td><td>400</td></tr>
+                <tr><td>说明文字</td><td>12 / 18</td><td>400</td></tr>
+                <tr><td>辅助信息</td><td>11.5 / 16</td><td>400</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="mini-label" style="margin-top:28px"><span>尺寸</span><span>8PT GRID</span></p>
+          <ul class="metrics">
+            <li><span>窗口内边距</span><span>20px</span></li>
+            <li><span>卡片圆角 / 控件圆角</span><span>12px / 8px</span></li>
+            <li><span>设备行高</span><span>62px</span></li>
+            <li><span>开关</span><span>34 × 20</span></li>
+            <li><span>分组间距</span><span>18px</span></li>
+            <li><span>焦点环</span><span>2px 强调色</span></li>
+          </ul>
+          <p class="caption" style="margin-top:12px"><span>图标 16px 线性、1.5px 描边；状态只用圆点，不用表情符号。</span></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 05 落地 -->
+    <section class="section" id="impl" aria-labelledby="impl-title">
+      <div class="section-head">
+        <p class="kicker">05 / 落地</p>
+        <h2 id="impl-title">改哪些文件，动哪些测试</h2>
+        <p class="section-lead">改动集中在渲染层，桥接协议和配置格式都不变。第一轮只做控制中心与设置页，其余窗口下一轮统一。</p>
+      </div>
+
+      <div class="impl-grid">
+        <div class="impl">
+          <h3>窗口与文件</h3>
+          <ul>
+            <li><code>windows.cjs</code>：<code>control-center</code> 改为 <code>[520, 520]</code>，设置视图切到 <code>[520, 720]</code>，允许纵向拉伸，最小 <code>520 × 460</code>。</li>
+            <li>新增 <code>renderer/views/control-center.js</code>，手写结构；<code>app.js</code> 不再 <code>fetch</code> 布局 JSON。</li>
+            <li>删除 <code>layouts/control-center.json</code> 与 <code>export-electron-layout.ps1</code> 的导出步骤，<code>windows-files.json</code> 同步移除。</li>
+            <li><code>bridge.ps1</code>、<code>preload.js</code>、<code>native-host.cjs</code> 不动，<code>patch / probe / discover / merge / summary / copy</code> 的语义不变。</li>
+          </ul>
+        </div>
+        <div class="impl">
+          <h3>交互映射</h3>
+          <ul>
+            <li>设备开关：<code>patch({peers, expectedRevision})</code>，与现在一致。</li>
+            <li>全部暂停 / 恢复：一次 <code>patch</code> 把全部 <code>enabled</code> 置为同一值，后端不需要新字段。</li>
+            <li>添加设备：现有 <code>peer-editor</code>；设备菜单：现有 <code>peer-menu</code>，增加「重新检测」「手机翻页」。</li>
+            <li>状态行：由 <code>runtime</code>、<code>probe</code> 结果和 <code>sharing.Stage</code> 组合，不再单独维护检测文案。</li>
+            <li>设置页：输入框失焦、开关点击即保存，沿用现有 <code>patch</code>。</li>
+            <li>设备超过 4 台时在卡片内滚动，最多 16 台；最近一条同步记录固定在列表下方。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="tablewrap">
+        <table class="idtable">
+          <thead><tr><th scope="col">界面元素</th><th scope="col">现有 ID</th><th scope="col">处理</th></tr></thead>
+          <tbody>
+            <tr><td>设备行</td><td><code>PeerRow0…15</code></td><td>保留 ID，结构重写</td></tr>
+            <tr><td>设备开关</td><td><code>PeerEnabledToggle0…15</code></td><td>保留，改为 <code>role="switch"</code> 的按钮</td></tr>
+            <tr><td>设备状态</td><td><code>PeerStatusLabel0…15</code></td><td>保留，文案改为「在线 / 离线 / 已暂停」</td></tr>
+            <tr><td>检测按钮</td><td><code>TestPeersButton</code></td><td>删除，改为打开时自动检测 + 设备菜单</td></tr>
+            <tr><td>状态行</td><td><code>ConnectionTitleLabel</code> / <code>OnlineStatusLabel</code></td><td>合并为状态标题与状态副标题</td></tr>
+            <tr><td>远程桌面</td><td><code>RemoteDesktopButton</code></td><td>移到页脚，ID 保留</td></tr>
+            <tr><td>设置项</td><td><code>NotificationToggle</code> 等</td><td>移入设置视图，ID 保留</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="impl-grid" style="margin-top:36px">
+        <div class="impl">
+          <h3>测试影响</h3>
+          <ul>
+            <li><code>electron-renderer-live.cjs</code> 依赖 <code>TestPeersButton</code>、<code>PeerStatusLabel0</code>、<code>OnlineStatusLabel</code> 和 <code>168×60</code> 的行几何，需要改为状态行文本、开关 <code>aria-checked</code> 与新行高的断言。</li>
+            <li><code>electron-live.cjs</code> 中点击控制中心的步骤同步调整。</li>
+            <li><code>settings-ui.ps1</code> 覆盖旧 WinForms 窗口，不受影响。</li>
+          </ul>
+        </div>
+        <div class="impl">
+          <h3>其余窗口（下一轮）</h3>
+          <ul>
+            <li>远程桌面与外网配对是整窗浅色的 WinForms 风格；远程桌面首页、更新和共享选择器是深色且各自硬编码颜色。</li>
+            <li>先抽按钮、输入框、列表、开关、提示条五个组件，再逐窗替换，并让所有窗口跟随系统深浅色。</li>
+            <li>托盘菜单同步去表情符号，改成纯文字加勾选状态。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="section-head" style="margin-top:44px">
+        <p class="kicker" style="color:var(--ink-3)">需要你拍板</p>
+        <h2 style="font-size:20px">四个会影响实现的问题</h2>
+      </div>
+      <ul class="questions">
+        <li><strong>远程桌面入口放哪<span class="pill">建议：页脚</span></strong><p>放主窗口页脚最容易被找到，也不会挤占状态区；托盘里保留一份，重度用户可以从托盘直接进。</p></li>
+        <li><strong>是否接受「全部暂停」<span class="pill">建议：保留</span></strong><p>用现有设备开关组合实现，一次 <code>patch</code> 写全部 <code>enabled</code>，后端不改。暂停时逐台开关的旧值不会记住，恢复时全部打开。</p></li>
+        <li><strong>浅色主题是否跟随系统</strong><p>本稿给了完整的浅色映射。实现需要额外一轮对比度验收，Windows 的强调色、标题栏和托盘菜单也要一起处理。</p></li>
+        <li><strong>设置页放在同窗口还是独立窗口</strong><p>同窗口切换的体验更连贯，代价是切换视图时要调整窗口高度。独立窗口更简单，但会多一个右上角关闭按钮和一层焦点管理。</p></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="pagefoot">
+    <span>ClipRelay 界面重设计 · 设计稿 v1</span>
+    <span>2026-10-26 · 基于 main @ fb7e1aa</span>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const root = document.documentElement;
+  const win = document.getElementById('mainWin');
+  const rows = [...win.querySelectorAll('.drow')];
+  const title = document.getElementById('statusTitle');
+  const sub = document.getElementById('statusSub');
+  const dot = document.getElementById('statusDot');
+  const pauseBtn = document.getElementById('pauseAll');
+  const count = document.getElementById('devCount');
+  const list = document.getElementById('devList');
+  const emptyCard = document.getElementById('emptyCard');
+  const recent = document.getElementById('recentLine');
+  const addPeerLink = document.getElementById('addPeerLink');
+  const banner = document.getElementById('shareBanner');
+  const presetButtons = [...document.querySelectorAll('.seg [data-preset]')];
+  const themeButtons = [...document.querySelectorAll('[data-theme-opt]')];
+
+  const isOn = row => row.querySelector('.switch').getAttribute('aria-checked') === 'true';
+
+  function setPressed() {
+    const paused = win.dataset.state !== 'empty' && !rows.some(isOn);
+    const empty = win.dataset.state === 'empty';
+    const shared = !banner.hidden;
+    for (const button of presetButtons) {
+      const name = button.dataset.preset;
+      const pressed = name === 'empty' ? empty
+        : name === 'paused' ? paused
+        : name === 'shared' ? shared
+        : !empty && !shared && !paused;
+      button.setAttribute('aria-pressed', String(pressed));
+    }
+  }
+
+  function render() {
+    const empty = win.dataset.state === 'empty';
+    list.hidden = empty;
+    emptyCard.hidden = !empty;
+    recent.hidden = empty;
+    pauseBtn.hidden = empty;
+    addPeerLink.hidden = empty;
+    dot.classList.remove('idle');
+
+    if (empty) {
+      title.textContent = '等待第一台设备';
+      sub.textContent = '本机仍可接收；添加一台设备后即可发送。';
+      count.textContent = '0';
+      dot.classList.add('idle');
+      setPressed();
+      return;
+    }
+
+    count.textContent = String(rows.length);
+    const on = rows.filter(isOn);
+    const online = rows.filter(row => row.dataset.online === 'true').length;
+
+    if (!on.length) {
+      title.textContent = '已暂停同步';
+      sub.textContent = '设备仍可接收，本机不会广播新的复制内容。';
+      pauseBtn.textContent = '恢复全部';
+      dot.classList.add('idle');
+    } else {
+      title.textContent = '正在同步';
+      sub.textContent = online + ' 台在线 · 上次同步 12:31';
+      pauseBtn.textContent = '全部暂停';
+    }
+    setPressed();
+  }
+
+  document.addEventListener('click', event => {
+    const switchNode = event.target.closest('.app-skin .switch');
+    if (switchNode) {
+      const next = switchNode.getAttribute('aria-checked') !== 'true';
+      switchNode.setAttribute('aria-checked', String(next));
+      const row = switchNode.closest('.drow');
+      if (row) {
+        row.classList.toggle('off', !next);
+        render();
+      }
+      return;
+    }
+
+    if (event.target.closest('.menu button')) {
+      for (const menu of document.querySelectorAll('.app-skin .menu')) menu.hidden = true;
+      for (const node of document.querySelectorAll('.more')) node.setAttribute('aria-expanded', 'false');
+      return;
+    }
+
+    const more = event.target.closest('.more');
+    if (more) {
+      const menu = more.parentElement.querySelector('.menu');
+      const wasOpen = !menu.hidden;
+      for (const other of document.querySelectorAll('.app-skin .menu')) other.hidden = true;
+      menu.hidden = wasOpen;
+      more.setAttribute('aria-expanded', String(!wasOpen));
+      return;
+    }
+
+    if (!event.target.closest('.menu')) {
+      for (const menu of document.querySelectorAll('.app-skin .menu')) menu.hidden = true;
+    }
+  });
+
+  for (const button of presetButtons) {
+    button.addEventListener('click', () => {
+      const preset = button.dataset.preset;
+      win.dataset.state = preset === 'empty' ? 'empty' : 'normal';
+      banner.hidden = preset !== 'shared';
+      const turnOn = preset === 'normal' || preset === 'shared';
+      for (const row of rows) {
+        row.querySelector('.switch').setAttribute('aria-checked', String(turnOn));
+        row.classList.toggle('off', !turnOn);
+      }
+      render();
+    });
+  }
+
+  pauseBtn.addEventListener('click', () => {
+    const turnOff = rows.some(isOn);
+    for (const row of rows) {
+      row.querySelector('.switch').setAttribute('aria-checked', String(!turnOff));
+      row.classList.toggle('off', turnOff);
+    }
+    render();
+  });
+
+  for (const button of themeButtons) {
+    button.addEventListener('click', () => {
+      root.dataset.appTheme = button.dataset.themeOpt;
+      for (const other of themeButtons) other.setAttribute('aria-pressed', String(other === button));
+    });
+  }
+
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      for (const menu of document.querySelectorAll('.app-skin .menu')) menu.hidden = true;
+      for (const more of document.querySelectorAll('.more')) more.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  // Fit the reconstructed legacy window into whatever column it lands in.
+  const shots = [...document.querySelectorAll('.shot-frame')];
+  function fitShots() {
+    for (const frame of shots) {
+      const app = frame.querySelector('.before-app');
+      if (!app) continue;
+      const scale = frame.clientWidth / 760;
+      app.style.transform = 'scale(' + scale + ')';
+      frame.style.height = (720 * scale) + 'px';
+    }
+  }
+  addEventListener('resize', fitShots);
+
+  render();
+  fitShots();
+})();
+</script>

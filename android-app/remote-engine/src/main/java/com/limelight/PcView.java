@@ -60,7 +60,80 @@ import org.xmlpull.v1.XmlPullParserException;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
-public class PcView extends Activity implements AdapterFragmentCallbacks {
+public class PcView extends androidx.activity.ComponentActivity implements AdapterFragmentCallbacks {
+    // The Compose home shares this activity's discovery/pairing lifecycle without
+    // launching a second computer picker. Legacy callers can still use its views.
+    protected boolean usesDeviceHome() { return false; }
+    protected void onComputerChanged(ComputerDetails computer) {}
+    protected void onComputerRemoved(String uuid) {}
+    protected void onConnectionChanged(String uuid, String error) {}
+    private String connectingUuid;
+    private boolean serviceBound;
+    private Thread serviceReadyThread;
+    private GLSurfaceView rendererProbe;
+    private final Runnable connectionTimeout = () -> {
+        cancelComputerConnection();
+        onConnectionChanged(null, "连接超时，请检查电脑是否开机并允许连接");
+    };
+
+    protected void rescanComputers() {
+        if (connectingUuid == null) { stopComputerUpdates(false); startComputerUpdates(); }
+    }
+
+    protected void connectToComputer(String uuid) {
+        if (connectingUuid != null || openingStream || pairingActive.get()) return;
+        connectingUuid = uuid;
+        onConnectionChanged(uuid, null);
+        networkHandler.postDelayed(connectionTimeout, 60000);
+        getIntent().putExtra("cliprelay_connect_uuid", uuid);
+        ComputerDetails computer = managerBinder == null ? null : managerBinder.getComputer(uuid);
+        if (computer != null) updateComputer(new ComputerDetails(computer));
+    }
+
+    protected void cancelComputerConnection() {
+        getIntent().removeExtra("cliprelay_connect_uuid");
+        networkHandler.removeCallbacks(connectionTimeout);
+        cancelLanPairing();
+        connectingUuid = null;
+        onConnectionChanged(null, null);
+    }
+
+    protected void showComputerActions(String uuid) {
+        ComputerDetails computer = managerBinder == null ? null : managerBinder.getComputer(uuid);
+        if (computer == null) return;
+        String[] labels = {"连接详情", "唤醒电脑", "文件传输", "终端", "唤醒设置", "移除设备"};
+        new android.app.AlertDialog.Builder(this).setTitle(computer.name)
+                .setItems(labels, (dialog, which) -> {
+                    switch (which) {
+                        case 0:
+                            String address = computer.activeAddress == null ? "暂不可用" : computer.activeAddress.toString();
+                            new android.app.AlertDialog.Builder(this).setTitle("连接详情")
+                                    .setMessage("电脑：" + computer.name + "\n状态：" +
+                                            (computer.state == ComputerDetails.State.ONLINE ? "在线" : "暂未连接") +
+                                            "\n当前地址：" + address + "\n连接方式：" +
+                                            (EmbeddedNetwork.isAddress(computer.activeAddress) ? "跨网络连接" : "直连"))
+                                    .setPositiveButton(android.R.string.ok, null).show();
+                            break;
+                        case 1: wakeControls().show(computer); break;
+                        case 4: wakeControls().configure(computer); break;
+                        case 5:
+                            UiHelper.displayDeletePcConfirmationDialog(this, computer, () -> {
+                                if (managerBinder != null) removeComputer(computer);
+                            }, null);
+                            break;
+                        default:
+                            if (computer.state != ComputerDetails.State.ONLINE || computer.activeAddress == null ||
+                                    computer.pairState != PairState.PAIRED) {
+                                Toast.makeText(this, "请先连接这台电脑", Toast.LENGTH_SHORT).show();
+                                return;
+                            }
+                            Intent intent = ServerHelper.createStartIntent(this, new NvApp("Desktop", 0, false), computer, managerBinder);
+                            intent.setClass(this, which == 2 ? com.limelight.files.FileTransferActivity.class :
+                                    com.limelight.terminal.TerminalActivity.class);
+                            startActivity(intent);
+                    }
+                }).setNegativeButton("取消", null).show();
+    }
     private RelativeLayout noPcFoundLayout;
     private PcGridAdapter pcGridAdapter;
     private ShortcutHelper shortcutHelper;
@@ -88,7 +161,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private final java.util.concurrent.atomic.AtomicBoolean pairingActive = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile NvHTTP pairingHttp;
     private volatile boolean pairingCancelled;
-    private android.app.AlertDialog lanPairDialog;
+    private volatile int pairingGeneration;
     private final Runnable checkEmbeddedNetwork = new Runnable() {
         @Override public void run() {
             if (!inForeground || isFinishing() || isDestroyed()) return;
@@ -121,22 +194,25 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     ((ComputerManagerService.ComputerManagerBinder)binder);
 
             // Wait in a separate thread to avoid stalling the UI
-            new Thread() {
+            serviceReadyThread = new Thread() {
                 @Override
                 public void run() {
                     // Wait for the binder to be ready
                     localBinder.waitForReady();
 
                     // Now make the binder visible
-                    managerBinder = localBinder;
-
-                    // Start updates
-                    startComputerUpdates();
+                    if (isInterrupted()) return;
+                    runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed()) return;
+                        managerBinder = localBinder;
+                        startComputerUpdates();
+                    });
 
                     // Force a keypair to be generated early to avoid discovery delays
                     new AndroidCryptoProvider(PcView.this).getClientCertificate();
                 }
-            }.start();
+            };
+            serviceReadyThread.start();
         }
 
         public void onServiceDisconnected(ComponentName className) {
@@ -171,6 +247,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private final static int GAMESTREAM_EOL_ID = 11;
 
     private void initializeViews() {
+        if (usesDeviceHome()) return;
         setContentView(R.layout.activity_pc_view);
 
         com.limelight.ui.RemoteUi.apply(this);
@@ -217,7 +294,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             public void onClick(View v) {
                 new android.app.AlertDialog.Builder(PcView.this)
                     .setTitle("ClipRelay 远程电脑")
-                    .setMessage("在电脑 ClipRelay 中开启‘手机远控’，同一局域网的电脑会自动出现在这里。点选电脑后，核对两边的确认标识，在电脑上允许一次即可；旧版电脑仍需填写 PIN。\n\n配对会一直保存，电脑 IP 变化后会自动重新发现，不需要再次输入地址。手动地址和非局域网配对码都在‘其他添加方式’中；已配置安全通道的电脑会自动选择可用路径。\n\n远控引擎基于 Moonlight / Sunshine 开源项目（GPLv3）。")
+                    .setMessage("在电脑 ClipRelay 设置中开启‘允许被连接’后，点选电脑即可连接并控制，无需在电脑上逐台确认。开启‘允许被发现’后，同一局域网的设备可以自动找到这台电脑。\n\n连接记录会一直保存，电脑 IP 变化后会自动重新发现，不需要再次输入地址。手动地址和非局域网配对码都在‘其他添加方式’中；旧版电脑仍需填写 PIN。\n\n远控引擎基于 Moonlight / Sunshine 开源项目（GPLv3）。")
                     .setNeutralButton("开源许可", (dialog, which) -> com.limelight.ui.OpenSourceNotice.show(PcView.this))
                     .setPositiveButton(android.R.string.ok, null).show();
             }
@@ -270,7 +347,13 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            completeOnCreate();
+                            if (isFinishing() || isDestroyed()) return;
+                            if (usesDeviceHome()) {
+                                if (rendererProbe != null && rendererProbe.getParent() instanceof android.view.ViewGroup) {
+                                    ((android.view.ViewGroup) rendererProbe.getParent()).removeView(rendererProbe);
+                                }
+                                rendererProbe = null;
+                            } else completeOnCreate();
                         }
                     });
                 }
@@ -283,7 +366,14 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 public void onDrawFrame(GL10 gl10) {
                 }
             });
-            setContentView(surfaceView);
+            if (usesDeviceHome()) {
+                rendererProbe = surfaceView;
+                completeOnCreate();
+                networkHandler.post(() -> {
+                    if (!isFinishing() && !isDestroyed() && rendererProbe != null)
+                        addContentView(rendererProbe, new android.view.ViewGroup.LayoutParams(1, 1));
+                });
+            } else setContentView(surfaceView);
         }
         else {
             LimeLog.info("Cached GL Renderer: " + glPrefs.glRenderer);
@@ -299,10 +389,11 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         UiHelper.setLocale(this);
 
         // Bind to the computer manager service
-        bindService(new Intent(PcView.this, ComputerManagerService.class), serviceConnection,
+        serviceBound = bindService(new Intent(PcView.this, ComputerManagerService.class), serviceConnection,
                 Service.BIND_AUTO_CREATE);
 
         pcGridAdapter = new PcGridAdapter(this, PreferenceConfiguration.readPreferences(this));
+        PreferenceManager.setDefaultValues(this, R.xml.preferences, false);
 
         initializeViews();
     }
@@ -310,16 +401,17 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private void startComputerUpdates() {
         // Only allow polling to start if we're bound to CMS, polling is not already running,
         // and our activity is in the foreground.
-        if (managerBinder != null && !runningPolling && inForeground) {
+        if (managerBinder != null && !runningPolling && inForeground && !pairingActive.get() && !isDestroyed() && !isFinishing()) {
             freezeUpdates = false;
             managerBinder.startPolling(new ComputerManagerListener() {
                 @Override
                 public void notifyComputerUpdated(final ComputerDetails details) {
                     if (!freezeUpdates) {
+                        final ComputerDetails snapshot = new ComputerDetails(details);
                         PcView.this.runOnUiThread(new Runnable() {
                             @Override
                             public void run() {
-                                updateComputer(details);
+                                if (!freezeUpdates && !isFinishing() && !isDestroyed()) updateComputer(snapshot);
                             }
                         });
 
@@ -356,11 +448,11 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     public void onDestroy() {
         if (remoteWake != null) { remoteWake.close(); remoteWake = null; }
         cancelLanPairing();
-        if (lanPairDialog != null) lanPairDialog.dismiss();
         super.onDestroy();
         networkHandler.removeCallbacksAndMessages(null);
 
-        if (managerBinder != null) {
+        if (serviceReadyThread != null) serviceReadyThread.interrupt();
+        if (serviceBound) {
             unbindService(serviceConnection);
         }
     }
@@ -389,6 +481,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         inForeground = false;
         networkHandler.removeCallbacks(checkEmbeddedNetwork);
         stopComputerUpdates(false);
+        if (usesDeviceHome()) cancelComputerConnection();
     }
 
     @Override
@@ -479,8 +572,10 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         }
 
         if (!pairingActive.compareAndSet(false, true)) return;
+        final int requestGeneration = ++pairingGeneration;
+        final ComputerManagerService.ComputerManagerBinder pairingBinder = managerBinder;
         pairingCancelled = false;
-        Toast.makeText(PcView.this, getResources().getString(R.string.pairing), Toast.LENGTH_SHORT).show();
+        Toast.makeText(PcView.this, "正在连接电脑…", Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -493,7 +588,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     stopComputerUpdates(true);
 
                     httpConn = new NvHTTP(ServerHelper.getCurrentAddressFromComputer(computer),
-                            computer.httpsPort, managerBinder.getUniqueId(), computer.serverCert,
+                            computer.httpsPort, pairingBinder.getUniqueId(), computer.serverCert,
                             PlatformBinding.getCryptoProvider(PcView.this));
                     pairingHttp = httpConn;
                     httpConn.beginPairing();
@@ -512,17 +607,9 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                         if (pairingCancelled) throw new IOException("配对已取消");
                         if (lanPairing != null) {
                             httpConn.setLanPairingSession(lanPairing);
-                            final String code = lanPairing.verification;
-                            runOnUiThread(() -> {
-                                if (isFinishing() || isDestroyed() || pairingCancelled) return;
-                                lanPairDialog = new android.app.AlertDialog.Builder(PcView.this)
-                                        .setTitle("请在电脑上允许这台手机")
-                                        .setMessage("确认两边显示的标识相同：\n\n" + code + "\n\n在电脑 ClipRelay 的待确认请求中允许连接。Mac 可从菜单“允许其他设备连接这台 Mac…”打开请求。配对后会记住电脑，以后不用输入 IP 或 PIN。")
-                                        .setNegativeButton("取消配对", (d, which) -> cancelLanPairing())
-                                        .setOnCancelListener(d -> cancelLanPairing()).create();
-                                lanPairDialog.setCanceledOnTouchOutside(false);
-                                lanPairDialog.show();
-                            });
+                            // ClipRelay hosts accept connections according to their single
+                            // "allow connections" setting. Pair in the background and
+                            // continue straight into the desktop when it completes.
                         } else {
                             Dialog.displayDialog(PcView.this, getResources().getString(R.string.pair_pairing_title),
                                 getResources().getString(R.string.pair_pairing_msg)+" "+pinStr+"\n\n"+
@@ -554,12 +641,14 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                             message = null;
 
                             // Pin this certificate for later HTTPS use
-                            managerBinder.savePairing(computer.uuid, pm.getPairedCert());
+                            pairingBinder.savePairing(computer.uuid, pm.getPairedCert());
+                            computer.serverCert = pm.getPairedCert();
+                            computer.pairState = PairState.PAIRED;
                             success = true;
 
                             // Invalidate reachability information after pairing to force
                             // a refresh before reading pair state again
-                            managerBinder.invalidateStateForComputer(computer.uuid);
+                            pairingBinder.invalidateStateForComputer(computer.uuid);
                         }
                         else {
                             // Should be no other values
@@ -579,7 +668,6 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     pairingHttp = null;
                     if (lanPairing != null) lanPairing.close();
                     pairingActive.set(false);
-                    runOnUiThread(() -> { if (lanPairDialog != null) { lanPairDialog.dismiss(); lanPairDialog = null; } });
                 }
 
                 Dialog.closeDialogs();
@@ -589,7 +677,10 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        if (isFinishing() || isDestroyed()) return;
+                        if (isFinishing() || isDestroyed() || pairingCancelled || requestGeneration != pairingGeneration) {
+                            startComputerUpdates();
+                            return;
+                        }
                         if (toastMessage != null) {
                             Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
                         }
@@ -599,6 +690,11 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                             doAppList(computer, true, false);
                         }
                         else {
+                            if (usesDeviceHome()) {
+                                networkHandler.removeCallbacks(connectionTimeout);
+                                connectingUuid = null;
+                                onConnectionChanged(null, toastMessage == null ? "连接失败，请重试" : toastMessage);
+                            }
                             // Start polling again if we're still in the foreground
                             startComputerUpdates();
                         }
@@ -609,6 +705,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     }
 
     private void cancelLanPairing() {
+        pairingGeneration++;
         pairingCancelled = true;
         NvHTTP pending = pairingHttp;
         if (pending != null) pending.cancelPairing();
@@ -722,6 +819,9 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     new NvApp("Desktop", 0, false), computer, managerBinder);
             stream.putExtra(Game.EXTRA_DIRECT_DESKTOP, true);
             openingStream = true;
+            networkHandler.removeCallbacks(connectionTimeout);
+            connectingUuid = null;
+            onConnectionChanged(null, null);
             startActivity(stream);
             return;
         }
@@ -846,7 +946,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         for (int i = 0; i < pcGridAdapter.getCount(); i++) {
             ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(i);
 
-            if (details.equals(computer.details)) {
+            if (details.uuid.equals(computer.details.uuid)) {
                 // Disable or delete shortcuts referencing this PC
                 shortcutHelper.disableComputerShortcut(details,
                         getResources().getString(R.string.scut_deleted_pc));
@@ -856,12 +956,13 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
                 if (pcGridAdapter.getCount() == 0) {
                     // Show the "Discovery in progress" view
-                    noPcFoundLayout.setVisibility(View.VISIBLE);
+                    if (noPcFoundLayout != null) noPcFoundLayout.setVisibility(View.VISIBLE);
                 }
 
                 break;
             }
         }
+        onComputerRemoved(details.uuid);
     }
     
     private void updateComputer(ComputerDetails details) {
@@ -886,11 +987,19 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             pcGridAdapter.addComputer(new ComputerObject(details));
 
             // Remove the "Discovery in progress" view
-            noPcFoundLayout.setVisibility(View.INVISIBLE);
+            if (noPcFoundLayout != null) noPcFoundLayout.setVisibility(View.INVISIBLE);
         }
 
         // Notify the view that the data has changed
         pcGridAdapter.notifyDataSetChanged();
+        onComputerChanged(new ComputerDetails(details));
+        String requested = getIntent().getStringExtra("cliprelay_connect_uuid");
+        if (requested != null && requested.equals(details.uuid) && inForeground &&
+                details.state == ComputerDetails.State.ONLINE && details.activeAddress != null) {
+            getIntent().removeExtra("cliprelay_connect_uuid");
+            if (details.pairState == PairState.PAIRED) doAppList(details, false, false);
+            else doPair(details);
+        }
     }
 
     @Override

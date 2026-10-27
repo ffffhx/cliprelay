@@ -31,6 +31,8 @@ const host={async request(action,data={}){
   if(action==='normalize-peer')return data;
   if(action==='preview-state')return previewVersion==='legacy'?{Success:false,StatusCode:404}:{Success:true,ResponseBody:JSON.stringify({active:true,moving:false,page:previewPage,pageCount:3,contentType:'text'})};
   if(action==='preview-navigate'){previewPage=data.direction==='previous'?3:1;return [{Success:true,StatusCode:200}];}
+  if(action==='remote')return {ok:true,data:data.action==='status'?{enabled:true,ready:true}:data.action==='pairings'?{pairings:[]}:data.action==='clients'?{viewId:'a'.repeat(32),named_certs:[]}:{}};
+  if(action==='stop-sharing'){state.sharing={Stage:'ended',Active:false,Title:'共享已结束',Detail:'测试共享已停止',Action:'重新共享'};return null;}
   if(action==='share'||action==='stop-sharing'||action==='copy'||action==='update-check'||action==='update-notify')return null;
   throw new Error('Unexpected test action: '+action);
 }};
@@ -58,7 +60,32 @@ app.whenReady().then(async()=>{
   fs.writeFileSync(path.join(output,'control-center-partial.png'),(await center.webContents.capturePage()).toPNG());record({partialSummary:true,rowGeometry:true});
   assert.equal(await evaluate(center,'typeof require'), 'undefined');
   assert.match(await evaluate(center,'window.cliprelay.request("unknown-action").then(()=>"unsafe",error=>error.message)'),/Invalid desktop action/);record({sandboxAndActionAllowlist:true});
-  await evaluate(center,'document.getElementById("PortInput").value="0"');center.close();
+  assert.equal(await evaluate(center,'document.getElementById("RemoteDesktopButton").textContent'),'远程桌面');
+  assert.equal(await evaluate(center,'document.getElementById("ScreenShareButton")'),null);
+  await button(center,'RemoteDesktopButton');const home=await open('remote-home');
+  let clientOpened=0;windows.client={open(){clientOpened++;},close(){}};
+  await button(home,'RemoteHomeClient');assert.equal(clientOpened,1);
+  const noShare=calls.filter(call=>call.action==='share').length;
+  await button(home,'RemoteHomeHost');const receiver=await open('remote-desktop');
+  assert.equal(receiver.getParentWindow(),home);assert.match(receiver.getTitle(),/允许设备连接/);
+  assert.match(await evaluate(receiver,'document.body.innerText'),/已授权的设备/);receiver.destroy();
+  await button(home,'RemoteHomeShare');const picker=await open('screen-share-picker');
+  assert.equal(picker.getParentWindow(),home);assert.match(await evaluate(picker,'document.body.innerText'),/不能操作键盘鼠标/);picker.destroy();
+  assert.equal(calls.filter(call=>call.action==='share').length,noShare);
+  assert.equal(calls.filter(call=>call.action==='remote' && !['status','clients','pairings'].includes(call.data.action)).length,0);
+  fs.writeFileSync(path.join(output,'remote-home.png'),(await home.webContents.capturePage()).toPNG());
+  state.sharing={Stage:'connected',Active:true,Title:'正在共享 · office PC',Detail:'正在实时共享整个主屏幕',Action:'结束共享'};windows.refresh();
+  await waitFor(()=>evaluate(home,'document.getElementById("RemoteHomeShare").textContent === "结束共享"'),'shared session in home');
+  assert.equal(await evaluate(center,'document.getElementById("RemoteDesktopButton").hidden'),false);
+  await button(home,'RemoteHomeShare');await waitFor(()=>!state.sharing.Active,'stop shared session');
+  assert.equal(calls.filter(call=>call.action==='stop-sharing').length,1);
+  await waitFor(()=>evaluate(home,'document.getElementById("RemoteHomeShare").textContent === "选择接收电脑"'),'sharing reset');
+  await waitFor(()=>evaluate(center,'document.getElementById("ScreenSharingActionButton").textContent === "远程桌面"'),'ended sharing route');
+  home.destroy();await button(center,'ScreenSharingActionButton');const reopened=await open('remote-home');reopened.destroy();
+  record({unifiedRemoteEntry:true,remoteHomeRoutes:true,viewOnlySharing:true,sharingStopAndReturn:true});
+  state.sharing={Stage:'idle',Active:false};windows.refresh();
+  await waitFor(()=>evaluate(center,'!document.getElementById("connectionPanel").hidden'),'sharing status cleared');
+  await evaluate(center,'document.getElementById("PortInput").focus();document.getElementById("PortInput").value="0"');center.close();
   await waitFor(()=>evaluate(center,'Boolean(document.querySelector("dialog[open]"))'),'invalid close');assert.equal(state.config.port,47632);
   await evaluate(center,'document.querySelector("dialog button").click();document.getElementById("PortInput").value="47632"');record({invalidSettingsKeepWindowOpen:true});
   const editor=await open('peer-editor','phone');

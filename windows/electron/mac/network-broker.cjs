@@ -17,6 +17,18 @@ function addresses(value){
 }
 function validate(action,value,deviceId){
   if(!value || typeof value!=='object' || Array.isArray(value))throw fault('BROKER_BAD_REPLY');
+  if(action==='directory'){
+    if(!Array.isArray(value.devices)||value.devices.length>1000)throw fault('BROKER_BAD_REPLY');
+    const seen=new Set();
+    return {devices:value.devices.map(peer=>{
+      if(!peer||!id(peer.id)||seen.has(peer.id)||!name(peer.name)||typeof peer.deviceId!=='string'||!peer.deviceId||peer.deviceId.length>64||/[\r\n\0]/.test(peer.deviceId)||!['windows','macos'].includes(peer.platform)||typeof peer.connectable!=='boolean')throw fault('BROKER_BAD_REPLY');
+      seen.add(peer.id);return {id:peer.id,deviceId:peer.deviceId,name:peer.name,platform:peer.platform,connectable:peer.connectable};
+    })};
+  }
+  if(action==='connect-device'){
+    if(value.id!==deviceId||value.state!=='approved'||!id(value.hostId)||!name(value.computer))throw fault('BROKER_BAD_REPLY');
+    return {id:value.id,state:value.state,hostId:value.hostId,computer:value.computer};
+  }
   if(action==='claim'){
     if(value.id!==deviceId || value.state!=='pending' || !name(value.computer))throw fault('BROKER_BAD_REPLY');
     return {id:value.id,state:value.state,computer:value.computer};
@@ -43,9 +55,10 @@ class BrokerClient{
     this.endpoint=url.href.replace(/\/$/,'');
   }
   async request(action,data={},signal){
-    if(!['claim','status','enroll'].includes(action))throw fault('INVALID_BROKER_ACTION');
+    if(!['claim','status','enroll','directory','connect-device'].includes(action))throw fault('INVALID_BROKER_ACTION');
     if(action==='claim' && (!data || Object.keys(data).length!==2 || !/^[0-9]{8}$/.test(data.code) || !name(data.name)))throw fault('INVALID_PAIRING_CODE');
-    if(action!=='claim' && (!data || typeof data!=='object' || Array.isArray(data) || Object.keys(data).length))throw fault('INVALID_BROKER_ACTION');
+    if(action==='connect-device'&&(!data||Object.keys(data).length!==2||!id(data.id)||!name(data.name)))throw fault('INVALID_BROKER_ACTION');
+    if(!['claim','connect-device'].includes(action) && (!data || typeof data!=='object' || Array.isArray(data) || Object.keys(data).length))throw fault('INVALID_BROKER_ACTION');
     if(signal?.aborted)throw fault('CANCELLED');
     const body=Buffer.from(JSON.stringify(data));if(body.length>4096)throw fault('INVALID_BROKER_ACTION');
     const value=await new Promise((resolve,reject)=>{
@@ -54,16 +67,17 @@ class BrokerClient{
       const finish=(code,value)=>{if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);request?.destroy();agent.destroy();code?reject(fault(code)):resolve(value);};
       const abort=()=>finish('CANCELLED');
       try{
-        const url=new URL(this.endpoint+'/v1/'+(action==='claim'?'claims':action));
-        request=https.request(url,{method:action==='status'?'GET':'POST',agent,minVersion:'TLSv1.2',ca:this.ca,
+        const url=new URL(this.endpoint+'/v1/'+({claim:'claims','connect-device':'directory/claim'}[action]||action));
+        request=https.request(url,{method:['status','directory'].includes(action)?'GET':'POST',agent,minVersion:'TLSv1.2',ca:this.ca,
           maxHeaderSize:16384,headers:{Authorization:'Bearer '+this.credential,'Content-Type':'application/json','Content-Length':body.length}},response=>{
-          if(response.statusCode!==(action==='claim'?201:200)){
+          if(!(action==='connect-device'?[200,201].includes(response.statusCode):response.statusCode===(action==='claim'?201:200))){
             const status=response.statusCode;
+            if(action==='connect-device'&&status===404){finish('DEVICE_NOT_AVAILABLE');return;}
             finish(status>=300 && status<400?'BROKER_REDIRECT':({400:'BROKER_BAD_REQUEST',401:'NETWORK_REVOKED',403:'NETWORK_NOT_APPROVED',404:'PAIRING_CODE_EXPIRED',409:'BROKER_CONFLICT',410:'PAIRING_CODE_EXPIRED',429:'BROKER_RATE_LIMIT'})[status] || 'BROKER_UNAVAILABLE');return;
           }
           const chunks=[];let length=0;
           response.on('error',()=>finish('BROKER_UNAVAILABLE'));
-          response.on('data',chunk=>{length+=chunk.length;if(length>128*1024){finish('BROKER_BAD_REPLY');return;}chunks.push(chunk);});
+          response.on('data',chunk=>{length+=chunk.length;if(length>(action==='directory'?512:128)*1024){finish('BROKER_BAD_REPLY');return;}chunks.push(chunk);});
           response.on('end',()=>{try{finish(null,JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks))));}catch{finish('BROKER_BAD_REPLY');}});
         });
         request.on('error',()=>finish('BROKER_UNAVAILABLE'));

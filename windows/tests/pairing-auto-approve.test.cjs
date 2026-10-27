@@ -35,3 +35,26 @@ test('stops polling after stop and ignores request failures', async () => {
   assert.equal(timers.size, 0);
   assert.equal(approver.started, false);
 });
+
+test('enabled network connections are accepted without a settings window and failed decisions retry', async () => {
+  const id='a'.repeat(24), calls=[]; let attempts=0;
+  const approver=new PairingAutoApprover({request:async(_,data)=>{
+    calls.push(data.action);
+    if(data.action==='lanPairings')return {ok:true,data:{pairings:[]}};
+    if(data.action==='networkStatus')return {ok:true,data:{ready:true,pending:[{id},{id:'invalid'}]}};
+    assert.deepEqual(data,{action:'networkApprove',id});
+    return {ok:++attempts>1};
+  }});
+  approver.started=true;
+  await approver.poll();await approver.poll();await approver.poll();
+  assert.equal(attempts,2);
+  approver.stop();
+});
+
+test('stop while status is pending cannot approve a late request', async () => {
+  let resolve;const calls=[];
+  const approver=new PairingAutoApprover({request:(_,data)=>{calls.push(data.action);return new Promise(done=>{resolve=done;});}});
+  approver.started=true;const polling=approver.poll();approver.stop();
+  resolve({ok:true,data:{pairings:[pending]}});await polling;
+  assert.deepEqual(calls,['lanPairings']);
+});

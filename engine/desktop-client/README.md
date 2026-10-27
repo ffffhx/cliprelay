@@ -20,6 +20,12 @@ runs real mutual TLS tests, and builds Windows x64 and macOS universal viewers.
 `scripts/build_desktop_client.py SOURCE windows|macos` requires a fresh build
 directory and upstream's Qt/compiler/dependency prerequisites.
 
+Imported desktop sessions disable gaming configuration toasts. In upstream,
+enabling desktop mouse mode produces a toast that postpones session start by
+3500 ms. The Windows installer also applies the equivalent `confwarnings=0`
+preference for existing packaged viewers. Connection and decoder failures still
+stop the session and report errors; picture settings and codec selection are unchanged.
+
 The embedded viewer accepts only `--cliprelay-session`. Its owning desktop app
 writes a four-byte big-endian payload length followed by bounded UTF-8 JSON to
 the child's stdin pipe. Version 1 carries an already paired client certificate,

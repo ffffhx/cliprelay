@@ -53,6 +53,7 @@ type Server struct {
 	db         database
 	rates      map[string]rateEntry
 	now        func() time.Time
+	directory  map[string]presence
 }
 
 func New(control Control, controlURL, statePath string) (*Server, error) {
@@ -81,6 +82,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/revoke", s.wrap(s.revoke))
 	mux.HandleFunc("POST /v1/enroll", s.wrap(s.enroll))
 	mux.HandleFunc("GET /v1/status", s.wrap(s.status))
+	mux.HandleFunc("POST /v1/presence", s.wrap(s.publishPresence))
+	mux.HandleFunc("GET /v1/directory", s.wrap(s.discover))
+	mux.HandleFunc("POST /v1/directory/claim", s.wrap(s.claimDiscovered))
 	return mux
 }
 

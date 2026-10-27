@@ -15,6 +15,8 @@ async function build(){
   try{
     const source=path.join(staging,'source');fs.mkdirSync(source);
     fs.cpSync(path.join(__dirname,'mac'),path.join(source,'mac'),{recursive:true});
+    fs.mkdirSync(path.join(source,'renderer'));
+    for(const file of ['center.css','center-base.css','icons.js'])fs.copyFileSync(path.join(__dirname,'renderer',file),path.join(source,'renderer',file));
     let hostPin=null,companionPin=null;
     if(process.env.CLIPRELAY_HOST_ENGINE_ARTIFACT || process.env.CLIPRELAY_HOST_ENGINE_PIN){
       hostPin=JSON.parse(process.env.CLIPRELAY_HOST_ENGINE_PIN || 'null');

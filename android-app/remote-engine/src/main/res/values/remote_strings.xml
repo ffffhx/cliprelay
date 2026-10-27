@@ -2,10 +2,10 @@
     <string name="remote_address_required">Enter the computer address.</string>
     <string name="remote_address_invalid">Check the address and port. Ports must be between 1 and 65535.</string>
     <string name="remote_connect_busy">Connecting…</string>
-    <string name="remote_connect_failed">Could not connect. Check the address, network, and Remote Desktop setting on your computer.</string>
+    <string name="remote_connect_failed">Could not connect. Check the address, network, and Allow connections setting on your computer.</string>
     <string name="remote_connect_cancelled">Connection cancelled. You can edit the address and try again.</string>
     <string name="remote_back">Back</string><string name="remote_connect_title">Connect to your computer</string>
-    <string name="remote_connect_subtitle">Find nearby computers automatically. Approve once, then tap to connect.</string>
+    <string name="remote_connect_subtitle">Select a computer to connect and control it.</string>
     <string name="remote_pair_device">Scan again</string>
     <string name="remote_add_address">Other ways to add</string>
     <string name="remote_auto_connect">Automatic · Finding a route</string>
@@ -15,19 +15,19 @@
     <string name="remote_add">Add computer</string><string name="remote_settings">Stream settings</string>
     <string name="remote_help">Connection help</string><string name="remote_more">More options for %1$s</string>
     <string name="remote_search_title">Looking for your computer</string>
-    <string name="remote_search_body">Computers on the same network appear here. You can also add one by its address.</string>
-    <string name="remote_online_paired">Online · Paired</string><string name="remote_online_unpaired">Ready to pair</string>
+    <string name="remote_search_body">Enable Allow connections and Allow discovery on your computer. Computers on the same network appear here, or you can add one by its address.</string>
+    <string name="remote_online_paired">Online · Available</string><string name="remote_online_unpaired">Online · Available</string>
     <string name="remote_offline">Offline</string><string name="remote_checking">Checking connection</string>
-    <string name="remote_open_computer">Connect to computer</string><string name="remote_pair_computer">Pair this computer</string>
+    <string name="remote_open_computer">Connect to computer</string><string name="remote_pair_computer">Connect to computer</string>
     <string name="remote_connection_options">Connection options</string><string name="remote_check_connection">Check connection</string>
     <string name="remote_address_pending">Checking address…</string><string name="remote_address_label">COMPUTER ADDRESS</string>
     <string name="remote_add_subtitle">Enter the address shown in ClipRelay on your computer.</string>
     <string name="remote_address_hint">192.168.1.100 or Tailscale address</string>
     <string name="remote_address_example">An IP address or a host name works. You can include a port.</string>
     <string name="remote_find_address">Where is the address?</string>
-    <string name="remote_find_address_body">On your computer, open ClipRelay → Remote Desktop and copy an address from the list.</string>
+    <string name="remote_find_address_body">On your computer, open ClipRelay → Settings → Advanced → Connection diagnostics to find its address.</string>
     <string name="remote_away_title">Connecting away from home</string>
-    <string name="remote_away_body">Choose Pair computer from the computer list and authorize this phone once. ClipRelay then chooses the connection automatically.</string>
+    <string name="remote_away_body">After adding a computer, ClipRelay chooses an available connection automatically. Keep Allow connections enabled on the computer.</string>
     <string name="remote_desktop_title">Remote desktop</string><string name="remote_desktop_name">Computer desktop</string>
     <string name="remote_desktop_body">View the screen, move the pointer and type from your phone.</string>
     <string name="remote_desktop_open">Open desktop</string><string name="remote_desktop_controls">Touch &amp; keyboard</string>

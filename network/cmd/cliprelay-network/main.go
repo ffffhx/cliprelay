@@ -67,10 +67,43 @@ type state struct {
 	Error       string           `json:"error"`
 }
 type runtime struct {
-	mu        sync.Mutex
-	value     state
-	client    *mobile.PairingClient
-	dir, name string
+	mu            sync.Mutex
+	value         state
+	client        *mobile.PairingClient
+	dir, name     string
+	presence      *advertisement
+	presenceUntil time.Time
+}
+
+type advertisement struct {
+	DeviceID     string `json:"deviceId"`
+	Name         string `json:"name"`
+	Platform     string `json:"platform"`
+	Discoverable bool   `json:"discoverable"`
+	Connectable  bool   `json:"connectable"`
+}
+
+func (r *runtime) publication(now time.Time) *advertisement {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.presence == nil {
+		return nil
+	}
+	p := *r.presence
+	if !now.Before(r.presenceUntil) {
+		p.Discoverable = false
+		p.Connectable = false
+	}
+	return &p
+}
+
+func (r *runtime) publish() {
+	p := r.publication(time.Now())
+	if p == nil {
+		return
+	}
+	data, _ := json.Marshal(p)
+	_, _ = r.client.Request("presence", string(data))
 }
 
 func main() {
@@ -127,8 +160,9 @@ func main() {
 	encoder := json.NewEncoder(os.Stdout)
 	for scanner.Scan() {
 		var req struct {
-			Action string `json:"action"`
-			ID     string `json:"id"`
+			Action   string         `json:"action"`
+			ID       string         `json:"id"`
+			Presence *advertisement `json:"presence"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &req) != nil {
 			encoder.Encode(map[string]any{"ok": false, "error": "invalid command"})
@@ -140,6 +174,16 @@ func main() {
 		var response any
 		var err error
 		switch req.Action {
+		case "presence":
+			if req.Presence == nil || len(req.Presence.DeviceID) == 0 || len(req.Presence.DeviceID) > 64 || len(req.Presence.Name) == 0 || len(req.Presence.Name) > 128 || req.Presence.Platform != "windows" {
+				err = fmt.Errorf("invalid presence")
+				break
+			}
+			app.mu.Lock()
+			app.presence = req.Presence
+			app.presenceUntil = time.Now().Add(12 * time.Second)
+			response = map[string]any{"accepted": true, "id": app.value.ID}
+			app.mu.Unlock()
 		case "status":
 			app.mu.Lock()
 			response = app.value
@@ -240,6 +284,7 @@ func (r *runtime) session(ctx context.Context) error {
 		if value.Reauthorize {
 			return fmt.Errorf("renewing expired network registration")
 		}
+		r.publish()
 		autoApprovePairings(r.client, value.Pending)
 		ips := []string{}
 		for _, p := range value.Peers {

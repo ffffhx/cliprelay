@@ -23,7 +23,7 @@ $package = Join-Path $staging 'ClipRelay-Windows'
 try {
     Copy-Item -LiteralPath (Join-Path (Split-Path $source) 'LICENSE') -Destination (Join-Path $package 'LICENSE')
     # Explicit allowlist: never bundle config, history, tokens, keys or test files.
-    foreach ($name in @('cliprelay.ps1','start.ps1','install.ps1','install-support.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','paired-relay.cs','version.json','release-notes.txt')) {
+    foreach ($name in @('cliprelay.ps1','start.ps1','ai.ps1','install.ps1','install-support.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','paired-relay.cs','version.json','release-notes.txt')) {
         Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $package $name)
     }
     $video = Join-Path $package 'screen-share'

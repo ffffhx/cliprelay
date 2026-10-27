@@ -4,13 +4,14 @@
     $script:desktopHost = New-Object ClipRelay.DesktopHostBridge($PipeName)
     $script:desktopJobs = New-Object Collections.ArrayList
     $script:desktopRevision = 0
+    $script:desktopInstanceId = [Guid]::NewGuid().ToString('N')
     # Only the Electron renderer shows windows. The native engine retains its
     # clipboard, hotkey, discovery and network implementations.
     function script:Show-PeerConfiguration { Send-ElectronWindow 'control-center' }
     function script:Show-RelayControlCenter { Send-ElectronWindow 'control-center' }
-    function script:Show-ScreenSharing { param($Owner); Send-ElectronWindow 'screen-share-picker' }
     function script:Show-PhonePreviewRemote { Send-ElectronWindow 'preview-remote' }
     function script:Show-RemoteDesktopSettings { param($Owner); Send-ElectronWindow 'remote-desktop' }
+    function script:Show-RemoteDesktopHome { Send-ElectronWindow 'remote-home' }
     function script:Show-RemoteNetworkSettings { param($Owner); Send-ElectronWindow 'remote-network' }
     function script:Show-RelayUpdates { param($Owner); Send-ElectronWindow 'updates' }
     $script:desktopHostTimer = New-Object Windows.Forms.Timer
@@ -53,7 +54,7 @@ function Send-ElectronReply($Id, $Data, [string]$ErrorText = '') {
 
 function Get-ElectronSnapshot {
     return @{
-        revision=$script:desktopRevision
+        revision=$script:desktopRevision; instanceId=$script:desktopInstanceId
         runtime=(Get-RelayRuntimeSnapshot); addresses=@(Get-LocalShareableAddresses)
         config=@{peers=@($script:Peers);port=$script:Port;deviceId=$script:DeviceId;deviceName=$script:DeviceName;notifications=$script:Notifications;accessToken=$script:AccessToken;discoveryEnabled=$script:DiscoveryEnabled;legacyReceiverEnabled=$script:LegacyReceiverEnabled;startupEnabled=(Test-StartupRegistration)}
         sharing=(Get-ScreenSharingView); update=(Get-RelayUpdateSnapshot)
@@ -63,7 +64,14 @@ function Get-ElectronSnapshot {
 function Save-ElectronConfiguration($Config) {
     $legacy = Get-PropertyValue -Object $Config -Name 'legacyReceiverEnabled'
     if ($null -ne $legacy -and $legacy -isnot [bool]) { throw 'Invalid compatibility setting.' }
-    $null = Save-PeerConfiguration -PeerAddress '' -Peers @($Config.peers) -ListenPort ([int]$Config.port) -Notifications ([bool]$Config.notifications) -AccessToken ([string]$Config.accessToken) -StartupEnabled ([bool]$Config.startupEnabled) -DiscoveryEnabled ([bool]$Config.discoveryEnabled) -DeviceName ([string]$Config.deviceName) -LegacyReceiverEnabled:([bool]$legacy)
+    foreach ($peer in @($Config.peers)) {
+        if (-not (Get-PropertyValue -Object $peer -Name 'pairedOwner')) {
+            $peer | Add-Member -NotePropertyName legacyAllowed -NotePropertyValue $true -Force
+            $peer | Add-Member -NotePropertyName accessToken -NotePropertyValue '' -Force
+            $peer | Add-Member -NotePropertyName requiresAuth -NotePropertyValue $false -Force
+        }
+    }
+    $null = Save-PeerConfiguration -PeerAddress '' -Peers @($Config.peers) -ListenPort ([int]$Config.port) -Notifications ([bool]$Config.notifications) -AccessToken '' -StartupEnabled ([bool]$Config.startupEnabled) -DiscoveryEnabled ([bool]$Config.discoveryEnabled) -DeviceName ([string]$Config.deviceName) -LegacyReceiverEnabled:$true
     $script:desktopRevision++
 }
 
@@ -95,8 +103,6 @@ function Invoke-ElectronRequest([string]$Json) {
             'paired-peers' { $task = [ClipRelay.PairedRelayPublisher]::GetPeersAsync() }
             'summary' { $result = Get-RelayDeliverySummary -Results @($data.results) -Kind '检测' }
             'copy' { Set-ClipboardTextWithRetry -Text ([string]$data.text) }
-            'share' { $result = Invoke-ScreenShareCommand -Command @{action='start';peer=$data.peer;localPort=$script:Port;localName=$script:DeviceName} }
-            'stop-sharing' { $result = Invoke-ScreenShareCommand -Command @{action='stop-sending'} -NoStart }
             'preview-state' { $targets = @(New-RelayBroadcastTargets -Peers @($data.peer) -IncludeDisabled); $task = [ClipRelay.RelayBroadcaster]::GetPreviewStateAsync($targets[0],1500) }
             'preview-navigate' {
                 if ($data.direction -notin @('previous','next')) { throw 'Invalid direction.' }
@@ -105,7 +111,7 @@ function Invoke-ElectronRequest([string]$Json) {
                 $task = [ClipRelay.RelayBroadcaster]::NavigatePreviewAsync($targets,$direction,1500)
             }
             'remote' {
-                if ($data.action -notin @('status','pairings','clients','enable','disable','pair','pairReject','lanPairApprove','lanPairReject','unpair','disconnect','networkStatus','networkCode','networkApprove','networkRevoke','networkEnable','networkDisable')) { throw 'Unknown remote action.' }
+                if ($data.action -notin @('status','pairings','lanPairings','clients','enable','disable','pair','pairReject','lanPairApprove','lanPairReject','unpair','disconnect','networkStatus','networkCode','networkApprove','networkRevoke','networkEnable','networkDisable','networkPresence')) { throw 'Unknown remote action.' }
                 if (-not ('ClipRelay.Remote.ControlClient' -as [type])) { Add-Type -Path (Join-Path (Split-Path $PSScriptRoot) 'remote-desktop\remote-client.cs') }
                 $task = [ClipRelay.Remote.ControlClient]::RequestAsync(($data | ConvertTo-Json -Compress))
             }

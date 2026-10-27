@@ -104,7 +104,7 @@ Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" -ErrorAction Silen
 Install-ScriptFile -Name "cliprelay.ps1" -Destination $clientPath
 Install-ScriptFile -Name "uninstall.ps1" -Destination $uninstallerPath
 Install-ScriptFile -Name "cliprelay.ico" -Destination $iconPath
-foreach ($file in @('updates.ps1', 'update-client.cs', 'paired-relay.cs', 'version.json', 'start.ps1', 'install-support.ps1')) {
+foreach ($file in @('updates.ps1', 'update-client.cs', 'paired-relay.cs', 'version.json', 'start.ps1', 'ai.ps1', 'install-support.ps1')) {
     Install-ScriptFile -Name $file -Destination (Join-Path $installDirectory $file)
 }
 $screenShareDirectory = Join-Path $installDirectory 'screen-share'
@@ -241,6 +241,8 @@ if ($firewallRuleNeedsUpdate) {
 else {
     Write-Host "==> The firewall rule already exists"
 }
+
+Set-ClipRelayViewerPreferences
 
 Write-Host "==> Starting ClipRelay"
 Stop-InstalledClient

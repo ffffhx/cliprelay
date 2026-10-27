@@ -16,7 +16,7 @@ data class AppSettings(
     val discoveryEnabled: Boolean,
     val fullscreenDarkMode: Boolean = true,
     val debugStayAwake: Boolean = false,
-    val legacyCompatibility: Boolean = false,
+    val legacyCompatibility: Boolean = true,
 )
 
 object AppPreferences {
@@ -46,7 +46,7 @@ object AppPreferences {
             port = preferences.getInt(KEY_PORT, DEFAULT_PORT).coerceIn(MIN_PORT, MAX_PORT),
             startOnBoot = preferences.getBoolean(KEY_START_ON_BOOT, true),
             showNotificationPreview = preferences.getBoolean(KEY_NOTIFICATION_PREVIEW, true),
-            accessToken = preferences.getString(KEY_ACCESS_TOKEN, "").orEmpty(),
+            accessToken = "",
             fullscreenTextSizeSp = FullscreenTextSize.normalize(
                 preferences.getInt(KEY_FULLSCREEN_TEXT_SIZE_SP, FullscreenTextSize.DEFAULT_SP),
             ),
@@ -54,7 +54,7 @@ object AppPreferences {
             discoveryEnabled = preferences.getBoolean(KEY_DISCOVERY_ENABLED, true),
             fullscreenDarkMode = preferences.getBoolean(KEY_FULLSCREEN_DARK_MODE, true),
             debugStayAwake = preferences.getBoolean(KEY_DEBUG_STAY_AWAKE, false),
-            legacyCompatibility = preferences.getBoolean(KEY_LEGACY_COMPATIBILITY, false),
+            legacyCompatibility = true,
         )
     }
 
@@ -115,7 +115,7 @@ object AppPreferences {
 
     fun isReceiverEnabled(context: Context): Boolean =
         context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
-            .getBoolean(KEY_RECEIVER_ENABLED, false)
+            .getBoolean(KEY_RECEIVER_ENABLED, true)
 
     fun setReceiverEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE).edit {

@@ -2,8 +2,8 @@ import {element} from './elements.js';
 export async function mount({root,api,title,status,setStatus,button,close}){
   root.querySelector('.dialog-brand').style.top='16px';
   root.querySelector('.dialog-close').style.cssText='left:502px;right:auto;top:16px;width:32px;height:32px';
-  title.textContent='屏幕共享';title.style.cssText='left:24px;top:40px;font:700 26.67px "Segoe UI Variable Display"';
-  element(root,'div','选择观看你屏幕的电脑',26,83,470,22,'color:#94a3b8;font-size:12.67px');
+  title.textContent='共享本机屏幕';title.style.cssText='left:24px;top:40px;font:700 26.67px "Segoe UI Variable Display"';
+  element(root,'div','仅观看 · 选择接收屏幕的 Windows 电脑',26,83,470,22,'color:#94a3b8;font-size:12.67px');
   element(root,'div','接收电脑',26,119,250,20,'color:#94a3b8;font-weight:bold');
   const {config}=await api.request('snapshot');
   const peers=config.peers.filter(peer=>!peer.platform || peer.platform==='windows');
@@ -26,7 +26,7 @@ export async function mount({root,api,title,status,setStatus,button,close}){
   render();
   if(!peers.length){element(list,'div','还没有可共享的电脑',14,6,470,30,'font-size:14.67px;font-weight:bold');element(list,'div','先回到控制中心，添加另一台 Windows 电脑。',14,39,470,25,'color:#94a3b8');}
   status.style.cssText=`position:absolute;left:26px;top:${157+height}px;width:508px;height:46px;white-space:pre-line;color:#94a3b8`;
-  setStatus('对方接受后实时观看整个主屏幕，本机在后台共享。\n右键 ClipRelay 托盘图标可查看状态、结束共享。');
+  setStatus('对方接受后可观看主屏幕，不能操作键盘鼠标。\n可在“远程桌面”或托盘菜单结束共享。');
   element(root,'div','',24,216+height,512,1,'background:#262c3c');
   button('取消',264,232+height,90,close);
   const start=button('开始共享 →',366,232+height,170,async()=>{

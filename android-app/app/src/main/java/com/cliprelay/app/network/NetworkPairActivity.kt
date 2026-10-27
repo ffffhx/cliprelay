@@ -18,7 +18,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cliprelay.app.ui.theme.ClipRelayTheme
-import com.limelight.PcView
+import com.cliprelay.app.MainActivity
 
 class NetworkPairActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,7 +32,7 @@ class NetworkPairActivity : ComponentActivity() {
                 NetworkPairScreen(computers, pairing,
                     onBack = { finish() },
                     onOpen = {
-                        startActivity(Intent(this, PcView::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
+                        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
                         finish()
                     },
                     onPair = { NetworkConnectionService.start(this, it) },

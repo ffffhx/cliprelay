@@ -24,7 +24,7 @@ if (!(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'node_modules\@electron\pa
 if ($LASTEXITCODE -ne 0) { throw 'Electron application branding failed.' }
 $appDirectory = Join-Path $output 'resources\app'
 New-Item -ItemType Directory -Path $appDirectory -Force | Out-Null
-foreach ($name in @('main.js','native-host.cjs','windows.cjs','pairing-auto-approve.cjs','preload.js','launch-native.ps1','package.json','desktop-client.cjs')) {
+foreach ($name in @('main.js','native-host.cjs','windows.cjs','pairing-auto-approve.cjs','preload.js','launch-native.ps1','package.json','desktop-client.cjs','desktop-connection.cjs','device-directory.cjs','ai-controller.cjs','ai-server.cjs','ai-cli-leases.cjs','ai-mcp.cjs')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $appDirectory -Force
 }
 $clientFiles = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json

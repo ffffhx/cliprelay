@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://cliprelay.zestybead3.chatgpt.site/sitemap.xml

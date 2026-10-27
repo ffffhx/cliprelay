@@ -4,11 +4,38 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 type fakePairingClient struct {
 	calls []string
 	err   error
+}
+
+func TestPublicPresenceRequiresFreshDesktopLease(t *testing.T) {
+	r := &runtime{}
+	now := time.Now()
+	if r.publication(now) != nil {
+		t.Fatal("background service published without a desktop")
+	}
+	r.presence = &advertisement{DeviceID: "local", Name: "PC", Platform: "windows", Discoverable: true, Connectable: true}
+	r.presenceUntil = now.Add(12 * time.Second)
+	if !r.publication(now).Discoverable {
+		t.Fatal("active desktop not published")
+	}
+	for _, at := range []time.Time{r.presenceUntil, r.presenceUntil.Add(time.Second)} {
+		p := r.publication(at)
+		if p.Discoverable || p.Connectable {
+			t.Fatal("desktop lease expiry retained public access")
+		}
+	}
+	if !r.presence.Discoverable {
+		t.Fatal("publication mutated the saved desktop decision")
+	}
+	r.presence.Discoverable = false
+	if r.publication(now).Discoverable {
+		t.Fatal("hidden desktop published")
+	}
 }
 
 func (f *fakePairingClient) Request(action, data string) (string, error) {

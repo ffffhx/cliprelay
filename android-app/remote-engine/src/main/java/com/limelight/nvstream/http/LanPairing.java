@@ -17,7 +17,7 @@ import javax.net.ssl.X509TrustManager;
 import okhttp3.*;
 import org.json.JSONObject;
 
-/** A certificate-bound first-use request. Only the computer's operator approves it. */
+/** A certificate-bound first-use request accepted by the host's connection policy. */
 public final class LanPairing implements AutoCloseable {
     private final OkHttpClient client;
     private final HttpUrl url;
@@ -40,7 +40,7 @@ public final class LanPairing implements AutoCloseable {
                 .addPathSegments("v1/pair").build();
         try {
             // Trust on first contact is limited to this short-lived bootstrap
-            // client. The displayed code binds both certificates and a nonce;
+            // client. The verification code binds both certificates and a nonce;
             // normal stream requests keep their existing strict certificate pin.
             X509TrustManager trust = new X509TrustManager() {
                 public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }

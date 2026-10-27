@@ -18,6 +18,14 @@ import (
 )
 
 func TestDesktopClientRealBrokerApprovalAndRevocation(t *testing.T) {
+	runDesktopBroker(t, false)
+}
+
+func TestDesktopClientPublicDirectoryWithoutPairingCode(t *testing.T) {
+	runDesktopBroker(t, true)
+}
+
+func runDesktopBroker(t *testing.T, discovery bool) {
 	runtime := os.Getenv("CLIPRELAY_DESKTOP_NODE")
 	if runtime == "" {
 		runtime = "node"
@@ -29,6 +37,9 @@ func TestDesktopClientRealBrokerApprovalAndRevocation(t *testing.T) {
 	s, control := fixture(t)
 	host := credential("h")
 	hostID := call(t, s, "POST", "/v1/hosts", host, `{"name":"Host fixture"}`, 201)["id"].(string)
+	if discovery {
+		call(t, s, "POST", "/v1/presence", host, `{"deviceId":"local-host","name":"Host fixture","platform":"windows","discoverable":true,"connectable":true}`, 200)
+	}
 	call(t, s, "POST", "/v1/enroll", host, `{}`, 200)
 	remote := NetworkNode{ID: "81", IPs: []string{"100.64.0.2"}, Online: true}
 	remote.User.ID = "1"
@@ -58,7 +69,11 @@ func TestDesktopClientRealBrokerApprovalAndRevocation(t *testing.T) {
 	}
 	defer func() { input.Close(); command.Process.Kill() }()
 	publicCA := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
-	json.NewEncoder(input).Encode(map[string]string{"endpoint": server.URL + "/network", "ca": publicCA, "code": code(t, s, host), "hostId": hostID})
+	config := map[string]any{"endpoint": server.URL + "/network", "ca": publicCA, "hostId": hostID, "discovery": discovery}
+	if !discovery {
+		config["code"] = code(t, s, host)
+	}
+	json.NewEncoder(input).Encode(config)
 	scanner := bufio.NewScanner(output)
 	next := func(phase string) map[string]any {
 		t.Helper()
@@ -76,7 +91,9 @@ func TestDesktopClientRealBrokerApprovalAndRevocation(t *testing.T) {
 	if !ok {
 		t.Fatal("missing desktop claim ID")
 	}
-	call(t, s, "POST", "/v1/approve", host, fmt.Sprintf(`{"id":%q}`, id), 200)
+	if !discovery {
+		call(t, s, "POST", "/v1/approve", host, fmt.Sprintf(`{"id":%q}`, id), 200)
+	}
 	io.WriteString(input, "approved\n")
 	next("enrolled")
 	call(t, s, "POST", "/v1/revoke", host, fmt.Sprintf(`{"id":%q}`, id), 200)
