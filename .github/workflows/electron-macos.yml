@@ -147,6 +147,7 @@ jobs:
           APP_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          gh run watch "$HOST_RUN_ID" --exit-status > /dev/null
           engine_arch="$APP_ARCH"
           if [ "$engine_arch" = x64 ]; then engine_arch=x86_64; fi
           python3 scripts/fetch_sunshine_macos.py --run "$HOST_RUN_ID" --arch "$engine_arch" --directory .tools/host-engine-download

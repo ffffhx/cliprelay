@@ -91,6 +91,13 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'selected source'):
             self.prepare()
 
+    def test_deferred_stream_cannot_publish_without_explicit_selection(self):
+        path = self.artifacts / 'ClipRelay-macOS-arm64/app-bundle-arm64.json'
+        data = release.read_json(path)
+        self.put(path, dict(data, host=True, companion=True, streamAcceptance='deferred'))
+        with self.assertRaisesRegex(ValueError, 'explicit publication authorization'):
+            self.prepare()
+
 
 if __name__ == '__main__':
     unittest.main()
