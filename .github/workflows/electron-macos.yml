@@ -3,6 +3,14 @@ name: Electron macOS build
 on:
   workflow_dispatch:
     inputs:
+      publish_release:
+        description: 'Publish both verified architectures as an unnotarized macOS release'
+        type: boolean
+        default: false
+      defer_stream_acceptance:
+        description: 'Explicitly defer packaged video/audio acceptance; disclose this in the release'
+        type: boolean
+        default: false
       architecture:
         description: 'Architecture to package; each selected package keeps all native acceptance gates'
         type: choice
@@ -32,12 +40,24 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.arch == 'x64' && 'macos-15-intel' || 'macos-26' }}
+    env:
+      CLIPRELAY_DEFER_MAC_STREAM_ACCEPTANCE: ${{ inputs.defer_stream_acceptance && '1' || '0' }}
     strategy:
       fail-fast: false
       matrix:
         arch: ${{ fromJSON(inputs.architecture == 'x64' && '["x64"]' || inputs.architecture == 'arm64' && '["arm64"]' || '["arm64","x64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate release inputs
+        if: inputs.publish_release
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+          VIEWER_RUN: ${{ inputs.desktop_client_run_id }}
+          NETWORK_RUN: ${{ inputs.desktop_network_run_id }}
+        run: |
+          test "$ARCHITECTURE" = both
+          test -n "$VIEWER_RUN"
+          test -n "$NETWORK_RUN"
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
@@ -142,12 +162,12 @@ jobs:
           if [ "$companion_arch" = x64 ]; then companion_arch=x86_64; fi
           python3 scripts/fetch_host_companion.py --run "$HOST_COMPANION_RUN_ID" --arch "$companion_arch" --directory .tools/host-companion-download
       - name: Build independent decoder for complete host privacy acceptance
-        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != ''
+        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != '' && !inputs.defer_stream_acceptance
         run: |
           node --test scripts/tests/mac-privacy-receipt.test.cjs
           python3 scripts/build_privacy_pixel_fixtures.py
       - name: Build owned tone and decoder for complete host audio acceptance
-        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != ''
+        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != '' && !inputs.defer_stream_acceptance
         run: |
           node --test scripts/tests/mac-audio-receipt.test.cjs
           python3 scripts/build_macos_audio_fixture.py
@@ -157,6 +177,7 @@ jobs:
           name: ClipRelay-macOS-${{ matrix.arch }}
           path: |
             .tools/mac-electron/*.zip
+            .tools/mac-electron/app-bundle-*.json
             .tools/mac-electron/viewer-bundle-*.json
             .tools/mac-electron/network-bundle-*.json
             .tools/mac-electron/host-engine-bundle-*.json
@@ -187,3 +208,35 @@ jobs:
           name: ClipRelay-Mac-Native-Audio-Failure-${{ matrix.arch }}
           path: .tools/mac-electron/native-audio-bundle-*.json
           if-no-files-found: ignore
+
+  release:
+    if: inputs.publish_release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ClipRelay-macOS-*
+          path: macos-artifacts
+      - name: Verify packages and prepare release metadata
+        env:
+          DEFER_STREAM: ${{ inputs.defer_stream_acceptance && '1' || '0' }}
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_prepare_macos_release.py
+          args=()
+          if [ "$DEFER_STREAM" = 1 ]; then args+=(--allow-deferred-stream); fi
+          python3 scripts/prepare_macos_release.py --artifacts macos-artifacts --output macos-release --commit "$GITHUB_SHA" --run "$GITHUB_RUN_ID" "${args[@]}"
+      - name: Publish immutable macOS release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open("macos-release/macos-update.json"))["versionName"])')
+          gh release create "macos-v$version" macos-release/ClipRelay-macOS-*.zip macos-release/SHA256SUMS macos-release/macos-update.json \
+            --target "$GITHUB_SHA" --latest=false --title "ClipRelay macOS $version" --notes-file macos-release/release-notes.md

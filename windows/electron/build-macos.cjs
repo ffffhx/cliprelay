@@ -179,7 +179,8 @@ async function build(){
         for(const link of links){if(fs.readlinkSync(link.copied)!==link.target || !fs.realpathSync(link.copied).startsWith(packaged+path.sep))throw new Error('Viewer framework link escapes the packaged runtime');}
         fs.writeFileSync(path.join(output,`viewer-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,viewerArchitectures:architectures,verifiedFiles:Object.keys(manifest.files).length,verifiedSymlinks:links.length,viewerSha256:manifest.files['runtime/ClipRelayStream.app/Contents/MacOS/Moonlight']},null,2));
       }
-      if(hostPin && companionPin && process.env.CLIPRELAY_VIEWER_ARTIFACT && process.env.CI==='true' && process.env.GITHUB_ACTIONS==='true'){
+      const deferStream=process.env.CLIPRELAY_DEFER_MAC_STREAM_ACCEPTANCE==='1';
+      if(hostPin && companionPin && process.env.CLIPRELAY_VIEWER_ARTIFACT && process.env.CI==='true' && process.env.GITHUB_ACTIONS==='true' && !deferStream){
         const appDirectory=path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac');
         const reportPath=path.join(output,`native-stream-bundle-${architecture}.json`);
         const env={...process.env,APP_SOURCE_COMMIT:process.env.GITHUB_SHA};
@@ -219,7 +220,22 @@ async function build(){
         require('../../scripts/audio_fixture/receipt.cjs').validate(JSON.parse(fs.readFileSync(audioPath,'utf8')),
           {testCommit:process.env.GITHUB_SHA,applicationCommit:process.env.GITHUB_SHA,architecture,hostScope:'complete-app-host'});
       }
-      const zip=path.join(output,`ClipRelay-macOS-${architecture}-${version.versionName}.zip`);execFileSync('/usr/bin/ditto',['-c','-k','--sequesterRsrc','--keepParent',path.join(bundle,'ClipRelay.app'),zip]);console.log(zip);
+      // Seal the completed outer application without changing pinned nested runtimes.
+      // Ad-hoc signing is not Developer ID signing or Apple notarization.
+      const app=path.join(bundle,'ClipRelay.app');
+      execFileSync('/usr/bin/codesign',['--force','--sign','-','--preserve-metadata=entitlements,flags,runtime',app],{stdio:'inherit'});
+      execFileSync('/usr/bin/codesign',['--verify','--strict',app],{stdio:'inherit'});
+      const minimumOS=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :LSMinimumSystemVersion',path.join(app,'Contents/Info.plist')],{encoding:'utf8'}).trim();
+      const nativeArchitecture=execFileSync(path.join(app,'Contents/MacOS/ClipRelay'),['-p','process.arch'],{encoding:'utf8',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}}).trim();
+      if(nativeArchitecture!==architecture)throw new Error('Sealed application architecture mismatch');
+      const zip=path.join(output,`ClipRelay-macOS-${architecture}-${version.versionName}.zip`);
+      execFileSync('/usr/bin/ditto',['-c','-k','--sequesterRsrc','--keepParent',app,zip]);
+      fs.writeFileSync(path.join(output,`app-bundle-${architecture}.json`),JSON.stringify({passed:true,architecture,version:version.versionName,
+        sourceCommit:process.env.GITHUB_SHA||null,minimumOS,signature:'ad-hoc',notarized:false,
+        viewer:!!process.env.CLIPRELAY_VIEWER_ARTIFACT,network:!!process.env.CLIPRELAY_NETWORK_HELPER_ARTIFACT,host:!!hostPin,companion:!!companionPin,
+        streamAcceptance:hostPin?(deferStream?'deferred':'passed'):'not-applicable',
+        archive:path.basename(zip),size:fs.statSync(zip).size,sha256:crypto.createHash('sha256').update(fs.readFileSync(zip)).digest('hex')},null,2)+'\n');
+      console.log(zip);
     }
   }finally{
     const resolved=path.resolve(staging);const temp=path.resolve(os.tmpdir())+path.sep;
