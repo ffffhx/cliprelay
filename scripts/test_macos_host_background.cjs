@@ -28,8 +28,12 @@ async function main(){
   const bootstrap=()=>jsonRequest({address:'127.0.0.1',port:48792,path:'/v1/pair',identity:identities.client,trust:{bootstrap:true},
     body:{name:'Background disposable client',nonce:'a'.repeat(32),pin:'1234'},timeout:3000,limit:2048});
   try{
+    const defaults=loadConfig(preferences,{legacy:()=>({}),defaults:()=>({}),hostname:()=> 'Disposable background Mac'});
+    assert.equal(defaults.hostAutoStart,true);cases.push('fresh-config-default-startup-enabled');
+    // Exercise an explicit saved opt-out, rather than the obsolete default-off policy.
+    saveConfig(preferences,{...defaults,hostAutoStart:false});
     const initial=reopen();await initial.launch();assert.equal(initial.snapshot().autoStart,false);assert.equal(initial.snapshot().phase,'stopped');
-    assert.equal(initial.owner.session.current,null);assert.equal(initial.monitor.record,undefined);cases.push('default-open-does-not-start-host');
+    assert.equal(initial.owner.session.current,null);assert.equal(initial.monitor.record,undefined);cases.push('saved-opt-out-does-not-start-host');
     await initial.action('host-set-auto-start',{enabled:true});assert.equal(loadConfig(preferences).hostAutoStart,true);assert.equal(initial.snapshot().phase,'stopped');
     await initial.close();cases.push('explicit-opt-in-persists-without-starting-now');
     stage='opt-in-start';const controller=reopen();await controller.launch();await controller.startTask;assert.equal(controller.snapshot().phase,'running');
@@ -56,7 +60,7 @@ async function main(){
     assert.ok(path.basename(base).startsWith('cliprelay-packaged-host-background-'));fs.rmSync(base,{recursive:true,force:true});
   }
   process.stdout.write(JSON.stringify({protocol:1,passed:true,cases,actualChildStarts:children.length,observedNoticeEvents:notices.length,
-    backgroundRequestsObserved:true,requestNotificationsDeduplicated:true,startupOptInPersisted:true,defaultStartupOff:true,optOutReopenStopped:true,
+    backgroundRequestsObserved:true,requestNotificationsDeduplicated:true,startupOptInPersisted:true,defaultStartupEnabled:true,savedOptOutRespected:true,optOutReopenStopped:true,
     ownedChildrenReaped:true,defaultStateUnchanged:true,nativeWorkers:false,keychainValidated:false,nativeRequestsExecuted:false,
     nativeNotificationsDisplayed:false,guiValidated:false,streamStarted:false,systemInputInjected:false,
     scope:'Actual packaged private polling with no settings window, generation-specific notification events, saved startup opt-in and opt-out on disposable macOS CI. Notification callback observation only; no OS notification, user GUI, Keychain or video stream acceptance.'})+'\n');
