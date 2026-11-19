@@ -1,9 +1,9 @@
 {
   "serviceSources": [
-    "remote-service.cs", "input-focus.cs", "voice-input.cs", "desktop-user.cs",
+    "remote-service.cs", "input-focus.cs", "voice-input.cs", "voice-typeless.cs", "voice-typeless-audio.cs", "desktop-user.cs",
     "file-transfer.cs", "clipboard-exchange.cs", "privacy-screen.cs", "session-lock.cs",
     "audio-mute.cs", "audio-endpoints.cs", "audio-control.cs", "wake.cs", "terminal.cs",
-    "terminal-native.cs", "terminal-mouse.cs", "relay-ipc.cs", "lan-pairing.cs", "host-clients.cs", "engine-admin.cs",
+    "terminal-native.cs", "terminal-mouse.cs", "herdr.cs", "herdr-rpc.cs", "herdr-projects.cs", "relay-ipc.cs", "lan-pairing.cs", "host-clients.cs", "engine-admin.cs",
     "service-process-access.cs", "automation.cs", "automation-browser.cs", "automation-windows.cs"
   ],
   "supportFiles": [

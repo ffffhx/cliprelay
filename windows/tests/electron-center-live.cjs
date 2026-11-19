@@ -112,7 +112,27 @@ app.whenReady().then(async()=>{
   assert.equal(BrowserWindow.getAllWindows().length,windowCount);
   assert.equal(await evaluate('document.querySelector("dialog").open'),false);
   await wait(()=>evaluate('document.body.innerText.includes("正在启动控制")'),'connection state shown inline');
+  session={phase:'running',peerId:'pc',error:'',statistics:{phase:'live',bitrateMbps:8.25,fps:47.6,width:1920,height:1080}};windows.refresh();
+  await wait(()=>evaluate('document.querySelector("[data-stat=fps]")?.textContent.includes("47.6")'),'measured frame rate');
+  assert.match(await evaluate('document.querySelector("[data-stat=bitrate]").textContent'),/8\.3.*Mbps/);
+  assert.equal(await evaluate('document.querySelector("[data-stat=quality]").textContent'),'1080p');
+  assert.match(await evaluate('document.querySelector(".stream-resolution").textContent'),/1920 × 1080/);
+  assert.match(await evaluate('document.querySelector(".stream-shortcut").textContent'),/Ctrl \+ Alt \+ Shift \+ X/);
+  fs.writeFileSync(path.join(output,'remote-statistics.png'),(await center.webContents.capturePage()).toPNG());
+  center.setSize(560,800);await sleep(100);
+  assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth&&document.querySelector(".stream-stats").scrollWidth<=document.querySelector(".stream-stats").clientWidth'),true);
+  fs.writeFileSync(path.join(output,'remote-statistics-narrow.png'),(await center.webContents.capturePage()).toPNG());
+  center.setSize(1160,760);await sleep(100);
+  session.statistics={phase:'unavailable',bitrateMbps:null,fps:null,width:1920,height:1080};windows.refresh();
+  await wait(()=>evaluate('document.querySelector("[data-stats-phase=unavailable]")!==null'),'older player retains actual resolution without invented rates');
+  assert.match(await evaluate('document.querySelector("[data-stat=fps]").textContent'),/—/);
+  assert.equal(await evaluate('document.querySelector("[data-stat=quality]").textContent'),'1080p');
+  session.statistics={phase:'stale',bitrateMbps:null,fps:null,width:0,height:0};windows.refresh();
+  await wait(()=>evaluate('document.querySelector("[data-stats-phase=stale]")!==null'),'stale samples hidden');
+  assert.doesNotMatch(await evaluate('document.querySelector(".stream-stats").textContent'),/47\.6|8\.3|1080p/);
+  session.phase='recovering';windows.refresh();await wait(()=>evaluate('!document.querySelector(".stream-stats")'),'recovery clears measurements');
   await click('[data-action="remote-stop"]');
+  record('remote card renders measured bitrate, presented FPS and resolution; stale/recovering sessions clear old values');
   record('clipboard card toggles persist; remote availability is independent; connect has no second window');
   assert.equal(windows.open('remote-home'),center);assert.equal(windows.open('screen-share-picker'),undefined);
   fs.writeFileSync(path.join(output,'remote.png'),(await center.webContents.capturePage()).toPNG());record('connect forwards actual device; old remote route reuses center; share window removed');
@@ -139,13 +159,16 @@ app.whenReady().then(async()=>{
   await click('[data-setting="discoveryEnabled"]');await wait(()=>!state.config.discoveryEnabled,'discoverability saved');
   await click('[data-page="remote"]');
   const scanCount=calls.filter(c=>c.action==='discover').length;
-  discovery=deferred();await click('[data-action="connect-new"]');await wait(()=>calls.filter(c=>c.action==='discover').length>scanCount,'add computer starts scanning while hidden');
+  discovery=deferred();await click('[data-action="connect-new"]');await sleep(150);
+  assert.equal(calls.filter(c=>c.action==='discover').length,scanCount,'opening add computer must not scan');
+  assert.equal(await evaluate('document.querySelector("dialog [data-action=scan-again]").textContent.trim()'),'扫描局域网设备');
+  await click('[data-action="scan-again"]');await wait(()=>calls.filter(c=>c.action==='discover').length>scanCount,'explicit computer scan starts while hidden');
   await click('[data-action="manual"]');discovery.resolve([{Id:'stale',Name:'Stale scan',Address:'192.0.2.42',Platform:'windows',Port:47632}]);discovery=null;await sleep(150);
   assert.equal(await evaluate('document.querySelector("#modal-title").textContent'),'手动添加电脑');
   assert.equal(await evaluate('!!document.querySelector("#peer-form")'),true);await click('[data-action="dismiss"]');
   record('discoverability is visible in general settings; hidden computers can still scan; late scan cannot replace manual entry');
   const existingTargets=state.config.peers.map(p=>[p.id,p.enabled]);
-  state.config.deviceId='local';discovery=deferred();const resultScanCount=calls.filter(c=>c.action==='discover').length;await click('[data-action="connect-new"]');
+  state.config.deviceId='local';discovery=deferred();const resultScanCount=calls.filter(c=>c.action==='discover').length;await click('[data-action="connect-new"]');await click('[data-action="scan-again"]');
   await wait(()=>calls.filter(c=>c.action==='discover').length>resultScanCount,'computer scan requested');
   discovery.resolve([
     {Id:'local',Name:'This computer',Address:'192.168.1.9',Port:47632,Platform:'windows'},
@@ -163,7 +186,7 @@ app.whenReady().then(async()=>{
   assert.deepEqual(state.config.peers.slice(0,2).map(p=>[p.id,p.enabled]),existingTargets);
   assert.equal(state.config.peers[2].platform,'macos');assert.equal(state.config.peers[2].address,'127.0.0.1');assert.equal(state.config.peers[2].enabled,false);
   record('computer scan filters phone/self/duplicates, marks saved computers, preserves metadata and clipboard targets');
-  await click('[data-action="connect-new"]');await wait(()=>evaluate('document.querySelector("dialog").innerText.includes("暂未发现电脑")'),'empty scan guidance');
+  await click('[data-action="connect-new"]');await click('[data-action="scan-again"]');await wait(()=>evaluate('document.querySelector("dialog").innerText.includes("暂未发现电脑")'),'empty scan guidance');
   await click('[data-action="dismiss"]');
   await click('[data-page="settings"]');await evaluate('document.querySelector("#device-name").focus();document.querySelector("#device-name").value="我的工作电脑"');
   windows.refresh();await sleep(200);assert.equal(await evaluate('document.querySelector("#device-name").value'),'我的工作电脑');

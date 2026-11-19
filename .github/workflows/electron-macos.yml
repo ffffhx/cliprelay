@@ -1,6 +1,8 @@
 name: Electron macOS build
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       publish_release:
@@ -37,10 +39,46 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: cliprelay-macos-release
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      viewer: ${{ steps.components.outputs.viewer }}
+      network: ${{ steps.components.outputs.network }}
+      host: ${{ steps.components.outputs.host }}
+      companion: ${{ steps.components.outputs.companion }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve verified component builds
+        id: components
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VIEWER: ${{ inputs.desktop_client_run_id }}
+          NETWORK: ${{ inputs.desktop_network_run_id }}
+          HOST: ${{ inputs.host_engine_run_id }}
+          COMPANION: ${{ inputs.host_companion_run_id }}
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_macos_update_components.py
+          python3 scripts/resolve_macos_update_components.py
+
   build:
+    needs: prepare
     runs-on: ${{ matrix.arch == 'x64' && 'macos-15-intel' || 'macos-26' }}
     env:
+      VIEWER_RUN_ID: ${{ needs.prepare.outputs.viewer }}
+      NETWORK_RUN_ID: ${{ needs.prepare.outputs.network }}
+      HOST_RUN_ID: ${{ needs.prepare.outputs.host }}
+      HOST_COMPANION_RUN_ID: ${{ needs.prepare.outputs.companion }}
       CLIPRELAY_DEFER_MAC_STREAM_ACCEPTANCE: ${{ inputs.defer_stream_acceptance && '1' || '0' }}
     strategy:
       fail-fast: false
@@ -48,6 +86,8 @@ jobs:
         arch: ${{ fromJSON(inputs.architecture == 'x64' && '["x64"]' || inputs.architecture == 'arm64' && '["arm64"]' || '["arm64","x64"]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Validate release inputs
         if: inputs.publish_release
         env:
@@ -61,6 +101,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
+      - name: Generate the main release version
+        if: github.ref == 'refs/heads/main'
+        run: node scripts/desktop-release-version.cjs
+      - run: node --test windows/tests/desktop-updates.test.cjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -100,10 +144,9 @@ jobs:
       - run: node --test windows/tests/desktop-files.test.cjs windows/tests/desktop-files-ui.test.cjs windows/tests/mac-owned-window.test.cjs
       - run: node --test windows/tests/desktop-terminal.test.cjs windows/tests/desktop-terminal-ui.test.cjs windows/tests/desktop-terminal-window.test.cjs windows/tests/desktop-terminal-mouse.test.cjs windows/tests/desktop-terminal-mouse-ui.test.cjs
       - name: Fetch verified desktop viewer
-        if: inputs.desktop_client_run_id != ''
+        if: needs.prepare.outputs.viewer != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          VIEWER_RUN_ID: ${{ inputs.desktop_client_run_id }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib, re, subprocess, tarfile
@@ -120,10 +163,9 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as output: output.write('CLIPRELAY_VIEWER_ARTIFACT='+str(artifact)+'\n')
           PY
       - name: Fetch verified desktop network helper
-        if: inputs.desktop_network_run_id != ''
+        if: needs.prepare.outputs.network != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          NETWORK_RUN_ID: ${{ inputs.desktop_network_run_id }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib, re, subprocess, tarfile
@@ -140,10 +182,9 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as output: output.write('CLIPRELAY_NETWORK_HELPER_ARTIFACT='+str(artifact)+'\n')
           PY
       - name: Fetch verified native host engine
-        if: inputs.host_engine_run_id != ''
+        if: needs.prepare.outputs.host != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          HOST_RUN_ID: ${{ inputs.host_engine_run_id }}
           APP_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -152,10 +193,9 @@ jobs:
           if [ "$engine_arch" = x64 ]; then engine_arch=x86_64; fi
           python3 scripts/fetch_sunshine_macos.py --run "$HOST_RUN_ID" --arch "$engine_arch" --directory .tools/host-engine-download
       - name: Fetch verified host companion
-        if: inputs.host_companion_run_id != ''
+        if: needs.prepare.outputs.companion != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          HOST_COMPANION_RUN_ID: ${{ inputs.host_companion_run_id }}
           APP_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -163,12 +203,12 @@ jobs:
           if [ "$companion_arch" = x64 ]; then companion_arch=x86_64; fi
           python3 scripts/fetch_host_companion.py --run "$HOST_COMPANION_RUN_ID" --arch "$companion_arch" --directory .tools/host-companion-download
       - name: Build independent decoder for complete host privacy acceptance
-        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != '' && !inputs.defer_stream_acceptance
+        if: needs.prepare.outputs.host != '' && needs.prepare.outputs.companion != '' && needs.prepare.outputs.viewer != '' && !inputs.defer_stream_acceptance
         run: |
           node --test scripts/tests/mac-privacy-receipt.test.cjs
           python3 scripts/build_privacy_pixel_fixtures.py
       - name: Build owned tone and decoder for complete host audio acceptance
-        if: inputs.host_engine_run_id != '' && inputs.host_companion_run_id != '' && inputs.desktop_client_run_id != '' && !inputs.defer_stream_acceptance
+        if: needs.prepare.outputs.host != '' && needs.prepare.outputs.companion != '' && needs.prepare.outputs.viewer != '' && !inputs.defer_stream_acceptance
         run: |
           node --test scripts/tests/mac-audio-receipt.test.cjs
           python3 scripts/build_macos_audio_fixture.py
@@ -211,13 +251,21 @@ jobs:
           if-no-files-found: ignore
 
   release:
-    if: inputs.publish_release
+    if: inputs.publish_release || github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - name: Generate the same main release version
+        if: github.ref == 'refs/heads/main'
+        run: node scripts/desktop-release-version.cjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -241,3 +289,7 @@ jobs:
           version=$(python3 -c 'import json; print(json.load(open("macos-release/macos-update.json"))["versionName"])')
           gh release create "macos-v$version" macos-release/ClipRelay-macOS-*.zip macos-release/SHA256SUMS macos-release/macos-update.json \
             --target "$GITHUB_SHA" --latest=false --title "ClipRelay macOS $version" --notes-file macos-release/release-notes.md
+          if ! gh release view macos-latest > /dev/null 2>&1; then
+            gh release create macos-latest --target "$GITHUB_SHA" --latest=false --title 'ClipRelay macOS updates' --notes 'Verified macOS update feed.'
+          fi
+          gh release upload macos-latest macos-release/macos-update.json --clobber

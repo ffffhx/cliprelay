@@ -1,5 +1,7 @@
 [
   "main.js",
+  "development.cjs",
+  "lifecycle.cjs",
   "native-host.cjs",
   "windows.cjs",
   "desktop-connection.cjs",
@@ -40,6 +42,7 @@
   "desktop-client.cjs",
   "mac/client-identity.cjs",
   "mac/stream-viewer.cjs",
+  "mac/stream-statistics.cjs",
   "mac/input-protocol.cjs",
   "mac/input-session.cjs",
   "mac/input-ui.js",

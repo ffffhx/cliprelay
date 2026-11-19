@@ -27,6 +27,9 @@ const {HostPermissionController,message:hostPermissionMessage}=require('./host-p
 const {HostController,message:hostMessage}=require('./host-controller.cjs');
 const {HostNotices}=require('./host-notices.cjs');
 const {LoginStartup}=require('./login-startup.cjs');
+let appUpdates;
+let developmentInfo;
+try { developmentInfo = require('../development-build.json'); } catch {}
 app.setName('ClipRelay');
 app.setPath('userData',path.join(app.getPath('appData'),'ClipRelay'));
 let tray,bonjour,service,receiver,chooser,scanning=0,config,legacyChanging=false,paired,viewer,network,files,terminal,bitrate,displays,privacy,audioMute,sessionLock,wake,clipboardSync,hostPermissions,host,hostNotices,permissionQuit=false,permissionQuitReady=false;
@@ -89,6 +92,7 @@ function menu(){
     {type:'separator'},
     {label:`快捷键：${config.hotkey || 'Control+Alt+G'}`,enabled:false},
     {label:'选择发送目标…',click:scan},
+    {label:developmentInfo?'开发版说明…':'检查更新…',click:()=>appUpdates?.open()},
     {type:'separator'},{label:'退出 ClipRelay',role:'quit'}
   ]));
 }
@@ -129,6 +133,9 @@ function select(peer,token){
   saveConfig(app.getPath('userData'),config);paired.selectLegacy();menu();alert('已选择旧版目标：'+peer.text);
 }
 async function start(){
+  await require('../lifecycle.cjs').initialize(app,{development:!!developmentInfo,sourceRoot:developmentInfo?.sourceRoot||null});
+  appUpdates=require('./updates.cjs').initialize({app,dialog,Notification,net:require('electron').net,shell,BrowserWindow,development:!!developmentInfo});
+  if(developmentInfo) require('../development.cjs').install({app,root:path.join(developmentInfo.sourceRoot,'windows'),source:path.resolve(__dirname,'..')});
   app.dock?.hide();
   hostPermissions=new HostPermissionController({directory:__dirname,openSettings:url=>shell.openExternal(url)});
   config=loadConfig(app.getPath('userData'),{hostname:()=>{

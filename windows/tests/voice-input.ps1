@@ -1,16 +1,16 @@
-param([switch]$Live, [switch]$VirtualLoop, [switch]$CustomEditor)
+﻿param([switch]$Live, [switch]$VirtualLoop, [switch]$CustomEditor, [switch]$Provider, [switch]$AppMicrophoneRouting, [string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$output = Join-Path $root '.tools\voice-tests'
+$output = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $root ('.tools\artifacts\acceptance\voice-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 [IO.Directory]::CreateDirectory($output) | Out-Null
 $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $wpf = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF'
-$sources = @((Join-Path $root 'windows\remote-desktop\input-focus.cs'), (Join-Path $root 'windows\remote-desktop\voice-input.cs'))
-$references = @('/r:System.Web.Extensions.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', "/r:$wpf\UIAutomationClient.dll", "/r:$wpf\UIAutomationTypes.dll", "/r:$wpf\WindowsBase.dll")
+$sources = @((Join-Path $root 'windows\remote-desktop\input-focus.cs'), (Join-Path $root 'windows\remote-desktop\voice-input.cs'), (Join-Path $root 'windows\remote-desktop\voice-typeless.cs'), (Join-Path $root 'windows\remote-desktop\voice-typeless-audio.cs'))
+$references = @('/r:System.Web.Extensions.dll', '/r:System.Management.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', "/r:$wpf\UIAutomationClient.dll", "/r:$wpf\UIAutomationTypes.dll", "/r:$wpf\WindowsBase.dll")
 $test = Join-Path $output 'VoiceInputTest.exe'
 & $compiler /nologo /target:exe /platform:x64 "/out:$test" @references @sources (Join-Path $PSScriptRoot 'voice-input.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Voice test compilation failed.' }
-if ($VirtualLoop) { & $test --virtual-loop } else { & $test }
+if ($VirtualLoop) { & $test --virtual-loop } elseif ($Provider) { & $test --provider } elseif ($AppMicrophoneRouting) { & $test --app-microphone-routing } else { & $test }
 if ($LASTEXITCODE -ne 0) { throw 'Voice component test failed.' }
 if ($Live -or $CustomEditor) {
     $test = Join-Path $output 'DoubaoVoiceLiveTest.exe'

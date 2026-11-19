@@ -17,7 +17,7 @@ public final class RemoteImageCodec {
     public static final class Image {
         public final Bitmap preview;
         public final byte[] png;
-        Image(Bitmap preview, byte[] png) { this.preview = preview; this.png = png; }
+        public Image(Bitmap preview, byte[] png) { this.preview = preview; this.png = png; }
     }
     public static Image read(ContentResolver resolver, Uri uri) throws IOException {
         if (uri == null || !"content".equals(uri.getScheme())) throw new IOException("IMAGE_INVALID");

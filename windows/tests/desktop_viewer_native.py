@@ -161,6 +161,13 @@ if ($result.ReturnValue -ne 0) {{ throw 'Fixture launch failed' }}''')
                 assert visible[-1]['renderedAgeMs']<2000,'Presentation feedback is stale'
                 report['presentation']={'reports':len(progress),'first':visible[0],'last':visible[-1],
                     'hostFirstFrame':current['streams'][0]['firstFrame'],'mode':'native successful present submission; physical panel not measured'}
+                capabilities=json.loads((viewer.parent.parent/'manifest.json').read_text(encoding='utf-8')).get('capabilities',[])
+                if 'stream-statistics-v1' in capabilities:
+                    statistics=[item['statistics'] for item in history if item.get('type')=='state' and item.get('statistics',{} ) and item['statistics']['phase']=='live']
+                    assert len(statistics)>=2,'Native rate samples missing'
+                    assert any(item['fps']>0 and item['bitrateMbps']>0 for item in statistics),'Actual frames and video bytes must advance'
+                    assert all(item['width']==1280 and item['height']==720 for item in statistics)
+                    report['statistics']={'samples':len(statistics),'last':statistics[-1],'mode':'received encoded video bytes and successful presentation counts'}
             if control_fixture:
                 def bitrate_state():
                     return next((entry for entry in reversed(history) if entry.get('type')=='bitrate'),{})

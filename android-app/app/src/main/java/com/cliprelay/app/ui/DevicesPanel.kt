@@ -103,8 +103,13 @@ internal fun AddComputerSheet(
             item {
                 Text("添加设备", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(8.dp))
-                Text("发现附近的新电脑，添加后可从首页连接。", style = MaterialTheme.typography.bodyMedium,
+                Text("添加云主机、外网电脑或附近的电脑，之后从首页连接桌面。", style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            item {
+                FilledTonalButton(onClick = { onDismiss(); onPairingCode() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("添加云主机 / 外网电脑")
+                }
             }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -133,7 +138,6 @@ internal fun AddComputerSheet(
             item { HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .4f)) }
             item {
                 TextButton(onClick = { onDismiss(); onAddress() }, modifier = Modifier.fillMaxWidth()) { Text("输入电脑地址") }
-                TextButton(onClick = { onDismiss(); onPairingCode() }, modifier = Modifier.fillMaxWidth()) { Text("使用配对码") }
             }
         }
     }

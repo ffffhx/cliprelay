@@ -296,6 +296,58 @@ public class NvHTTP {
         return controlRequest(displayClient(), request, "DISPLAY");
     }
 
+    private OkHttpClient herdrClient;
+    private okhttp3.Call herdrCall;
+    private String herdrOp="";
+    private boolean herdrCancelled;
+    private static final java.util.concurrent.ExecutorService HERDR_CLEANUP =
+            java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
+                Thread thread=new Thread(task,"Herdr connection cleanup");thread.setDaemon(true);return thread;
+            });
+    public org.json.JSONObject herdrRequest(org.json.JSONObject payload) throws IOException {
+        byte[] bytes=payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if(bytes.length>65536)throw new IOException("HERDR_BAD_REQUEST");
+        okhttp3.Call call;
+        synchronized(this) {
+            if(herdrCancelled)throw new IOException("HERDR_CANCELLED");
+            if(herdrCall!=null)throw new IOException("HERDR_BUSY");
+            if(herdrClient==null)herdrClient=displayClient().newBuilder()
+                    .dispatcher(new okhttp3.Dispatcher()).connectionPool(new ConnectionPool(1,10,TimeUnit.SECONDS))
+                    .proxy(java.net.Proxy.NO_PROXY).callTimeout(30,TimeUnit.SECONDS).readTimeout(28,TimeUnit.SECONDS).build();
+            call=herdrClient.newCall(new Request.Builder().url(displayUrl("herdr").build())
+                    .post(okhttp3.RequestBody.create(okhttp3.MediaType.get("application/json"),bytes)).build());
+            herdrCall=call;
+            herdrOp=payload.optString("op");
+        }
+        try(Response response=call.execute()) {
+            if(response.code()==404)throw new IOException("HERDR_UNSUPPORTED");
+            if(response.code()==403)throw new IOException("HERDR_UNPAIRED");
+            if(response.body()==null)throw new IOException("HERDR_UNAVAILABLE");
+            okio.BufferedSource source=response.body().source();source.request(1048577);
+            if(source.buffer().size()>1048576)throw new IOException("HERDR_INVALID_RESPONSE");
+            try{return new org.json.JSONObject(source.readUtf8());}
+            catch(org.json.JSONException e){throw new IOException("HERDR_INVALID_RESPONSE",e);}
+        } finally {synchronized(this){if(herdrCall==call)herdrCall=null;}}
+    }
+    /** Yield an observation to a deliberate input; mutations are never cancelled. */
+    public synchronized void interruptHerdrRead() {
+        if(herdrCall!=null&&herdrOp.equals("read")){
+            final okhttp3.Call call=herdrCall;HERDR_CLEANUP.execute(call::cancel);
+        }
+    }
+    public synchronized void cancelHerdrRequests() {
+        if(herdrCancelled)return;
+        herdrCancelled=true;
+        final okhttp3.Call call=herdrCall;
+        final OkHttpClient client=herdrClient;
+        // Closing a TLS socket can send close_notify. Lifecycle callbacks must
+        // invalidate new requests immediately, then release sockets off the UI thread.
+        HERDR_CLEANUP.execute(()->{
+            if(call!=null)call.cancel();
+            if(client!=null)client.connectionPool().evictAll();
+        });
+    }
+
     private OkHttpClient terminalClient;
     private okhttp3.Call terminalCall;
     private boolean terminalCancelled;
@@ -583,11 +635,20 @@ public class NvHTTP {
 
     /** Phone dictation uses the same pinned host/client TLS identities as remote input. */
     public void voiceRequest(String action, String session, int sequence, byte[] pcm) throws IOException {
+        voiceRequest("doubao", action, session, sequence, pcm);
+    }
+
+    public void voiceRequest(String provider, String action, String session, int sequence, byte[] pcm) throws IOException {
         if (serverCert == null) throw new IOException("VOICE_UNAVAILABLE");
+        if (!java.util.Arrays.asList("doubao", "typeless").contains(provider))
+            throw new IllegalArgumentException("Invalid voice provider");
         if (!java.util.Arrays.asList("status", "start", "audio", "stop", "cancel").contains(action))
             throw new IllegalArgumentException("Invalid voice action");
-        HttpUrl url = baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2)
-                .addPathSegment("v1").addPathSegment("voice").addPathSegment(action).build();
+        HttpUrl.Builder route = baseUrlHttp.newBuilder().scheme("https").port(baseUrlHttp.port() + 2)
+                .addPathSegment("v1").addPathSegment("voice");
+        // A separate route makes old hosts reject Typeless instead of starting Doubao.
+        if (provider.equals("typeless")) route.addPathSegment(provider);
+        HttpUrl url = route.addPathSegment(action).build();
         OkHttpClient client = voiceClient();
         Request.Builder request = new Request.Builder().url(url);
         if (!action.equals("status")) {

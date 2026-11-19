@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 using System.IO;
 using System.Diagnostics;
@@ -7,6 +7,24 @@ using ClipRelay.Remote;
 
 // No microphone recording from a physical device. Optional loop test opens ONLY the Steam virtual cable.
 public static class VoiceInputTest {
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class AudioEnumeratorClass { }
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface AudioEnumerator {
+        [PreserveSig] int Enumerate(int flow, uint state, out IntPtr devices);
+        [PreserveSig] int Default(int flow, int role, out AudioDevice device);
+    }
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface AudioDevice {
+        [PreserveSig] int Activate(ref Guid iid, uint context, IntPtr parameters, out IntPtr value);
+        [PreserveSig] int Properties(uint mode, out IntPtr store);
+        [PreserveSig] int Id(out IntPtr id);
+    }
+    static string DefaultInput() {
+        var enumerator = (AudioEnumerator)new AudioEnumeratorClass(); AudioDevice device = null;
+        try {
+            Marshal.ThrowExceptionForHR(enumerator.Default(1, 0, out device)); IntPtr id;
+            Marshal.ThrowExceptionForHR(device.Id(out id));
+            try { return Marshal.PtrToStringUni(id); } finally { Marshal.FreeCoTaskMem(id); }
+        } finally { if (device != null) Marshal.ReleaseComObject(device); Marshal.ReleaseComObject(enumerator); }
+    }
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Caps {
         public ushort manufacturer, product; public uint version;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string name;
@@ -25,7 +43,48 @@ public static class VoiceInputTest {
     static void Equal(int[] actual, params int[] expected) {
         Check(String.Join(",",actual)==String.Join(",",expected),"Incorrect shortcut");
     }
-    public static int Main(string[] args) {
+    [STAThread] public static int Main(string[] args) {
+        if (args.Length == 1 && args[0] == "--capture-only") return CaptureOnly();
+        if (args.Length == 1 && args[0] == "--app-microphone-routing") {
+            string root = Path.Combine(Path.GetDirectoryName(typeof(VoiceInputTest).Assembly.Location), "app-route-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try {
+                string defaultBefore = DefaultInput();
+                using (var policy = new WindowsAppMicrophone((uint)Process.GetCurrentProcess().Id)) {
+                    var original = new[] { policy.Read(0), policy.Read(1), policy.Read(2) };
+                    string endpoint = WindowsAppMicrophone.CaptureEndpoint("Steam Streaming Micro");
+                    using (var route = new TypelessAudioRoute(policy.Read, policy.Write, role => Path.Combine(root, "role" + role + ".json"))) {
+                        route.Select(endpoint);
+                        Check(endpoint.Contains(DefaultInput()), "Default input did not follow the application route");
+                        for (int role = 0; role < 3; role++) Check(policy.Read(role) == endpoint, "Windows did not apply application input role " + role);
+                    }
+                    for (int role = 0; role < 3; role++) Check(policy.Read(role) == original[role], "Windows did not restore application input role " + role);
+                    Check(DefaultInput() == defaultBefore, "Original default input was not restored");
+                }
+                Check(Directory.GetFiles(root, "*.json").Length == 0, "Windows recovery remains pending");
+                Console.WriteLine("Windows application microphone: virtual endpoint discovery, all three roles, readback and restoration passed. No audio recorded.");
+                return 0;
+            } catch (Exception error) { Console.WriteLine(error.GetType().Name + ": " + error.Message + "\n" + error.StackTrace); return 1; }
+            finally { if (Directory.GetFiles(root, "*.json").Length == 0) Directory.Delete(root, true); }
+        }
+        if (args.Length == 1 && args[0] == "--typeless-routing") {
+            try {
+                using (var voice = new TypelessVoice()) {
+                    voice.CheckAvailable();
+                    Console.WriteLine("Typeless idle and compatible; virtual output=" + voice.OutputDevice);
+                    voice.SelectMicrophone();
+                    Console.WriteLine("Application input switched and read back; no recording started.");
+                }
+                Check(!TypelessAudioRoute.RecoveryPending, "Application input restore remains pending");
+                Console.WriteLine("Typeless application input restored.");
+                return 0;
+            } catch (Exception error) { Console.WriteLine(error.GetType().Name + ": " + error.Message); return 1; }
+        }
+        if (args.Length == 2 && args[0] == "--typeless-microphone-crash") {
+            var lease = Route(args[1]);
+            lease.Select("virtual");
+            Environment.Exit(0);
+        }
         if (args.Length == 2 && args[0] == "--microphone-crash") {
             string deviceFile = Path.Combine(args[1], "device");
             var lease = new MicrophoneLease(Path.Combine(args[1], "lease.json"),
@@ -34,11 +93,22 @@ public static class VoiceInputTest {
             Environment.Exit(0); // Deliberately bypass Dispose, like a killed worker.
         }
         TestMicrophoneRecovery();
-        foreach(string version in new[]{"0.9.1.22\r\n", "0.9.2.7", " 0.9.2.7\r\n"})
-            Check(DoubaoVoice.SupportedVersion(version),"Known provider version rejected");
-        foreach(string version in new[]{null, "", "0.9.2.0", "0.9.2.8", "0.9.2.70", "0.9.2.7-preview"})
-            Check(!DoubaoVoice.SupportedVersion(version),"Unknown provider version accepted");
-        Console.WriteLine("Provider version gate passed.");
+        TestTypelessRouting();
+        try { TestTypeless(); }
+        catch (Exception e) { Console.WriteLine("Typeless test failed: " + e.GetType().Name + ": " + e.Message); return 1; }
+        DoubaoVoice.CheckSettingsContract(typeof(CompatibleSettings));
+        foreach (var type in new[] { null, typeof(object), typeof(MissingPatch), typeof(WrongPatch), typeof(WrongList), typeof(StaticPatch) }) {
+            bool rejected = false;
+            try { DoubaoVoice.CheckSettingsContract(type); }
+            catch (InvalidOperationException e) { rejected = e.Message == "DOUBAO_VERSION_UNSUPPORTED"; }
+            Check(rejected, "Incompatible settings contract accepted: " + type);
+        }
+        Console.WriteLine("Provider capability checks passed (no version allowlist).");
+        if (args.Length == 1 && args[0] == "--provider") {
+            using (var provider = new DoubaoVoice()) provider.CheckAvailable();
+            Console.WriteLine("Installed provider capability probe passed.");
+            return 0;
+        }
         if(args.Length==0) return 0;
         uint device=uint.MaxValue;
         for(uint i=0;i<waveInGetNumDevs();i++){Caps caps;if(waveInGetDevCaps(new UIntPtr(i),out caps,(uint)Marshal.SizeOf(typeof(Caps)))==0 && caps.name.Contains("Steam Streaming Micro")){device=i;break;}}
@@ -74,6 +144,173 @@ public static class VoiceInputTest {
         } finally {waveInReset(input);waveInUnprepareHeader(input,header,size);waveInClose(input);Marshal.FreeHGlobal(data);Marshal.FreeHGlobal(header);}
         }
         return 0;
+    }
+    sealed class TypelessAccess : ITypelessVoiceAccess {
+        public TypelessVoiceState Current = TypelessVoiceState.Idle;
+        public int Starts, Stops, Cancels;
+        public bool FailFinish, WrongInput, StartRecording = true;
+        public uint Prepare() { return 3; }
+        public void SelectMicrophone() { }
+        public void VerifyRecordingInput() { if (WrongInput) throw new InvalidOperationException("VOICE_AUDIO_DEVICE_FAILED"); }
+        public TypelessVoiceState State { get { return Current; } }
+        public void Begin() { Starts++; if (StartRecording) Current = TypelessVoiceState.Recording; }
+        public void Finish(bool commit) {
+            if (commit) Stops++; else Cancels++;
+            if (FailFinish) throw new IOException("Unknown invocation result");
+            Current = TypelessVoiceState.Idle;
+        }
+        public void Dispose() { }
+    }
+    static int CaptureOnly() {
+        uint device = UInt32.MaxValue;
+        for (uint i = 0; i < waveInGetNumDevs(); i++) {
+            Caps caps;
+            if (waveInGetDevCaps(new UIntPtr(i), out caps, (uint)Marshal.SizeOf(typeof(Caps))) == 0 && caps.name.Contains("Steam Streaming Micro")) { device = i; break; }
+        }
+        Check(device != UInt32.MaxValue, "Virtual input missing");
+        var format = PcmPlayback.Format.Pcm; format.samples = 48000; format.bytes = 96000;
+        IntPtr input; Check(waveInOpen(out input, device, ref format, IntPtr.Zero, IntPtr.Zero, 0) == 0, "Virtual capture failed");
+        uint size = (uint)Marshal.SizeOf(typeof(PcmPlayback.Header));
+        IntPtr data = Marshal.AllocHGlobal((int)format.bytes * 12), header = Marshal.AllocHGlobal((int)size);
+        try {
+            Marshal.StructureToPtr(new PcmPlayback.Header { data = data, length = format.bytes * 12 }, header, false);
+            Check(waveInPrepareHeader(input, header, size) == 0 && waveInAddBuffer(input, header, size) == 0 && waveInStart(input) == 0, "Virtual capture start failed");
+            Thread.Sleep(10000); waveInReset(input);
+            var state = (PcmPlayback.Header)Marshal.PtrToStructure(header, typeof(PcmPlayback.Header));
+            byte[] bytes = new byte[state.recorded]; Marshal.Copy(data, bytes, 0, bytes.Length);
+            int peak = 0, active = 0; double sum = 0;
+            for (int i = 0; i + 1 < bytes.Length; i += 2) { int sample = (short)(bytes[i] | bytes[i + 1] << 8); peak = Math.Max(peak, Math.Abs(sample)); if (Math.Abs(sample) > 300) active++; sum += (double)sample * sample; }
+            Console.WriteLine("Virtual capture probe: samples=" + bytes.Length / 2 + ", peak=" + peak + ", active=" + active + ", RMS=" + Math.Sqrt(sum / Math.Max(1, bytes.Length / 2)).ToString("F0"));
+            return 0;
+        } finally { waveInReset(input); waveInUnprepareHeader(input, header, size); waveInClose(input); Marshal.FreeHGlobal(data); Marshal.FreeHGlobal(header); }
+    }
+    static TypelessAudioRoute Route(string path, Action<int, string> write = null) {
+        return new TypelessAudioRoute(role => File.ReadAllText(Path.Combine(path, "device" + role)),
+            write ?? ((role, value) => File.WriteAllText(Path.Combine(path, "device" + role), value)),
+            role => Path.Combine(path, "route" + role + ".json"));
+    }
+    static void TestTypelessRouting() {
+        string root = Path.Combine(Path.GetDirectoryName(typeof(VoiceInputTest).Assembly.Location), "typeless-route-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try {
+            for (int role = 0; role < 3; role++) File.WriteAllText(Path.Combine(root, "device" + role), role == 0 ? "" : "physical" + role);
+            using (var route = Route(root)) {
+                route.Select("virtual");
+                Reject(() => { using (var nested = Route(root)) { } }, "VOICE_BUSY");
+                File.WriteAllText(Path.Combine(root, "device1"), "user-choice");
+            }
+            Check(File.ReadAllText(Path.Combine(root, "device0")) == "" && File.ReadAllText(Path.Combine(root, "device1")) == "user-choice" && File.ReadAllText(Path.Combine(root, "device2")) == "physical2", "Per-role restore or manual selection lost");
+            using (var route = Route(root, (role, value) => {
+                if (role == 1 && value == "virtual") throw new IOException("Write failed");
+                File.WriteAllText(Path.Combine(root, "device" + role), value);
+            })) Reject(() => route.Select("virtual"), "VOICE_AUDIO_DEVICE_FAILED");
+            Check(File.ReadAllText(Path.Combine(root, "device0")) == "" && File.ReadAllText(Path.Combine(root, "device1")) == "user-choice", "Partial switch not rolled back");
+            var start = new ProcessStartInfo(typeof(VoiceInputTest).Assembly.Location, "--typeless-microphone-crash \"" + root + "\"") { UseShellExecute = false, CreateNoWindow = true };
+            using (var crashed = Process.Start(start)) { Check(crashed.WaitForExit(10000), "Crash test timed out"); Check(crashed.ExitCode == 0, "Crash fixture failed"); }
+            Check(File.ReadAllText(Path.Combine(root, "device2")) == "virtual", "Crash fixture did not switch");
+            using (var recovery = Route(root)) { }
+            Check(File.ReadAllText(Path.Combine(root, "device0")) == "" && File.ReadAllText(Path.Combine(root, "device1")) == "user-choice" && File.ReadAllText(Path.Combine(root, "device2")) == "physical2", "Crash recovery lost original roles");
+            Check(Directory.GetFiles(root, "*.json").Length == 0, "Recovery journals remain");
+            using (var pending = Route(root)) { pending.Select("virtual"); pending.LeaveForRecovery(); }
+            Check(File.ReadAllText(Path.Combine(root, "device0")) == "virtual" && Directory.GetFiles(root, "*.json").Length == 3,
+                "Unconfirmed stop restored physical input or discarded recovery records");
+            using (var recovery = Route(root)) { }
+            Check(File.ReadAllText(Path.Combine(root, "device0")) == "" && File.ReadAllText(Path.Combine(root, "device1")) == "user-choice" &&
+                File.ReadAllText(Path.Combine(root, "device2")) == "physical2" && Directory.GetFiles(root, "*.json").Length == 0,
+                "Deferred microphone recovery failed");
+            Console.WriteLine("Typeless routing: independent roles, user changes, exclusivity, partial failure and worker crash recovery passed.");
+        } finally { Directory.Delete(root, true); }
+    }
+    static void Reject(Action action, string code) {
+        try { action(); } catch (InvalidOperationException e) { Check(e.Message == code, "Wrong failure: " + e.Message); return; }
+        throw new Exception("Expected " + code);
+    }
+    static void TestTypeless() {
+        Equal(TypelessVoice.ParseShortcut("RightAlt"), 0xA5);
+        Equal(TypelessVoice.ParseShortcut("RightAlt+RightCtrl"), 0xA5, 0xA3);
+        foreach (string value in new[] { null, "", "Alt", "RightAlt+", "RightAlt+RightAlt", "LeftWin", "A", "RightAlt+Enter", "LeftCtrl+V" })
+            Reject(() => TypelessVoice.ParseShortcut(value), "TYPELESS_SHORTCUT_REQUIRED");
+        Check(TypelessVoice.VirtualOutput("virtual", "Microphone (Steam Streaming Microphone)") == "Steam Streaming Micro", "Steam mapping");
+        Check(TypelessVoice.VirtualOutput("virtual", "CABLE Output (VB-Audio Virtual Cable)") == "CABLE Input", "Cable direction");
+        foreach (string id in new[] { null, "", "default", "communications" })
+            Reject(() => TypelessVoice.VirtualOutput(id, "Steam Streaming Microphone"), "TYPELESS_MIC_REQUIRED");
+        Reject(() => TypelessVoice.VirtualOutput("physical", "Realtek Microphone"), "TYPELESS_MIC_REQUIRED");
+        Reject(() => TypelessVoice.VirtualOutput("cable", "CABLE Input (VB-Audio Virtual Cable)"), "TYPELESS_MIC_REQUIRED");
+        string output;
+        string settings = "{\"selectedMicrophoneDevice\":{\"deviceId\":\"virtual\",\"label\":\"Steam Streaming Microphone\"},\"featureShortcutBindings\":{\"dictationMode\":[\"LeftCtrl+V\",\"RightAlt\",\"RightAlt+RightCtrl\"],\"askAnythingMode\":[\"RightAlt\"]}}";
+        Equal(TypelessVoice.ReadSettings(settings, out output), 0xA5, 0xA3);
+        Check(output == "Steam Streaming Micro", "Wrong output");
+        Reject(() => TypelessVoice.ReadSettings("{}", out output), "TYPELESS_VERSION_UNSUPPORTED");
+        Equal(TypelessVoice.ReadSettings(settings.Replace("virtual", "default"), out output), 0xA5, 0xA3);
+        Check(output == null, "Default microphone should use a temporary application route");
+        Reject(() => TypelessVoice.ReadSettings(settings.Replace("RightAlt+RightCtrl", "RightAlt"), out output), "TYPELESS_SHORTCUT_REQUIRED");
+        Reject(() => TypelessVoice.ReadSettings(settings.Replace("\"askAnythingMode\":[\"RightAlt\"]", "\"askAnythingMode\":[\"RightAlt\",\"RightCtrl+RightAlt\"]"), out output), "TYPELESS_SHORTCUT_REQUIRED");
+        var access = new TypelessAccess();
+        using (var voice = new TypelessVoice(access, () => { })) {
+            voice.CheckAvailable(); voice.SelectMicrophone();
+            Check(access.Starts == 0, "Preparation started recording");
+            voice.Start(() => true); Check(voice.IsRecording && voice.OutputDevice == 3, "Recording never confirmed");
+            voice.End(true); voice.End(true);
+            Check(access.Starts == 1 && access.Stops == 1 && access.Cancels == 0, "Duplicate finish");
+        }
+        access = new TypelessAccess();
+        using (var voice = new TypelessVoice(access, () => { })) {
+            Reject(() => voice.Start(() => false), "VOICE_FOCUS_REQUIRED");
+            Check(access.Starts == 0, "Started without target focus");
+            int checks = 0;
+            Reject(() => voice.Start(() => ++checks == 1), "VOICE_FOCUS_REQUIRED");
+            Check(access.Cancels == 1 && access.Stops == 0, "Focus change committed speech");
+        }
+        foreach (var state in new[] { TypelessVoiceState.Busy, TypelessVoiceState.Recording, TypelessVoiceState.Unavailable }) {
+            access = new TypelessAccess { Current = state };
+            using (var voice = new TypelessVoice(access, () => { }))
+                Reject(() => voice.Start(() => true), state == TypelessVoiceState.Unavailable ? "TYPELESS_VERSION_UNSUPPORTED" : "VOICE_BUSY");
+            Check(access.Starts == 0 && access.Stops == 0 && access.Cancels == 0, "Touched independent dictation");
+        }
+        access = new TypelessAccess { StartRecording = false };
+        using (var voice = new TypelessVoice(access, () => { }))
+            Reject(() => voice.Start(() => true), "VOICE_INPUT_FAILED");
+        Check(access.Starts == 1 && access.Stops == 0, "Unconfirmed start was retried or committed");
+        access = new TypelessAccess { StartRecording = false };
+        int polls = 0, focusChecks = 0;
+        using (var voice = new TypelessVoice(access, () => { if (++polls == 2) access.Current = TypelessVoiceState.Recording; }))
+            Reject(() => voice.Start(() => ++focusChecks == 1), "VOICE_FOCUS_REQUIRED");
+        Check(access.Cancels == 1 && access.Stops == 0, "Late startup was not cancelled after focus loss");
+        access = new TypelessAccess { FailFinish = true };
+        using (var voice = new TypelessVoice(access, () => { })) {
+            voice.Start(() => true);
+            try { voice.End(true); throw new Exception("Unknown finish reported success"); } catch (IOException) { }
+        }
+        Check(access.Stops == 1 && access.Cancels == 0, "Replayed unknown finish");
+        access = new TypelessAccess { WrongInput = true };
+        using (var voice = new TypelessVoice(access, () => { }))
+            Reject(() => voice.Start(() => true), "VOICE_AUDIO_DEVICE_FAILED");
+        Check(access.Cancels == 1 && access.Stops == 0, "Wrong physical input was not cancelled");
+        access = new TypelessAccess();
+        using (var voice = new TypelessVoice(access, () => { })) {
+            voice.Start(() => true); access.WrongInput = true;
+            Check(!voice.IsRecording, "Mid-recording input change was not detected");
+        }
+        Check(access.Cancels == 1 && access.Stops == 0, "Input change committed speech");
+        Console.WriteLine("Typeless: settings, virtual microphone routing, shortcuts, ownership, cancellation and no-replay checks passed.");
+    }
+    public class Microphones { public object[] Devices { get; set; } }
+    public class CompatibleSettings {
+        public void ApplyPatch(System.Collections.Generic.IDictionary<string, object> patch) { throw new Exception("Probe must not invoke mutations"); }
+        public Microphones GetMicrophoneList() { throw new Exception("Contract check must not invoke RPC"); }
+    }
+    public class MissingPatch { public Microphones GetMicrophoneList() { return null; } }
+    public class WrongPatch {
+        public void ApplyPatch(string patch) { }
+        public Microphones GetMicrophoneList() { return null; }
+    }
+    public class WrongList {
+        public void ApplyPatch(System.Collections.Generic.IDictionary<string, object> patch) { }
+        public string GetMicrophoneList() { return null; }
+    }
+    public class StaticPatch {
+        public static void ApplyPatch(System.Collections.Generic.IDictionary<string, object> patch) { }
+        public Microphones GetMicrophoneList() { return null; }
     }
     static void TestMicrophoneRecovery() {
         string root = Path.Combine(Path.GetTempPath(), "ClipRelay-mic-test-" + Guid.NewGuid().ToString("N"));

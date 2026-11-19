@@ -15,6 +15,7 @@ function Initialize-RelayUpdater {
     try { $saved = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json } catch {}
     $script:relayUpdateState = [PSCustomObject]@{
         Current = $version; Release = $null; Transfer = $null; Operation = ''; Error = ''
+        Development = ($env:CLIPRELAY_DEVELOPMENT -eq '1')
         Checked = $false; NextCheck = [DateTime]::UtcNow.AddSeconds(10); FilePath = ''
         StatePath = $statePath; DownloadDirectory = (Join-Path $directory 'Downloads')
         Notify = ($null -eq $saved -or (Get-PropertyValue $saved 'notify') -ne $false)
@@ -56,7 +57,7 @@ function ConvertFrom-RelayUpdateManifest {
 
 function Start-RelayUpdateCheck {
     $state = $script:relayUpdateState
-    if ($null -eq $state -or $null -ne $state.Transfer) { return }
+    if ($null -eq $state -or $state.Development -or $null -ne $state.Transfer) { return }
     $state.Error = ''
     $state.Operation = 'check'
     $state.NextCheck = [DateTime]::UtcNow.AddMinutes(15)
@@ -65,7 +66,7 @@ function Start-RelayUpdateCheck {
 
 function Start-RelayUpdateDownload {
     $state = $script:relayUpdateState
-    if ($null -ne $state.Transfer -or $null -eq $state.Release) { return }
+    if ($state.Development -or $null -ne $state.Transfer -or $null -eq $state.Release) { return }
     $release = $state.Release
     $path = Join-Path $state.DownloadDirectory "ClipRelay-Windows-$($release.versionName).zip"
     $state.Error = ''; $state.FilePath = ''; $state.Operation = 'download'
@@ -118,6 +119,7 @@ function Get-RelayUpdateSnapshot {
         Operation = $state.Operation; Error = $state.Error; Checked = $state.Checked
         Received = $(if ($null -ne $state.Transfer) { $state.Transfer.Received } else { 0 })
         FilePath = $state.FilePath; Notify = $state.Notify
+        Development = $state.Development
     }
 }
 
@@ -128,6 +130,7 @@ function Set-RelayUpdateNotifications {
 }
 
 function Open-RelayUpdateDownload {
+    if ($script:relayUpdateState.Development) { return }
     $path = $script:relayUpdateState.FilePath
     if ($path -and (Test-Path -LiteralPath $path)) {
         Start-Process -FilePath 'explorer.exe' -ArgumentList "/select,`"$path`""
@@ -139,6 +142,48 @@ function Stop-RelayUpdater {
     if ($null -ne $script:relayUpdateState -and $null -ne $script:relayUpdateState.Transfer) {
         $script:relayUpdateState.Transfer.Dispose()
     }
+}
+
+function Install-RelayDownloadedUpdate {
+    $state = $script:relayUpdateState
+    if ($state.Development -or !$state.FilePath -or $null -eq $state.Release) { throw '没有可安装的正式版更新。' }
+    $package = Get-Item -LiteralPath $state.FilePath -ErrorAction Stop
+    if ($package.Length -ne $state.Release.sizeBytes -or (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash -ine $state.Release.sha256) {
+        $state.FilePath = ''; throw '安装包校验失败，请重新下载。'
+    }
+    $answer = [Windows.Forms.MessageBox]::Show('安装更新将结束当前连接，并保留已有设备和配置。现在安装？', 'ClipRelay 更新', [Windows.Forms.MessageBoxButtons]::YesNo, [Windows.Forms.MessageBoxIcon]::Question, [Windows.Forms.MessageBoxDefaultButton]::Button2)
+    if ($answer -ne [Windows.Forms.DialogResult]::Yes) { return }
+    $directory = Join-Path $state.DownloadDirectory ('install-' + $state.Release.versionName + '-' + [Guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($package.FullName)
+    try {
+        $prefix = [IO.Path]::GetFullPath($directory).TrimEnd('\') + '\'
+        foreach ($entry in $archive.Entries) {
+            $resolved = [IO.Path]::GetFullPath((Join-Path $directory $entry.FullName))
+            if (!$resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw '安装包包含无效路径。' }
+        }
+    } finally { $archive.Dispose() }
+    [IO.Compression.ZipFile]::ExtractToDirectory($package.FullName, $directory)
+    $installer = Join-Path $directory 'ClipRelay-Windows/install.ps1'
+    if (!(Test-Path -LiteralPath $installer)) { throw '安装包缺少安装程序。' }
+    # The existing installer verifies its complete manifest and preserves configuration.
+    # WMI creates an independent helper so closing the current App cannot kill installation.
+    $powerShell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    $inner = @'
+$psi = New-Object Diagnostics.ProcessStartInfo
+$psi.FileName = '__POWERSHELL__'
+$psi.Arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "__INSTALLER__"'
+$psi.WorkingDirectory = '__DIRECTORY__'
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+[void][Diagnostics.Process]::Start($psi)
+'@
+    $inner = $inner.Replace('__POWERSHELL__', $powerShell.Replace("'", "''")).Replace('__INSTALLER__', $installer.Replace("'", "''")).Replace('__DIRECTORY__', (Split-Path $installer).Replace("'", "''"))
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+    $startup = ([wmiclass]'Win32_ProcessStartup').CreateInstance(); $startup.ShowWindow = 0
+    $result = ([wmiclass]'Win32_Process').Create("`"$powerShell`" -NoProfile -STA -WindowStyle Hidden -EncodedCommand $encoded", (Split-Path $installer), $startup)
+    if ($result.ReturnValue -ne 0) { throw '无法启动安装程序，请重试。' }
 }
 
 function Show-RelayUpdates {

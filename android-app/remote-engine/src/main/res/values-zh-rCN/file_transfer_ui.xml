@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ft_refresh">刷新目录</string>
+    <string name="ft_computer">电脑</string>
+    <string name="ft_phone">手机</string>
+    <string name="ft_online">在线</string>
+    <string name="ft_connecting">正在连接</string>
+    <string name="ft_disconnected">连接暂不可用</string>
+    <string name="ft_selected_title">已选 %1$d 项</string>
+    <string name="ft_selection_subtitle">共 %1$s · %2$s 的文件</string>
+    <string name="ft_clear_selection">取消选择</string>
+    <string name="ft_select_all">全选</string>
+    <string name="ft_tasks">传输任务</string>
+    <string name="ft_roots_title">电脑目录</string>
+    <string name="ft_roots_subtitle">%1$s 上的常用位置</string>
+    <string name="ft_item_count">%1$d 项</string>
+    <string name="ft_new">新建</string>
+    <string name="ft_choose_location">先选择电脑上的保存目录</string>
+    <string name="ft_select_hint">点选电脑上的文件，即可下载到手机</string>
+    <string name="ft_selected_hint">已选文件可下载到手机</string>
+    <string name="ft_empty_folder">这个文件夹还是空的</string>
+    <string name="ft_empty_folder_hint">可以从手机发送文件到这里</string>
+    <string name="ft_selected_count">已选 %1$d 个文件</string>
+    <string name="ft_download">下载到手机</string>
+    <string name="ft_upload">发送手机文件</string>
+    <string name="ft_download_destination">下一步选择手机保存位置</string>
+    <string name="ft_upload_destination">保存到 %1$s</string>
+    <string name="ft_retry">重试</string>
+    <string name="ft_current_folder">当前目录：%1$s</string>
+    <string name="ft_folder_name">文件夹名称</string>
+    <string name="ft_create">创建</string>
+    <string name="ft_cancel_title">取消这个传输？</string>
+    <string name="ft_cancel_message">取消后，需要重新发起传输。</string>
+    <string name="ft_keep">继续保留</string>
+    <string name="ft_blocked">不可用 · 受限路径</string>
+    <string name="ft_folder">文件夹</string>
+    <string name="ft_file">文件</string>
+    <string name="ft_history">历史记录</string>
+    <string name="ft_paused_count">%1$d 个任务已暂停</string>
+    <string name="ft_active_count">%1$d 个任务正在传输</string>
+    <string name="ft_queue_hint">发送与下载 · 查看进度</string>
+    <string name="ft_tasks_subtitle">与 %1$s 之间的文件传输</string>
+    <string name="ft_active">进行中</string>
+    <string name="ft_no_history">暂无传输记录</string>
+    <string name="ft_no_tasks_hint">发送或下载文件后，可在这里查看进度</string>
+    <string name="ft_history_hint">清除记录不会删除已传输的文件。</string>
+    <string name="ft_background_hint">收起面板后\n传输会继续进行</string>
+    <string name="ft_resume_all">全部继续</string>
+    <string name="ft_close">关闭面板</string>
+    <string name="ft_to_computer">手机 → 电脑</string>
+    <string name="ft_to_phone">电脑 → 手机</string>
+    <string name="ft_chosen_folder">所选文件夹</string>
+</resources>
+

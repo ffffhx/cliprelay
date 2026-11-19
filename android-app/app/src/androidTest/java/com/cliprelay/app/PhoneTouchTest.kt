@@ -18,6 +18,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.limelight.R
 import com.limelight.binding.input.touch.PhoneTouchContext
 import com.limelight.binding.input.touch.PhoneScrollState
+import com.limelight.binding.input.touch.PhonePageState
 import com.limelight.binding.input.touch.PhonePinchState
 import com.limelight.nvstream.jni.MoonBridge
 import com.limelight.preferences.TouchMode
@@ -74,6 +75,7 @@ class PhoneTouchTest {
             val wheels = mutableListOf<Pair<Short, Short>>()
             val clicks = mutableListOf<Boolean>()
             val zooms = mutableListOf<Boolean>()
+            val pages = mutableListOf<Boolean>()
             val feedbackPoints = mutableListOf<Pair<Float, Float>>()
             var feedbackVisible = false
             var feedbackReleases = 0
@@ -107,6 +109,11 @@ class PhoneTouchTest {
                     override fun position(x: Float, y: Float) { mousePositions += x to y }
                     override fun scroll(vertical: Short, horizontal: Short) { wheels += vertical to horizontal }
                     override fun zoom(inside: Boolean) { zooms += inside }
+                })
+                context!!.setPageSink(object : PhonePageState.Sink {
+                    override fun position(x: Float, y: Float) { mousePositions += x to y }
+                    override fun page(pageDown: Boolean) { pages += pageDown }
+                    override fun click(right: Boolean) { clicks += right }
                 })
                 context!!.setScrollFeedback(object : PhoneTouchContext.ScrollFeedback {
                     override fun show(x: Float, y: Float) { feedbackPoints += x to y; feedbackVisible = true }
@@ -314,6 +321,7 @@ class PhoneTouchTest {
                     override fun applicationChanged() { context!!.cancel() }
                     override fun scrollCompatibilityChanged(enabled: Boolean) { context!!.setScrollCompatibility(enabled) }
                     override fun pinchCompatibilityChanged(enabled: Boolean) { context!!.setPinchCompatibility(enabled) }
+                    override fun pageCompatibilityChanged(enabled: Boolean) { context!!.setPageCompatibility(enabled) }
                     override fun touchMode() = selected
                     override fun selectTouchMode(mode: TouchMode) { selected = mode; mode.save(screen) }
                 })
@@ -370,7 +378,7 @@ class PhoneTouchTest {
             chooseTouchMode(TouchMode.PHONE)
             assertEquals(TouchMode.PHONE, selected)
             assertEquals(TouchMode.PHONE, TouchMode.read(screen))
-            // Only ChatGPT uses single-finger wheel scrolling; Orca/general retain native contacts.
+            // Only ChatGPT uses single-finger wheel scrolling; Orca and other apps keep native contacts.
             val checksBeforeProfiles = keyboardChecks
             fun swipeInPhoneMode(compatible: Boolean) {
                 assertEquals(TouchMode.PHONE, selected)
@@ -424,7 +432,7 @@ class PhoneTouchTest {
             send(MotionEvent.ACTION_UP, a)
             assertEquals(zoomsBeforeSwitch, zooms.size)
             instrument.runOnMainSync { toolbar.observeApplication("orca") }
-            // Reopening desktop mode must preserve Orca's native single-finger gestures.
+            // Reopening desktop mode must preserve native contacts.
             instrument.runOnMainSync { toolbar.setGameMode(false) }
             swipeInPhoneMode(false)
             instrument.runOnMainSync { toolbar.observeApplication("chatgpt") }
@@ -443,6 +451,53 @@ class PhoneTouchTest {
             assertEquals(cancelledCount, events.size)
             assertTrue(held.isEmpty())
             assertEquals(checksBeforeProfiles, keyboardChecks)
+            // Orca single-finger touch is native on both sides of the former sidebar boundary.
+            // The video is 800x400 at (100,100).
+            val nativeStart = events.size
+            val pagesStart = pages.size
+            val wheelsStart = wheels.size
+            val clicksStart = clicks.size
+            val mouseStart = mousePositions.size
+            for (rootX in listOf(130f, 300f, 500f, 850f)) {
+                val finger = Finger(7, rootX, 300f)
+                val x = (rootX - 100f) / 800f
+                for (endY in listOf(200f, 400f)) {
+                    val before = events.size
+                    send(MotionEvent.ACTION_DOWN, finger)
+                    send(MotionEvent.ACTION_MOVE, finger.copy(y = endY))
+                    send(MotionEvent.ACTION_UP, finger.copy(y = endY))
+                    assertEquals(listOf(
+                        Contact(MoonBridge.LI_TOUCH_EVENT_DOWN, 7, x, .5f),
+                        Contact(MoonBridge.LI_TOUCH_EVENT_MOVE, 7, x, (endY - 100f) / 400f),
+                        Contact(MoonBridge.LI_TOUCH_EVENT_UP, 7, x, (endY - 100f) / 400f)
+                    ), events.drop(before))
+                }
+                val beforeTap = events.size
+                send(MotionEvent.ACTION_DOWN, finger)
+                send(MotionEvent.ACTION_UP, finger)
+                assertEquals(listOf(
+                    Contact(MoonBridge.LI_TOUCH_EVENT_DOWN, 7, x, .5f),
+                    Contact(MoonBridge.LI_TOUCH_EVENT_UP, 7, x, .5f)
+                ), events.drop(beforeTap))
+                assertTrue(held.isEmpty())
+            }
+            assertEquals(nativeStart + 32, events.size)
+            assertEquals(pagesStart, pages.size)
+            assertEquals(wheelsStart, wheels.size)
+            assertEquals(clicksStart, clicks.size)
+            assertEquals(mouseStart, mousePositions.size)
+            // Switching away cancels native contact without replaying the old release.
+            val terminal = Finger(7, 500f, 300f)
+            send(MotionEvent.ACTION_DOWN, terminal)
+            instrument.runOnMainSync { toolbar.observeApplication("chatgpt") }
+            assertEquals(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, events.last().type)
+            val nativeBeforeSwitch = events.size
+            send(MotionEvent.ACTION_MOVE, terminal.copy(y = 200f))
+            send(MotionEvent.ACTION_UP, terminal.copy(y = 200f))
+            assertEquals(pagesStart, pages.size)
+            assertEquals(nativeBeforeSwitch, events.size)
+            assertTrue(held.isEmpty())
+            instrument.runOnMainSync { toolbar.observeApplication("orca") }
             chooseTouchMode(TouchMode.DIRECT)
             assertEquals(TouchMode.DIRECT, selected)
             assertEquals(TouchMode.DIRECT, TouchMode.read(screen))

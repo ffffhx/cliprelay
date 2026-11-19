@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ft_refresh">Refresh folder</string>
+    <string name="ft_computer">Computer</string>
+    <string name="ft_phone">Phone</string>
+    <string name="ft_online">Online</string>
+    <string name="ft_connecting">Connecting</string>
+    <string name="ft_disconnected">Connection unavailable</string>
+    <string name="ft_selected_title">%1$d selected</string>
+    <string name="ft_selection_subtitle">%1$s · Files on %2$s</string>
+    <string name="ft_clear_selection">Clear selection</string>
+    <string name="ft_select_all">Select all</string>
+    <string name="ft_tasks">Transfers</string>
+    <string name="ft_roots_title">Computer folders</string>
+    <string name="ft_roots_subtitle">Common locations on %1$s</string>
+    <string name="ft_item_count">%1$d items</string>
+    <string name="ft_new">New</string>
+    <string name="ft_choose_location">Choose a folder on your computer first</string>
+    <string name="ft_select_hint">Select files on your computer to download to your phone</string>
+    <string name="ft_selected_hint">Selected files can be downloaded to your phone</string>
+    <string name="ft_empty_folder">This folder is empty</string>
+    <string name="ft_empty_folder_hint">Send a file from your phone to get started</string>
+    <string name="ft_selected_count">%1$d files selected</string>
+    <string name="ft_download">Download to phone</string>
+    <string name="ft_upload">Send phone files</string>
+    <string name="ft_download_destination">Next: choose where to save on your phone</string>
+    <string name="ft_upload_destination">Save to %1$s</string>
+    <string name="ft_retry">Retry</string>
+    <string name="ft_current_folder">Current folder: %1$s</string>
+    <string name="ft_folder_name">Folder name</string>
+    <string name="ft_create">Create</string>
+    <string name="ft_cancel_title">Cancel this transfer?</string>
+    <string name="ft_cancel_message">You will need to start the transfer again.</string>
+    <string name="ft_keep">Keep transfer</string>
+    <string name="ft_blocked">Unavailable · restricted path</string>
+    <string name="ft_folder">Folder</string>
+    <string name="ft_file">File</string>
+    <string name="ft_history">History</string>
+    <string name="ft_paused_count">%1$d transfers paused</string>
+    <string name="ft_active_count">%1$d transfers in progress</string>
+    <string name="ft_queue_hint">Send and download · View progress</string>
+    <string name="ft_tasks_subtitle">File transfers with %1$s</string>
+    <string name="ft_active">In progress</string>
+    <string name="ft_no_history">No transfer history</string>
+    <string name="ft_no_tasks_hint">Send or download files to see progress here</string>
+    <string name="ft_history_hint">Clearing a record keeps the transferred file.</string>
+    <string name="ft_background_hint">Transfers continue when you close this panel.</string>
+    <string name="ft_resume_all">Resume all</string>
+    <string name="ft_close">Close panel</string>
+    <string name="ft_to_computer">Phone → Computer</string>
+    <string name="ft_to_phone">Computer → Phone</string>
+    <string name="ft_chosen_folder">Selected folder</string>
+</resources>
+

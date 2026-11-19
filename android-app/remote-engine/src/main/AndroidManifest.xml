@@ -48,7 +48,11 @@
         <activity android:name="com.limelight.terminal.TerminalActivity" android:exported="false"
             android:theme="@style/RemoteTheme" android:windowSoftInputMode="stateHidden|adjustResize"
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|uiMode" />
+        <activity android:name="com.limelight.herdr.HerdrActivity" android:exported="false"
+            android:theme="@style/HerdrTheme" android:windowSoftInputMode="stateHidden|adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|uiMode" />
         <service android:name="com.limelight.files.TransferService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name="com.limelight.herdr.HerdrMonitorService" android:exported="false" android:foregroundServiceType="connectedDevice" />
         <activity android:name="com.limelight.HelpActivity" android:exported="false"
             android:theme="@style/RemoteTheme" />
         <service android:name="com.limelight.discovery.DiscoveryService" android:exported="false" />

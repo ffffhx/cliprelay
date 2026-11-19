@@ -84,15 +84,25 @@ export async function mount(root,api,view='control-center'){
   function shortcutRows(){return `<div class="shortcut-row"><span>${icon('text')}发送文本</span><span class="key-combo"><kbd>Ctrl</kbd> + <kbd>C</kbd></span></div><div class="shortcut-row"><span>${icon('screenshot')}发送截图${snapshot.runtime.ScreenshotHotkeyAvailable===false?'<span class="failed">快捷键冲突</span>':''}</span><span class="key-combo"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>F12</kbd></span></div>`;}
   function devices(){return heading('剪切板','选择接收设备，按快捷键发送文本或截图。',button('添加设备','add','','plus'))+`<div class="section-heading"><h2>设备 <span>${peers().length}</span></h2><div class="device-toolbar"><span class="small muted">${probe?.phase==='done'?probe.results.filter(r=>r.ok).length+' 台可发送剪切板':''}</span>${button(probe&&probe.phase!=='done'?'检测中…':'检测全链路连接','probe','','wifi',probe&&probe.phase!=='done'?'disabled':'')}</div></div>${probeSummary()}${deviceList()}<section class="shortcut-section"><div class="section-heading"><h2>快捷键</h2><button class="inline-action" data-action="targets">发送目标 · ${targets().length} 台设备${icon('down')}</button></div>${shortcutRows()}<div class="last-status" role="status">${icon(['error','partial'].includes(snapshot.runtime.State)?'help':'checkCircle')}<span>${esc(time(snapshot.runtime.At))} ${esc(snapshot.runtime.Detail||'等待下一次发送')}</span></div></section>`;}
   const remoteActive=()=>['connecting','starting','running','recovering','closing'].includes(remoteSession.phase);
+  function streamStats(phase){
+    if(phase!=='running')return '';
+    const stats=remoteSession.statistics,live=stats?.phase==='live';
+    const number=value=>Number.isFinite(value)&&value>=0?value.toFixed(1):'—';
+    const width=Number.isInteger(stats?.width)&&stats.width>0?stats.width:0;
+    const height=Number.isInteger(stats?.height)&&stats.height>0?stats.height:0;
+    const resolution=width&&height?`${width} × ${height}`:'—';
+    const note=stats?.phase==='stale'?'实时数据已暂停':stats?.phase==='unavailable'?'实时数据暂不可用':live?'':'正在采样…';
+    return `<section class="stream-stats" aria-label="实时串流状态" data-stats-phase="${esc(stats?.phase||'loading')}"><dl><div title="实际接收的视频码率，不含音频及网络协议开销"><dt>实时码率</dt><dd data-stat="bitrate">${live?number(stats.bitrateMbps):'—'} <small>Mbps</small></dd></div><div title="实际呈现的画面帧率"><dt>实时帧率</dt><dd data-stat="fps">${live?number(stats.fps):'—'} <small>fps</small></dd></div><div><dt>画质</dt><dd data-stat="quality">${height?`${height}p`:'—'}</dd><span class="stream-resolution">${resolution}</span></div></dl>${note?`<p class="stream-stats-note">${note}</p>`:''}</section><p class="stream-shortcut">Ctrl + Alt + Shift + X 退出或进入全屏</p>`;
+  }
   function remoteCard(peer){
     const result=remoteProbe?.results.find(r=>r.id===peer.id),owned=remoteSession.peerId===peer.id;
     const phase=owned&&remoteActive()?remoteSession.phase:'';
     const failure=owned&&remoteSession.error||(!result?.ok&&result?.detail)||remoteProbe?.error||'';
     const label=phase?({connecting:'正在连接…',starting:'正在启动控制…',running:'已连接',recovering:'正在重连…',closing:'正在断开…'})[phase]:failure?'无法连接':result?.ok?'可连接':remoteProbe?.phase==='checking'?'检测中…':'待检测';
     const action=phase?button(phase==='connecting'?'取消连接':'断开连接','remote-stop','','',phase==='closing'?'disabled':''):button('连接电脑','connect','primary','remote',`data-id="${esc(peer.id)}" ${!result?.ok||remoteActive()||remoteProbe?.phase==='checking'?'disabled':''}`);
-    return `<article class="device-card remote-card" data-device-id="${esc(peer.id)}"><div class="remote-art">${icon(glyph(peer))}</div><div class="remote-info"><h3>${esc(peer.name)}</h3><div class="device-meta"><span>${platform(peer)}</span><span class="${failure?'failed':result?.ok?'passed':'muted'}">${label}</span></div>${failure?`<p class="remote-error" role="status">${esc(failure)}</p>`:''}${owned&&['DEVICE_CODE_REQUIRED','DEVICE_CODE_INVALID'].includes(remoteSession.errorCode)?button('输入设备码','retry-code','primary','',`data-id="${esc(peer.id)}"`):action}${peer.networkId&&!phase?button('移除','remove-computer','text','',`data-id="${esc(peer.networkId)}"`):''}</div></article>`;
+    return `<article class="device-card remote-card" data-device-id="${esc(peer.id)}"><div class="remote-art">${icon(glyph(peer))}</div><div class="remote-info"><h3>${esc(peer.name)}</h3><div class="device-meta"><span>${platform(peer)}</span><span class="${failure?'failed':phase==='running'||result?.ok?'passed':'muted'}">${label}</span></div>${streamStats(phase)}${failure?`<p class="remote-error" role="status">${esc(failure)}</p>`:''}${owned&&['DEVICE_CODE_REQUIRED','DEVICE_CODE_INVALID'].includes(remoteSession.errorCode)?button('输入设备码','retry-code','primary','',`data-id="${esc(peer.id)}"`):action}${peer.networkId&&!phase?button('移除','remove-computer','text','',`data-id="${esc(peer.networkId)}"`):''}</div></article>`;
   }
-  function remote(){return heading('远程控制','添加电脑后即可连接；重新检测会更新已添加电脑的地址并检查连通性。',button('添加电脑','connect-new','','plus'))+`<div class="section-heading"><h2>电脑 <span>${computers().length}</span></h2>${button(remoteProbe?.phase==='checking'?'检测中…':'重新检测','remote-probe','','wifi',remoteProbe?.phase==='checking'||remoteActive()?'disabled':'')}</div>${computers().length?`<div class="devices-grid">${computers().map(remoteCard).join('')}</div>`:'<div class="empty-state">'+icon('monitor')+'<h2>添加你的第一台电脑</h2><p>点击「添加电脑」扫描局域网；不同网络请使用设备码添加。</p></div>'}`;}
+  function remote(){return heading('远程控制','连接电脑或 Windows 云主机，查看桌面并使用键盘鼠标操作。',`<div class="remote-add-actions">${button('添加云主机','code-add','primary')}${button('添加电脑','connect-new','','plus')}</div>`)+`<div class="section-heading"><h2>电脑 <span>${computers().length}</span></h2>${button(remoteProbe?.phase==='checking'?'检测中…':'重新检测','remote-probe','','wifi',remoteProbe?.phase==='checking'||remoteActive()?'disabled':'')}</div>${computers().length?`<div class="devices-grid">${computers().map(remoteCard).join('')}</div>`:'<div class="empty-state">'+icon('monitor')+'<h2>添加你的第一台电脑</h2><p>点击「添加电脑」选择添加方式：扫描局域网、输入设备码或手动输入地址。</p></div>'}`;}
   function settings(){
     const c=snapshot.config;
     const hostDetail=remoteHostError?'无法读取远控状态：'+esc(remoteHostError):remoteHostBusy?'正在保存…':!remoteHost?'正在读取远控状态…':remoteHost.enabled&&!remoteHost.ready?'正在准备接收连接…':'开启后允许设备连接本机，首次配对可要求输入设备码。关闭会断开远控并停止接收连接。';
@@ -155,7 +165,7 @@ export async function mount(root,api,view='control-center'){
   }
   function codeDialog(peer=null){
     codeTarget=peer;
-    modal(peer?'输入设备码':'通过设备码添加电脑',`<form id="code-form"><p>${peer?'请输入 '+esc(peer.name)+' 的设备码。':'不同网络的电脑通过设备码配对。'}</p><label>设备码<input class="modal-input" name="code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" placeholder="对方设置中显示的 8 位设备码" required></label><p>配对成功后会记住这台电脑。</p><button type="submit" hidden></button></form>`,button('取消','dismiss')+button('配对连接','code-submit','primary'));
+    modal(peer?'输入设备码':'通过设备码添加电脑',`<form id="code-form"><p>${peer?'请输入 '+esc(peer.name)+' 的设备码。':'在云主机或电脑上运行 ClipRelay，在「设置 → 通用」开启「允许被连接」，并输入其八位设备码。配对后即可查看和操作桌面。'}</p><label>设备码<input class="modal-input" name="code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" placeholder="对方设置中显示的 8 位设备码" required></label><p>配对成功后会记住这台电脑。</p><button type="submit" hidden></button></form>`,button('取消','dismiss')+button('配对连接','code-submit','primary'));
   }
   async function submitCode(){
     const form=dialog.querySelector('#code-form');if(!form||!form.reportValidity())return;
@@ -265,6 +275,10 @@ export async function mount(root,api,view='control-center'){
   }
   let discovered=[],discoveryKind='devices';
   const sameDevice=(a,b)=>a.id&&b.id&&String(a.id).toLowerCase()===String(b.id).toLowerCase()||a.address&&b.address&&String(a.address).toLowerCase()===String(b.address).toLowerCase()&&Number(a.port)===Number(b.port);
+  function addComputer(){
+    discoveryKind='computers';discovered=[];
+    modal('添加电脑',`<p>查找同一局域网内的电脑，请点击下方按钮开始扫描。</p>${button('扫描局域网设备','scan-again','primary','wifi','data-kind="computers"')}<p>请在对方的 ClipRelay 设置中开启「允许被发现」。不同网络可通过设备码添加。</p>`,button('输入设备码','code-add')+button('手动输入地址','manual','','','data-kind="computers"')+button('取消','dismiss'));
+  }
   async function add(kind='devices'){
     discoveryKind=kind;discovered=[];
     const computerOnly=kind==='computers',title=computerOnly?'添加电脑':'添加设备';
@@ -279,7 +293,7 @@ export async function mount(root,api,view='control-center'){
     }catch(e){if(dialog.open&&dialog.scanMarker===marker)error(e);}
   }
   function updates(){modal('关于与更新','<div id="update-state"></div>',button('完成','dismiss','primary'));updateDialog();if(!snapshot.update.Operation)api.request('update-check').catch(error);}
-  function updateDialog(){const node=dialog.querySelector('#update-state');if(!node)return;const u=snapshot.update;node.innerHTML=`<p>ClipRelay · v${esc(u.CurrentVersion||'—')}</p><p role="status">${esc(u.Error|| (u.Operation==='check'?'正在检查更新…':u.Operation==='download'?'正在下载…':u.FilePath?'下载完成':u.Release?'发现新版 v'+u.Release.versionName:u.Checked?'已是最新版本':'等待检查'))}</p>${u.Release?`<div class="update-notes">${esc(u.Release.releaseNotes||'')}</div>`:''}<div class="modal-footer">${button('检查更新','update-check','','',u.Operation?'disabled':'')}${u.Release?button(u.FilePath?'打开下载位置':'下载新版',u.FilePath?'update-open':'update-download','primary','',u.Operation?'disabled':''):''}</div>`;}
+  function updateDialog(){const node=dialog.querySelector('#update-state');if(!node)return;const u=snapshot.update;if(u.Development){node.innerHTML=`<p>ClipRelay · 开发版 v${esc(u.CurrentVersion||'—')}</p><p>使用本地源码。界面修改自动刷新，后台修改后按提示重启；线上正式版不会覆盖此版本。</p>`;return;}node.innerHTML=`<p>ClipRelay · 正式版 v${esc(u.CurrentVersion||'—')}</p><p role="status">${esc(u.Error|| (u.Operation==='check'?'正在检查更新…':u.Operation==='download'?'正在下载…':u.FilePath?'下载完成并已校验':u.Release?'发现新版 v'+u.Release.versionName:u.Checked?'已是最新版本':'等待检查'))}</p>${u.Release?`<div class="update-notes">${esc(u.Release.releaseNotes||'')}</div>`:''}<div class="modal-footer">${button('检查更新','update-check','','',u.Operation?'disabled':'')}${u.Release?button(u.FilePath?'安装更新':'下载新版',u.FilePath?'update-install':'update-download','primary','',u.Operation?'disabled':''):''}</div>`;}
   async function close(){try{await commitInput(document.activeElement);await saveQueue;await api.window('close');}catch(e){error(e);}}
   async function commitInput(node){if(!snapshot||!node)return;if(node.id==='device-name'&&node.value!==snapshot.config.deviceName){const value=node.value.trim();if(!value)throw new Error('请输入设备名称');await patch({deviceName:value});}if(node.id==='listen-port'&&node.value!==String(snapshot.config.port)){if(!/^\d+$/.test(node.value)||Number(node.value)<1||Number(node.value)>65535)throw new Error('端口必须是 1 到 65535 之间的整数');await patch({port:Number(node.value)});}}
   const actions={
@@ -296,7 +310,7 @@ export async function mount(root,api,view='control-center'){
     'toggle-code-policy':async()=>{const reply=await api.request('remote',{action:'deviceAccess',required:!deviceAccess.required});if(!reply?.ok)throw new Error(reply?.error||'无法保存连接设置');deviceAccess=reply.data;paint();},
     'rotate-device-code':confirmCodeRotation,'confirm-device-code':rotateDeviceCode,
     'remote-probe':checkRemote,'remote-stop':async()=>{remoteSession=await api.window('desktop-stop');paint();},
-    'connect-new':()=>add('computers'),preview:()=>api.window('open',{name:'preview-remote'}),updates,'update-check':()=>api.request('update-check'),'update-download':()=>api.request('update-download'),'update-open':()=>api.request('update-open')
+    'connect-new':addComputer,preview:()=>api.window('open',{name:'preview-remote'}),updates,'update-check':()=>api.request('update-check'),'update-download':()=>api.request('update-download'),'update-open':()=>api.request('update-open'),'update-install':()=>api.request('update-install')
   };
   root.addEventListener('click',async event=>{
     const el=event.target.closest('button');if(!el||el.disabled)return;

@@ -1,0 +1,16 @@
+<resources>
+    <style name="HerdrTheme" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#3F5ED7</item>
+        <item name="android:windowBackground">#F7F8FA</item>
+        <item name="android:colorBackground">#F7F8FA</item>
+        <item name="android:statusBarColor">#F7F8FA</item>
+        <item name="android:navigationBarColor">#F7F8FA</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:textColorPrimary">#202633</item>
+        <item name="android:textColorSecondary">#596474</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

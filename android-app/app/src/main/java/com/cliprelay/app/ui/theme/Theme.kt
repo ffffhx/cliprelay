@@ -42,7 +42,7 @@ private val DarkColors = darkColorScheme(
     secondaryContainer = Color(0xFF243B5E),
     onSecondaryContainer = Color(0xFF7AB7FF),
     secondary = Color(0xFFBEA9FF),
-    tertiary = SignalCyan,
+    tertiary = Color(0xFF88C8AD),
     background = Color(0xFF181C24),
     onBackground = Color(0xFFE8F1FA),
     surface = Color(0xFF20252F),
@@ -94,8 +94,7 @@ private val ClipRelayTypography = Typography(
 )
 
 @Composable
-fun ClipRelayTheme(content: @Composable () -> Unit) {
-    val darkTheme = isSystemInDarkTheme()
+fun ClipRelayTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     val colorScheme = if (darkTheme) DarkColors else LightColors
 
     MaterialTheme(

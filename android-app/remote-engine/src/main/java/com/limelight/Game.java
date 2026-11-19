@@ -707,10 +707,31 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 conn.sendMouseButtonDown(button); conn.sendMouseButtonUp(button);
             }
         });
-        com.limelight.ui.GameInputState zoomKeys = new com.limelight.ui.GameInputState((key, down, modifiers) ->
+        com.limelight.ui.GameInputState.KeySink syntheticKeys = (key, down, modifiers) ->
                 conn.sendKeyboardInput((short)(0x8000 | key),
-                        down ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP, (byte)modifiers, (byte)0));
+                        down ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP, (byte)modifiers, (byte)0);
+        com.limelight.ui.GameInputState zoomKeys = new com.limelight.ui.GameInputState(syntheticKeys);
+        com.limelight.ui.GameInputState pageKeys = new com.limelight.ui.GameInputState(syntheticKeys);
         zoomKeys.setEnabled(true);
+        pageKeys.setEnabled(true);
+        phoneTouch.setPageSink(new com.limelight.binding.input.touch.PhonePageState.Sink() {
+            public void position(float x, float y) {
+                conn.sendMousePosition((short)Math.max(0, Math.min(streamView.getWidth(), x)),
+                        (short)Math.max(0, Math.min(streamView.getHeight(), y)),
+                        (short)streamView.getWidth(), (short)streamView.getHeight());
+            }
+            public void page(boolean pageDown) {
+                if (!connected || !hasWindowFocus()) return;
+                // Orca pages its terminal with plain Page Down / Page Up. Each tap
+                // releases its key immediately, including on failure.
+                try { pageKeys.update("page", pageDown ? 0x22 : 0x21); }
+                finally { pageKeys.releaseAll(); }
+            }
+            public void click(boolean right) {
+                byte button = right ? MouseButtonPacket.BUTTON_RIGHT : MouseButtonPacket.BUTTON_LEFT;
+                conn.sendMouseButtonDown(button); conn.sendMouseButtonUp(button);
+            }
+        });
         phoneTouch.setPinchSink(new com.limelight.binding.input.touch.PhonePinchState.Sink() {
             public void position(float x, float y) {
                 conn.sendMousePosition((short)Math.max(0, Math.min(streamView.getWidth(), x)),
@@ -761,6 +782,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
                     @Override public void pinchCompatibilityChanged(boolean enabled) {
                         phoneTouch.setPinchCompatibility(enabled);
+                    }
+                    @Override public void pageCompatibilityChanged(boolean enabled) {
+                        phoneTouch.setPageCompatibility(enabled);
                     }
                     @Override public void applicationChanged() {
                         if (voiceInput != null) voiceInput.end(true);

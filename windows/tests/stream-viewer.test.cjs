@@ -32,6 +32,38 @@ test('native presentation telemetry is opt-in and renderer options cannot enable
   assert.equal(JSON.parse(envelope(host(),identities.client,{},true).subarray(4)).telemetry,true);
   assert.equal(JSON.parse(envelope(host(),identities.client).subarray(4)).telemetry,undefined);
   assert.throws(()=>envelope(host(),identities.client,{telemetry:true}),{code:'INVALID_STREAM_OPTIONS'});
+  assert.equal(JSON.parse(envelope(host(),identities.client).subarray(4)).fullscreen,true);
+  assert.equal(JSON.parse(envelope(host(),identities.client,{fullscreen:false}).subarray(4)).fullscreen,false);
+  assert.equal(JSON.parse(envelope(host(),identities.client,{},true,false,true).subarray(4)).statistics,true);
+  assert.equal(JSON.parse(envelope(host(),identities.client,{},true).subarray(4)).statistics,undefined);
+  assert.throws(()=>envelope(host(),identities.client,{statistics:true}),{code:'INVALID_STREAM_OPTIONS'});
+  assert.throws(()=>envelope(host(),identities.client,{},false,false,true),{code:'INVALID_STREAM_OPTIONS'});
+});
+
+test('negotiated native counters reach card statistics and reset across reconnection',async t=>{
+  let now=0;
+  const f=manager(store(),{resolveTelemetry:()=>true,resolveStatistics:()=>true,now:()=>now});t.after(()=>f.viewer.stop());
+  await f.viewer.open();await until(()=>f.viewer.phase==='running');
+  const sample=(elapsedMs,receivedFrames,renderedFrames,videoBytes)=>({version:1,event:'statistics',elapsedMs,receivedFrames,renderedFrames,videoBytes});
+  f.child.send(progress(20));f.child.send(sample(0,10,8,1000));await until(()=>f.viewer.record?.statistics?.latest);
+  f.child.send(sample(1000,70,53,1501000));await until(()=>f.viewer.snapshot().statistics?.phase==='live');
+  assert.deepEqual(f.viewer.snapshot().statistics,{phase:'live',bitrateMbps:12,fps:45,width:1280,height:720});
+  now=3000;assert.equal(f.viewer.snapshot().statistics.phase,'stale');assert.equal(f.viewer.snapshot().statistics.width,0);
+  f.child.send({version:1,event:'ended',reason:'network'});await until(()=>f.children.length===2&&f.viewer.phase==='running');
+  assert.equal(f.viewer.snapshot().statistics,null);
+  f.child.send(progress(5));f.child.send(sample(0,2,1,100));await until(()=>f.viewer.snapshot().statistics?.phase==='loading');
+  f.child.send(sample(1000,32,31,500100));await until(()=>f.viewer.snapshot().statistics?.phase==='live');
+  assert.equal(f.viewer.snapshot().statistics.fps,30);
+});
+
+test('unnegotiated or regressing statistics cannot publish misleading measurements',async t=>{
+  const value={version:1,event:'statistics',elapsedMs:1,receivedFrames:2,renderedFrames:1,videoBytes:100};
+  for(const enabled of [false,true])await t.test(String(enabled),async t=>{
+    const f=manager(store(),{resolveTelemetry:()=>true,resolveStatistics:()=>enabled});t.after(()=>f.viewer.stop());
+    await f.viewer.open();await until(()=>f.viewer.phase==='running');f.child.send(value);
+    if(enabled){await until(()=>f.viewer.record?.statistics?.latest);f.child.send({...value,elapsedMs:2,videoBytes:99});}
+    await until(()=>f.viewer.phase==='error');assert.equal(f.viewer.error,'VIEWER_PROTOCOL_ERROR');
+  });
 });
 
 test('long-running progress stays bounded and repeated frame reports cannot make a frozen picture fresh',async t=>{

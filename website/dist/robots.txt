@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://cliprelay.zestybead3.chatgpt.site/sitemap.xml
+Sitemap: https://cliprelay.fengf0099.chatgpt.site/sitemap.xml

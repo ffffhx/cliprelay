@@ -81,4 +81,39 @@ class DiscoveryLifecycleTest {
         } finally { agent.stopDiscovery() }
         await { env.held.get() == 0 }
     }
+    @Test fun stopDoesNotWaitForAnInFlightNetworkCallback() {
+        val env = Environment()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val stopped = CountDownLatch(1)
+        val agent = object : JmDNSDiscoveryAgent(object : MdnsDiscoveryListener {
+            override fun notifyComputerAdded(computer: MdnsComputer) = Unit
+            override fun notifyDiscoveryFailure(error: Exception) = throw AssertionError(error)
+        }, env) {
+            override fun reportNewComputer(name: String, port: Int, v4: Array<java.net.Inet4Address>, v6: Array<java.net.Inet6Address>) {
+                entered.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+        }
+        val event = object : javax.jmdns.ServiceEvent(Any()) {
+            override fun getDNS(): javax.jmdns.JmDNS? = null
+            override fun getType() = "_nvstream._tcp.local."
+            override fun getName() = "fixture"
+            override fun getInfo() = javax.jmdns.ServiceInfo.create(type, name, 47989, "")
+        }
+        var callback: Thread? = null
+        var stop: Thread? = null
+        try {
+            agent.startDiscovery(1000)
+            await { env.opened.singleOrNull()?.callback != null }
+            callback = Thread { env.opened[0].callback!!.serviceResolved(event) }.also { it.start() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            stop = Thread { agent.stopDiscovery(); stopped.countDown() }.also { it.start() }
+            assertTrue("Leaving the UI must not wait for a discovery listener's network I/O", stopped.await(500, TimeUnit.MILLISECONDS))
+            env.opened[0].callback!!.serviceResolved(null) // A callback arriving after stop is discarded.
+        } finally {
+            release.countDown(); callback?.join(2000); stop?.join(2000); agent.stopDiscovery()
+        }
+        await { env.held.get() == 0 && env.opened.all { it.closed.get() == 1 } }
+    }
 }

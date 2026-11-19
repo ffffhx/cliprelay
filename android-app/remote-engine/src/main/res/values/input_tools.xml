@@ -16,10 +16,11 @@
     <string name="shortcuts_reset">Reset shortcuts</string>
     <string name="speech_provider">Voice input method</string>
     <string name="speech_provider_hint_short">Hold to change voice input method</string>
-    <string name="speech_provider_hint">Phone recognition shows text for review before typing it on the computer. The system service may send audio to its provider. The existing computer method uses Doubao.</string>
+    <string name="speech_provider_hint">Phone recognition shows text for review. Computer recognition uses Doubao or Typeless to type into the selected computer field. Audio is processed by the selected service. Select a virtual microphone in Typeless settings first.</string>
     <string name="speech_local">Phone · On-device recognition</string>
     <string name="speech_system">Phone · System service (may use network)</string>
     <string name="speech_desktop">Computer · Doubao</string>
+    <string name="speech_typeless">Computer · Typeless</string>
     <string name="speech_unavailable">This phone has no available recognition service for this method. Configure a service in Android settings, or choose another method.</string>
     <string name="speech_starting">Starting phone recognition…</string>
     <string name="speech_listening">Speak to your phone (up to 60 seconds)</string>

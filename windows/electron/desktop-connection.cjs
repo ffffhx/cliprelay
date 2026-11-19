@@ -34,11 +34,14 @@ class DirectConnection{
     const viewer=this.viewer.snapshot();
     const ended=viewer.error==='VIEWER_STOPPED';
     return {peerId:this.target?.id||'',address:this.target?.address||'',phase:this.busy?'connecting':ended?'idle':viewer.phase,
-      available:viewer.available,errorCode:this.errorCode||'',error:this.error||(!this.busy&&!ended&&viewer.error?message({code:viewer.error}):'')};
+      available:viewer.available,statistics:!this.busy&&viewer.phase==='running'?viewer.statistics||null:null,
+      errorCode:this.errorCode||'',error:this.error||(!this.busy&&!ended&&viewer.error?message({code:viewer.error}):'')};
   }
   start(peer){
     const remote=peer?.networkId||peer?.directoryId;
-    if(remote&&(!this.network||!/^[a-f0-9]{24}$/.test(remote)))throw new Error('设备信息无效，请刷新列表');
+    // Saved catalog IDs are 32 hex characters; discovered peer IDs are 24.
+    const remoteIdPattern=peer?.networkId?/^[a-f0-9]{32}$/:/^[a-f0-9]{24}$/;
+    if(remote&&(!this.network||typeof remote!=='string'||!remoteIdPattern.test(remote)))throw new Error('设备信息无效，请刷新列表');
     const target={...(remote?peer.networkId?{networkId:remote}:{directoryId:remote}:endpoint(peer?.address,Number(peer?.port||48789))),id:String(peer?.id||''),label:String(peer?.name||'').slice(0,128)};
     if(peer?.deviceCode!==undefined&&!/^[0-9]{8}$/.test(peer.deviceCode))throw fault('INVALID_PAIRING_CODE');
     if(this.busy||this.paired.pairController||this.network?.pairAbort||['starting','running','recovering','closing'].includes(this.viewer.snapshot().phase))throw new Error('已有远控连接正在进行，请先结束当前连接');
@@ -60,7 +63,7 @@ class DirectConnection{
         }
         }
         if(generation!==this.generation)return;
-        await this.viewer.open({width:1920,height:1080,fps:60,bitrate:12000});
+        await this.viewer.open({width:1920,height:1080,fps:60,bitrate:12000,fullscreen:true});
       }catch(error){if(generation===this.generation){this.errorCode=error.code||'';this.error=error.code?message(error):error.message;}}
       finally{if(generation===this.generation)this.busy=false;}
     })();

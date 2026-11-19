@@ -123,7 +123,20 @@ try{
         Assert (@(Get-ChildItem $temp -Filter '*.partial').Count -eq 0) 'Partial download leaked'
         'PASS: real cloud HTTPS check/download, digest mismatch, size mismatch and partial cleanup.'
     }
-    'PASS: manifest validation, version comparisons, notification persistence, offline recovery, themed UI and click actions.'
+    $state.Development=$true; $state.Transfer=$null
+    Start-RelayUpdateCheck
+    Start-RelayUpdateDownload
+    Assert ($null -eq $state.Transfer) 'Development contacted the formal update service'
+    $blocked=$false
+    try { Install-RelayDownloadedUpdate } catch { $blocked=$true }
+    Assert $blocked 'Development attempted to install a formal update'
+    $state.Development=$false
+    $state.FilePath=Join-Path $temp 'tampered.zip'
+    [IO.File]::WriteAllText($state.FilePath,'tampered')
+    $blocked=$false
+    try { Install-RelayDownloadedUpdate } catch { $blocked=$true }
+    Assert ($blocked -and !$state.FilePath) 'Installer accepted changed downloaded bytes'
+    'PASS: manifest validation, version comparisons, notification persistence, offline recovery, themed UI, development isolation and install revalidation.'
 }
 finally{
     Stop-RelayUpdater

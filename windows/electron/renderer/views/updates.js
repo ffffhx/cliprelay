@@ -13,16 +13,17 @@ export async function mount({root,api,title,status,setStatus,button,close}){
   notify.onclick=async()=>{try{state.Notify=!state.Notify;notify.setAttribute('aria-checked',String(state.Notify));await api.request('update-notify',{enabled:state.Notify});}catch(error){setStatus(error.message,true);}};
   const check=button('检查更新',24,456,124,()=>api.request('update-check'));
   button('稍后',282,456,90,close);
-  const download=button('下载新版',384,456,152,()=>api.request(state.FilePath?'update-open':'update-download'),true);
+  const download=button('下载新版',384,456,152,()=>api.request(state.FilePath?'update-install':'update-download'),true);
   return {update(snapshot){
     state=snapshot.update;const available=state.Release;
+    if(state.Development){title.textContent='ClipRelay 开发版';version.textContent=`本地开发版 v${state.CurrentVersion} · Windows`;notes.textContent='界面代码保存后自动刷新；后台修改会提示重启。此版本不会安装线上正式版。';check.disabled=true;download.disabled=true;notify.disabled=true;setStatus('使用本地源码，结束当前连接后可重启加载后台修改。');return;}
     if(!initialized){initialized=true;if(!state.Checked && !state.Operation)api.request('update-check').catch(error=>setStatus(error.message,true));}
     title.textContent=available?'有新版本可以下载':'版本更新';
     version.textContent=available?`v${state.CurrentVersion}  →  v${available.versionName}    ·    Windows`:`当前版本 v${state.CurrentVersion}    ·    Windows`;
     const content=available?.releaseNotes || '发布新版本后，这里会显示更新内容。';if(notes.textContent!==content)notes.textContent=content;
     check.disabled=!!state.Operation;download.disabled=!available || !!state.Operation;
-    download.textContent=state.FilePath?'打开下载位置':state.Operation==='download'?'正在下载…':'下载新版';
+    download.textContent=state.FilePath?'安装更新':state.Operation==='download'?'正在下载…':'下载新版';
     notify.setAttribute('aria-checked',String(state.Notify));
-    setStatus(state.Error || (state.Operation==='download'?`正在下载 ${(state.Received/1048576).toFixed(1)} / ${(available.sizeBytes/1048576).toFixed(1)} MB，关闭窗口后仍会继续。`:state.Operation==='check'?'正在检查更新…':state.FilePath?'下载完成并已校验。解压后双击 Install.cmd，保留现有设备设置。':available?`安装包 ${(available.sizeBytes/1048576).toFixed(1)} MB · 下载后由你选择安装时间。`:state.Checked?'已是最新版本。运行期间每 15 分钟自动检查。':'运行期间每 15 分钟自动检查，也可以立即检查。'),!!state.Error);
+    setStatus(state.Error || (state.Operation==='download'?`正在下载 ${(state.Received/1048576).toFixed(1)} / ${(available.sizeBytes/1048576).toFixed(1)} MB，关闭窗口后仍会继续。`:state.Operation==='check'?'正在检查更新…':state.FilePath?'下载完成并已校验。点击安装更新，保留现有设备设置。':available?`安装包 ${(available.sizeBytes/1048576).toFixed(1)} MB · 下载后由你选择安装时间。`:state.Checked?'已是最新版本。运行期间每 15 分钟自动检查。':'运行期间每 15 分钟自动检查，也可以立即检查。'),!!state.Error);
   },error:error=>setStatus(error.message,true)};
 }

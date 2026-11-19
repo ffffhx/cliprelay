@@ -149,11 +149,13 @@ public class JmDNSDiscoveryAgent extends MdnsDiscoveryAgent {
         }
         @Override public void serviceRemoved(ServiceEvent event) { }
         @Override public void serviceResolved(ServiceEvent event) {
-            synchronized (JmDNSDiscoveryAgent.this) {
-                if (!active()) return;
-                reportNewComputer(event.getInfo().getName(), event.getInfo().getPort(),
-                        event.getInfo().getInet4Addresses(), event.getInfo().getInet6Addresses());
-            }
+            if (!active()) return;
+            // The listener performs STUN/server-info network I/O. Never hold the
+            // lifecycle monitor during delivery: onPause stops discovery on the
+            // UI thread. An already dispatched callback may finish; later ones
+            // are rejected by the scan's cancellation/generation check above.
+            reportNewComputer(event.getInfo().getName(), event.getInfo().getPort(),
+                    event.getInfo().getInet4Addresses(), event.getInfo().getInet6Addresses());
         }
     }
 }

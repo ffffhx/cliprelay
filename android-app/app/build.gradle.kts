@@ -36,8 +36,8 @@ android {
         applicationId = "com.cliprelay.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 68
-        versionName = "0.10.38"
+        versionCode = 69
+        versionName = "0.10.39"
 
         val updateManifestUrl = providers.gradleProperty("cliprelayUpdateManifestUrl")
             .orElse("https://124-221-36-36.anyip.dev:8443/cliprelay/update.json")

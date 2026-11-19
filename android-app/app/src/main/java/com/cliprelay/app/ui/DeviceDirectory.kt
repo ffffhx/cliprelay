@@ -6,8 +6,20 @@ data class HomeComputer(
     val uuid: String,
     val name: String,
     val state: ComputerDetails.State,
+    val address: String? = null,
+    val crossNetwork: Boolean = false,
+    val paired: Boolean = false,
+    val hasCertificate: Boolean = false,
 ) {
     val displayName: String get() = name.replaceFirst(Regex("^ClipRelay\\s*[-–—]\\s*", RegexOption.IGNORE_CASE), "").ifBlank { name }
+    val online: Boolean get() = state == ComputerDetails.State.ONLINE
+    val canOpenTools: Boolean get() = online && address != null && paired
+    val canConfigureWake: Boolean get() = canOpenTools && hasCertificate
+    val connectionLabel: String get() = when {
+        !online || address == null -> "暂未连接"
+        crossNetwork -> "跨网络连接"
+        else -> "直连"
+    }
 }
 
 /** Discovery also persists peers in the engine DB. Home membership is explicit. */

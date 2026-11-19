@@ -13,6 +13,7 @@
     <string name="phone_computer_list">电脑列表</string>
     <string name="tablet_computer_keyboard">电脑键盘</string>
     <string name="tablet_voice_doubao">豆包语音</string>
+    <string name="tablet_voice_typeless">Typeless</string>
     <string name="tablet_voice_local">本机语音</string>
     <string name="tablet_voice_system">系统语音</string>
     <string name="tablet_voice_stop">停止录音</string>
