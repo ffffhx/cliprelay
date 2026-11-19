@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <style name="HerdrTheme" parent="android:Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#7AB7FF</item>
@@ -7,10 +7,10 @@
         <item name="android:statusBarColor">#181C24</item>
         <item name="android:navigationBarColor">#181C24</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
         <item name="android:textColorPrimary">#E8F1FA</item>
         <item name="android:textColorSecondary">#B8C8D8</item>
-        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>
