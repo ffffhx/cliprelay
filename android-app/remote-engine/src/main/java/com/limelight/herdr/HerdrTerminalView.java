@@ -1,5 +1,6 @@
 package com.limelight.herdr;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -205,6 +206,9 @@ public final class HerdrTerminalView extends View {
     private static boolean ornament(String text){
         boolean ink=false;for(int i=0;i<text.length();i++){char c=text.charAt(i);if(Character.isWhitespace(c))continue;if(c<0x2800||c>0x28ff)return false;ink=true;}return ink;
     }
+    // Layout.BREAK_STRATEGY_SIMPLE and LineBreaker.BREAK_STRATEGY_SIMPLE are the
+    // same value; lint wants the LineBreaker constant, which needs API 29.
+    @SuppressLint("WrongConstant")
     private RenderFrame render(ScreenSnapshot input){
         long begin=System.nanoTime();RenderFrame result=new RenderFrame();result.cursorVisible=input.cursorVisible;
         StringBuilder raw=new StringBuilder();java.util.ArrayList<Run> runs=new java.util.ArrayList<>();
