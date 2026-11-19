@@ -184,10 +184,17 @@ try {
         # Execute the real configuration-loading section without starting a tray
         # process, listener, or keyboard hook. Restart must not revive a legacy peer.
         $source = Get-Content -LiteralPath $clientPath -Raw -Encoding UTF8
-        $startupStart = $source.IndexOf('$configPath = Join-Path $PSScriptRoot "config.json"')
+        # The startup section now picks the config directory first (a development
+        # build honours CLIPRELAY_DATA_DIRECTORY), then builds config.json from it.
+        $startupStart = $source.IndexOf('$configDirectory = if ($env:CLIPRELAY_DEVELOPMENT')
+        if ($startupStart -lt 0) { throw "The configuration loading section was not found." }
         $startupEnd = $source.IndexOf('$mutex = $null', $startupStart)
+        # $PSScriptRoot is empty inside Invoke-Expression, so drop the directory
+        # creation and point the loader straight at the temporary config.
         $startupSource = $source.Substring($startupStart, $startupEnd - $startupStart).Replace(
-            '$configPath = Join-Path $PSScriptRoot "config.json"', '$configPath = $temporaryConfig'
+            '[IO.Directory]::CreateDirectory($configDirectory) | Out-Null', '$null = $configDirectory'
+        ).Replace(
+            '$configPath = Join-Path $configDirectory "config.json"', '$configPath = $temporaryConfig'
         )
         & {
             $Peer = ""

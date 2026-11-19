@@ -2435,13 +2435,13 @@ function Save-PeerConfiguration {
     if ($ListenPort -lt 1 -or $ListenPort -gt 65535) {
         throw "服务端口必须是 1 到 65535 之间的整数。"
     }
-    $normalizedAccessToken = ""
+    $normalizedAccessToken = if ($null -eq $AccessToken) { "" } else { $AccessToken.Trim() }
     if ($normalizedAccessToken.Length -gt 128) {
         throw "访问密钥不能超过 128 个字符。"
     }
     $normalizedDeviceName = Get-NormalizedDeviceName -Value $DeviceName
     $oldLegacyReceiver = Get-Variable -Name LegacyReceiverEnabled -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-    $LegacyReceiverEnabled = $true
+    if ($null -eq $LegacyReceiverEnabled) { $LegacyReceiverEnabled = ($oldLegacyReceiver -is [bool] -and $oldLegacyReceiver) }
 
     if ($null -eq $Peers) {
         $Peers = @([PSCustomObject]@{
@@ -2940,9 +2940,8 @@ if ($script:DeviceId.Length -gt 128) {
 $script:DeviceName = Get-NormalizedDeviceName -Value $configuredDeviceName
 $script:DiscoveryEnabled = if ($null -eq $configuredDiscoveryEnabled) { $true } else { [bool]$configuredDiscoveryEnabled }
 $configuredLegacyReceiver = Get-PropertyValue -Object $configuration -Name 'legacyReceiverEnabled'
-$script:LegacyReceiverEnabled = $true
-$script:AccessToken = ''
-if ($configuredLegacyReceiver -ne $true) { $configRequiresDiscoveryMigration = $true }
+$script:LegacyReceiverEnabled = $configuredLegacyReceiver -is [bool] -and $configuredLegacyReceiver
+if ($configuredLegacyReceiver -isnot [bool]) { $configRequiresDiscoveryMigration = $true }
 
 $hasConfiguredPeers = $null -ne $configuration -and $null -ne $configuration.PSObject.Properties["peers"]
 if ($peerWasExplicitlyProvided -or -not $hasConfiguredPeers) {
