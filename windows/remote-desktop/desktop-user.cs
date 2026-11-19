@@ -43,12 +43,12 @@ namespace ClipRelay.Remote {
         }
 
         static int WorkerFailure(string argument,string stage) {
-            if(argument=="--terminal-probe" || argument=="--automation-probe")Console.Error.WriteLine("DESKTOP_USER_WORKER "+stage+" "+Marshal.GetLastWin32Error());
+            if(argument=="--terminal-probe" || argument=="--automation-probe" || argument=="--herdr-probe")Console.Error.WriteLine("DESKTOP_USER_WORKER "+stage+" "+Marshal.GetLastWin32Error());
             return 2;
         }
 
         public static int RunWorker(string argument) {
-            if (argument != "--file-probe" && argument != "--clipboard-probe" && argument != "--privacy-probe" && argument != "--audio-mute-probe" && argument != "--audio-mute-recover" && argument != "--terminal-probe" && argument != "--automation-probe") throw new ArgumentException("Unknown desktop worker");
+            if (argument != "--file-probe" && argument != "--clipboard-probe" && argument != "--privacy-probe" && argument != "--audio-mute-probe" && argument != "--audio-mute-recover" && argument != "--terminal-probe" && argument != "--automation-probe" && argument != "--herdr-probe") throw new ArgumentException("Unknown desktop worker");
             IntPtr original = IntPtr.Zero, token = IntPtr.Zero, environment = IntPtr.Zero, job = IntPtr.Zero;
             var info = new ProcessInfo();
             try {
@@ -58,7 +58,7 @@ namespace ClipRelay.Remote {
                     if (!OpenProcessToken(shell.Handle, 0x000A, out original)) return WorkerFailure(argument,"token");
                 // Terminal shells must not inherit an elevated Explorer token,
                 // even on installations with UAC disabled.
-                if (argument == "--terminal-probe") using (var identity = new System.Security.Principal.WindowsIdentity(original))
+                if (argument == "--terminal-probe" || argument == "--herdr-probe") using (var identity = new System.Security.Principal.WindowsIdentity(original))
                     if (new System.Security.Principal.WindowsPrincipal(identity).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)) return WorkerFailure(argument,"elevated-shell");
                 if (!DuplicateTokenEx(original, 0xF01FF, IntPtr.Zero, 2, 1, out token) ||
                     !CreateEnvironmentBlock(out environment, token, false)) return WorkerFailure(argument,"environment");
@@ -78,7 +78,7 @@ namespace ClipRelay.Remote {
                 string executable = typeof(DesktopUserProcess).Assembly.Location;
                 bool created=CreateProcessAsUser(token, executable, new StringBuilder("\"" + executable + "\" " + argument),
                     IntPtr.Zero, IntPtr.Zero, stdio, 0x08000404, environment, Path.GetDirectoryName(executable), ref startup, out info);
-                if(!created && (argument=="--terminal-probe" || argument=="--automation-probe") && Marshal.GetLastWin32Error()==1314) {
+                if(!created && (argument=="--terminal-probe" || argument=="--automation-probe" || argument=="--herdr-probe") && Marshal.GetLastWin32Error()==1314) {
                     // An elevated user test/development host lacks the SYSTEM
                     // primary-token assignment privilege. Use the same limited
                     // shell token, still suspended and in a kill-on-close job.

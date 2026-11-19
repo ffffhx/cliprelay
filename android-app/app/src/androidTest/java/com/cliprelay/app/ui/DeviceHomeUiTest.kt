@@ -52,7 +52,7 @@ class DeviceHomeUiTest {
         rule.onNodeWithTag("add-computer").performClick()
         rule.onNodeWithTag("nearby-yifan").assertDoesNotExist()
         rule.onNodeWithText("输入电脑地址").assertIsDisplayed()
-        rule.onNodeWithText("使用配对码").assertIsDisplayed()
+        rule.onNodeWithText("添加云主机 / 外网电脑").assertIsDisplayed()
     }
 
     @Test fun offlineRetryDoesNotLaunchAConnectionAndManualEntryClosesSheet() {
@@ -70,10 +70,43 @@ class DeviceHomeUiTest {
         rule.onNodeWithTag("add-computer-sheet").assertDoesNotExist()
     }
 
+    @Test fun moreMenuTargetsTheSelectedDeviceAndRemovalOnlyFollowsConfirmation() {
+        val saved = mutableStateOf(listOf(first, second))
+        var removedId: String? = null
+        rule.setContent { Home(saved.value, action = { id, action ->
+            if (action == com.limelight.PcView.ComputerAction.REMOVE) {
+                removedId = id
+                saved.value = saved.value.filterNot { it.uuid == id }
+            }
+        }) }
+        rule.onNodeWithContentDescription("YIFAN的更多操作").performClick()
+        rule.onNodeWithTag("device-action-details").performClick()
+        rule.onNodeWithTag("device-connection-details").onChildren().filterToOne(hasText("YIFAN", substring = true))
+            .assertExists()
+        rule.onNodeWithTag("device-actions-back").performClick()
+        rule.onNodeWithTag("device-action-remove").performScrollTo().performClick()
+        rule.runOnIdle { assertNull(removedId) }
+        rule.onNodeWithTag("device-remove-confirm").performClick()
+        rule.runOnIdle { assertEquals("yifan", removedId) }
+        rule.onNodeWithTag("computer-actions-sheet").assertDoesNotExist()
+        rule.onNodeWithTag("computer-yifan").assertDoesNotExist()
+        rule.onNodeWithTag("computer-uckf").assertIsDisplayed()
+    }
+
+    @Test fun removingSelectedDeviceElsewhereDismissesItsMenu() {
+        val saved = mutableStateOf(listOf(first, second))
+        rule.setContent { Home(saved.value) }
+        rule.onNodeWithContentDescription("UCKF的更多操作").performClick()
+        rule.onNodeWithTag("computer-actions-sheet").assertIsDisplayed()
+        rule.runOnIdle { saved.value = listOf(second) }
+        rule.onNodeWithTag("computer-actions-sheet").assertDoesNotExist()
+    }
+
     @Composable private fun Home(
         computers: List<HomeComputer>, nearby: List<HomeComputer> = emptyList(),
         connecting: String? = null, connect: (String) -> Unit = {}, cancel: () -> Unit = {},
         add: (String) -> Unit = {}, rescan: () -> Unit = {}, address: () -> Unit = {},
+        action: (String, com.limelight.PcView.ComputerAction) -> Unit = { _, _ -> },
     ) {
         ClipRelayTheme {
             ClipRelayScreen(ReceiverStatus(ReceiverPhase.RUNNING),
@@ -85,7 +118,7 @@ class DeviceHomeUiTest {
                 onCheckUpdate = {}, onDownloadUpdate = {}, onInstallUpdate = {},
                 computers = computers, nearbyComputers = nearby, connectingComputer = connecting,
                 onConnectComputer = connect, onCancelConnection = cancel, onAddComputer = add,
-                onRescanComputers = rescan, onAddAddress = address)
+                onRescanComputers = rescan, onAddAddress = address, onComputerAction = action)
         }
     }
 }

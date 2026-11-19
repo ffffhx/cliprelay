@@ -9,6 +9,9 @@ body #app .app{width:100%;max-width:none;height:100dvh;margin:0;border:0;border-
 .local-device>div{min-width:0}.local-device .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-card{padding:0}.remote-art{height:166px;display:flex;align-items:center;justify-content:center;background:var(--subtle);color:var(--muted)}
 .remote-art .icon{width:70px;height:70px;stroke-width:1.15}.remote-info{padding:18px 22px}.remote-info h3{margin:0 0 4px}.remote-info .btn{width:100%;margin-top:22px}
+.stream-stats{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.stream-stats dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0}.stream-stats dt{font-size:11px;color:var(--muted);margin-bottom:7px}.stream-stats dd{margin:0;font-size:19px;font-weight:550;font-variant-numeric:tabular-nums;white-space:nowrap}.stream-stats dd small{font-size:10px;font-weight:400;color:var(--muted)}
+.stream-resolution{display:block;margin-top:4px;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}.stream-stats-note,.stream-shortcut{font-size:11px;color:var(--muted);line-height:1.5;margin:12px 0 0}.remote-info:has(.stream-stats) .btn{margin-top:16px}
 .clipboard-device-list{display:flex;flex-direction:column;gap:12px}
 .clipboard-device-row{display:flex;align-items:center;gap:16px;padding:16px 18px;min-height:82px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
 .clipboard-device-row .device-art{width:42px;height:42px;border-radius:10px;flex-shrink:0}.clipboard-device-row .device-art svg{width:26px;height:26px}
@@ -27,3 +30,5 @@ dialog.modal{position:fixed;inset:0;margin:auto;background:var(--surface);color:
 @media(min-width:1400px){.content{padding:30px 56px;max-width:1350px;width:100%;margin:0 auto}.devices-grid{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}}
 @media(max-width:850px){.sidebar{width:174px;padding-inline:12px}.content{padding-inline:24px}.device-toolbar{gap:8px}.device-toolbar>.small{display:none}}
 @media(max-width:640px){.sidebar{display:flex;width:68px;padding:22px 8px}.brand{padding:0 10px}.brand span,.nav-item span,.local-device,.sidebar-bottom .nav-item span{display:none}.nav-item{justify-content:center;padding:12px 0}.sidebar nav{margin-top:30px}.content{padding:18px}.page-head{align-items:flex-start}.page-head h1{font-size:23px}.page-head p{max-width:200px}.devices-grid{grid-template-columns:1fr}.offline-row .row-detail{align-items:flex-start;flex-direction:column;gap:2px}.setting-row{gap:12px}.setting-input{width:150px}.probe-summary{flex-direction:column}.probe-actions{align-self:flex-end}}
+
+.remote-add-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}

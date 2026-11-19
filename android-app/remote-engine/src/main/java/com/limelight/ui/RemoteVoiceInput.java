@@ -31,9 +31,12 @@ public final class RemoteVoiceInput {
     private final Runnable beforeStart;
     private Session session;
     private boolean permissionPending, closed;
+    private String permissionProvider = "doubao";
 
     private static final class Session {
         final String id = UUID.randomUUID().toString().replace("-", "");
+        final String provider;
+        Session(String provider) { this.provider = provider; }
         volatile boolean ending, abort, captureDone;
         final ArrayBlockingQueue<byte[]> audio = new ArrayBlockingQueue<>(10);
         final AtomicReference<String> error = new AtomicReference<>();
@@ -65,22 +68,27 @@ public final class RemoteVoiceInput {
     }
     private void changed(State state) { if (!closed) listener.changed(state); }
     public void start() {
+        start("doubao");
+    }
+    public void start(String provider) {
+        if (!"doubao".equals(provider) && !"typeless".equals(provider)) throw new IllegalArgumentException("Invalid voice provider");
         if (closed || isActive() || http == null || activity.isFinishing()) return;
         if (activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionPending = true;
+            permissionProvider = provider;
             changed(State.STARTING);
             activity.requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, PERMISSION);
             return;
         }
         beforeStart.run();
-        Session next = new Session(); session = next;
+        Session next = new Session(provider); session = next;
         changed(State.STARTING);
         new Thread(() -> run(next), "ClipRelay voice transport").start();
     }
     public void permissionResult(boolean granted, boolean ready) {
         boolean requested = permissionPending; permissionPending = false;
         if (!requested || closed) return;
-        if (granted && ready) start();
+        if (granted && ready) start(permissionProvider);
         else {
             changed(State.IDLE);
             if (!granted) Toast.makeText(activity, R.string.voice_permission, Toast.LENGTH_LONG).show();
@@ -129,7 +137,7 @@ public final class RemoteVoiceInput {
         AudioRecord recorder = null;
         String failure = null;
         try {
-            http.voiceRequest("status", current.id, 0, null);
+            http.voiceRequest(current.provider, "status", current.id, 0, null);
             if (current.ending) return;
             int minimum = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             if (minimum <= 0) throw new IOException("VOICE_MIC_FAILED");
@@ -137,7 +145,7 @@ public final class RemoteVoiceInput {
                     AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(minimum, 12800));
             if (recorder.getState() != AudioRecord.STATE_INITIALIZED) throw new IOException("VOICE_MIC_FAILED");
             attempted = true;
-            http.voiceRequest("start", current.id, 0, null);
+            http.voiceRequest(current.provider, "start", current.id, 0, null);
             if (current.ending) return;
             if (!current.begin(recorder)) {
                 if (current.ending) return;
@@ -150,11 +158,11 @@ public final class RemoteVoiceInput {
             int sequence = 0;
             while (!current.abort && (!current.captureDone || !current.audio.isEmpty())) {
                 byte[] data = current.audio.poll(250, TimeUnit.MILLISECONDS);
-                if (data != null) http.voiceRequest("audio", current.id, sequence++, data);
+                if (data != null) http.voiceRequest(current.provider, "audio", current.id, sequence++, data);
             }
             if (current.error.get() != null) throw new IOException(current.error.get());
             main.post(() -> { if (session == current) changed(State.STOPPING); });
-            http.voiceRequest(current.abort ? "cancel" : "stop", current.id, sequence, null);
+            http.voiceRequest(current.provider, current.abort ? "cancel" : "stop", current.id, sequence, null);
             attempted = false;
         } catch (Exception error) {
             failure = error instanceof IOException ? error.getMessage() : "VOICE_MIC_FAILED";
@@ -163,7 +171,7 @@ public final class RemoteVoiceInput {
             if (capture != null) try { capture.join(1500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             current.recorder = null;
             if (recorder != null) recorder.release();
-            if (attempted) try { http.voiceRequest("cancel", current.id, 0, null); } catch (IOException ignored) { /* Host's independent six-second watchdog ends it. */ }
+            if (attempted) try { http.voiceRequest(current.provider, "cancel", current.id, 0, null); } catch (IOException ignored) { /* Host's independent six-second watchdog ends it. */ }
             String result = failure;
             main.post(() -> {
                 if (session != current) return;
@@ -180,6 +188,11 @@ public final class RemoteVoiceInput {
             case "UPDATE_HOST": return R.string.voice_update_host;
             case "DOUBAO_REQUIRED": return R.string.voice_doubao_required;
             case "DOUBAO_VERSION_UNSUPPORTED": return R.string.voice_version_unsupported;
+            case "TYPELESS_REQUIRED": return R.string.voice_typeless_required;
+            case "TYPELESS_MIC_REQUIRED": return R.string.voice_typeless_mic_required;
+            case "TYPELESS_ROUTING_UNSUPPORTED": return R.string.voice_typeless_routing_unsupported;
+            case "TYPELESS_SHORTCUT_REQUIRED": return R.string.voice_typeless_shortcut_required;
+            case "TYPELESS_VERSION_UNSUPPORTED": return R.string.voice_typeless_unsupported;
             case "VIRTUAL_MIC_REQUIRED": case "VOICE_AUDIO_DEVICE_FAILED": return R.string.voice_virtual_mic_required;
             case "VOICE_BUSY": return R.string.voice_busy;
             case "VOICE_FOCUS_REQUIRED": return R.string.voice_focus_required;

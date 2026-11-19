@@ -7,6 +7,7 @@ const {NetworkController}=require('../electron/mac/network-controller.cjs');
 const {PairedStore}=require('../electron/mac/paired-store.cjs');
 const {RoutedStore,sameRoute}=require('../electron/mac/routed-store.cjs');
 const {PairedController}=require('../electron/mac/paired-controller.cjs');
+const {DirectConnection}=require('../electron/desktop-connection.cjs');
 const token=()=>crypto.randomBytes(32).toString('base64url');
 const peer={id:'1'.repeat(24),name:'Fixture PC',online:true,addresses:['100.64.0.2']};
 const error=code=>Object.assign(new Error(code),{code});
@@ -118,6 +119,17 @@ test('public IDs cannot enroll; device-code pairing persists credentials reused 
 test('cancelled approval cannot overwrite a saved computer or start a channel',async t=>{
   const f=setup(t);f.control.approved=false;f.manager.claim('12345678');await until(()=>f.manager.pairing.state==='approval');f.manager.cancelPair();await f.manager.pairTask;
   assert.equal(f.manager.pairing.error,'CANCELLED');assert.equal(f.catalog.records().length,0);assert.equal(f.channels.length,0);
+});
+
+test('saved cloud computer card reconnects with its catalog ID and reuses the paired host',async t=>{
+  const f=setup(t);f.manager.claim('12345678');await f.manager.pairTask;
+  const record=f.catalog.records()[0],credential=f.catalog.credential(record.id);
+  f.store.select(null);let opens=0;
+  const direct=new DirectConnection({store:f.store},{snapshot:()=>({available:true,phase:'idle'}),async open(){opens++;}},f.manager);
+  direct.start({id:'network:'+record.id,networkId:record.id,name:record.name});await direct.task;
+  assert.equal(direct.status().error,'');assert.equal(opens,1);
+  assert.equal(f.store.selected().networkId,record.id);
+  assert.equal(f.catalog.records().length,1);assert.equal(f.catalog.credential(record.id),credential);
 });
 
 test('pausing a paired host withdraws its network and reports paused until the host is enabled again',async t=>{

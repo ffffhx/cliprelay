@@ -1,24 +1,18 @@
 ﻿package com.cliprelay.app.network
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
-import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.cliprelay.app.R
 import com.cliprelay.app.ClipRelayApplication
 import com.cliprelay.app.data.AppPreferences
+import com.cliprelay.app.service.BackgroundServiceNotification
 import com.cliprelay.network.mobile.Mobile
 import com.cliprelay.network.mobile.Node
 import go.Seq
@@ -50,7 +44,6 @@ class NetworkConnectionService : Service() {
     private var pairingJob: Job? = null
     private var pairingToken: Any? = null
     private var stopping = false
-    private var lastNotificationText: String? = null
     private lateinit var identity: NetworkIdentity
     private lateinit var connectivity: ConnectivityManager
     private class Connection(val record: SavedNetworkPairing) {
@@ -70,9 +63,7 @@ class NetworkConnectionService : Service() {
         identity = NetworkIdentity(this)
         connectivity = getSystemService(ConnectivityManager::class.java)
         connectivity.registerDefaultNetworkCallback(callback)
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL, "电脑连接", NotificationManager.IMPORTANCE_LOW))
-        ServiceCompat.startForeground(this, NOTIFICATION, notification("正在连接电脑"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        BackgroundServiceNotification.start(this)
         synchronized(publicationLock) { refresh() }
         updateInterfaces()
         scope.launch {
@@ -348,23 +339,10 @@ class NetworkConnectionService : Service() {
         connections.value = current
         state.value = current.firstOrNull { it.ready } ?: pairing.value ?: current.firstOrNull { it.enabled }
             ?: current.firstOrNull() ?: ExternalConnectionState()
-        val readyCount = current.count { it.ready }
-        val text = if (readyCount > 0) "已连接 $readyCount 台电脑" else state.value.message
-        if (text != lastNotificationText) {
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(text))
-            lastNotificationText = text
-        }
     }
     private fun stopIfIdle() {
         if (!stopping && sessions.isEmpty() && pairingJob == null && identity.list().none { it.enabled }) stopSelf()
     }
-    private fun notification(text: String) = NotificationCompat.Builder(this, CHANNEL)
-        .setSmallIcon(R.drawable.ic_notification).setContentTitle("ClipRelay 电脑连接").setContentText(text)
-        .setOngoing(true).setSilent(true)
-        .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, NetworkPairActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
-        .addAction(0, "全部暂停", PendingIntent.getService(this, 1, Intent(this, NetworkConnectionService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
-        .build()
-
     override fun onDestroy() {
         synchronized(publicationLock) {
             stopping = true
@@ -374,7 +352,7 @@ class NetworkConnectionService : Service() {
         }
         scope.cancel()
         runCatching { connectivity.unregisterNetworkCallback(callback) }
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        BackgroundServiceNotification.stop(this)
         super.onDestroy()
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -389,8 +367,6 @@ class NetworkConnectionService : Service() {
     companion object {
         const val LOCAL_ADDRESS = "127.120.0.1" // The migrated original pairing keeps this address.
         private const val ENDPOINT = "https://124-221-36-36.anyip.dev:8443/cliprelay-network"
-        private const val CHANNEL = "cliprelay_external_connection"
-        private const val NOTIFICATION = 47732
         private const val STOP = "com.cliprelay.app.network.STOP"
         private const val START = "com.cliprelay.app.network.START"
         private const val RESTORE = "com.cliprelay.app.network.RESTORE"

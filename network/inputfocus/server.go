@@ -590,10 +590,13 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 		}
 	}
 	terminal := &probe{ctx: ctx, executable: executable, argument: "--terminal-probe", maxOutput: 65536, timeout: 8 * time.Second}
+	herdr := &probe{ctx: ctx, executable: executable, argument: "--herdr-probe", maxOutput: 1024 * 1024, timeout: 25 * time.Second}
 	automation := &probe{ctx: ctx, executable: executable, argument: "--automation-probe", maxOutput: 4 * 1024 * 1024, timeout: 40 * time.Second}
 	if managed {
 		automation.executable = ""
 	} // Windows desktop worker; explicit unsupported elsewhere.
+	// Local pairing also uses managed admission on Windows. Keep its supplied
+	// Herdr worker; application-owned Mac hosts already supply an empty path.
 	if managed {
 		if err := configureManagedTerminal(terminal, dir); err != nil {
 			return err
@@ -601,7 +604,10 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	}
 	// Registered before manager joins: those cleanup operations run first, then
 	// every remaining worker gets its EOF/grace period at the same time.
-	defer func() { cancel(); stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal, automation) }()
+	defer func() {
+		cancel()
+		stopProbes(p, voice, files, clipboard, privacy, audio, wake, terminal, herdr, automation)
+	}()
 	privacyManager := &privacyControl{clients: clients, provider: engineDisplayProviderWithAccess(access), read: privacy.read, cleanupRead: privacy.readCleanup, now: time.Now}
 	if managed {
 		closePrivacy, err := configureManagedPrivacy(ctx, privacyManager, dir, access)
@@ -626,6 +632,10 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	terminalDone := make(chan struct{})
 	go func() { defer close(terminalDone); terminalManager.maintain(ctx) }()
 	defer func() { cancel(); <-terminalDone }()
+	herdrManager := &herdrControl{clients: clients, read: herdr.read, cleanupRead: herdr.readCleanup, unsupported: herdr.executable == ""}
+	herdrDone := make(chan struct{})
+	go func() { defer close(herdrDone); herdrManager.maintain(ctx) }()
+	defer func() { cancel(); <-herdrDone }()
 	automationManager := &automationControl{clients: clients, read: automation.read, cleanupRead: automation.readCleanup}
 	automationDone := make(chan struct{})
 	go func() { defer close(automationDone); automationManager.maintain(ctx) }()
@@ -642,6 +652,7 @@ func serveHostWithEngineAccess(ctx context.Context, dir, executable string, acce
 	}
 	server.Handler = withInputState(terminalManager.handler(wakeManager.handler(server.Handler)), clients, engineInputProviderWithAccess(access))
 	server.Handler = automationManager.handler(server.Handler)
+	server.Handler = herdrManager.handler(server.Handler)
 	pairer := newLANPairerWithAccess(ctx, dir, cert, access)
 	pairer.managed = managed
 	if managed && executable != "" {

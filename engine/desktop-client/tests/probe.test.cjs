@@ -32,10 +32,23 @@ test('lifecycle reports one connection and the first terminal reason only',async
   assert.equal((await start(envelope(),['--network-errors']).done).code,0);
 });
 test('invalid identity, types, limits and unknown properties fail closed',async()=>{
-  for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001},{telemetry:1},{inputEpochs:true},{inputEpochs:1,telemetry:true}]){
+  for(const change of [{version:2},{port:65535},{width:1},{fps:60.5},{fullscreen:1},{address:'https://example.com'},{privateKey:wrong.key},{clientId:'x'},{unexpected:1},{bitrate:100001},{telemetry:1},{statistics:1,telemetry:true},{statistics:true},{inputEpochs:true},{inputEpochs:1,telemetry:true}]){
     const result=await start({...envelope(),...change},['--parse']).done;assert.equal(result.code,2,JSON.stringify(change));
   }
   const result=await start(Buffer.from([0,2,0,0]),['--parse']).done;assert.equal(result.code,2);
+});
+
+test('negotiated statistics count actual frames and bytes, not sequence gaps or duplicate callbacks',async()=>{
+  const result=await start({...envelope(),telemetry:true,statistics:true},['--progress']).done;
+  assert.equal(result.code,0,result.stderr);
+  const events=result.stdout.trim().split('\n').map(JSON.parse),stats=events.filter(e=>e.event==='statistics');
+  assert.equal(stats.length,2);
+  assert.equal(stats[0].receivedFrames,1);assert.equal(stats[0].renderedFrames,1);assert.equal(stats[0].videoBytes,1000);
+  assert.equal(stats[1].receivedFrames,2);assert.equal(stats[1].renderedFrames,2);assert.equal(stats[1].videoBytes,2500);
+  assert.ok(stats[1].elapsedMs>stats[0].elapsedMs);
+  assert.equal(events.at(-1).event,'ended');
+  const legacy=await start({...envelope(),telemetry:true},['--progress']).done;
+  assert.doesNotMatch(legacy.stdout,/"event":"statistics"/);
 });
 
 function inputFrame(epoch,operation){

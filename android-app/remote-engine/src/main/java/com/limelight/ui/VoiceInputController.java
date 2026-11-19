@@ -7,26 +7,28 @@ import com.limelight.nvstream.http.NvHTTP;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
-/** Keeps the existing Doubao workflow and exposes independent public Android recognizers. */
+/** Selects a desktop dictation provider or an independent public Android recognizer. */
 public final class VoiceInputController {
     private final Activity activity;
     private final RemoteVoiceInput desktop;
     private final PhoneSpeechInput phone;
     private final SharedPreferences preferences;
+    private final RemoteVoiceInput.Listener listener;
     private AlertDialog options;
     private boolean closed;
     public VoiceInputController(Activity activity,NvHTTP http,Runnable beforeStart,RemoteVoiceInput.Listener listener,
                                 BooleanSupplier ready,Function<String,Boolean> send){
-        this.activity=activity;desktop=new RemoteVoiceInput(activity,http,beforeStart,listener);
+        this.activity=activity;this.listener=listener;desktop=new RemoteVoiceInput(activity,http,beforeStart,listener);
         phone=new PhoneSpeechInput(activity,ready,send,beforeStart,listener);
         preferences=activity.getSharedPreferences("remote_voice",0);
     }
     private String mode(){String value;try{value=preferences.getString("provider","desktop");}catch(ClassCastException e){return "invalid";}
-        return "local".equals(value) || "system".equals(value) || "desktop".equals(value)?value:"invalid";}
+        return "local".equals(value) || "system".equals(value) || "desktop".equals(value) || "typeless".equals(value)?value:"invalid";}
     public boolean isActive(){return desktop.isActive() || phone.active() || options!=null;}
     public int buttonLabel(){
         switch(mode()){
             case "desktop": return R.string.tablet_voice_doubao;
+            case "typeless": return R.string.tablet_voice_typeless;
             case "local": return R.string.tablet_voice_local;
             case "system": return R.string.tablet_voice_system;
             default: return R.string.voice_input;
@@ -36,16 +38,17 @@ public final class VoiceInputController {
         if(closed || options!=null)return;
         if(desktop.isActive()){desktop.end(false);return;}
         if(phone.active()){phone.stop();return;}
-        String mode=mode();if(mode.equals("invalid"))showOptions();else if(mode.equals("desktop"))desktop.start();else phone.start(mode.equals("local"));
+        String mode=mode();if(mode.equals("invalid"))showOptions();else if(mode.equals("desktop") || mode.equals("typeless"))desktop.start(mode.equals("typeless")?"typeless":"doubao");else phone.start(mode.equals("local"));
     }
     public void showOptions(){
         if(closed || activity.isFinishing())return;pause();
-        String[] modes={"local","system","desktop"};int selected=java.util.Arrays.asList(modes).indexOf(mode());
+        String[] modes={"local","system","desktop","typeless"};int selected=java.util.Arrays.asList(modes).indexOf(mode());
         android.widget.TextView hint=new android.widget.TextView(activity);hint.setText(R.string.speech_provider_hint);hint.setPadding(24,12,24,12);
         options=new AlertDialog.Builder(activity).setTitle(R.string.speech_provider).setView(hint)
-                .setSingleChoiceItems(new String[]{activity.getString(R.string.speech_local),activity.getString(R.string.speech_system),activity.getString(R.string.speech_desktop)},selected,(d,i)->{
+                .setSingleChoiceItems(new String[]{activity.getString(R.string.speech_local),activity.getString(R.string.speech_system),activity.getString(R.string.speech_desktop),activity.getString(R.string.speech_typeless)},selected,(d,i)->{
                     if(i<2 && !PhoneSpeechInput.available(activity,i==0)){android.widget.Toast.makeText(activity,R.string.speech_unavailable,android.widget.Toast.LENGTH_LONG).show();return;}
                     if(!preferences.edit().putString("provider",modes[i]).commit()){android.widget.Toast.makeText(activity,R.string.shortcuts_save_failed,android.widget.Toast.LENGTH_LONG).show();return;}
+                    listener.changed(RemoteVoiceInput.State.IDLE);
                     d.dismiss();
                 }).setNegativeButton(android.R.string.cancel,null).create();
         AlertDialog shown=options;shown.setOnDismissListener(d->{if(options==shown)options=null;});shown.show();

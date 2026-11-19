@@ -1,7 +1,6 @@
 package com.cliprelay.app.service
 
 import android.Manifest
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -11,7 +10,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -20,7 +18,6 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.cliprelay.app.MainActivity
@@ -59,7 +56,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
         createNotificationChannels()
         AppUpdater.startAutomaticChecks(this)
-        startAsForeground(buildReceiverNotification("正在启动配对接收服务"))
+        BackgroundServiceNotification.start(this)
         debugStayAwake.start()
     }
 
@@ -93,7 +90,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
             phase = ReceiverPhase.STOPPED,
             port = AppPreferences.load(this).port,
         )
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        BackgroundServiceNotification.stop(this)
         super.onDestroy()
     }
 
@@ -124,13 +121,6 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
                 addresses.isEmpty() -> "等待网络连接"
                 discoveryError != null -> "接收正常；局域网自动发现暂不可用"
                 else -> "配对加密接收已开启；旧版局域网兼容也已开启（未加密）"
-            },
-        )
-        updateReceiverNotification(
-            if (addresses.isEmpty()) {
-                "正在监听 :$port，等待网络连接"
-            } else {
-                "${addresses.first()}:$port"
             },
         )
     }
@@ -204,7 +194,6 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
             addresses = NetworkAddresses.localIpv4(),
             detail = message,
         )
-        updateReceiverNotification("无法监听 ${settings.port}：$message")
     }
 
     private fun startServer() {
@@ -232,7 +221,6 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
             port = AppPreferences.load(this).port,
             detail = detail,
         )
-        updateReceiverNotification(detail)
     }
 
     private fun refreshRunningEndpoint() {
@@ -254,14 +242,6 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
         notificationManager.createNotificationChannels(
             listOf(
                 NotificationChannel(
-                    RECEIVER_CHANNEL_ID,
-                    getString(R.string.receiver_channel_name),
-                    NotificationManager.IMPORTANCE_LOW,
-                ).apply {
-                    description = getString(R.string.receiver_channel_description)
-                    setShowBadge(false)
-                },
-                NotificationChannel(
                     CLIPS_CHANNEL_ID,
                     getString(R.string.clips_channel_name),
                     NotificationManager.IMPORTANCE_DEFAULT,
@@ -270,50 +250,6 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
                 },
             ),
         )
-    }
-
-    private fun startAsForeground(notification: Notification) {
-        val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        } else {
-            0
-        }
-        ServiceCompat.startForeground(
-            this,
-            RECEIVER_NOTIFICATION_ID,
-            notification,
-            foregroundServiceType,
-        )
-    }
-
-    private fun updateReceiverNotification(detail: String) {
-        startAsForeground(buildReceiverNotification(detail))
-    }
-
-    private fun buildReceiverNotification(detail: String): Notification {
-        val openApp = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val stopService = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, ClipRelayService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        return NotificationCompat.Builder(this, RECEIVER_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.notification_running_title))
-            .setContentText(detail)
-            .setContentIntent(openApp)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .addAction(0, getString(R.string.notification_stop), stopService)
-            .build()
     }
 
     private fun showReceivedNotification(text: String) {
@@ -396,9 +332,7 @@ class ClipRelayService : Service(), ClipRelayHttpServer.Listener {
         const val ACTION_RESTART = "com.cliprelay.app.action.RESTART"
         const val ACTION_STOP = "com.cliprelay.app.action.STOP"
 
-        private const val RECEIVER_CHANNEL_ID = "cliprelay_receiver"
         private const val CLIPS_CHANNEL_ID = "cliprelay_clips"
-        private const val RECEIVER_NOTIFICATION_ID = 47632
         private const val RECEIVED_NOTIFICATION_START_ID = 47700
         private const val RECEIVED_NOTIFICATION_END_ID = 47799
         private const val IMAGE_CLIPBOARD_DIRECTORY = "clipboard_images"

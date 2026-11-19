@@ -61,7 +61,11 @@ class MainActivity : com.limelight.PcView() {
 
     override fun onComputerChanged(computer: com.limelight.nvstream.http.ComputerDetails) {
         if (!::deviceDirectory.isInitialized) return
-        deviceDirectory.update(com.cliprelay.app.ui.HomeComputer(computer.uuid, computer.name, computer.state),
+        deviceDirectory.update(com.cliprelay.app.ui.HomeComputer(computer.uuid, computer.name, computer.state,
+            address = computer.activeAddress?.toString(),
+            crossNetwork = com.limelight.computers.EmbeddedNetwork.isAddress(computer.activeAddress),
+            paired = computer.pairState == com.limelight.nvstream.http.PairingManager.PairState.PAIRED,
+            hasCertificate = computer.serverCert != null),
             explicitlyAdded = computer.manualAddress != null || computer.embeddedAddress != null || computer.serverCert != null)
         publishDevices()
     }
@@ -190,7 +194,7 @@ class MainActivity : com.limelight.PcView() {
                     onCancelConnection = ::cancelComputerConnection,
                     onDismissConnectionError = { connectionError = null },
                     onAddComputer = ::addHomeComputer,
-                    onComputerActions = ::showComputerActions,
+                    onComputerAction = ::performComputerAction,
                     onRescanComputers = ::rescanComputers,
                     onAddAddress = { startActivity(Intent(this, com.limelight.preferences.AddComputerManually::class.java)) },
                     onAddPairingCode = { startActivity(Intent(this, com.cliprelay.app.network.NetworkPairActivity::class.java)) },

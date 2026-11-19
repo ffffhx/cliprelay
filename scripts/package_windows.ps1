@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot) '.tools\windows-release'), [string]$ViewerArtifact = $env:CLIPRELAY_VIEWER_ARTIFACT, [string]$NetworkArtifact = $env:CLIPRELAY_NETWORK_HELPER_ARTIFACT, [string]$EngineArtifact = $env:CLIPRELAY_HOST_ENGINE_ARTIFACT)
+param([string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot) ('.tools\artifacts\packages\windows\' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8))), [string]$ViewerArtifact = $env:CLIPRELAY_VIEWER_ARTIFACT, [string]$NetworkArtifact = $env:CLIPRELAY_NETWORK_HELPER_ARTIFACT, [string]$EngineArtifact = $env:CLIPRELAY_HOST_ENGINE_ARTIFACT)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $source = Join-Path (Split-Path $PSScriptRoot) 'windows'
@@ -23,7 +23,7 @@ $package = Join-Path $staging 'ClipRelay-Windows'
 try {
     Copy-Item -LiteralPath (Join-Path (Split-Path $source) 'LICENSE') -Destination (Join-Path $package 'LICENSE')
     # Explicit allowlist: never bundle config, history, tokens, keys or test files.
-    foreach ($name in @('cliprelay.ps1','start.ps1','ai.ps1','install.ps1','install-support.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','paired-relay.cs','version.json','release-notes.txt')) {
+    foreach ($name in @('cliprelay.ps1','start.ps1','app.ps1','ai.ps1','install.ps1','install-support.ps1','uninstall.ps1','cliprelay.ico','updates.ps1','update-client.cs','paired-relay.cs','version.json','release-notes.txt')) {
         Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $package $name)
     }
     $video = Join-Path $package 'screen-share'
@@ -101,4 +101,9 @@ finally {
     if ($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path $resolved -Leaf).StartsWith('cliprelay-package-')) {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
+}
+if (!$PSBoundParameters.ContainsKey('OutputDirectory')) {
+    # A package already exists successfully; retention failures must not hide it.
+    try { & (Join-Path $PSScriptRoot 'clean_artifacts.ps1') -Apply }
+    catch { Write-Warning "Package created, but artifact cleanup needs attention: $_" }
 }

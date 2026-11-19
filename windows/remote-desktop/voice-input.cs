@@ -1,5 +1,5 @@
 ﻿// Phone PCM -> a virtual microphone -> the installed desktop Doubao Input Method.
-// No audio files, default-speaker playback, simulated shortcuts, or cloud credentials.
+// No audio files, default-speaker playback, or cloud credentials.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -14,12 +14,21 @@ using System.Windows.Automation;
 using Microsoft.Win32;
 
 namespace ClipRelay.Remote {
+    public interface IDesktopVoice : IDisposable {
+        uint OutputDevice { get; }
+        uint ProcessId { get; }
+        bool IsRecording { get; }
+        void CheckAvailable();
+        void SelectMicrophone();
+        void Start(Func<bool> sameTarget);
+        void End(bool commit);
+    }
     public static class VoiceInput {
         static readonly object Gate = new object();
         static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         static readonly Timer Watchdog = new Timer(Check, null, 300, 300);
         static PcmPlayback playback;
-        static DoubaoVoice doubao;
+        static IDesktopVoice provider;
         static long started, lastAudio, lastRecovery;
         static IntPtr target;
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -122,7 +131,7 @@ namespace ClipRelay.Remote {
             IntPtr current = GetForegroundWindow();
             if (current == target) return true;
             uint pid; GetWindowThreadProcessId(current, out pid);
-            return doubao != null && pid == doubao.ProcessId;
+            return provider != null && pid == provider.ProcessId;
         }
         static bool IsPasswordFocus() {
             // UIA is advisory for an explicit IME command: custom editors may not
@@ -136,7 +145,7 @@ namespace ClipRelay.Remote {
         static void Check(object unused) {
             lock (Gate) {
                 if (playback != null && (Now - lastAudio > 6000 || Now - started > 180000 ||
-                    !SameTarget() || !doubao.IsRecording)) End(false);
+                    !SameTarget() || !provider.IsRecording)) End(false);
                 if (playback == null && Now - lastRecovery > 5000) {
                     lastRecovery = Now;
                     RecoverMicrophone();
@@ -149,15 +158,20 @@ namespace ClipRelay.Remote {
                 if (File.Exists(MicrophoneLease.JournalPath))
                     using (var provider = new DoubaoVoice()) provider.CheckAvailable();
             } catch { /* The journal remains for retry once Doubao is available and idle. */ }
+            try {
+                using (var identity = WindowsIdentity.GetCurrent()) if (identity.IsSystem) return;
+                if (TypelessAudioRoute.RecoveryPending)
+                    using (var provider = new TypelessVoice()) provider.CheckAvailable();
+            } catch { /* Retry when the trusted Typeless process is available and idle. */ }
         }
         static void End(bool commit) {
             try {
                 if (playback != null && commit && SameTarget()) playback.Drain();
                 else commit = false;
-                if (doubao != null) doubao.End(commit && SameTarget());
+                if (provider != null) provider.End(commit && SameTarget());
             } finally {
                 if (playback != null) { playback.Dispose(); playback = null; }
-                if (doubao != null) { doubao.Dispose(); doubao = null; }
+                if (provider != null) { provider.Dispose(); provider = null; }
             }
         }
         public static void Close() { lock (Gate) { End(false); } }
@@ -169,10 +183,12 @@ namespace ClipRelay.Remote {
                         End(command == "voice-stop");
                         return Reply(active, active ? "" : "VOICE_ENDED");
                     }
-                    if (command == "voice-status" || command == "voice-start") {
+                    if (command == "voice-status" || command == "voice-start" ||
+                        command == "voice-status:typeless" || command == "voice-start:typeless") {
                         if (playback != null) return Reply(false, "VOICE_BUSY");
-                        if (command == "voice-status") {
-                            using (var provider = new DoubaoVoice()) provider.CheckAvailable();
+                        bool typeless = command.EndsWith(":typeless", StringComparison.Ordinal);
+                        if (command.StartsWith("voice-status", StringComparison.Ordinal)) {
+                            using (IDesktopVoice candidate = typeless ? (IDesktopVoice)new TypelessVoice() : new DoubaoVoice()) candidate.CheckAvailable();
                             return Reply(true, "");
                         }
                         if (!InputFocus.IsInteractiveDesktop()) return Reply(false, "VOICE_FOCUS_REQUIRED");
@@ -183,17 +199,17 @@ namespace ClipRelay.Remote {
                         // hints, not as an authority on whether an IME can type.
                         if (target == IntPtr.Zero || target == GetShellWindow() || IsPasswordFocus())
                             return Reply(false, "VOICE_FOCUS_REQUIRED");
-                        doubao = new DoubaoVoice();
-                        doubao.CheckAvailable();
-                        doubao.SelectMicrophone();
-                        playback = new PcmPlayback(doubao.OutputDevice);
+                        provider = typeless ? (IDesktopVoice)new TypelessVoice() : new DoubaoVoice();
+                        provider.CheckAvailable();
+                        provider.SelectMicrophone();
+                        playback = new PcmPlayback(provider.OutputDevice);
                         if (!SameTarget()) throw new InvalidOperationException("VOICE_FOCUS_REQUIRED");
-                        doubao.Start(SameTarget);
+                        provider.Start(SameTarget);
                         started = lastAudio = Now;
                         return Reply(true, "");
                     }
                     if (command.StartsWith("voice-audio:", StringComparison.Ordinal)) {
-                        if (playback == null || !SameTarget() || !doubao.IsRecording) {
+                        if (playback == null || !SameTarget() || !provider.IsRecording) {
                             End(false); return Reply(false, "VOICE_ENDED");
                         }
                         string encoded = command.Substring(12);
@@ -209,6 +225,9 @@ namespace ClipRelay.Remote {
                     End(false);
                     return Reply(false, error.Message.StartsWith("VOICE_", StringComparison.Ordinal) ||
                         error.Message == "DOUBAO_REQUIRED" || error.Message == "DOUBAO_VERSION_UNSUPPORTED" ||
+                        error.Message == "TYPELESS_REQUIRED" || error.Message == "TYPELESS_MIC_REQUIRED" ||
+                        error.Message == "TYPELESS_SHORTCUT_REQUIRED" || error.Message == "TYPELESS_VERSION_UNSUPPORTED" ||
+                        error.Message == "TYPELESS_ROUTING_UNSUPPORTED" ||
                         error.Message == "VIRTUAL_MIC_REQUIRED" ? error.Message : "VOICE_UNAVAILABLE");
                 } catch { End(false); return Reply(false, "VOICE_UNAVAILABLE"); }
             }
@@ -217,9 +236,10 @@ namespace ClipRelay.Remote {
 
     // Doubao deliberately ignores injected keyboard shortcuts. Its installed
     // local RPC library exposes the same start/show/stop/cancel commands used by its UI.
-    // This is NOT a public SDK: fail closed on other versions, never guess command IDs.
+    // This is NOT a public SDK: check the installed interface, not a version allowlist.
+    // Keep the existing command protocol and verify recording at runtime; never guess IDs.
     // Load only the installed Program Files binaries; none are bundled with ClipRelay.
-    public sealed class DoubaoVoice : IDisposable {
+    public sealed class DoubaoVoice : IDesktopVoice {
         const string Pipe = @"\\.\pipe\ObricIme\oime-server";
         readonly JavaScriptSerializer json = new JavaScriptSerializer();
         readonly string directory, config;
@@ -246,9 +266,29 @@ namespace ClipRelay.Remote {
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int length);
-        public static bool SupportedVersion(string value) {
-            string version = (value ?? "").Trim();
-            return version == "0.9.1.22" || version == "0.9.2.7";
+        static InvalidOperationException Incompatible() {
+            // Preserve the wire code so older phone clients can still display the error.
+            return new InvalidOperationException("DOUBAO_VERSION_UNSUPPORTED");
+        }
+        static PropertyInfo RequireProperty(Type type, string name, Type expected) {
+            var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+            if (property == null || property.GetGetMethod() == null ||
+                property.GetIndexParameters().Length != 0 || !expected.IsAssignableFrom(property.PropertyType))
+                throw Incompatible();
+            return property;
+        }
+        public static void CheckSettingsContract(Type type) {
+            if (type == null || type.IsAbstract || type.GetConstructor(Type.EmptyTypes) == null) throw Incompatible();
+            var apply = type.GetMethod("ApplyPatch", new[] { typeof(IDictionary<string, object>) });
+            var list = type.GetMethod("GetMicrophoneList", Type.EmptyTypes);
+            if (apply == null || apply.IsStatic || apply.ContainsGenericParameters ||
+                list == null || list.IsStatic || list.ContainsGenericParameters || list.ReturnType == typeof(void))
+                throw Incompatible();
+            RequireProperty(list.ReturnType, "Devices", typeof(System.Collections.IEnumerable));
+        }
+        static object ReadProperty(object value, string name, Type expected) {
+            if (value == null) throw Incompatible();
+            return RequireProperty(value.GetType(), name, expected).GetValue(value, null);
         }
         public DoubaoVoice() {
             string trusted = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "DoubaoIME", "versions") + Path.DirectorySeparatorChar;
@@ -264,19 +304,43 @@ namespace ClipRelay.Remote {
                 directory = Path.GetDirectoryName(executable); pid = process.Id; break;
             }
             if (directory == null) throw new InvalidOperationException("DOUBAO_REQUIRED");
-            if (!SupportedVersion(File.ReadAllText(Path.Combine(directory, "version.dat"))))
-                throw new InvalidOperationException("DOUBAO_VERSION_UNSUPPORTED");
             config = Path.Combine(VoiceInput.UserAppData(), "DoubaoIme", "conf", "config.json");
             if (!File.Exists(config)) throw new InvalidOperationException("DOUBAO_REQUIRED");
             try {
                 library = LoadLibraryEx(Path.Combine(directory, "doubaoime-rpc-new.dll"), IntPtr.Zero, 0x900);
-                if (library == IntPtr.Zero) throw new InvalidOperationException("DOUBAO_REQUIRED");
+                if (library == IntPtr.Zero) throw Incompatible();
                 IntPtr entry = GetProcAddress(library, "RpcPipe_SimpleMessage");
                 if (entry == IntPtr.Zero) throw new InvalidOperationException("DOUBAO_VERSION_UNSUPPORTED");
                 rpc = (RpcMessage)Marshal.GetDelegateForFunctionPointer(entry, typeof(RpcMessage));
-                var type = Assembly.LoadFrom(Path.Combine(directory, "DoubaoImeSettings.exe"))
-                    .GetType("DoubaoIme.Settings.App.Ipc.SettingsRpcClient", true);
-                settings = Activator.CreateInstance(type); patch = type.GetMethod("ApplyPatch");
+                Type type;
+                try {
+                    type = Assembly.LoadFrom(Path.Combine(directory, "DoubaoImeSettings.exe"))
+                        .GetType("DoubaoIme.Settings.App.Ipc.SettingsRpcClient", false);
+                    CheckSettingsContract(type);
+                } catch (FileNotFoundException) { throw Incompatible(); }
+                  catch (FileLoadException) { throw Incompatible(); }
+                  catch (BadImageFormatException) { throw Incompatible(); }
+                  catch (TypeLoadException) { throw Incompatible(); }
+                  catch (AmbiguousMatchException) { throw Incompatible(); }
+                settings = Activator.CreateInstance(type);
+                patch = type.GetMethod("ApplyPatch", new[] { typeof(IDictionary<string, object>) });
+                object list = type.GetMethod("GetMicrophoneList", Type.EmptyTypes).Invoke(settings, null);
+                var devices = ReadProperty(list, "Devices", typeof(System.Collections.IEnumerable)) as System.Collections.IEnumerable;
+                if (devices == null) throw Incompatible();
+                foreach (object device in devices) {
+                    string name = ReadProperty(device, "Name", typeof(string)) as string;
+                    string id = ReadProperty(device, "Id", typeof(string)) as string;
+                    if (name == null || String.IsNullOrEmpty(id)) throw Incompatible();
+                    string output = name.Contains("Steam Streaming Microphone") ? "Steam Streaming Micro" :
+                        name.Contains("CABLE Output") && name.Contains("VB-Audio") ? "CABLE Input" : null;
+                    if (output == null) continue;
+                    OutputDevice = PcmPlayback.Find(output);
+                    microphone = id;
+                    break;
+                }
+                if (String.IsNullOrEmpty(microphone)) throw new InvalidOperationException("VIRTUAL_MIC_REQUIRED");
+                // Validate read-only capabilities before any microphone recovery or mutation.
+                ReadMicrophone();
                 if (!IsRecording || File.Exists(MicrophoneLease.JournalPath))
                     microphoneLease = new MicrophoneLease(MicrophoneLease.JournalPath, ReadMicrophone, SetMicrophone,
                         delegate {
@@ -288,18 +352,6 @@ namespace ClipRelay.Remote {
                                 while (IsRecording && wait.ElapsedMilliseconds < 1000) Thread.Sleep(50);
                             }
                         });
-                object list = type.GetMethod("GetMicrophoneList").Invoke(settings, null);
-                var devices = (System.Collections.IEnumerable)list.GetType().GetProperty("Devices").GetValue(list, null);
-                foreach (object device in devices) {
-                    string name = Convert.ToString(device.GetType().GetProperty("Name").GetValue(device, null));
-                    string output = name.Contains("Steam Streaming Microphone") ? "Steam Streaming Micro" :
-                        name.Contains("CABLE Output") && name.Contains("VB-Audio") ? "CABLE Input" : null;
-                    if (output == null) continue;
-                    OutputDevice = PcmPlayback.Find(output);
-                    microphone = Convert.ToString(device.GetType().GetProperty("Id").GetValue(device, null));
-                    break;
-                }
-                if (String.IsNullOrEmpty(microphone)) throw new InvalidOperationException("VIRTUAL_MIC_REQUIRED");
             } catch { Dispose(); throw; }
         }
         public bool IsRecording {
@@ -317,7 +369,12 @@ namespace ClipRelay.Remote {
         }
         string ReadMicrophone() {
             var values = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(config));
-            return Convert.ToString(((Dictionary<string, object>)values["voice"])["selectedMicrophoneId"]);
+            object voice, selected;
+            if (values == null || !values.TryGetValue("voice", out voice)) throw Incompatible();
+            var options = voice as Dictionary<string, object>;
+            if (options == null || !options.TryGetValue("selectedMicrophoneId", out selected) ||
+                (selected != null && !(selected is string))) throw Incompatible();
+            return Convert.ToString(selected);
         }
         void SetMicrophone(string id) {
             patch.Invoke(settings, new object[] { new Dictionary<string, object> {
@@ -430,6 +487,11 @@ namespace ClipRelay.Remote {
             try { Restore(); }
             catch { /* Keep the recovery journal; the idle worker and service exit retry. */ }
             finally { gate.Dispose(); gate = null; }
+        }
+        public void LeaveForRecovery() {
+            // The provider may still be recording after an uncertain stop. Keep
+            // the virtual route until a later, verified idle-state recovery.
+            if (gate != null) { gate.Dispose(); gate = null; }
         }
     }
 

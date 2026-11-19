@@ -2376,6 +2376,9 @@ function Set-StartupRegistration {
     if (Test-Path -LiteralPath $desktopExecutable) {
         $shortcut.TargetPath = $desktopExecutable
         $shortcut.Arguments = '--background'
+        if ($env:CLIPRELAY_DEVELOPMENT -eq '1') {
+            $shortcut.Arguments += ' --development-root="' + (Join-Path $PSScriptRoot 'electron') + '"'
+        }
     }
     $shortcut.WorkingDirectory = $PSScriptRoot
     $iconPath = Join-Path $PSScriptRoot "cliprelay.ico"
@@ -2878,7 +2881,9 @@ function Test-PeerConnectivity {
     return "发送检测成功：对方完整响应了 POST /push。"
 }
 
-$configPath = Join-Path $PSScriptRoot "config.json"
+$configDirectory = if ($env:CLIPRELAY_DEVELOPMENT -eq '1' -and $env:CLIPRELAY_DATA_DIRECTORY) { $env:CLIPRELAY_DATA_DIRECTORY } else { $PSScriptRoot }
+[IO.Directory]::CreateDirectory($configDirectory) | Out-Null
+$configPath = Join-Path $configDirectory "config.json"
 $configuration = $null
 $peerWasExplicitlyProvided = $PSBoundParameters.ContainsKey("Peer") -and -not [string]::IsNullOrWhiteSpace($Peer)
 if (Test-Path -LiteralPath $configPath) {

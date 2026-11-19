@@ -29,3 +29,7 @@ android-app/network-libs/
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Local build output and temp build logs
+output/
+tmp-*.log

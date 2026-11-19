@@ -155,7 +155,7 @@ fun ClipRelayScreen(
     onCancelConnection: () -> Unit = {},
     onDismissConnectionError: () -> Unit = {},
     onAddComputer: (String) -> Unit = {},
-    onComputerActions: (String) -> Unit = {},
+    onComputerAction: (String, com.limelight.PcView.ComputerAction) -> Unit = { _, _ -> },
     onRescanComputers: () -> Unit = {},
     onAddAddress: () -> Unit = {},
     onAddPairingCode: () -> Unit = {},
@@ -169,6 +169,19 @@ fun ClipRelayScreen(
     var selectedTab by rememberSaveable { mutableStateOf("devices") }
     var showHistory by rememberSaveable { mutableStateOf(false) }
     var showAddComputer by rememberSaveable { mutableStateOf(false) }
+    var actionsComputerId by rememberSaveable { mutableStateOf<String?>(null) }
+    val actionsComputer = computers.firstOrNull { it.uuid == actionsComputerId }
+    LaunchedEffect(actionsComputerId, actionsComputer) {
+        if (actionsComputerId != null && actionsComputer == null) actionsComputerId = null
+    }
+    if (actionsComputer != null) ComputerActionsSheet(
+        computer = actionsComputer,
+        onDismiss = { actionsComputerId = null },
+        onAction = { action ->
+            actionsComputerId = null
+            onComputerAction(actionsComputer.uuid, action)
+        },
+    )
     if (showAddComputer) AddComputerSheet(nearbyComputers, { showAddComputer = false },
         onAddComputer, onRescanComputers, onAddAddress, onAddPairingCode)
     BackHandler(connectingComputer != null && !showAddComputer) { onCancelConnection() }
@@ -260,7 +273,7 @@ fun ClipRelayScreen(
                 items(computers, key = { it.uuid }) { computer ->
                     ComputerCard(computer, connectingComputer == computer.uuid, connectingComputer != null,
                         onConnect = { onConnectComputer(computer.uuid) }, onCancel = onCancelConnection,
-                        onRescan = onRescanComputers, onActions = { onComputerActions(computer.uuid) })
+                        onRescan = onRescanComputers, onActions = { actionsComputerId = computer.uuid })
                 }
                 if (connectionError != null) item {
                     Row(verticalAlignment = Alignment.CenterVertically) {

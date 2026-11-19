@@ -16,10 +16,11 @@
     <string name="shortcuts_reset">重置快捷键</string>
     <string name="speech_provider">语音输入方式</string>
     <string name="speech_provider_hint_short">长按切换语音输入方式</string>
-    <string name="speech_provider_hint">手机识别会先显示文字供检查，再输入到电脑。系统服务可能把音频发送给其提供方。原有电脑方式使用豆包。</string>
+    <string name="speech_provider_hint">手机识别会先显示文字供检查。电脑识别使用豆包或 Typeless，直接输入电脑当前输入框。声音由所选服务处理；Typeless 需先在电脑设置中选择虚拟麦克风。</string>
     <string name="speech_local">手机 · 本机识别</string>
     <string name="speech_system">手机 · 系统语音服务（可能联网）</string>
     <string name="speech_desktop">电脑 · 豆包</string>
+    <string name="speech_typeless">电脑 · Typeless</string>
     <string name="speech_unavailable">手机没有可用的此类语音服务。请在 Android 设置中配置服务，或选择其他方式。</string>
     <string name="speech_starting">正在启动手机识别…</string>
     <string name="speech_listening">请对着手机说话（最多 60 秒）</string>

@@ -949,7 +949,7 @@ index c20d3126..f7dd6021 100644
  
  int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
  {
-+    ClipRelayImport::reportReceived(static_cast<quint32>(du->frameNumber));
++    ClipRelayImport::reportReceived(static_cast<quint32>(du->frameNumber), du->fullLength);
      PLENTRY entry = du->bufferList;
      int err;
  

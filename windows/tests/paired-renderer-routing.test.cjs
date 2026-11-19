@@ -6,6 +6,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {EventEmitter}=require('node:events');
 const {pathToFileURL}=require('node:url');
+const {createRequire}=require('node:module');
 
 function fixture(){
   const handlers=new Map(),requests=[];
@@ -15,9 +16,10 @@ function fixture(){
     loadFile(file,options){this.lastLoad={file,options};this.webContents.mainFrame.url=pathToFileURL(file).href+'?'+new URLSearchParams(options.query);}
   }
   const filename=path.resolve(__dirname,'../electron/windows.cjs');
+  const sourceRequire=createRequire(filename);
   const module={exports:{}};
   const electron={BrowserWindow:Window,ipcMain:{handle:(name,fn)=>handlers.set(name,fn)},screen:{getPrimaryDisplay:()=>({workAreaSize:{width:1920,height:1080}})},Menu:{}};
-  vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,__dirname:path.dirname(filename),Buffer,require:name=>name==='electron'?electron:require(name)},{filename});
+  vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,__dirname:path.dirname(filename),Buffer,require:name=>name==='electron'?electron:sourceRequire(name)},{filename});
   const host={request:async(action,data)=>{requests.push({action,data});return {ok:true,peers:[]};}};
   const windows=new module.exports.DesktopWindows(host,path.resolve(__dirname,'..'));
   const event=window=>({sender:window.webContents,senderFrame:window.webContents.mainFrame});

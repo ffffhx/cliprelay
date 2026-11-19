@@ -6,10 +6,10 @@ const dimensions = {
   'control-center': [1160,754], 'peer-editor':[960,720],
   'preview-remote':[480,400], 'updates':[560,520], 'remote-home':[620,570], 'remote-desktop':[700,660], 'remote-network':[620,620]
 };
-const actions = new Set(['snapshot','patch','normalize-peer','discover','merge','probe','paired-peers','summary','copy','preview-state','preview-navigate','remote','update-check','update-download','update-open','update-notify']);
+const actions = new Set(['snapshot','patch','normalize-peer','discover','merge','probe','paired-peers','summary','copy','preview-state','preview-navigate','remote','update-check','update-download','update-open','update-install','update-notify']);
 
 class DesktopWindows {
-  constructor(host, root) {
+  constructor(host, root, dataRoot = root) {
     this.host = host;
     this.root = root;
     this.windows = new Map();
@@ -18,7 +18,7 @@ class DesktopWindows {
     const {AiController}=require('./ai-controller.cjs');
     const {AiServer}=require('./ai-server.cjs');
     this.ai=new AiController({getClient:()=>this.getClient(),directory:this.directory});
-    this.aiServer=new AiServer({directory:root,controller:this.ai});
+    this.aiServer=new AiServer({directory:dataRoot,controller:this.ai});
     this.page = path.join(__dirname,'renderer','index.html');
     this.url = pathToFileURL(this.page).href;
     const owner = event => {

@@ -10,6 +10,11 @@ public final class ApplicationPolicy {
         return !gameMode && "orca".equals(app);
     }
 
+    /** Orca now rejects invalid mouse reports; keep single-finger gestures native. */
+    public static boolean usesPhonePageCompatibility(String app, boolean gameMode) {
+        return false;
+    }
+
     private String candidate;
     private long since;
     public String observe(boolean supported, String app, long now) {

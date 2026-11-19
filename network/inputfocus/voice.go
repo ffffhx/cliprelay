@@ -24,6 +24,7 @@ type voiceHandler struct {
 	read                     func(string) (json.RawMessage, error)
 	now                      func() time.Time
 	session, owner, previous string
+	provider                 string
 	sequence, bytes          int
 	started, last            time.Time
 }
@@ -44,6 +45,7 @@ func (v *voiceHandler) call(command string) voiceResult {
 	// Only fixed machine codes leave the helper, never provider messages or paths.
 	switch result.Code {
 	case "", "DOUBAO_REQUIRED", "DOUBAO_VERSION_UNSUPPORTED",
+		"TYPELESS_REQUIRED", "TYPELESS_MIC_REQUIRED", "TYPELESS_SHORTCUT_REQUIRED", "TYPELESS_VERSION_UNSUPPORTED", "TYPELESS_ROUTING_UNSUPPORTED",
 		"VIRTUAL_MIC_REQUIRED", "VOICE_AUDIO_DEVICE_FAILED", "VOICE_AUDIO_BACKLOG",
 		"VOICE_BUSY", "VOICE_FOCUS_REQUIRED", "VOICE_ENDED",
 		"VOICE_INPUT_FAILED", "VOICE_UNAVAILABLE", "VOICE_INVALID_AUDIO":
@@ -56,11 +58,17 @@ func (v *voiceHandler) call(command string) voiceResult {
 func (v *voiceHandler) clear() {
 	v.previous = v.session
 	v.session, v.owner = "", ""
+	v.provider = ""
 	v.sequence, v.bytes = 0, 0
 }
 
 func (v *voiceHandler) serve(w http.ResponseWriter, r *http.Request, clients string) {
 	route := strings.TrimPrefix(r.URL.Path, "/v1/voice/")
+	provider, suffix := "doubao", ""
+	if strings.HasPrefix(route, "typeless/") {
+		provider, suffix = "typeless", ":typeless"
+		route = strings.TrimPrefix(route, "typeless/")
+	}
 	if r.URL.RawQuery != "" || (route == "status" && r.Method != "GET") ||
 		(route != "status" && (r.Method != "POST" || (route != "start" && route != "audio" && route != "stop" && route != "cancel"))) {
 		http.NotFound(w, r)
@@ -102,7 +110,7 @@ func (v *voiceHandler) serve(w http.ResponseWriter, r *http.Request, clients str
 			voiceReply(w, 409, voiceResult{Code: "VOICE_BUSY"})
 			return
 		}
-		result := v.call("voice-status")
+		result := v.call("voice-status" + suffix)
 		voiceReply(w, 200, result)
 		return
 	}
@@ -118,15 +126,16 @@ func (v *voiceHandler) serve(w http.ResponseWriter, r *http.Request, clients str
 			voiceReply(w, 409, voiceResult{Code: "VOICE_BUSY"})
 			return
 		}
-		result := v.call("voice-start")
+		result := v.call("voice-start" + suffix)
 		if result.OK {
 			v.session, v.owner = session, owner
+			v.provider = provider
 			v.started, v.last = v.now(), v.now()
 		}
 		voiceReply(w, 200, result)
 		return
 	}
-	if v.session != session || v.owner != owner {
+	if v.session != session || v.owner != owner || v.provider != provider {
 		voiceReply(w, 409, voiceResult{Code: "VOICE_ENDED"})
 		return
 	}

@@ -45,7 +45,6 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         try{host=TransferStorage.host(getIntent());}catch(JSONException e){finish();return;}
         LinearLayout page=new LinearLayout(this);page.setOrientation(LinearLayout.VERTICAL);page.setBackgroundColor(0xff11151d);
@@ -159,7 +158,6 @@ public final class TerminalActivity extends Activity implements RemoteTerminalVi
     }
     private void modal(){
         AlertDialog owned=dialog;
-        owned.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         owned.setOnDismissListener(d->{if(dialog==owned){dialog=null;update();schedule(0);}});update();
     }
     private void toast(int message){Toast.makeText(this,message,Toast.LENGTH_SHORT).show();}

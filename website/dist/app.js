@@ -1,70 +1,18 @@
-'use strict';
 
-const menuButton = document.querySelector('.menu-button');
-const navigation = document.getElementById('navigation');
-function closeMenu() {
-  navigation.classList.remove('open');
-  menuButton.setAttribute('aria-expanded', 'false');
-  menuButton.setAttribute('aria-label', '打开导航');
-}
-menuButton.addEventListener('click', () => {
-  const open = menuButton.getAttribute('aria-expanded') !== 'true';
-  navigation.classList.toggle('open', open);
-  menuButton.setAttribute('aria-expanded', String(open));
-  menuButton.setAttribute('aria-label', open ? '关闭导航' : '打开导航');
-});
-navigation.addEventListener('click', (event) => { if (event.target.closest('a')) closeMenu(); });
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && menuButton.getAttribute('aria-expanded') === 'true') {
-    closeMenu(); menuButton.focus();
-  }
-});
-document.addEventListener('click', (event) => { if (!event.target.closest('.site-header')) closeMenu(); });
 
-const tabs = [...document.querySelectorAll('[role="tab"]')];
-const tablist = document.querySelector('[role="tablist"]');
-const horizontalTabs = window.matchMedia('(max-width: 850px)');
-function updateOrientation() { tablist.setAttribute('aria-orientation', horizontalTabs.matches ? 'horizontal' : 'vertical'); }
-updateOrientation();
-horizontalTabs.addEventListener('change', updateOrientation);
-function selectTab(selected) {
-  for (const tab of tabs) {
-    const active = tab === selected;
-    tab.setAttribute('aria-selected', String(active));
-    tab.tabIndex = active ? 0 : -1;
-    document.getElementById(tab.getAttribute('aria-controls')).hidden = !active;
-  }
-}
-tabs.forEach((tab, index) => {
-  tab.addEventListener('click', () => selectTab(tab));
-  tab.addEventListener('keydown', (event) => {
-    let next;
-    const previousKey = horizontalTabs.matches ? 'ArrowLeft' : 'ArrowUp';
-    const nextKey = horizontalTabs.matches ? 'ArrowRight' : 'ArrowDown';
-    if (event.key === nextKey) next = (index + 1) % tabs.length;
-    if (event.key === previousKey) next = (index + tabs.length - 1) % tabs.length;
-    if (event.key === 'Home') next = 0;
-    if (event.key === 'End') next = tabs.length - 1;
-    if (next !== undefined) { event.preventDefault(); selectTab(tabs[next]); tabs[next].focus(); }
-  });
-});
+const $=id=>document.getElementById(id),stage=$('experience'),relay=$('relay-button'),source=$('screen-content'),initialSource=source.innerHTML;
+let mode='clipboard',sent=false,timer=null;
+const modes={clipboard:{tag:'跨屏接力',hint:'点击，接力这句话',title:'下一站，我的手机',wait:'让想法，再走一步。',desc:'选中文字或截图，发送到已配对设备。下一次粘贴，就在另一块屏幕。',bottom:'两块屏幕，同一段思路。',count:'01 — 03',aria:'演示：将这句话传递到手机'},desktop:{tag:'远程桌面',hint:'点击，接上电脑',title:'我的远程电脑',wait:'电脑，随手可达。',desc:'在 Android 手机上查看并操作电脑。完成配对与授权后，就能继续桌面上的工作。',bottom:'换个地方，也能继续。',count:'02 — 03',aria:'演示：从手机连接远程桌面'},ai:{tag:'AI 操作 · 开发预览',hint:'点击，预览连接',title:'已授权的工作空间',wait:'等待你的下一步。',desc:'ProfilePilot CLI 为 AI 提供设备操作入口。此能力属于 Windows 0.4.3 待发布功能，目标设备仍需完成授权。',bottom:'每一次操作，都从你的授权开始。',count:'03 — 03',aria:'演示：预览 AI 设备连接'}};
+function setMode(next){clearTimeout(timer);mode=next;sent=false;relay.disabled=false;stage.classList.remove('sending');stage.dataset.mode=next;stage.setAttribute('aria-labelledby','tab-'+next);document.querySelectorAll('.demo-tab').forEach(b=>{const active=b.dataset.mode===next;b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1});const m=modes[next];$('scene-tag').textContent=m.tag;$('relay-hint').textContent=m.hint;$('phone-title').textContent=m.title;$('phone-message').className='phone-message waiting';$('phone-message').textContent=m.wait;$('demo-description-text').textContent=m.desc;$('stage-bottom-text').textContent=m.bottom;$('scene-counter').textContent=m.count;relay.setAttribute('aria-label',m.aria);relay.innerHTML='<svg class="icon"><use href="#arrow"/></svg>';$('phone-status').innerHTML='<svg class="icon"><use href="#shield"/></svg> 已配对 · 等待接力';if(next==='clipboard')source.innerHTML=initialSource;if(next==='desktop')source.innerHTML='<div class="screen-label">我的电脑<span>等待连接 ↗</span></div><div class="remote-content"><span class="tiny">YOUR WORKSPACE</span><h3>继续那个好想法。</h3><div class="files"><div class="file"></div><div class="file"></div><div class="file"></div></div><span class="remote-cursor">↖ 我的手机</span></div>';if(next==='ai')source.innerHTML='<div class="screen-label">设备操作入口<span>开发预览</span></div><div class="terminal-content"><div class="dim"># 发现你的设备</div><div class="command">$ ppilot remote devices --json</div><div>✓ 我的电脑 · 可连接</div><div class="terminal-badge">选择目标 → 建立会话 → 执行操作</div></div>'}
+document.querySelectorAll('.demo-tab').forEach((b,i,all)=>{b.addEventListener('click',()=>setMode(b.dataset.mode));b.addEventListener('keydown',e=>{let n=i;if(e.key==='ArrowRight')n=(i+1)%all.length;else if(e.key==='ArrowLeft')n=(i-1+all.length)%all.length;else if(e.key==='Home')n=0;else if(e.key==='End')n=all.length-1;else return;e.preventDefault();setMode(all[n].dataset.mode);all[n].focus()})});
+relay.addEventListener('click',()=>{if(sent){setMode(mode);return}relay.disabled=true;stage.classList.add('sending');$('relay-hint').textContent=mode==='clipboard'?'正在传递…':'正在连接…';const delay=matchMedia('(prefers-reduced-motion:reduce)').matches?80:1000;timer=setTimeout(()=>{stage.classList.remove('sending');relay.disabled=false;sent=true;$('phone-message').className='phone-message delivered';$('phone-message').textContent=mode==='clipboard'?'好的想法，不该停在一块屏幕。':mode==='desktop'?'已接上工作桌面。继续那个好想法。':'目标已连接。等待下一步授权操作。';$('phone-title').textContent=mode==='clipboard'?'收到你的好想法':mode==='desktop'?'电脑，已在手边':'连接准备就绪';$('phone-status').innerHTML='<svg class="icon"><use href="#check"/></svg> '+(mode==='clipboard'?'已送达 · 可以粘贴':'连接完成 · 演示状态');$('relay-hint').textContent='再体验一次 ↺';relay.innerHTML='<svg class="icon"><use href="#check"/></svg>';relay.setAttribute('aria-label','重置当前功能演示')},delay)});
+$('phone-message').setAttribute('aria-live','polite');$('phone-status').setAttribute('aria-live','polite');
+const menu=document.querySelector('.menu-toggle'),nav=$('main-nav');menu.addEventListener('click',()=>{const open=nav.classList.toggle('open');menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'关闭导航':'打开导航')});nav.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{nav.classList.remove('open');menu.setAttribute('aria-expanded','false');menu.setAttribute('aria-label','打开导航')}));
 
-let toastTimer;
-const copyStatus = document.getElementById('copy-status');
-function showToast(message) {
-  clearTimeout(toastTimer);
-  copyStatus.textContent = message;
-  copyStatus.classList.add('visible');
-  toastTimer = setTimeout(() => copyStatus.classList.remove('visible'), 3500);
-}
-document.querySelectorAll('[data-copy]').forEach((button) => {
-  button.addEventListener('click', async () => {
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
-      await navigator.clipboard.writeText(button.dataset.copy);
-      showToast('命令已复制');
-    } catch {
-      showToast('无法自动复制，请选中上方命令手动复制');
-    }
-  });
-});
+// Keep the navigation state in sync with keyboard, outside-click and breakpoint changes.
+function closeNavigation(){nav.classList.remove('open');menu.setAttribute('aria-expanded','false');menu.setAttribute('aria-label','打开导航')}
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&nav.classList.contains('open')){closeNavigation();menu.focus()}});
+document.addEventListener('click',event=>{if(!nav.contains(event.target)&&!menu.contains(event.target))closeNavigation()});
+matchMedia('(min-width:761px)').addEventListener('change',event=>{if(event.matches)closeNavigation()});
+window.addEventListener('pagehide',()=>clearTimeout(timer));
+window.addEventListener('pageshow',event=>{if(event.persisted)setMode(mode)});

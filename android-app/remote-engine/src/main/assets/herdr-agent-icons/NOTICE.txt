@@ -1,0 +1,7 @@
+﻿Agent identification icons match Herdr desktop's bundled assets.
+Source: https://github.com/ffffhx/herdr-app
+Commit: 8b9cd2963722b0715b7e48b0361df5372e940b94
+Files: defaults/icons/codex.svg, defaults/icons/claude.svg
+Converted to Android VectorDrawable without changing path geometry, colors or gradient.
+Herdr code/assets license: Apache-2.0 (LICENSE). Brand marks belong to their respective owners.
+Used only to identify the corresponding agent sessions, not as ClipRelay branding.

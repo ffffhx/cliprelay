@@ -504,6 +504,7 @@ namespace ClipRelay.Remote {
             if (args.Length == 1 && args[0] == "--voice-probe") return VoiceInput.Run();
             if (args.Length == 1 && args[0] == "--wake-probe") return WakeProbe.Run();
             if (args.Length == 1 && args[0] == "--terminal-probe") return TerminalWorker.Run();
+            if (args.Length == 1 && args[0] == "--herdr-probe") return HerdrWorker.Run();
             if (args.Length == 1 && args[0] == "--automation-probe") return AutomationWorker.Run();
             if (args.Length == 1 && args[0] == "--voice-recover") return VoiceInput.Run(true);
             if (args.Length == 1 && args[0] == "--focus-probe") return InputFocus.Run();

@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([switch]$OpenSettings, [int]$Port = 0, [string]$Peer = '', [int]$DebugPort = 0)
+param([switch]$OpenSettings, [int]$Port = 0, [string]$Peer = '', [int]$DebugPort = 0, [switch]$Development)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $executable = Join-Path $PSScriptRoot 'desktop\ClipRelay.exe'
@@ -8,6 +8,11 @@ if ($Port -lt 0 -or $Port -gt 65535) { throw 'Invalid port.' }
 if ($DebugPort -ne 0 -and ($DebugPort -lt 1024 -or $DebugPort -gt 65535)) { throw 'Invalid Agent debug port.' }
 if ($Peer -and ($Peer -match '[\s/\\:"\x00-\x1f]' -or $Peer.StartsWith('-'))) { throw 'Invalid peer address.' }
 $arguments = if ($OpenSettings) { '--open-settings' } else { '--background' }
+if ($Development) {
+    $source = Join-Path $PSScriptRoot 'electron'
+    if (!(Test-Path -LiteralPath (Join-Path (Split-Path $PSScriptRoot) '.git'))) { throw 'Development startup requires a source checkout.' }
+    $arguments += ' --development-root="' + $source + '"'
+}
 if ($Port) { $arguments += ' --port ' + $Port }
 if ($Peer) { $arguments += ' --peer "' + $Peer + '"' }
 if ($DebugPort) { $arguments += ' --remote-debugging-port=' + $DebugPort + ' --remote-debugging-address=127.0.0.1' }

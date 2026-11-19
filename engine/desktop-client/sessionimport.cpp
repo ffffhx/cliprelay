@@ -37,6 +37,7 @@ static bool connectedEvent = false, endedEvent = false;
 static QMutex progressMutex;
 static QElapsedTimer progressClock;
 static quint64 receivedFrame = 0, renderedFrame = 0;
+static quint64 receivedCount = 0, renderedCount = 0, videoBytes = 0;
 static qint64 receivedAt = 0, renderedAt = 0, reportedAt = -200;
 static int renderedWidth = 0, renderedHeight = 0;
 static std::atomic<bool> outputFailed{false};
@@ -80,16 +81,21 @@ void reportEnded(EndReason reason) {
     }
     writeEvent(QByteArray("{\"version\":1,\"event\":\"ended\",\"reason\":\"") + value + "\"}\n");
 }
-void reportReceived(quint64 frame) {
+void reportReceived(quint64 frame, int bytes) {
     if (!loaded || !current.telemetry || !frame || frame > 0xffffffffULL) return;
     QMutexLocker guard(&progressMutex);
-    if (frame > receivedFrame) { receivedFrame = frame; receivedAt = progressClock.elapsed(); }
+    if (frame > receivedFrame) {
+        receivedFrame = frame; receivedAt = progressClock.elapsed();
+        ++receivedCount;
+        if (bytes > 0) videoBytes += static_cast<quint64>(bytes);
+    }
 }
 void reportRendered(quint64 frame, int width, int height) {
     if (!loaded || !current.telemetry || !frame || width < 1 || width > 65536 || height < 1 || height > 65536) return;
     QMutexLocker guard(&progressMutex);
     if (frame <= renderedFrame || frame > receivedFrame) return;
     renderedFrame = frame; renderedWidth = width; renderedHeight = height; renderedAt = progressClock.elapsed();
+    ++renderedCount;
 }
 void reportProgress() {
     if (!loaded || !current.telemetry) return;
@@ -104,6 +110,14 @@ void reportProgress() {
         {"receivedAgeMs",receivedFrame?qMin<qint64>(60000,now-receivedAt):60000},
         {"renderedAgeMs",renderedFrame?qMin<qint64>(60000,now-renderedAt):60000}};
     writeEvent(QJsonDocument(state).toJson(QJsonDocument::Compact) + '\n');
+    if (current.statistics) {
+        // Count actual decode submissions and successful presents, not frame IDs:
+        // dropped frames leave gaps in IDs and must not inflate the measured FPS.
+        const QJsonObject statistics{{"version",1},{"event","statistics"},{"elapsedMs",now},
+            {"receivedFrames",qint64(receivedCount)},{"renderedFrames",qint64(renderedCount)},
+            {"videoBytes",qint64(videoBytes)}};
+        writeEvent(QJsonDocument(statistics).toJson(QJsonDocument::Compact) + '\n');
+    }
 }
 void reportInputCommand(quint32 epoch, bool acknowledged) {
     QMutexLocker guard(&eventMutex);
@@ -155,6 +169,7 @@ bool parse(const QByteArray& bytes, Session& result) {
     if (o.contains("overlay")) keys.insert("overlay");
     if (o.contains("overlayPort")) keys.insert("overlayPort");
     if (o.contains("telemetry")) keys.insert("telemetry");
+    if (o.contains("statistics")) keys.insert("statistics");
     if (o.contains("inputEpochs")) keys.insert("inputEpochs");
     const auto actualKeys = o.keys();
     if (QSet<QString>(actualKeys.cbegin(), actualKeys.cend()) != keys) return false;
@@ -170,6 +185,9 @@ bool parse(const QByteArray& bytes, Session& result) {
     candidate.fullscreen = o.value("fullscreen").toBool();
     if (o.contains("telemetry") && !o.value("telemetry").isBool()) return false;
     candidate.telemetry = o.value("telemetry").toBool(false);
+    if (o.contains("statistics") && !o.value("statistics").isBool()) return false;
+    candidate.statistics = o.value("statistics").toBool(false);
+    if (candidate.statistics && !candidate.telemetry) return false;
     if (o.contains("inputEpochs") && !o.value("inputEpochs").isBool()) return false;
     candidate.inputEpochs = o.value("inputEpochs").toBool(false);
     if (candidate.inputEpochs && !candidate.telemetry) return false;

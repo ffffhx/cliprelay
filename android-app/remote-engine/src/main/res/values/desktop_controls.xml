@@ -14,6 +14,7 @@
     <string name="phone_computer_list">Computers</string>
     <string name="tablet_computer_keyboard">PC keyboard</string>
     <string name="tablet_voice_doubao">Doubao voice</string>
+    <string name="tablet_voice_typeless">Typeless</string>
     <string name="tablet_voice_local">On-device voice</string>
     <string name="tablet_voice_system">System voice</string>
     <string name="tablet_voice_stop">Stop recording</string>

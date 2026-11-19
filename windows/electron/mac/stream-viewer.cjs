@@ -6,18 +6,20 @@ const {validateIdentity}=require('./paired-store.cjs');
 const {sameRoute}=require('./routed-store.cjs');
 const inputProtocol=require('./input-protocol.cjs');
 const {InputSession}=require('./input-session.cjs');
+const {StreamStatistics}=require('./stream-statistics.cjs');
 const recoveryTransportErrors=new Set(['HTTP_429','HTTP_503','TIMEOUT','ECONNRESET','ECONNREFUSED','ETIMEDOUT','EHOSTUNREACH','ENETUNREACH']);
 
-function envelope(host,identity,options={},telemetry=false,inputEpochs=false){
+function envelope(host,identity,options={},telemetry=false,inputEpochs=false,statistics=false){
   validateIdentity(identity);
   const target=endpoint(host.address,host.port);
   if(target.port>65514 || target.address.includes('%'))throw fault('INVALID_STREAM_TARGET');
   const certificate=new crypto.X509Certificate(host.certificate);
   if(crypto.createHash('sha256').update(certificate.raw).digest('hex')!==host.id || !/^[a-f0-9]{32}$/.test(host.clientId))throw fault('INVALID_STREAM_TARGET');
   if(!options || typeof options!=='object' || Array.isArray(options) || Object.keys(options).some(k=>!['width','height','fps','bitrate','fullscreen'].includes(k)))throw fault('INVALID_STREAM_OPTIONS');
-  const value={version:1,...target,clientId:host.clientId,certificate:identity.cert,privateKey:identity.key,hostCertificate:host.certificate,width:1920,height:1080,fps:60,bitrate:12000,fullscreen:false,...options};
+  const value={version:1,...target,clientId:host.clientId,certificate:identity.cert,privateKey:identity.key,hostCertificate:host.certificate,width:1920,height:1080,fps:60,bitrate:12000,fullscreen:true,...options};
   if(telemetry===true)value.telemetry=true;
   if(inputEpochs===true){if(telemetry!==true)throw fault('INVALID_STREAM_OPTIONS');value.inputEpochs=true;}
+  if(statistics===true){if(telemetry!==true)throw fault('INVALID_STREAM_OPTIONS');value.statistics=true;}
   if(host.overlay!==undefined && typeof host.overlay!=='boolean')throw fault('INVALID_STREAM_TARGET');
   if(host.overlay){
     const remote=host.overlayPort ?? 48789;
@@ -37,6 +39,9 @@ function telemetryCapability(directory){
 function inputCapability(directory){
   try{return JSON.parse(fs.readFileSync(path.join(directory,'manifest.json'),'utf8')).capabilities?.includes('input-epochs-v1')===true;}catch{return false;}
 }
+function statisticsCapability(directory){
+  try{return JSON.parse(fs.readFileSync(path.join(directory,'manifest.json'),'utf8')).capabilities?.includes('stream-statistics-v1')===true;}catch{return false;}
+}
 
 function executable(directory,platform=process.platform,overlay=false){
   const relative=platform==='win32'?'runtime/ClipRelayStream.exe':platform==='darwin'?'runtime/ClipRelayStream.app/Contents/MacOS/Moonlight':null;
@@ -54,17 +59,19 @@ function executable(directory,platform=process.platform,overlay=false){
 
 class StreamViewer{
   constructor({directory,store,onUpdate=()=>{},spawnProcess=spawn,resolveExecutable=executable,resolveTelemetry=telemetryCapability,now=()=>performance.now(),
-    resolveInput=inputCapability,inputRequest=inputProtocol.request,displayRequest,inputTimeoutMs=15000,inputPollMs=100,
+    resolveInput=inputCapability,resolveStatistics=statisticsCapability,inputRequest=inputProtocol.request,displayRequest,inputTimeoutMs=15000,inputPollMs=100,
     retryDelays=[500,1000,2000,5000],recoveryMs=90000,maxRetries=8,stableMs=15000,startupMs=45000,killMs=3000}){
     Object.assign(this,{directory,store,onUpdate,spawnProcess,resolveExecutable,resolveTelemetry,now,retryDelays,recoveryMs,maxRetries,stableMs,startupMs,killMs});
-    Object.assign(this,{resolveInput,inputRequest,displayRequest,inputTimeoutMs,inputPollMs});
+    Object.assign(this,{resolveInput,resolveStatistics,inputRequest,displayRequest,inputTimeoutMs,inputPollMs});
     this.phase='idle';this.generation=0;this.available=false;this.error='';
     try{this.file=this.resolveExecutable(directory);this.available=true;}catch{}
   }
   snapshot(){
     const record=this.record,p=record?.progress;
     const progress=p && !record.closing && this.phase==='running'?{...p,receivedAgeMs:Math.min(60000,Math.ceil(Math.max(0,this.now()-record.receivedAt))),renderedAgeMs:Math.min(60000,Math.ceil(Math.max(0,this.now()-record.renderedAt)))}:null;
-    return {available:this.available,phase:this.phase,hostName:this.intent?.bound.name || '',error:this.error,retry:this.intent?.retries || 0,telemetry:!!record?.telemetry,progress,input:{...(record?.input?.snapshot()||{phase:'unavailable'}),manualPaused:this.intent?.manualPaused===true}};
+    const statistics=progress?{...(record.statistics?.snapshot(this.now())||{phase:'unavailable',bitrateMbps:null,fps:null}),
+      width:progress.renderedAgeMs<3000?progress.width:0,height:progress.renderedAgeMs<3000?progress.height:0}:null;
+    return {available:this.available,phase:this.phase,hostName:this.intent?.bound.name || '',error:this.error,retry:this.intent?.retries || 0,telemetry:!!record?.telemetry,progress,statistics,input:{...(record?.input?.snapshot()||{phase:'unavailable'}),manualPaused:this.intent?.manualPaused===true}};
   }
   changed(){this.onUpdate(this.snapshot());}
   authorized(){
@@ -136,7 +143,8 @@ class StreamViewer{
       // Recovery must preserve a user's pause even if the replacement route
       // reaches an older host. Never silently fall back to unrestricted input.
       if(intent.manualPaused&&!inputEpochs)throw fault('INPUT_UNSUPPORTED');
-      bytes=envelope(host,identity,intent.options,telemetry,inputEpochs);
+      const statistics=telemetry&&this.resolveStatistics(this.directory);
+      bytes=envelope(host,identity,intent.options,telemetry,inputEpochs,statistics);
       // The host app owns this child. Its still-open stdin is the session lease;
       // normal quit and crashes close it. Credentials never enter argv/env/disk.
       const env={...process.env};
@@ -144,6 +152,7 @@ class StreamViewer{
       const child=this.spawnProcess(file,['--cliprelay-session'],{cwd:path.dirname(file),env,windowsHide:true,stdio:['pipe','pipe','ignore'],shell:false});
       this.child=child;
       const record=this.record={child,host,intent,connected:false,ended:false,bytes:0,buffer:'',closing:false,telemetry,budgetAt:this.now()};
+      if(statistics)record.statistics=new StreamStatistics();
       if(inputEpochs)record.input=new InputSession({host:{...host},identity,instance:inputState.instance,
         current:()=>this.currentSession()===record,progress:()=>this.snapshot().progress,
         write:(frame,callback)=>{if(this.currentSession()!==record)throw fault('CANCELLED');return child.stdin.write(frame,callback);},
@@ -196,13 +205,17 @@ class StreamViewer{
       if(event?.version!==1 || record.ended || (event.event==='connected'?keys!=='event,version' || record.connected:
         event.event==='ended'?keys!=='event,reason,version' || !['network','pairing','host','user','parent','decoder'].includes(event.reason):
         event.event==='progress'?!record.telemetry || !record.connected || keys!=='event,height,received,receivedAgeMs,rendered,renderedAgeMs,version,width':
+        event.event==='statistics'?!record.statistics || !record.connected || keys!=='elapsedMs,event,receivedFrames,renderedFrames,version,videoBytes':
         event.event==='input'?!record.input||!record.connected:true)){
         this.finish('VIEWER_PROTOCOL_ERROR');return;
       }
       const authorized=this.authorized();
       if(!authorized){this.finish();return;}
       if(!sameRoute(authorized,record.host)){this.recover();return;}
-      if(event.event==='input'){
+      if(event.event==='statistics'){
+        if(!record.statistics.update(event,this.now())){this.finish('VIEWER_PROTOCOL_ERROR');return;}
+        this.changed();
+      }else if(event.event==='input'){
         record.input.receive(event);if(record.closing)return;
       }else if(event.event==='progress'){
         const integer=(v,min,max)=>Number.isSafeInteger(v)&&v>=min&&v<=max,p=record.progress;

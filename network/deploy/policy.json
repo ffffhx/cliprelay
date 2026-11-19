@@ -4,7 +4,7 @@
       "action": "accept",
       "src": ["autogroup:member"],
       "proto": "tcp",
-      "dst": ["autogroup:self:48784", "autogroup:self:48789", "autogroup:self:48791", "autogroup:self:48810"]
+      "dst": ["autogroup:self:48784", "autogroup:self:48789", "autogroup:self:48791", "autogroup:self:48792", "autogroup:self:48810"]
     },
     {
       "action": "accept",

@@ -118,6 +118,7 @@ function Invoke-ElectronRequest([string]$Json) {
             'update-check' { Start-RelayUpdateCheck }
             'update-download' { Start-RelayUpdateDownload }
             'update-open' { Open-RelayUpdateDownload }
+            'update-install' { Install-RelayDownloadedUpdate }
             'update-notify' { Set-RelayUpdateNotifications -Enabled ([bool]$data.enabled) }
             default { throw 'Unknown desktop action.' }
         }

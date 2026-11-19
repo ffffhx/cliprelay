@@ -98,10 +98,38 @@ public class PcView extends androidx.activity.ComponentActivity implements Adapt
         onConnectionChanged(null, null);
     }
 
+    public enum ComputerAction { FILES, TERMINAL, HERDR, WAKE, WAKE_SETTINGS, REMOVE }
+
+    /** Execute against current discovery state; REMOVE requires a UI confirmation first. */
+    protected void performComputerAction(String uuid, ComputerAction action) {
+        ComputerDetails current = managerBinder == null ? null : managerBinder.getComputer(uuid);
+        if (current == null) {
+            Toast.makeText(this, "设备暂不可用，请稍后重试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ComputerDetails computer = new ComputerDetails(current);
+        switch (action) {
+            case WAKE: wakeControls().show(computer); return;
+            case WAKE_SETTINGS: wakeControls().configure(computer); return;
+            case REMOVE: removeComputer(computer); return;
+            default:
+                if (computer.state != ComputerDetails.State.ONLINE || computer.activeAddress == null ||
+                        computer.pairState != PairState.PAIRED) {
+                    Toast.makeText(this, "请先连接这台电脑", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Intent intent = ServerHelper.createStartIntent(this, new NvApp("Desktop", 0, false), computer, managerBinder);
+                intent.setClass(this, action == ComputerAction.FILES ? com.limelight.files.FileTransferActivity.class :
+                        action == ComputerAction.HERDR ? com.limelight.herdr.HerdrActivity.class :
+                        com.limelight.terminal.TerminalActivity.class);
+                startActivity(intent);
+        }
+    }
+
     protected void showComputerActions(String uuid) {
         ComputerDetails computer = managerBinder == null ? null : managerBinder.getComputer(uuid);
         if (computer == null) return;
-        String[] labels = {"连接详情", "唤醒电脑", "文件传输", "终端", "唤醒设置", "移除设备"};
+        String[] labels = {"连接详情", "唤醒电脑", "文件传输", "终端", "唤醒设置", "移除设备", "Herdr 会话"};
         new android.app.AlertDialog.Builder(this).setTitle(computer.name)
                 .setItems(labels, (dialog, which) -> {
                     switch (which) {
@@ -114,23 +142,16 @@ public class PcView extends androidx.activity.ComponentActivity implements Adapt
                                             (EmbeddedNetwork.isAddress(computer.activeAddress) ? "跨网络连接" : "直连"))
                                     .setPositiveButton(android.R.string.ok, null).show();
                             break;
-                        case 1: wakeControls().show(computer); break;
-                        case 4: wakeControls().configure(computer); break;
+                        case 1: performComputerAction(uuid, ComputerAction.WAKE); break;
+                        case 4: performComputerAction(uuid, ComputerAction.WAKE_SETTINGS); break;
                         case 5:
                             UiHelper.displayDeletePcConfirmationDialog(this, computer, () -> {
-                                if (managerBinder != null) removeComputer(computer);
+                                performComputerAction(uuid, ComputerAction.REMOVE);
                             }, null);
                             break;
                         default:
-                            if (computer.state != ComputerDetails.State.ONLINE || computer.activeAddress == null ||
-                                    computer.pairState != PairState.PAIRED) {
-                                Toast.makeText(this, "请先连接这台电脑", Toast.LENGTH_SHORT).show();
-                                return;
-                            }
-                            Intent intent = ServerHelper.createStartIntent(this, new NvApp("Desktop", 0, false), computer, managerBinder);
-                            intent.setClass(this, which == 2 ? com.limelight.files.FileTransferActivity.class :
-                                    com.limelight.terminal.TerminalActivity.class);
-                            startActivity(intent);
+                            performComputerAction(uuid, which == 2 ? ComputerAction.FILES :
+                                    which == 6 ? ComputerAction.HERDR : ComputerAction.TERMINAL);
                     }
                 }).setNegativeButton("取消", null).show();
     }

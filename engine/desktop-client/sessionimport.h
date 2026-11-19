@@ -17,6 +17,7 @@ struct Session {
     bool fullscreen = false;
     bool overlay = false;
     bool telemetry = false;
+    bool statistics = false;
     bool inputEpochs = false;
     quint16 overlayPort = 0;
 };
@@ -30,7 +31,7 @@ void watchParent(std::function<void()> onLost = {});
 enum class EndReason { Network, Pairing, Host, User, Parent, Decoder };
 void reportConnected();
 void reportEnded(EndReason reason);
-void reportReceived(quint64 frame);
+void reportReceived(quint64 frame, int bytes = 0);
 void reportRendered(quint64 frame, int width, int height);
 void reportProgress();
 enum class InputOperation { Pause = 1, Resume = 2, Acknowledge = 3 };

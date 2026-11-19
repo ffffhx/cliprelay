@@ -44,6 +44,7 @@ public final class DesktopToolbar {
         default void applicationChanged() {}
         default void scrollCompatibilityChanged(boolean enabled) {}
         default void pinchCompatibilityChanged(boolean enabled) {}
+        default void pageCompatibilityChanged(boolean enabled) {}
         default void virtualKeyboardChanged(boolean visible) {}
         default void image() {}
         default void files() {}
@@ -154,6 +155,7 @@ public final class DesktopToolbar {
         private void updateScrollCompatibility() {
             actions.scrollCompatibilityChanged(ApplicationPolicy.usesPhoneScrollCompatibility(detectedApp, gameMode));
             actions.pinchCompatibilityChanged(ApplicationPolicy.usesPhonePinchCompatibility(detectedApp, gameMode));
+            actions.pageCompatibilityChanged(ApplicationPolicy.usesPhonePageCompatibility(detectedApp, gameMode));
         }
         private boolean canSend() { return connected && !paused && !pip; }
 

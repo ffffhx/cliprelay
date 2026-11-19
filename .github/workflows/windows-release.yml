@@ -3,6 +3,7 @@ name: Windows Release
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['windows-v*']
 
 permissions:
@@ -22,9 +23,16 @@ jobs:
         shell: powershell
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
+      - name: Generate the main release version
+        if: github.ref == 'refs/heads/main'
+        run: node scripts/desktop-release-version.cjs
+      - name: Check development and desktop update contracts
+        run: node --test windows/tests/desktop-updates.test.cjs
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.7'

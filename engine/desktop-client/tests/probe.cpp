@@ -39,7 +39,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (app.arguments().contains("--progress")) {
-        ClipRelayImport::reportReceived(10);
+        ClipRelayImport::reportReceived(10,1000);
+        ClipRelayImport::reportReceived(10,1000); // repeated submission is not another frame
         ClipRelayImport::reportRendered(12,1280,720); // not received
         ClipRelayImport::reportRendered(9,1280,720);
         ClipRelayImport::reportRendered(8,1920,1080); // stale callback
@@ -47,7 +48,7 @@ int main(int argc, char** argv) {
         ClipRelayImport::reportProgress();
         ClipRelayImport::reportProgress(); // rate-limited
         QTimer::singleShot(250, &app, [&] {
-            ClipRelayImport::reportReceived(20);
+            ClipRelayImport::reportReceived(20,1500); // IDs skip, but only two frames arrived
             ClipRelayImport::reportRendered(19,1920,1080);
             ClipRelayImport::reportRendered(20,0,1080); // invalid geometry
             ClipRelayImport::reportProgress();

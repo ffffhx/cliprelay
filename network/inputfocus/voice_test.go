@@ -143,3 +143,73 @@ func TestVoiceExpiredSessionIsEndedBeforeReuse(t *testing.T) {
 		t.Fatal(w.Code, commands)
 	}
 }
+
+func TestVoiceProviderRoutingAndIsolation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clients.json")
+	cert := []byte("phone")
+	data, _ := json.Marshal(map[string]any{"root": map[string]any{"named_devices": []any{map[string]any{
+		"cert": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert})), "enabled": true}}}})
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var commands []string
+	result := `{"ok":true}`
+	h := handler(path, func(command string) (json.RawMessage, error) {
+		commands = append(commands, command)
+		return json.RawMessage(result), nil
+	})
+	request := func(method, route string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/v1/voice/"+route, nil)
+		r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Raw: cert}}}
+		r.Header.Set("X-ClipRelay-Voice-Session", strings.Repeat("c", 32))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if request("GET", "typeless/status").Code != 200 || commands[len(commands)-1] != "voice-status:typeless" {
+		t.Fatal(commands)
+	}
+	if request("POST", "typeless/start").Code != 200 || commands[len(commands)-1] != "voice-start:typeless" {
+		t.Fatal(commands)
+	}
+	n := len(commands)
+	for _, route := range []string{"start", "stop", "cancel", "status"} {
+		method := "POST"
+		if route == "status" {
+			method = "GET"
+		}
+		if request(method, route).Code != 409 {
+			t.Fatal("provider crossed session", route)
+		}
+	}
+	if len(commands) != n {
+		t.Fatal("wrong provider reached helper", commands)
+	}
+	if request("POST", "typeless/stop").Code != 200 || commands[len(commands)-1] != "voice-stop" {
+		t.Fatal(commands)
+	}
+	if request("POST", "typeless/stop").Code != 409 {
+		t.Fatal("finish replayed")
+	}
+	n = len(commands)
+	for _, route := range []string{"unknown/status", "typeless/unknown", "typeless/typeless/start"} {
+		if request("POST", route).Code != 404 {
+			t.Fatal("unknown route accepted", route)
+		}
+	}
+	if len(commands) != n {
+		t.Fatal("unknown provider reached helper")
+	}
+	for _, code := range []string{"TYPELESS_REQUIRED", "TYPELESS_MIC_REQUIRED", "TYPELESS_SHORTCUT_REQUIRED", "TYPELESS_VERSION_UNSUPPORTED", "TYPELESS_ROUTING_UNSUPPORTED"} {
+		result = `{"ok":false,"code":"` + code + `","private":"secret"}`
+		w := request("GET", "typeless/status")
+		if !strings.Contains(w.Body.String(), code) || strings.Contains(w.Body.String(), "secret") {
+			t.Fatal(w.Body.String())
+		}
+	}
+	// The default route remains byte-for-byte compatible with old Doubao phones.
+	request("GET", "status")
+	if commands[len(commands)-1] != "voice-status" {
+		t.Fatal(commands)
+	}
+}

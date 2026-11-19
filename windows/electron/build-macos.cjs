@@ -11,6 +11,7 @@ async function build(){
   const {packager}=await import('@electron/packager');
   const windowsRoot=path.resolve(__dirname,'..');
   const repo=path.resolve(windowsRoot,'..');
+  const development=process.argv.includes('--development');
   const staging=fs.mkdtempSync(path.join(os.tmpdir(),'cliprelay-electron-mac-'));
   try{
     const source=path.join(staging,'source');fs.mkdirSync(source);
@@ -42,6 +43,8 @@ async function build(){
       fs.cpSync(artifact,path.join(source,'mac','stream-viewer'),{recursive:true,verbatimSymlinks:true});
     }
     fs.writeFileSync(path.join(source,'main.js'),"require('./mac/main.cjs');\n");
+    fs.copyFileSync(path.join(__dirname,'lifecycle.cjs'),path.join(source,'lifecycle.cjs'));
+    if(development){fs.copyFileSync(path.join(__dirname,'development.cjs'),path.join(source,'development.cjs'));fs.writeFileSync(path.join(source,'development-build.json'),JSON.stringify({sourceRoot:repo}));}
     for(const name of ['package.json','package-lock.json'])fs.copyFileSync(path.join(__dirname,name),path.join(source,name));
     fs.copyFileSync(path.join(repo,'LICENSE'),path.join(source,'LICENSE'));
     execFileSync('npm',['ci','--omit=dev','--ignore-scripts'],{cwd:source,stdio:'inherit'});
@@ -54,13 +57,15 @@ async function build(){
     }
     const icon=path.join(staging,'ClipRelay.icns');execFileSync('/usr/bin/iconutil',['-c','icns',iconset,'-o',icon]);
     const version=JSON.parse(fs.readFileSync(path.join(windowsRoot,'version.json'),'utf8').replace(/^\uFEFF/,''));
-    const output=path.resolve(repo,'.tools','mac-electron');
+    const packageFile=path.join(source,'package.json');
+    const metadata=JSON.parse(fs.readFileSync(packageFile,'utf8'));metadata.version=version.versionName;fs.writeFileSync(packageFile,JSON.stringify(metadata,null,2)+'\n');
+    const output=development?path.resolve(repo,'.tools/artifacts/acceptance/desktop-development-mac'):path.resolve(repo,'.tools','mac-electron');
     // npm ci --omit=dev already created the production-only dependency tree.
     // A second prune incorrectly resolves intentionally absent build tools.
     const hostUsage=hostPin?{LSMinimumSystemVersion:'14.2',
       NSAudioCaptureUsageDescription:'用于将这台 Mac 的系统声音传输到你批准连接的设备。',
       NSMicrophoneUsageDescription:'用于在你选择麦克风作为音频来源时，将声音传输到已配对设备。'}:{};
-    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:false,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp'],...hostUsage}});
+    const built=await packager({dir:source,name:'ClipRelay',executableName:'ClipRelay',appBundleId:'com.cliprelay.desktop',appVersion:version.versionName,platform:'darwin',arch:architecture,electronVersion:'44.4.3',out:output,icon,asar:false,prune:false,derefSymlinks:false,overwrite:development,extendInfo:{LSUIElement:true,NSLocalNetworkUsageDescription:'ClipRelay 在局域网中发现接收设备并同步剪贴板。',NSBonjourServices:['_cliprelay._tcp'],...hostUsage}});
     for(const bundle of built){
       if(process.env.CI==='true' && process.env.GITHUB_ACTIONS==='true'){
         execFileSync('python3',[path.join(repo,'scripts','test_macos_login_startup.py'),'--runtime',path.join(bundle,'ClipRelay.app'),'--modules',path.join(bundle,'ClipRelay.app','Contents','Resources','app','mac'),'--report',path.join(output,`native-login-startup-${architecture}.json`)],{stdio:'inherit',timeout:180000});

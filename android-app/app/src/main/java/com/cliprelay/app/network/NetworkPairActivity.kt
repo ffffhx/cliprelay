@@ -65,8 +65,8 @@ internal fun NetworkPairScreen(
         Column(Modifier.safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)) {
             TextButton(onClick = onBack) { Text("返回") }
-            Text("外网电脑", style = MaterialTheme.typography.headlineLarge)
-            Text("每台电脑只需授权一次。以后在电脑列表中直接选择，自动连接可用网络。")
+            Text("云主机与外网电脑", style = MaterialTheme.typography.headlineLarge)
+            Text("添加运行 ClipRelay 的 Windows 云主机或其他电脑，连接后即可查看桌面、点击和输入。配对记录会保留，下次从设备首页直接连接。")
             if (computers.isNotEmpty()) {
                 Button(onClick = onOpen, modifier = Modifier.fillMaxWidth().testTag("external-open-computer")) {
                     Text("查看电脑列表")
@@ -93,7 +93,7 @@ internal fun NetworkPairScreen(
             }
             HorizontalDivider()
             Text(if (computers.isEmpty()) "配对电脑" else "添加另一台电脑", style = MaterialTheme.typography.titleLarge)
-            Text("在电脑 ClipRelay 的“手机远控 → 外网配对”中生成配对码。添加新电脑不影响已有连接。")
+            Text("在云主机或电脑上打开 ClipRelay → 设置 → 通用，开启“允许被连接”，输入那里显示的八位设备码。旧版的外网配对码也可使用。")
             // Saved computers have their own live status above; the pairing
             // completion message would become stale after pause or removal.
             pairing?.takeUnless { it.phase == "saved" }?.let { status ->
@@ -113,12 +113,12 @@ internal fun NetworkPairScreen(
                 TextButton(onClick = onCancelPairing, modifier = Modifier.testTag("external-cancel-pairing")) { Text("取消本次配对") }
             } else {
                 OutlinedTextField(value = code, onValueChange = { code = it.filter { digit -> digit in '0'..'9' }.take(8) },
-                    label = { Text("八位配对码") }, modifier = Modifier.fillMaxWidth().testTag("external-pair-code"),
+                    label = { Text("八位设备码或配对码") }, modifier = Modifier.fillMaxWidth().testTag("external-pair-code"),
                     singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                 Button(onClick = { onPair(code) }, enabled = code.length == 8,
                     modifier = Modifier.fillMaxWidth().testTag("external-submit-code")) { Text("提交配对") }
             }
-            Text("首次仅通过外网添加时，还需在电脑上确认手机显示的远控 PIN。暂停安全通道会保留授权，局域网连接仍可使用。",
+            Text("云主机需保持开机并运行 ClipRelay；手机与云主机可在不同网络，无需本地电脑转发。暂停连接会保留配对，恢复后可再次使用。",
                 style = MaterialTheme.typography.bodySmall)
         }
     }
