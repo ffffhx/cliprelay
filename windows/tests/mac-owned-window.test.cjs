@@ -21,6 +21,9 @@ async function fixture({autoStart=false}={}){
   const filename=path.resolve(__dirname,'../electron/mac/main.cjs');
   const imports={'./stream-viewer.cjs':{StreamViewer:class{snapshot(){return {available:false,phase:'idle'};}reconcile(){}stop(){}async open(){throw new Error('VIEWER_UNAVAILABLE');}}},electron,'bonjour-service':{Bonjour},'./config.cjs':{loadConfig:()=>({peer:'legacy.local',peerPort:47632,legacyEnabled:true,deviceName:'Mac',discoveryEnabled:false,hostAutoStart:autoStart}),saveConfig:(_directory,value)=>savedConfigs.push(value)},'./relay.cjs':{sendSelection:async()=>{legacySends++;},createReceiver:()=>receiver,discoveredPeer(){}},'./paired-store.cjs':{PairedStore:Store},'./paired-controller.cjs':{PairedController:Controller,message:()=> 'fixture connection failed'},'node:child_process':{execFile(){},execFileSync:()=> 'Mac'},'./host-notices.cjs':require('../electron/mac/host-notices.cjs')};
   Object.assign(imports,{'./network-catalog.cjs':{NetworkCatalog:class{}},'./network-controller.cjs':{NetworkController:Network},'./routed-store.cjs':{RoutedStore:class{constructor(base){return base;}}},'./client-identity.cjs':{createClientIdentity:()=>{}}});
+  // Startup now runs the shared lifecycle, the macOS update feed and the
+  // development-root installer; this fixture never exercises them.
+  Object.assign(imports,{'../lifecycle.cjs':{initialize:async()=>{}},'./updates.cjs':{initialize:()=>({open(){}})},'../development.cjs':{install(){}}});
   const fileActions=[];imports['./file-controller.cjs']={FileController:class{snapshot(){return {tasks:[]};}reconcile(){}releaseWindow(){}close(){}async action(action,data,window){fileActions.push({action,data,window});}},message:()=> 'File operation failed'};
   imports['./login-startup.cjs']=require('../electron/mac/login-startup.cjs');
   imports['./terminal-window.cjs']={DesktopTerminal:class{open(){}reconcile(){}close(){}}};
